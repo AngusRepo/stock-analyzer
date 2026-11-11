@@ -329,12 +329,13 @@ def _feature131_profiles(exogenous: bool) -> dict:
 
 
 def _r33_profiles() -> dict:
-    """R33 seven-model release: exo131 without XGBoost; NF folds and full-fit train only complete horizons."""
+    """R33 four-model release (exo131 trees, TabM, GNN). The sequence families left the roster on
+    2026-11-07 after the G5 #3 cohort put all three at OOF rank IC ~0; they return only through a
+    redesigned challenger that passes CPCV."""
+    from services.alpha_model_roster import R33_EXCLUDED_MODELS
     profiles = _feature131_profiles(True)
-    profiles.pop("XGBoost")
-    for name in ("PatchTST", "iTransformer"):
-        profiles[name]["payload_config"]["nf_require_complete_horizon"] = True
-        profiles[name]["required_effective_config"]["training_options"]["nf_require_complete_horizon"] = True
+    for name in R33_EXCLUDED_MODELS:
+        profiles.pop(name)
     return profiles
 
 

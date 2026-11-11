@@ -154,7 +154,7 @@ export async function listCanonicalReferences(
   // Recompute the whole canonical date cohort whenever any source label
   // changes. Filtering only missing rows leaves stale returns behind and
   // computes sector benchmarks/ranks on a partial cross-section.
-  const dirty = await db.prepare(`
+  const dirty = await withReferenceOverloadRetry(() => db.prepare(`
     SELECT DISTINCT r.signal_date, r.producer_run_id
       FROM selection_reference_snapshots_v1 r
       LEFT JOIN canonical_selection_labels_v4 l
@@ -174,51 +174,79 @@ export async function listCanonicalReferences(
          OR l.exit_adjustment_factor IS NOT h.exit_adjustment_factor)
   `).bind(asOfDate, ...SELECTION_REFERENCE_MATURE_COMPATIBLE_CONTRACT_VERSIONS,
     CANONICAL_SELECTION_ADJUSTMENT_SOURCE, costBps)
-    .all<{signal_date: string; producer_run_id: string}>()
+    .all<{signal_date: string; producer_run_id: string}>())
   const dirtyGroups = (dirty.results ?? []).filter(row =>
     (!startDate || row.signal_date >= startDate) && (!endDate || row.signal_date <= endDate)
       && (!canonicalRunIds || canonicalRunIds[row.signal_date] === row.producer_run_id))
   if (!dirtyGroups.length) return []
+  // Page one dirty cohort at a time on the (signal_date, symbol, producer_run_id)
+  // primary key. A cursor over every date scanned the whole table per 500-row page
+  // (3.4M rows on 2026-11-04) and back-to-back pages overloaded learning-db's 10 s
+  // window. Known heads already filtered dirtyGroups above, so only the
+  // heads-table path still needs a canonical clause.
+  const groups = [...new Map(dirtyGroups.map((group) => [`${group.signal_date}|${group.producer_run_id}`, group])).values()]
+    .sort((a, b) => compareText(a.signal_date, b.signal_date) || compareText(a.producer_run_id, b.producer_run_id))
   const rows: ReferenceRow[] = []
-  let cursorDate = ''
-  let cursorSymbol = ''
-  for (;;) {
-    const clauses = [
-      "r.signal_date <= ?",
-      "r.feature_contract_version IN (?, ?)",
-      "(r.signal_date > ? OR (r.signal_date = ? AND r.symbol > ?))",
-    ]
-    const binds: unknown[] = [
-      asOfDate,
-      ...SELECTION_REFERENCE_MATURE_COMPATIBLE_CONTRACT_VERSIONS,
-      cursorDate,
-      cursorDate,
-      cursorSymbol,
-    ]
-    if (startDate) { clauses.push('r.signal_date >= ?'); binds.push(startDate) }
-    if (canonicalRunIds) {
-      clauses.push("EXISTS (SELECT 1 FROM json_each(?) h WHERE h.key=r.signal_date AND h.value=r.producer_run_id)")
-      binds.push(JSON.stringify(canonicalRunIds))
-    } else {
-      clauses.push("EXISTS (SELECT 1 FROM canonical_run_heads h WHERE h.logical_run_key = 'screener:' || r.signal_date || ':TW:production:market_screener' AND h.run_id = r.producer_run_id)")
+  for (const [groupIndex, group] of groups.entries()) {
+    if (groupIndex > 0) await sleep(REFERENCE_GROUP_PAUSE_MS)
+    let cursorSymbol: string | null = null
+    for (;;) {
+      const clauses = [
+        "r.feature_contract_version IN (?, ?)",
+        "r.signal_date = ?",
+        "r.producer_run_id = ?",
+      ]
+      const binds: unknown[] = [
+        ...SELECTION_REFERENCE_MATURE_COMPATIBLE_CONTRACT_VERSIONS,
+        group.signal_date,
+        group.producer_run_id,
+      ]
+      if (cursorSymbol !== null) {
+        clauses.push("r.symbol > ?")
+        binds.push(cursorSymbol)
+      }
+      if (!canonicalRunIds) {
+        clauses.push("EXISTS (SELECT 1 FROM canonical_run_heads h WHERE h.logical_run_key = 'screener:' || r.signal_date || ':TW:production:market_screener' AND h.run_id = r.producer_run_id)")
+      }
+      const page = await withReferenceOverloadRetry(() => db.prepare(`
+        SELECT r.signal_date, r.symbol, r.producer_run_id, r.stock_id, r.market_segment, r.sector, r.feature_contract_version
+          FROM selection_reference_snapshots_v1 r
+         WHERE ${clauses.join(' AND ')}
+         ORDER BY r.symbol
+         LIMIT 500
+      `).bind(...binds).all<ReferenceRow>())
+      const pageRows = page.results ?? []
+      rows.push(...pageRows)
+      if (pageRows.length < 500) break
+      cursorSymbol = pageRows.at(-1)!.symbol
     }
-    clauses.push("EXISTS (SELECT 1 FROM json_each(?) d WHERE json_extract(d.value,'$.signal_date')=r.signal_date AND json_extract(d.value,'$.producer_run_id')=r.producer_run_id)")
-    binds.push(JSON.stringify(dirtyGroups))
-    if (endDate) { clauses.push('r.signal_date <= ?'); binds.push(endDate) }
-    const page = await db.prepare(`
-      SELECT r.signal_date, r.symbol, r.producer_run_id, r.stock_id, r.market_segment, r.sector, r.feature_contract_version
-        FROM selection_reference_snapshots_v1 r
-       WHERE ${clauses.join(' AND ')}
-       ORDER BY r.signal_date, r.symbol
-       LIMIT 500
-    `).bind(...binds).all<ReferenceRow>()
-    const pageRows = page.results ?? []
-    rows.push(...pageRows)
-    if (pageRows.length < 500) break
-    cursorDate = pageRows.at(-1)!.signal_date
-    cursorSymbol = pageRows.at(-1)!.symbol
   }
-  return rows
+  return rows.sort((a, b) => compareText(a.signal_date, b.signal_date) || compareText(a.symbol, b.symbol))
+}
+
+// Binary order, matching SQLite's ORDER BY on TEXT.
+function compareText(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0
+}
+
+const REFERENCE_GROUP_PAUSE_MS = 250
+const REFERENCE_OVERLOAD_RETRY_DELAY_MS = 12_000
+const REFERENCE_OVERLOAD_MAX_ATTEMPTS = 3
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+export async function withReferenceOverloadRetry<T>(run: () => Promise<T>): Promise<T> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await run()
+    } catch (error) {
+      const overloaded = /D1 DB is overloaded/i.test(error instanceof Error ? error.message : String(error))
+      if (!overloaded || attempt >= REFERENCE_OVERLOAD_MAX_ATTEMPTS) throw error
+      await sleep(REFERENCE_OVERLOAD_RETRY_DELAY_MS)
+    }
+  }
 }
 
 async function loadPriceHorizonEvidence(

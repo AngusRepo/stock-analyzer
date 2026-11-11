@@ -40,10 +40,34 @@ $WorkerTestSources = Get-ChildItem -Path (Join-Path (Get-Location) 'src\lib') -F
   Sort-Object Name |
   Where-Object { $RuntimeE2ETests -notcontains $_.Name } |
   ForEach-Object { "src/lib/$($_.Name)" }
+# Same runner and concurrency as the Linux ci worker suite (ci/run_suite.sh): one process per test
+# file, a file passes when its process exits 0. Batched so the file list stays under the Windows
+# command-line limit.
+$WorkerTestConcurrency = 4
+$WorkerTestBatchSize = 150
+$FailureReporter = [System.Uri]::new((Join-Path (Join-Path $Root 'ci') 'node_failures_reporter.mjs')).AbsoluteUri
 $FailedWorkerTests = @()
-foreach ($testSource in $WorkerTestSources) {
-  npx tsx $testSource
-  if ($LASTEXITCODE -ne 0) { $FailedWorkerTests += $testSource }
+for ($offset = 0; $offset -lt $WorkerTestSources.Count; $offset += $WorkerTestBatchSize) {
+  $last = [Math]::Min($offset + $WorkerTestBatchSize, $WorkerTestSources.Count) - 1
+  $batch = @($WorkerTestSources[$offset..$last])
+  $failureReport = Join-Path ([IO.Path]::GetTempPath()) "p9-worker-failures-$PID-$offset.txt"
+  Remove-Item -LiteralPath $failureReport -ErrorAction SilentlyContinue
+  node --import tsx --test "--test-concurrency=$WorkerTestConcurrency" `
+    --test-reporter=spec --test-reporter-destination=stdout `
+    "--test-reporter=$FailureReporter" "--test-reporter-destination=$failureReport" `
+    @batch
+  $batchExit = $LASTEXITCODE
+  $batchFailures = @()
+  if (Test-Path -LiteralPath $failureReport) {
+    $batchFailures = @(Get-Content -LiteralPath $failureReport |
+      ForEach-Object { if ($_ -match '^worker: (.+?) :: ') { $Matches[1] } } |
+      Sort-Object -Unique)
+    Remove-Item -LiteralPath $failureReport -ErrorAction SilentlyContinue
+  }
+  if ($batchExit -ne 0 -and $batchFailures.Count -eq 0) {
+    $batchFailures = @("test runner exit $batchExit without a failure report ($($batch[0])..$($batch[-1]))")
+  }
+  $FailedWorkerTests += $batchFailures
 }
 if ($FailedWorkerTests.Count -gt 0) {
   throw "worker contract tests failed ($($FailedWorkerTests.Count)): $($FailedWorkerTests -join ', ')"
@@ -54,7 +78,11 @@ Pop-Location
 Write-Host '[P9 gate] ml-controller contract tests'
 
 Push-Location (Join-Path $Root 'ml-controller')
-& $ControllerPython -m pytest tests\test_verify_pipeline_graph.py tests\test_p6_emerging_ml_contract.py tests\test_p7_model_upgrade_research_track.py tests\test_p8_adaptive_meta_contract.py tests\test_market_segment_policy.py tests\test_model_ic_tracker.py tests\test_train_serve_parity_contract.py tests\test_sector_flow_proxy.py tests\test_pipeline_callback_contract.py tests\test_retrain_followup_telemetry.py tests\test_oof_compute_wait.py tests\test_oof_materialize_job_contract.py tests\test_nav_opb_daily_primary.py tests\test_nav_daily_adoption.py tests\test_walk_forward_active8_contract.py tests\test_active8_paper_admission.py tests\test_paired_native_registration.py tests\test_paired_nav_execution_environment.py tests\test_native_storage_equivalence.py tests\test_nav_gcs_transport.py tests\test_nav_io_scope.py tests\test_nav_display_shared_cold_scope.py tests\test_strategy_nav_read_model.py tests\test_daily_nav_read_receipt.py tests\test_paired_native_prestart.py tests\test_paper_native_tick_route.py tests\test_paired_nav_strategy_bundle.py tests\test_d1_domain_client.py tests\test_research_validation.py tests\test_research_study_capture.py tests\test_research_canonical_bundle_view.py tests\test_retention_history.py tests\test_research_search_validation.py tests\test_promotion_service.py tests\test_alpha_evidence_runner.py tests\test_parameter_candidate_validation_chain.py tests\test_promotion_risk_domains.py tests\test_allocator_forecast_archive.py tests\test_allocator_ev_fusion_artifact_builder.py -q
+# pytest-xdist spreads the contract tests over the runner's cores; without it they run serially.
+$ControllerParallel = @()
+& $ControllerPython -c "import importlib.util, sys; sys.exit(0 if importlib.util.find_spec('xdist') else 1)"
+if ($LASTEXITCODE -eq 0) { $ControllerParallel = @('-n', 'logical', '--dist', 'worksteal') }
+& $ControllerPython -m pytest @ControllerParallel tests\test_verify_pipeline_graph.py tests\test_p6_emerging_ml_contract.py tests\test_p7_model_upgrade_research_track.py tests\test_p8_adaptive_meta_contract.py tests\test_market_segment_policy.py tests\test_model_ic_tracker.py tests\test_train_serve_parity_contract.py tests\test_sector_flow_proxy.py tests\test_pipeline_callback_contract.py tests\test_retrain_followup_telemetry.py tests\test_oof_compute_wait.py tests\test_oof_materialize_job_contract.py tests\test_nav_opb_daily_primary.py tests\test_nav_daily_adoption.py tests\test_walk_forward_active8_contract.py tests\test_active8_paper_admission.py tests\test_paired_native_registration.py tests\test_paired_nav_execution_environment.py tests\test_native_storage_equivalence.py tests\test_nav_gcs_transport.py tests\test_nav_io_scope.py tests\test_nav_display_shared_cold_scope.py tests\test_strategy_nav_read_model.py tests\test_daily_nav_read_receipt.py tests\test_paired_native_prestart.py tests\test_paper_native_tick_route.py tests\test_paired_nav_strategy_bundle.py tests\test_d1_domain_client.py tests\test_research_validation.py tests\test_research_study_capture.py tests\test_research_canonical_bundle_view.py tests\test_retention_history.py tests\test_research_search_validation.py tests\test_promotion_service.py tests\test_alpha_evidence_runner.py tests\test_parameter_candidate_validation_chain.py tests\test_promotion_risk_domains.py tests\test_allocator_forecast_archive.py tests\test_allocator_ev_fusion_artifact_builder.py -q
 if ($LASTEXITCODE -ne 0) { throw "ml-controller contract tests failed" }
 & $ControllerPython -m pytest tests\test_weekly_source_preflight.py tests\test_weekly_evidence_service.py tests\test_weekly_job_closure.py tests\test_backtest_corporate_accounting.py tests\test_backtest_snapshot_loader.py -q
 if ($LASTEXITCODE -ne 0) { throw "weekly source preflight tests failed" }

@@ -1775,7 +1775,13 @@ async function finalizeUpdateChain(
       console.log(`[Queue] Finalize already acquired for ${triggerTime} ${runId}`)
       const repaired = await repairFinalizeContinuationIfNeeded(env, deps, triggerTime, runId, shardCount)
       if (!repaired) {
-        await deferFinalizeContinuation(env, triggerTime, runId, shardCount, continuationAttempt, 'finalizer lease is still owned by the original continuation')
+        // The owner re-queues itself after a handled failure. A waiter only has to
+        // cover an owner that was killed, so it wakes once the lease can have
+        // expired; waking every 2 minutes made each shard waiter one more retry
+        // chain, and on 2026-11-04 those chains kept learning-db overloaded.
+        await deferFinalizeContinuation(env, triggerTime, runId, shardCount, continuationAttempt,
+          'finalizer lease is still owned by the original continuation',
+          await finalizeLeaseWaitSeconds(env, triggerTime, runId))
       }
       return
     }
@@ -1795,6 +1801,7 @@ async function deferFinalizeContinuation(
   shardCount: number,
   continuationAttempt: number,
   reason: string,
+  delaySeconds = FINALIZE_CONTINUATION_RETRY_DELAY_SECONDS,
 ): Promise<void> {
   if (await closeHandedOffIndicatorRun(env, triggerTime, runId)) return
   if (continuationAttempt >= FINALIZE_CONTINUATION_MAX_ATTEMPTS) {
@@ -1814,7 +1821,15 @@ async function deferFinalizeContinuation(
   await env.UPDATE_QUEUE.send({
     type: 'finalize_update', cursor: 0, triggerTime, runId, shardCount, attempt: 1,
     continuationAttempt: continuationAttempt + 1,
-  }, { delaySeconds: FINALIZE_CONTINUATION_RETRY_DELAY_SECONDS } as any)
+  }, { delaySeconds } as any)
+}
+
+async function finalizeLeaseWaitSeconds(env: Bindings, triggerTime: string, runId: string): Promise<number> {
+  const lock = await loadFinalizeLock(env, triggerTime, runId)
+  const expiresAtMs = lock?.expires_at ? Date.parse(lock.expires_at) : NaN
+  if (!Number.isFinite(expiresAtMs)) return FINALIZE_CONTINUATION_RETRY_DELAY_SECONDS
+  const untilExpiry = Math.ceil((expiresAtMs - Date.now()) / 1000) + 30
+  return Math.min(FINALIZE_LEASE_TTL_MS / 1000 + 30, Math.max(FINALIZE_CONTINUATION_RETRY_DELAY_SECONDS, untilExpiry))
 }
 
 export async function refreshMatureStrategyEvidenceBeforeScreener(
@@ -1823,11 +1838,18 @@ export async function refreshMatureStrategyEvidenceBeforeScreener(
   runId: string,
 ): Promise<string> {
   const startedAt = Date.now()
+  let phase = 'load_modules'
   try {
-    const progress = async (phase: string) => logSchedulerResult(env.KV, 'strategy-learning-mature-evidence', {
-      status: 'running', summary: `strategy-learning-mature-evidence phase=${phase}; date=${asOfDate}; run_id=${runId}`,
-      duration_ms: Date.now() - startedAt, run_id: runId, run_date: asOfDate,
-    }, env)
+    // A running entry cannot overwrite an earlier error in KV, so the failing
+    // phase also goes into the error summary and the thrown message.
+    const progress = async (next: string) => {
+      if (phase !== 'load_modules') await new Promise((resolve) => setTimeout(resolve, MATURE_EVIDENCE_PHASE_PAUSE_MS))
+      phase = next
+      await logSchedulerResult(env.KV, 'strategy-learning-mature-evidence', {
+        status: 'running', summary: `strategy-learning-mature-evidence phase=${phase}; date=${asOfDate}; run_id=${runId}`,
+        duration_ms: Date.now() - startedAt, run_id: runId, run_date: asOfDate,
+      }, env)
+    }
     await progress('recover_mature_selection')
     const { drainMatureSelectionEvidence } = await import('./matureSelectionEvidenceRecovery')
     const { materializeCanonicalSelectionLabelsV4 } = await import('./canonicalSelectionLabels')
@@ -1866,15 +1888,20 @@ export async function refreshMatureStrategyEvidenceBeforeScreener(
   } catch (error) {
     await logSchedulerResult(env.KV, 'strategy-learning-mature-evidence', {
       status: 'error',
-      summary: `mature evidence refresh failed before screener for ${asOfDate}`,
+      summary: `mature evidence refresh failed before screener for ${asOfDate}; phase=${phase}`,
       duration_ms: Date.now() - startedAt,
       run_id: runId,
       run_date: asOfDate,
       error: String(error),
     }, env)
-    throw error
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(`mature evidence phase=${phase}: ${message}`, { cause: error })
   }
 }
+
+// Let learning-db's 10 s resource window clear between the heavy phases, which
+// each read millions of rows; back to back they overloaded it on 2026-11-04.
+const MATURE_EVIDENCE_PHASE_PAUSE_MS = 12_000
 async function runFinalizeContinuation(
   env: Bindings,
   deps: ProcessUpdateBatchDeps,

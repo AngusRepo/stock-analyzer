@@ -379,8 +379,59 @@ def start_date_for_years(years: int) -> str:
     return today.replace(year=today.year - years).isoformat()
 
 
-def d1_request(sql: str, params: list[Any] | None = None) -> dict[str, Any]:
-    proxied = controller_d1_request(sql, params)
+# Backoff for one D1 POST that hit a transient edge failure (ops knob, not a trading constant).
+D1_PROXY_RETRY_DELAYS_SECONDS = tuple(
+    max(0.0, float(part)) for part in os.environ.get("FINLAB_D1_PROXY_RETRY_DELAYS_SECONDS", "2,8,20").split(",") if part.strip())
+D1_PROXY_TRANSIENT_HTTP_STATUS = frozenset({429, 502, 503, 504})
+# Every replayed D1 POST of this run (recorded in the manifest).
+D1_PROXY_RETRIES: list[dict[str, Any]] = []
+
+
+def d1_post_json(
+    url: str,
+    body: dict[str, Any],
+    headers: dict[str, str],
+    *,
+    timeout: float,
+    label: str,
+    retry_transient: bool = False,
+    error_limit: int = 800,
+) -> dict[str, Any]:
+    """POST one D1 request. With retry_transient the same body is replayed on HTTP 429/502/503/504,
+    connection errors and timeouts, so only reads and upsert-only writes may opt in. Other HTTP
+    statuses and SQL errors reported inside a 200 body are never replayed."""
+    data = json.dumps(body).encode("utf-8")
+    delays = D1_PROXY_RETRY_DELAYS_SECONDS if retry_transient else ()
+    for attempt in range(len(delays) + 1):
+        req = urllib.request.Request(
+            url, data=data, headers={**headers, "Content-Type": "application/json"}, method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:error_limit]
+            if exc.code not in D1_PROXY_TRANSIENT_HTTP_STATUS or attempt >= len(delays):
+                suffix = f" (http_{exc.code} after {attempt + 1} attempts)" if attempt else ""
+                raise RuntimeError(f"{detail}{suffix}") from exc
+            reason = f"http_{exc.code}"
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+            if attempt >= len(delays):
+                raise
+            reason = type(exc).__name__
+        D1_PROXY_RETRIES.append({"label": label, "attempt": attempt + 1, "reason": reason})
+        print(
+            f"[finlab-backfill] d1_post_retry label={label} attempt={attempt + 1}/{len(delays)} "
+            f"reason={reason} sleep={delays[attempt]}",
+            file=sys.stderr,
+            flush=True,
+        )
+        time.sleep(delays[attempt])
+    raise AssertionError("unreachable")
+
+
+def d1_request(sql: str, params: list[Any] | None = None, *, retry_transient: bool = False) -> dict[str, Any]:
+    proxied = controller_d1_request(sql, params, retry_transient=retry_transient)
     if proxied is not None:
         return proxied
 
@@ -391,17 +442,10 @@ def d1_request(sql: str, params: list[Any] | None = None) -> dict[str, Any]:
     body: dict[str, Any] = {"sql": sql}
     if params:
         body["params"] = params
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(body).encode("utf-8"),
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-        method="POST",
+    payload = d1_post_json(
+        url, body, {"Authorization": f"Bearer {token}"},
+        timeout=120, label="cloudflare_d1_query", retry_transient=retry_transient, error_limit=500,
     )
-    try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        raise RuntimeError(exc.read().decode("utf-8")[:500]) from exc
     if not payload.get("success"):
         raise RuntimeError(str(payload.get("errors") or payload)[:500])
     result = payload.get("result") or []
@@ -452,7 +496,13 @@ def d1_unavailable(step: str) -> bool:
     return True
 
 
-def controller_d1_request(sql: str, params: list[Any] | None = None, *, domain: str | None = None) -> dict[str, Any] | None:
+def controller_d1_request(
+    sql: str,
+    params: list[Any] | None = None,
+    *,
+    domain: str | None = None,
+    retry_transient: bool = False,
+) -> dict[str, Any] | None:
     url = controller_d1_query_url()
     token = controller_proxy_token()
     if not url or not token:
@@ -460,20 +510,10 @@ def controller_d1_request(sql: str, params: list[Any] | None = None, *, domain: 
     body = {"sql": sql, "params": params or []}
     if domain:
         body["domain"] = domain
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(body).encode("utf-8"),
-        headers={
-            "X-Controller-Token": token,
-            "Content-Type": "application/json",
-        },
-        method="POST",
+    payload = d1_post_json(
+        url, body, {"X-Controller-Token": token},
+        timeout=180, label=f"controller_d1_query:{domain or 'default'}", retry_transient=retry_transient,
     )
-    try:
-        with urllib.request.urlopen(req, timeout=180) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        raise RuntimeError(exc.read().decode("utf-8")[:800]) from exc
     if not payload.get("success"):
         raise RuntimeError(str(payload.get("errors") or payload)[:800])
     result = payload.get("result") or []
@@ -486,6 +526,7 @@ def controller_d1_batch_execute(
     timeout: float = 120.0,
     chunk_size: int = 250,
     domain: str | None = None,
+    retry_transient: bool = False,
 ) -> dict[str, Any] | None:
     url = controller_d1_batch_url()
     token = controller_proxy_token()
@@ -513,20 +554,11 @@ def controller_d1_batch_execute(
                 file=sys.stderr,
                 flush=True,
             )
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(body).encode("utf-8"),
-            headers={
-                "X-Controller-Token": token,
-                "Content-Type": "application/json",
-            },
-            method="POST",
+        payload = d1_post_json(
+            url, body, {"X-Controller-Token": token},
+            timeout=timeout, label=f"controller_d1_batch:{domain or 'default'}:chunk={chunk_no}/{chunk_count}",
+            retry_transient=retry_transient,
         )
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                payload = json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            raise RuntimeError(exc.read().decode("utf-8")[:800]) from exc
         if not payload.get("ok"):
             raise RuntimeError(str(payload)[:800])
         part_total = int(payload["total"]) if payload.get("total") is not None else len(part)
@@ -586,13 +618,13 @@ def d1_query(
     domain: str | None = None,
 ) -> list[dict[str, Any]]:
     if domain:
-        proxied = controller_d1_request(sql, params, domain=domain)
+        proxied = controller_d1_request(sql, params, domain=domain, retry_transient=True)
         if proxied is not None:
             return proxied.get("results") or []
         from services.d1_domain_client import D1DataDomain, client_for_domain
 
         return client_for_domain(D1DataDomain(domain)).query(sql, params=params, timeout=120.0)
-    return d1_request(sql, params).get("results") or []
+    return d1_request(sql, params, retry_transient=True).get("results") or []
 
 
 def d1_exec(
@@ -617,10 +649,10 @@ def d1_batch_execute(
     timeout: float = 120.0,
     chunk_size: int = 250,
     domain: str | None = None,
+    retry_transient: bool = False,
 ) -> dict[str, Any]:
-    proxied = controller_d1_batch_execute(
-        statements, timeout=timeout, chunk_size=chunk_size, domain=domain,
-    )
+    proxied = controller_d1_batch_execute(statements, timeout=timeout, chunk_size=chunk_size, domain=domain,
+                                          retry_transient=retry_transient)
     if proxied is not None:
         return proxied
     if domain:
@@ -647,9 +679,10 @@ def ops_d1_batch_execute(
     *,
     timeout: float = 120.0,
     chunk_size: int = 250,
+    retry_transient: bool = False,
 ) -> dict[str, Any]:
     return d1_batch_execute(
-        statements, timeout=timeout, chunk_size=chunk_size, domain="ops",
+        statements, timeout=timeout, chunk_size=chunk_size, domain="ops", retry_transient=retry_transient,
     )
 
 
@@ -4008,11 +4041,15 @@ def materialize_canonical_to_d1(
             "raise(abort,'stocks_listing_capture_conflict')",
         )):
             raise RuntimeError('finlab_core_listing_immutable_capture_migration_missing')
-        core_result = d1_batch_execute(core_statements, timeout=120., chunk_size=chunk_size, domain='core')
+        core_result = d1_batch_execute(
+            core_statements, timeout=120., chunk_size=chunk_size, domain='core', retry_transient=True)
         require_finlab_write_ack(core_result, len(core_statements), phase='core_security_master')
         apply_result = dict(core_result)
+    # Canonical statements are upserts, guarded prunes and idempotent metric updates, so a chunk that hit a
+    # transient proxy failure is replayed as-is.
     if not dry_run and statements:
-        legacy_result = controller_d1_batch_execute(statements, timeout=120.0, chunk_size=chunk_size)
+        legacy_result = controller_d1_batch_execute(statements, timeout=120.0, chunk_size=chunk_size,
+                                                    retry_transient=True)
         if legacy_result is None:
             from services.d1_client import batch_execute
 
@@ -4027,6 +4064,7 @@ def materialize_canonical_to_d1(
                 timeout=120.0,
                 chunk_size=chunk_size,
                 domain="market",
+                retry_transient=True,
             )
         else:
             from services import d1_client
@@ -4052,7 +4090,8 @@ def materialize_canonical_to_d1(
     # Publish metadata only after all data-domain writes have succeeded.
     if not dry_run and ops_statements:
         require_finlab_write_ack(apply_result, len(statements) + len(core_statements) + len(market_statements), phase="data")
-        ops_result = ops_d1_batch_execute(ops_statements, timeout=120.0, chunk_size=chunk_size)
+        ops_result = ops_d1_batch_execute(
+            ops_statements, timeout=120.0, chunk_size=chunk_size, retry_transient=True)
         require_finlab_write_ack(ops_result, len(ops_statements), phase="ops")
         apply_result = {key: int(apply_result.get(key) or 0) + int(ops_result.get(key) or 0)
                         for key in ("total", "success_count", "error_count", "changes_total")}
@@ -4233,6 +4272,7 @@ def checksum_manifest(payload: dict[str, Any]) -> str:
 
 
 def main() -> int:
+    D1_PROXY_RETRIES.clear()  # Modal reuses the container, and with it this module, across runs.
     parser = argparse.ArgumentParser(description="Run FinLab V4 remote backfill and D1 summary writeback.")
     parser.add_argument("--years", type=int, choices=[3, 5], required=True)
     parser.add_argument("--run-id", required=True)
@@ -4467,6 +4507,8 @@ def main() -> int:
         if manifest["canonical_d1_apply"].get("status") != "ready":
             manifest["backfill_status"] = "partial_failed"
         print("[finlab-backfill] canonical_d1_apply done", file=sys.stderr, flush=True)
+        if D1_PROXY_RETRIES:
+            manifest["d1_proxy_retries"] = list(D1_PROXY_RETRIES)
         write_json(run_dir / "manifest.json", manifest)
 
     if args.write_d1:
@@ -4474,6 +4516,8 @@ def main() -> int:
         print("[finlab-backfill] runtime_table_writeback start", file=sys.stderr, flush=True)
         manifest["runtime_table_writeback"] = insert_finlab_runtime_tables(manifest)
         print("[finlab-backfill] runtime_table_writeback done", file=sys.stderr, flush=True)
+        if D1_PROXY_RETRIES:
+            manifest["d1_proxy_retries"] = list(D1_PROXY_RETRIES)
         write_json(run_dir / "manifest.json", manifest)
 
     if args.gcs_bucket:

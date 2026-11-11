@@ -1,27 +1,37 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { loadObservations, backfillMissingStrategyEvidenceMetricSnapshots, strategyMetricPublicationScope } from './strategyEvidenceMetrics'
 import { loadDateReturns } from './strategyEvidenceOwnerCalibration'
 
 async function main() {
 const db = new DatabaseSync(':memory:')
-db.exec(`CREATE TABLE strategy_evidence_observations_v1 (
- matrix_row_id INTEGER,signal_date TEXT,symbol TEXT,producer_run_id TEXT,strategy_id TEXT,strategy_version TEXT,
- strategy_status TEXT,alpha_bucket TEXT,legacy_binary_affinity REAL,legacy_affinity_version TEXT,
- affinity_evidence_count INTEGER,evidence_affinity REAL,evidence_affinity_version TEXT,position_weight REAL,
- overlap REAL,horizon_days INTEGER,outcome_known_date TEXT,entry_date TEXT,exit_date TEXT,
- absolute_return_net REAL,benchmark_return_net REAL,residual_return_net REAL,cross_section_rank REAL,alpha_context TEXT);
+// The readers query the VIEW's base tables; backfill selection still reads the VIEW.
+const view = readFileSync(new URL('../../domain-migrations/learning/0020_evidence_session_owner_read_models.sql', import.meta.url), 'utf8')
+  .match(/CREATE VIEW strategy_evidence_observations_v1 AS[\s\S]*?;/)![0]
+db.exec(`CREATE TABLE strategy_label_matrix_v4 (signal_date TEXT,symbol TEXT,producer_run_id TEXT,strategy_id TEXT,strategy_version TEXT,
+ strategy_status TEXT,alpha_bucket TEXT,affinity REAL,affinity_version TEXT,affinity_evidence_count INTEGER,challenger_affinity REAL,
+ challenger_affinity_version TEXT,position_weight REAL,overlap REAL,strategy_hit INTEGER,evaluable INTEGER);
+ CREATE INDEX idx_strategy_label_matrix_v4_profile_evidence ON strategy_label_matrix_v4(strategy_id, strategy_version, strategy_hit, evaluable);
+ CREATE TABLE canonical_selection_outcomes_v1 (signal_date TEXT,symbol TEXT,producer_run_id TEXT,horizon_days INTEGER,outcome_known_date TEXT,
+ entry_date TEXT,exit_date TEXT,absolute_return_net REAL,benchmark_return_net REAL,residual_return_net REAL,cross_section_rank REAL);
+ CREATE INDEX idx_canonical_selection_outcomes_v1_strategy_join ON canonical_selection_outcomes_v1(signal_date, symbol, producer_run_id, horizon_days);
+ CREATE TABLE allocator_ev_feature_snapshots (snapshot_date TEXT,symbol TEXT,alpha_context TEXT,generated_at TEXT);
  CREATE TABLE selection_reference_snapshots_v1(signal_date TEXT,symbol TEXT,producer_run_id TEXT,
  strategy_matrix_status TEXT,feature_contract_version TEXT,strategy_labeler_version TEXT,strategy_registry_checksum TEXT);
  CREATE TABLE strategy_label_matrix_runs_v4(producer_run_id TEXT,status TEXT,expected_cell_count INTEGER,
- persisted_cell_count INTEGER,labeler_version TEXT,strategy_registry_checksum TEXT,reference_contract_version TEXT);`)
+ persisted_cell_count INTEGER,labeler_version TEXT,strategy_registry_checksum TEXT,reference_contract_version TEXT);
+ ${view}`)
 const v3 = 'selection-reference-snapshot-v3', v4 = 'selection-reference-snapshot-v4-regime-veto-evidence'
 const legacy = 'strategy-labeler-v2-revenue-pit-fuse-v1', current = 'strategy-labeler-v3-regime-veto-counterfactual-v1'
 const canonical: Record<string,string> = {}
 for (const [i, contract, labeler] of [[1,v3,legacy],[2,v4,current],[3,v3,current],[4,v4,legacy],[5,'unknown',current]] as const) {
   const day = `2026-09-0${i}`, run = `run${i}`; canonical[day] = run
-  db.prepare(`INSERT INTO strategy_evidence_observations_v1 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-    .run(i,day,'2330',run,'s','v1','active','trend_following',1,'legacy',1,1,'v1',1,0,5,'2026-09-10',day,'2026-09-10',0.02,0.01,0.01,0.9,'{}')
+  db.prepare(`INSERT INTO strategy_label_matrix_v4 VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,1)`)
+    .run(day,'2330',run,'s','v1','active','trend_following',1,'legacy',1,1,'v1',1,0)
+  db.prepare(`INSERT INTO canonical_selection_outcomes_v1 VALUES(?,?,?,?,?,?,?,?,?,?,?)`)
+    .run(day,'2330',run,5,'2026-09-10',day,'2026-09-10',0.02,0.01,0.01,0.9)
+  db.prepare(`INSERT INTO allocator_ev_feature_snapshots VALUES(?,?,?,?)`).run(day,'2330','{}','2026-09-10')
   db.prepare('INSERT INTO selection_reference_snapshots_v1 VALUES(?,?,?,?,?,?,?)').run(day,'2330',run,'ready',contract,labeler,'registry')
   db.prepare('INSERT INTO strategy_label_matrix_runs_v4 VALUES(?,?,?,?,?,?,?)').run(run,'ready',1,1,labeler,'registry',contract)
 }
@@ -38,7 +48,7 @@ assert.deepEqual(await read(), [['2026-09-01','2026-09-02'],['2026-09-01','2026-
 for (const sql of [
  "UPDATE strategy_label_matrix_runs_v4 SET persisted_cell_count=0 WHERE producer_run_id='run2'",
  "UPDATE strategy_label_matrix_runs_v4 SET strategy_registry_checksum='other' WHERE producer_run_id='run2'",
- "UPDATE strategy_evidence_observations_v1 SET outcome_known_date='2026-09-12' WHERE producer_run_id='run2'",
+ "UPDATE canonical_selection_outcomes_v1 SET outcome_known_date='2026-09-12' WHERE producer_run_id='run2'",
 ]) {
   db.exec('SAVEPOINT fixture'); db.exec(sql)
   assert.deepEqual(await read(), [['2026-09-01'],['2026-09-01']]); db.exec('ROLLBACK TO fixture; RELEASE fixture')

@@ -242,6 +242,47 @@ export function strategyEvidenceRegimeProjectionSql(alphaContextExpression: stri
   )`
 }
 
+// strategyEvidenceRegimeProjectionSql over a NULL alpha_context: what
+// strategy_evidence_observations_v1 projects for a selection without an
+// allocator snapshot. strategyEvidenceReadCost.test.ts pins it to SQLite.
+export const STRATEGY_EVIDENCE_EMPTY_REGIME_PROJECTION =
+  '{"market_regime_context":{"point_in_time":null,"regime_bucket":null,"regime_surface":null},"regime":null,"regime_surface":null}'
+
+export type StrategyEvidenceRegimeProjections = Map<string, string>
+
+function regimeProjectionKey(signalDate: string, symbol: string): string {
+  return `${signalDate}|${symbol}`
+}
+
+// The latest allocator snapshot per (snapshot_date, symbol), projected once
+// per task instead of a correlated subquery per observation row. Ties on
+// generated_at keep the lowest rowid: the row the former subquery reached
+// first on idx_allocator_ev_snapshots_date.
+export async function loadStrategyEvidenceRegimeProjections(
+  db: D1Database,
+  canonicalRunIds: CanonicalScreenerRunIds,
+): Promise<StrategyEvidenceRegimeProjections> {
+  const dates = Object.keys(canonicalRunIds).sort()
+  const projections: StrategyEvidenceRegimeProjections = new Map()
+  if (!dates.length) return projections
+  const result = await db.prepare(`
+    SELECT snapshot_date, symbol, ${strategyEvidenceRegimeProjectionSql('alpha_context')} AS alpha_context
+      FROM (
+        SELECT snapshot_date, symbol, alpha_context,
+               ROW_NUMBER() OVER (
+                 PARTITION BY snapshot_date, symbol ORDER BY generated_at DESC, rowid
+               ) AS recency
+          FROM allocator_ev_feature_snapshots
+         WHERE snapshot_date>=? AND snapshot_date<=?
+      )
+     WHERE recency=1
+  `).bind(dates[0], dates.at(-1)).all<{ snapshot_date: string; symbol: string; alpha_context: string }>()
+  for (const row of result.results ?? []) {
+    projections.set(regimeProjectionKey(row.snapshot_date, row.symbol), row.alpha_context)
+  }
+  return projections
+}
+
 function regimeConsistency(
   rows: StrategyEvidenceObservation[],
   supportedRegimes: string[],
@@ -630,16 +671,13 @@ export async function loadObservationsAcrossDatabases(
   canonicalRunIds: CanonicalScreenerRunIds,
 ): Promise<StrategyEvidenceObservation[]> {
   const outcomeRows: StrategyEvidenceOutcomeRow[] = []
+  const regimeProjections = await loadStrategyEvidenceRegimeProjections(outcomeDb, canonicalRunIds)
   let outcomeRowId = 0
   for (;;) {
     const page = await outcomeDb.prepare(`
       SELECT rowid source_row_id, signal_date, symbol, producer_run_id,
              horizon_days, outcome_known_date, entry_date, exit_date,
-             absolute_return_net, benchmark_return_net, residual_return_net, cross_section_rank,
-             (SELECT ${strategyEvidenceRegimeProjectionSql('a.alpha_context')} FROM allocator_ev_feature_snapshots a
-               WHERE a.snapshot_date=canonical_selection_outcomes_v1.signal_date
-                 AND a.symbol=canonical_selection_outcomes_v1.symbol
-               ORDER BY a.generated_at DESC LIMIT 1) alpha_context
+             absolute_return_net, benchmark_return_net, residual_return_net, cross_section_rank
         FROM canonical_selection_outcomes_v1
        WHERE outcome_known_date<=? AND rowid>?
        ORDER BY rowid
@@ -648,10 +686,10 @@ export async function loadObservationsAcrossDatabases(
     const rows = page.results ?? []
     outcomeRows.push(...rows
       .filter((row) => canonicalRunIds[row.signal_date] === row.producer_run_id)
-      .map((row) => ({
-        ...row,
-        market_regime: recordedMarketRegime(row.alpha_context),
-      })))
+      .map((row) => {
+        const alphaContext = regimeProjections.get(regimeProjectionKey(row.signal_date, row.symbol)) ?? null
+        return { ...row, alpha_context: alphaContext, market_regime: recordedMarketRegime(alphaContext) }
+      }))
     if (rows.length < 2000) break
     outcomeRowId = Number(rows.at(-1)!.source_row_id)
   }
@@ -708,40 +746,59 @@ export async function loadObservations(
   outcomeAsOfDate: string,
   canonicalRunIds: CanonicalScreenerRunIds,
   profile?: Pick<StrategyEvidenceProfile, 'strategy_id' | 'strategy_version'>,
+  regimeProjections?: StrategyEvidenceRegimeProjections,
 ): Promise<StrategyEvidenceObservation[]> {
   const output: StrategyEvidenceObservation[] = []
+  const projections = regimeProjections ?? await loadStrategyEvidenceRegimeProjections(db, canonicalRunIds)
   let matrixRowId = 0
   let horizonDays = 0
+  // Reads the base tables of strategy_evidence_observations_v1 with the same
+  // join, filters and derived columns. Through the VIEW, each json_extract of
+  // alpha_context became a correlated subquery over a whole snapshot date,
+  // about 1.8M rows read per page; the projection now comes from one task read.
+  const matrixSource = profile
+    ? 'strategy_label_matrix_v4 m INDEXED BY idx_strategy_label_matrix_v4_profile_evidence'
+    : 'strategy_label_matrix_v4 m'
   const profilePredicate = profile
-    ? 'AND v.strategy_id=? AND v.strategy_version=?'
+    ? 'AND m.strategy_id=? AND m.strategy_version=?'
     : ''
   const profileParams = profile
     ? [profile.strategy_id, profile.strategy_version]
     : []
   for (;;) {
     const page = await db.prepare(`
-      SELECT v.matrix_row_id, v.signal_date, v.symbol, v.producer_run_id,
-             v.strategy_id, v.strategy_version, v.strategy_status, v.alpha_bucket,
-             v.legacy_binary_affinity AS affinity,
-             v.legacy_affinity_version AS affinity_version,
-             v.affinity_evidence_count,
-             v.evidence_affinity AS challenger_affinity,
-             v.evidence_affinity_version AS challenger_affinity_version,
-             v.position_weight, v.overlap,
-             v.horizon_days, v.outcome_known_date, v.entry_date, v.exit_date,
-             v.absolute_return_net, v.benchmark_return_net, v.residual_return_net, v.cross_section_rank,
-             ${strategyEvidenceRegimeProjectionSql('v.alpha_context')} AS alpha_context
-        FROM strategy_evidence_observations_v1 v
-       WHERE v.outcome_known_date<=?
+      SELECT m.rowid AS matrix_row_id, m.signal_date, m.symbol, m.producer_run_id,
+             m.strategy_id, m.strategy_version, m.strategy_status, m.alpha_bucket,
+             m.affinity, m.affinity_version, m.affinity_evidence_count,
+             CASE
+               WHEN m.challenger_affinity_version='${FORMAL_CONTINUOUS_AFFINITY_VERSION}'
+                AND m.affinity_evidence_count>0
+               THEN m.challenger_affinity
+               ELSE NULL
+             END AS challenger_affinity,
+             CASE
+               WHEN m.challenger_affinity_version='${FORMAL_CONTINUOUS_AFFINITY_VERSION}'
+                AND m.affinity_evidence_count>0
+               THEN m.challenger_affinity_version
+               ELSE NULL
+             END AS challenger_affinity_version,
+             m.position_weight, m.overlap,
+             o.horizon_days, o.outcome_known_date, o.entry_date, o.exit_date,
+             o.absolute_return_net, o.benchmark_return_net, o.residual_return_net, o.cross_section_rank
+        FROM ${matrixSource}
+        JOIN canonical_selection_outcomes_v1 o INDEXED BY idx_canonical_selection_outcomes_v1_strategy_join
+          ON o.signal_date=m.signal_date AND o.symbol=m.symbol AND o.producer_run_id=m.producer_run_id
+       WHERE m.strategy_hit=1 AND m.evaluable=1
          ${profilePredicate}
+         AND o.outcome_known_date<=?
          AND EXISTS (
            SELECT 1
              FROM selection_reference_snapshots_v1 r
-            WHERE r.signal_date=v.signal_date AND r.symbol=v.symbol AND r.producer_run_id=v.producer_run_id
+            WHERE r.signal_date=m.signal_date AND r.symbol=m.symbol AND r.producer_run_id=m.producer_run_id
               AND r.strategy_matrix_status='ready'
               AND EXISTS (
                 SELECT 1 FROM strategy_label_matrix_runs_v4 mr
-                 WHERE mr.producer_run_id=v.producer_run_id
+                 WHERE mr.producer_run_id=m.producer_run_id
                    AND ${FORMAL_MATRIX_COMPATIBILITY.sql}
                    AND mr.status='ready'
                    AND mr.expected_cell_count>0
@@ -753,25 +810,27 @@ export async function loadObservations(
          )
          AND EXISTS (
            SELECT 1 FROM json_each(?) h
-            WHERE h.key=v.signal_date AND h.value=v.producer_run_id
+            WHERE h.key=m.signal_date AND h.value=m.producer_run_id
          )
-         AND (v.matrix_row_id>? OR (v.matrix_row_id=? AND v.horizon_days>?))
-       ORDER BY v.matrix_row_id, v.horizon_days
+         AND m.rowid>=? AND (m.rowid>? OR (m.rowid=? AND o.horizon_days>?))
+       ORDER BY m.rowid, o.horizon_days
        LIMIT 5000
     `).bind(
-      outcomeAsOfDate,
       ...profileParams,
+      outcomeAsOfDate,
       ...FORMAL_MATRIX_COMPATIBILITY.binds,
       JSON.stringify(canonicalRunIds),
+      matrixRowId,
       matrixRowId,
       matrixRowId,
       horizonDays,
     ).all<StrategyEvidenceObservation & { matrix_row_id: number }>()
     const rows = page.results ?? []
-    output.push(...rows.map((row) => ({
-      ...row,
-      market_regime: recordedMarketRegime(row.alpha_context),
-    })))
+    output.push(...rows.map((row) => {
+      const alphaContext = projections.get(regimeProjectionKey(row.signal_date, row.symbol))
+        ?? STRATEGY_EVIDENCE_EMPTY_REGIME_PROJECTION
+      return { ...row, alpha_context: alphaContext, market_regime: recordedMarketRegime(alphaContext) }
+    }))
     if (rows.length < 5000) break
     matrixRowId = Number(rows.at(-1)!.matrix_row_id)
     horizonDays = Number(rows.at(-1)!.horizon_days)
@@ -849,10 +908,28 @@ function chunks<T>(items: T[], width: number): T[][] {
   return output
 }
 
-async function attachMaximumAdverseExcursions(
+// Market rows already read in one materialization, shared by its profiles so
+// a symbol's prices and revenue revisions are read once per task, not per profile.
+export type StrategyEvidenceMarketCache = {
+  prices: Map<string, { start: string; end: string; rows: StrategyEvidencePriceRow[] }>
+  revisions: Map<string, RevenueRevisionObservation[]>
+}
+
+export function newStrategyEvidenceMarketCache(): StrategyEvidenceMarketCache {
+  return { prices: new Map(), revisions: new Map() }
+}
+
+function shiftIsoDate(date: string, days: number): string {
+  const parsed = new Date(`${date}T00:00:00.000Z`)
+  parsed.setUTCDate(parsed.getUTCDate() + days)
+  return parsed.toISOString().slice(0, 10)
+}
+
+export async function attachMaximumAdverseExcursions(
   observations: StrategyEvidenceObservation[],
   marketDb: D1Database,
   strategyKeys: Set<string>,
+  marketCache: StrategyEvidenceMarketCache = newStrategyEvidenceMarketCache(),
 ): Promise<void> {
   const relevant = observations.filter((row) => (
     strategyKeys.has(`${row.strategy_id}|${row.strategy_version}`)
@@ -863,20 +940,45 @@ async function attachMaximumAdverseExcursions(
   const symbols = [...new Set(relevant.map((row) => row.symbol))].sort()
   const dateStart = relevant.map((row) => row.entry_date!).sort()[0]
   const dateEnd = relevant.map((row) => row.exit_date!).sort().at(-1)!
-  const pricesBySymbol = new Map<string, StrategyEvidencePriceRow[]>()
-  for (const symbolChunk of chunks(symbols, 50)) {
-    const placeholders = symbolChunk.map(() => '?').join(',')
-    const result = await marketDb.prepare(`
-      SELECT stock_id AS symbol, date, adj_open, adj_low
-        FROM canonical_market_daily
-       WHERE stock_id IN (${placeholders}) AND source='finlab.price' AND date>=? AND date<=?
-       ORDER BY stock_id, date
-    `).bind(...symbolChunk, dateStart, dateEnd).all<StrategyEvidencePriceRow>()
-    for (const row of result.results ?? []) appendGroup(pricesBySymbol, String(row.symbol), row)
+  // Read only the dates outside each symbol's cached window; the cached
+  // window stays one contiguous [start, end] range.
+  const symbolsByRange = new Map<string, string[]>()
+  for (const symbol of symbols) {
+    const cached = marketCache.prices.get(symbol)
+    const ranges = cached
+      ? [[dateStart, shiftIsoDate(cached.start, -1)], [shiftIsoDate(cached.end, 1), dateEnd]]
+      : [[dateStart, dateEnd]]
+    for (const [start, end] of ranges) {
+      if (start <= end) appendGroup(symbolsByRange, `${start}|${end}`, symbol)
+    }
+  }
+  const fetched = new Map<string, StrategyEvidencePriceRow[]>()
+  for (const [range, rangeSymbols] of symbolsByRange) {
+    const [rangeStart, rangeEnd] = range.split('|')
+    for (const symbolChunk of chunks(rangeSymbols, 50)) {
+      const placeholders = symbolChunk.map(() => '?').join(',')
+      const result = await marketDb.prepare(`
+        SELECT stock_id AS symbol, date, adj_open, adj_low
+          FROM canonical_market_daily
+         WHERE stock_id IN (${placeholders}) AND source='finlab.price' AND date>=? AND date<=?
+         ORDER BY stock_id, date
+      `).bind(...symbolChunk, rangeStart, rangeEnd).all<StrategyEvidencePriceRow>()
+      for (const row of result.results ?? []) appendGroup(fetched, String(row.symbol), row)
+    }
+  }
+  for (const symbol of symbols) {
+    const cached = marketCache.prices.get(symbol)
+    const rows = [...(cached?.rows ?? []), ...(fetched.get(symbol) ?? [])]
+      .sort((left, right) => left.date.localeCompare(right.date))
+    marketCache.prices.set(symbol, {
+      start: cached && cached.start < dateStart ? cached.start : dateStart,
+      end: cached && cached.end > dateEnd ? cached.end : dateEnd,
+      rows,
+    })
   }
   for (const row of relevant) {
     row.maximum_adverse_excursion = maximumAdverseExcursionFromPricePath(
-      pricesBySymbol.get(row.symbol) ?? [],
+      marketCache.prices.get(row.symbol)?.rows ?? [],
       row.entry_date!,
       row.exit_date!,
     )
@@ -949,16 +1051,21 @@ export function fundamentalRevisionPersistenceEvidenceAsOf(
   }
 }
 
-async function attachFundamentalRevisionPersistence(
+export async function attachFundamentalRevisionPersistence(
   observations: StrategyEvidenceObservation[],
   marketDb: D1Database,
   strategyKeys: Set<string>,
   outcomeAsOfDate: string,
+  marketCache: StrategyEvidenceMarketCache = newStrategyEvidenceMarketCache(),
 ): Promise<void> {
   const relevant = observations.filter((row) => strategyKeys.has(`${row.strategy_id}|${row.strategy_version}`))
   if (!relevant.length) return
+  // The knowledge cutoff is fixed for one materialization, so a symbol's
+  // cached revisions are complete for every later profile.
   const symbols = [...new Set(relevant.map((row) => row.symbol))].sort()
-  const revisionsBySymbol = new Map<string, RevenueRevisionObservation[]>()
+    .filter((symbol) => !marketCache.revisions.has(symbol))
+  const revisionsBySymbol = marketCache.revisions
+  for (const symbol of symbols) revisionsBySymbol.set(symbol, [])
   for (const symbolChunk of chunks(symbols, 75)) {
     const placeholders = symbolChunk.map(() => '?').join(',')
     const result = await marketDb.prepare(`
@@ -1032,19 +1139,23 @@ export async function materializeStrategyEvidenceMetrics(
   if (observationDb === db) {
     // Bound the in-memory observation graph by one runtime profile. The full
     // joined cohort can exceed a Worker isolate's resource limit as history grows.
+    const regimeProjections = await loadStrategyEvidenceRegimeProjections(db, canonicalRunIds)
+    const marketCache = newStrategyEvidenceMarketCache()
     for (const profile of profiles) {
-      const observations = await loadObservations(db, options.outcomeAsOfDate, canonicalRunIds, profile)
+      const observations = await loadObservations(db, options.outcomeAsOfDate, canonicalRunIds, profile, regimeProjections)
       const profileKey = new Set([`${profile.strategy_id}|${profile.strategy_version}`])
       await attachMaximumAdverseExcursions(
         observations,
         marketDb,
         profile.required_metrics.includes('maximum_adverse_excursion') ? profileKey : new Set(),
+        marketCache,
       )
       await attachFundamentalRevisionPersistence(
         observations,
         revisionMarketDb,
         profile.required_metrics.includes('fundamental_revision_persistence') ? profileKey : new Set(),
         options.outcomeAsOfDate,
+        marketCache,
       )
       const rows = computeStrategyEvidenceMetricRows(
         profile,

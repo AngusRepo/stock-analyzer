@@ -9,6 +9,11 @@ binding = "CF_VERSION_METADATA"
 [limits]
 cpu_ms = 300_000
 
+# EC-F: Workers Logs record each invocation's outcome (exceededCpu, exceededMemory, ...) with its console
+# output; the 11/2 post-verify kill left no record of which limit ended it.
+[observability]
+enabled = true
+
 [triggers]
 crons = []
 

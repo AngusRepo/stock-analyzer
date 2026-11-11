@@ -19,8 +19,10 @@ type TableProof = { table: string; binding: string; columns: string[]; primaryKe
 type GroupProof = { table: string; binding: string; kind: 'group-count'; groupBy: string[];
   scope: { predicate: string; parameters: unknown[] }; groups: number; checksum: string }
 // v2: row-level proof only for the date x horizon keys whose projection status was written on or after the
-// business date (every attempt of this chain, plus any later night) and the producer's processed keys; the
+// business date (every attempt of this chain, plus a later night's rewrite) and the producer's processed keys; the
 // rest of the 120-day window is proven by SQL GROUP BY counts reconciled against status/producer counts.
+// The projection proof is as of the business date: status, label and rejection rows exiting after it (a later
+// night's newly mature keys) are outside its window, so they neither fail its maturity checks nor move its checksum.
 // v1 (whole-window row proof) receipts never verify.
 const SCHEMA = 'post-verify-label-evidence-v2' as const
 export type PostVerifyLabelEvidence = Record<string, unknown> & {
@@ -210,16 +212,18 @@ export async function capturePostVerifyLabelEvidence(env: Bindings, input: Input
       const statusRows: Row[] = []
       tables.push(await tableProof(statusDb,{table:`price_horizon_projection_status${v===2?'_v2':''}`,
         binding:v===1?'ops':'ops-target',columns:v===1?STATUS_COLUMNS:STATUS_V2_COLUMNS,keys:v===1?['signal_date']:['signal_date','horizon_days'],
-        where:statusWhere.where,binds:statusWhere.binds(version),
+        where:`${statusWhere.where} AND exit_date<=?`,binds:[...statusWhere.binds(version),date],
         onRow:row=>{statusRows.push(row);statuses.set(groupKey(v,row),row)}}))
       for (const [signal,h] of processed) if(!statuses.has(`${v}:${signal}:${h}`)) throw new Error(`post_verify_evidence_processed_status_missing:${v}:${signal}:${h}`)
       const scope = rowScope(processed,statusRows,date,v), projectionKeys = named(`projection-v${v}`,scope)
-      const window = { where:'price_date>=? AND price_date<=? AND source=? AND projection_version=?', binds:[startDate,date,PRICE_HORIZON_SOURCE,version] }
       const rowCounts = new Map<string,{labels:number;rejections:number}>()
       for (const rejection of [false,true]) {
         const table = `price_horizon_${rejection?'label_rejections':'labels'}_v${v}`, binding = v===1?'learning':'learning-target'
         const columns = [...(rejection?REJECTION_COLUMNS:LABEL_COLUMNS)]
         if (v===2) columns.splice(2,0,'horizon_days')
+        // Same as-of bound as the status rows. labels_v2 bounds outcome_known_date (= exit_date), its index column.
+        const window = { where:`price_date>=? AND price_date<=? AND source=? AND projection_version=? AND ${v===2&&!rejection?'outcome_known_date':'exit_date'}<=?`,
+          binds:[startDate,date,PRICE_HORIZON_SOURCE,version,date] }
         // Row-level content proof, one key at a time.
         tables.push(await keyedProof(db,projectionKeys,{table,binding,columns,keys:v===1?['stock_id','price_date']:['stock_id','price_date','horizon_days'],
             where:window.where,binds:window.binds,
@@ -280,7 +284,8 @@ export async function capturePostVerifyLabelEvidence(env: Bindings, input: Input
   } else {
     // The window counts JOIN references, labels and outcomes, so they must share one learning database.
     if (learning!==targetLearning) throw new Error('post_verify_evidence_split_learning_binding')
-    // Same row-level keys as the projection: multi-horizon status rows written on or after the business date.
+    // Same row-level keys as the projection, without its as-of bound: a key exiting after the business date stays
+    // in scope, since its labels are the pendingRows the producer counts.
     const statusRows: Row[] = [], exits=new Map<string,string>()
     tables.push(await tableProof(targetOps,{table:'price_horizon_projection_status_v2',binding:'ops-target',columns:STATUS_V2_COLUMNS,
       keys:['signal_date','horizon_days'],where:statusWhere.where,binds:statusWhere.binds(STRATEGY_MULTI_HORIZON_PROJECTION_VERSION),

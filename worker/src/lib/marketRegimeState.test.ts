@@ -6,6 +6,7 @@ import {
   LEGACY_REGIME_KEY,
   LEGACY_REGIME_META_KEY,
   MARKET_REGIME_STATE_KEY,
+  MARKET_REGIME_STATE_CURRENT_TTL_SECONDS,
   marketRegimeStateArchiveKey,
   readHistoricalHmmRegimeFamily,
   readMarketRegimeStateForDate,
@@ -24,6 +25,7 @@ function assert(condition: unknown, message: string): void {
 
 class FakeKV {
   store = new Map<string, string>()
+  ttls = new Map<string, number | undefined>()
 
   async get(key: string, mode?: string) {
     const raw = this.store.get(key)
@@ -31,8 +33,9 @@ class FakeKV {
     return mode === 'json' ? JSON.parse(raw) : raw
   }
 
-  async put(key: string, value: string) {
+  async put(key: string, value: string, options?: { expirationTtl?: number }) {
     this.store.set(key, value)
+    this.ttls.set(key, options?.expirationTtl)
   }
 
   async delete(key: string) {
@@ -72,6 +75,10 @@ void (async () => {
     },
   })
   await persistMarketRegimeState(kv, state)
+  const weekendGapSeconds = 10 * 86400
+  for (const key of [MARKET_REGIME_STATE_KEY, LEGACY_REGIME_KEY, LEGACY_REGIME_META_KEY]) {
+    assert(((kv as any).ttls.get(key) ?? 0) >= weekendGapSeconds, `${key} must survive weekends and long market closures`)
+  }
   const archiveKey = marketRegimeStateArchiveKey('2026-05-16')
   assert((kv as any).store.has(archiveKey), 'date-keyed HMM archive must be written for PIT reconstruction')
   assert((await readMarketRegimeStateForDate(kv, '2026-05-16'))?.family === 'bear', 'date reader must resolve exact archived regime')
@@ -92,6 +99,7 @@ void (async () => {
   const restored = await restoreMarketRegimeStateFromHistory(restoredKv, historyDb, '2026-05-16')
   assert(restored?.run_date === '2026-05-16', 'immutable history restore must return exact date')
   assert((restoredKv as any).store.get(MARKET_REGIME_STATE_KEY) === immutableJson, 'restore must republish exact immutable payload')
+  assert((restoredKv as any).ttls.get(MARKET_REGIME_STATE_KEY) === MARKET_REGIME_STATE_CURRENT_TTL_SECONDS, 'restore must use the closure-safe current-state TTL')
   assert(JSON.parse((restoredKv as any).store.get(LEGACY_REGIME_META_KEY)).restored_from_immutable_history === true, 'legacy mirror must expose immutable restore provenance')
   assert(await readHistoricalHmmRegimeFamily(kv, '2026-05-17') === null, 'HMM date reader must not reuse a different date')
 

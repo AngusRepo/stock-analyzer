@@ -1,4 +1,5 @@
 import type { SchedulerJob } from '@/lib/api'
+import { historicalReplayLabel } from '@/lib/schedulerDisplay'
 import './JobRunTiming.css'
 
 function available(value?: string | null): string | undefined {
@@ -18,11 +19,14 @@ export default function JobRunTiming({ job }: { job?: SchedulerJob }) {
     && ['triggered', 'running'].includes(job.lastAttemptStatus ?? '')
   // A dispatch receipt measures the HTTP trigger, not the detached job's runtime.
   const duration = triggerOnly ? '待終態收據' : available(job?.lastDuration) ?? '未提供'
+  // The run time can be today while the status belongs to an older run_date.
+  const replay = historicalReplayLabel(job)
 
   return <span className="obs-job-timing">
     <span><span className="obs-job-timing__label">{job?.stageCard ? '本輪開始' : '上次執行'}</span>
       <span className="sv-num" title={timestamp ? `${timestamp} · 顯示時間 Asia/Taipei` : undefined}>{lastRun}</span>
     </span>
+    {replay && <span><span className="obs-job-timing__label">run_date</span><span className="sv-num">{replay}</span></span>}
     {job?.stageCard && <span><span className="obs-job-timing__label">階段經過（含等待）</span><span className="sv-num">{job.stageElapsed ?? '—'}</span></span>}
     <span><span className="obs-job-timing__label">{job?.stageCard ? '已記錄執行' : triggerOnly ? '總耗時' : '耗時'}</span>
       <span className="sv-num" title={triggerOnly ? `目前只有啟動回報 ${job?.lastDuration ?? 'N/A'}，無完整執行耗時` : job?.durationConcernReason}>{duration}</span>

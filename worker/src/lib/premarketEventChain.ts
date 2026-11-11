@@ -94,10 +94,26 @@ async function projectPremarketProgress(env: Bindings, date: string, rows?: Row[
   }
 }
 
+/** Past the publication window nothing is dispatched; an unfinished trading-day chain is reported overdue, never a quiet skip. */
+async function premarketOverdueSummary(env: Bindings, date: string): Promise<string> {
+  const session = await resolveTwTradingSession(env.KV, date, env)
+  if (!session.trading) return 'status=skipped premarket_outside_window'
+  const { results } = await databaseForDataDomain(env, 'ops').prepare(`SELECT stage,status,cursor_key FROM pipeline_stage_runs
+    WHERE business_date=? AND canonical_run_id=? AND stage LIKE 'premarket_v3:%' ORDER BY created_at,stage`)
+    .bind(date, RUN(date)).all<Pick<Row,'stage'|'status'|'cursor_key'>>()
+  const ready = results.some(r => r.stage.startsWith(PREFIX + 'publish:') && r.status === 'success'
+    && JSON.parse(r.cursor_key ?? '{}').output?.ready === true)
+  if (ready) return 'status=skipped premarket_outside_window'
+  const stage = results.find(r => r.status === 'error')?.stage ?? results.find(r => r.status !== 'success')?.stage ?? 'not_started'
+  return `status=error premarket_event_chain overdue=true ready_target=${premarketPublicationTarget(date)} stage=${stage}`
+}
+
 /** All signals converge on one daily root; watchdog never resets successful stages. */
 export async function ensurePremarketEventChain(env: Bindings, date: string, now = Date.now()): Promise<string> {
   const clock = premarketClock(now)
-  if (date !== clock.date || clock.minutes < 390 || clock.minutes >= (env.PAPER_DAILY_PLAN_OWNER==='premarket_once_v1'?premarketPublicationMinutes(date):540)) return 'status=skipped premarket_outside_window'
+  const windowEnd = env.PAPER_DAILY_PLAN_OWNER==='premarket_once_v1'?premarketPublicationMinutes(date):540
+  if (date !== clock.date || clock.minutes < 390) return 'status=skipped premarket_outside_window'
+  if (clock.minutes >= windowEnd) return premarketOverdueSummary(env, date)
   const session = await resolveTwTradingSession(env.KV, date, env)
   if (!session.trading) return `status=skipped premarket_non_trading_day reason=${session.reason}`
   const db = databaseForDataDomain(env, 'ops')

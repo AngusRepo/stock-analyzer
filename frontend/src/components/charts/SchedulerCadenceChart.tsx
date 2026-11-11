@@ -59,7 +59,8 @@ function buildCadencePoints(jobs: SchedulerJob[]): CadencePoint[] {
       const offset = windowSize - history.length
       const status = history[index - offset]
       if (status === 'success') success += 1
-      if (status === 'failed') failed += 1
+      // Blocked, should-have-run skips and missing receipts are misses, not neutral skips.
+      if (status === 'failed' || status === 'blocked' || status === 'attention' || status === 'missing') failed += 1
       if (status === 'skip') skip += 1
     }
 

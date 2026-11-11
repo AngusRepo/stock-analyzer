@@ -1,4 +1,5 @@
 export const PRODUCTION_WORKER_HEALTH_URL = 'https://stockvision-worker.angus-solo-dev.workers.dev/api/health'
+export const PRODUCTION_PAGES_PROVENANCE_URL = 'https://stockvision-frontend.pages.dev/production-provenance.json'
 
 function requireLocalCommit(run, sha, owner) {
   try {
@@ -16,7 +17,7 @@ function requireAncestor(run, ancestor, sourceSha, owner) {
   }
 }
 
-export async function captureWorkerDeployGuard({ run, sourceSha, canonicalProductionBranch, productionBranch, fetchImpl = fetch }) {
+function requireFreshMain({ run, sourceSha, canonicalProductionBranch, productionBranch }) {
   const remoteRef = `refs/heads/${canonicalProductionBranch}`
   const remoteOutput = run('git', ['ls-remote', 'origin', remoteRef], { capture: true })
   const rows = remoteOutput.trim().split(/\r?\n/).filter(Boolean)
@@ -29,18 +30,25 @@ export async function captureWorkerDeployGuard({ run, sourceSha, canonicalProduc
     throw new Error(`canonical production deploy requires HEAD=fresh origin/${canonicalProductionBranch} (${mainSha}), got ${sourceSha}`)
   }
   requireAncestor(run, mainSha, sourceSha, 'fresh remote production branch')
+  return mainSha
+}
 
-  let health
+async function readLive(fetchImpl, url, unavailable) {
   try {
-    const response = await fetchImpl(PRODUCTION_WORKER_HEALTH_URL, {
+    const response = await fetchImpl(url, {
       redirect: 'error', cache: 'no-store', headers: { 'Cache-Control': 'no-cache', Pragma: 'no-cache' },
       signal: AbortSignal.timeout(15_000),
     })
-    if (!response.ok) throw new Error('health_http_failure')
-    health = await response.json()
+    if (!response.ok) throw new Error('live_http_failure')
+    return await response.json()
   } catch {
-    throw new Error('production Worker health attestation unavailable; deployment blocked')
+    throw new Error(unavailable)
   }
+}
+
+export async function captureWorkerDeployGuard({ run, sourceSha, canonicalProductionBranch, productionBranch, fetchImpl = fetch }) {
+  const mainSha = requireFreshMain({ run, sourceSha, canonicalProductionBranch, productionBranch })
+  const health = await readLive(fetchImpl, PRODUCTION_WORKER_HEALTH_URL, 'production Worker health attestation unavailable; deployment blocked')
   const provenance = health?.provenance
   if (health?.status !== 'ok' || provenance?.schema !== 'v1' || provenance?.provider !== 'cloudflare-workers'
     || provenance?.attested !== true || !/^[a-f0-9]{40}$/.test(provenance?.sourceSha ?? '')
@@ -52,10 +60,29 @@ export async function captureWorkerDeployGuard({ run, sourceSha, canonicalProduc
   return { mainSha, workerSourceSha: provenance.sourceSha, workerVersionId: provenance.versionId }
 }
 
-export async function assertWorkerDeployGuardUnchanged(baseline, options) {
-  const current = await captureWorkerDeployGuard(options)
-  for (const key of ['mainSha', 'workerSourceSha', 'workerVersionId']) {
+// Pages had no live check: a main deploy could replace a Pages build from a commit main never merged.
+export async function capturePagesDeployGuard({ run, sourceSha, canonicalProductionBranch, productionBranch, fetchImpl = fetch }) {
+  const mainSha = requireFreshMain({ run, sourceSha, canonicalProductionBranch, productionBranch })
+  const live = await readLive(fetchImpl, PRODUCTION_PAGES_PROVENANCE_URL, 'production Pages provenance unavailable; deployment blocked')
+  if (live?.schema !== 'v1' || live?.provider !== 'cloudflare-pages' || !/^[a-f0-9]{40}$/.test(live?.sourceSha ?? '')) {
+    throw new Error('production Pages source is not attested; deployment blocked')
+  }
+  requireLocalCommit(run, live.sourceSha, 'live Pages')
+  requireAncestor(run, live.sourceSha, sourceSha, 'live Pages')
+  return { mainSha, pagesSourceSha: live.sourceSha }
+}
+
+function requireUnchanged(baseline, current) {
+  for (const key of Object.keys(baseline)) {
     if (current[key] !== baseline[key]) throw new Error(`production changed during deployment gates: ${key}; recheck and review before deploying`)
   }
   return current
+}
+
+export async function assertWorkerDeployGuardUnchanged(baseline, options) {
+  return requireUnchanged(baseline, await captureWorkerDeployGuard(options))
+}
+
+export async function assertPagesDeployGuardUnchanged(baseline, options) {
+  return requireUnchanged(baseline, await capturePagesDeployGuard(options))
 }

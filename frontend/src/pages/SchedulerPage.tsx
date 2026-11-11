@@ -3,7 +3,8 @@ import { Activity, AlertTriangle, Clock, ExternalLink, RefreshCw } from 'lucide-
 import { lazy, Suspense } from 'react'
 import AppShell from '@/components/AppShell'
 import SchedulerPipelineChain from '@/components/SchedulerPipelineChain'
-import { schedulerApi, type SchedulerJob } from '@/lib/api'
+import { schedulerApi, type SchedulerHistoryCell, type SchedulerJob } from '@/lib/api'
+import { attentionSkipReason, historicalReplayLabel, historyCellStyle } from '@/lib/schedulerDisplay'
 import { queryTtl } from '@/lib/queryPolicy'
 import {
   WorkstationPageTitle,
@@ -23,6 +24,10 @@ function statusTone(status?: string): WorkstationTone {
   if (status === 'waiting') return 'info'
   if (status === 'sleep' || status === 'skip' || status === 'skipped') return 'neutral'
   return 'neutral'
+}
+
+function jobTone(job: SchedulerJob): WorkstationTone {
+  return attentionSkipReason(job) ? 'warn' : statusTone(job.lastStatus)
 }
 
 function suspiciousDuration(job: SchedulerJob) {
@@ -57,16 +62,15 @@ function consolidationLabel(job: SchedulerJob) {
   return 'UNCLASSIFIED'
 }
 
-function HistoryStrip({ history }: { history: Array<'success' | 'failed' | 'skip'> }) {
-  const items = history.length ? history : ['skip', 'skip', 'skip', 'skip', 'skip', 'skip', 'skip']
+function HistoryStrip({ history }: { history: SchedulerHistoryCell[] }) {
+  const items: SchedulerHistoryCell[] = history.length ? history : ['none', 'none', 'none', 'none', 'none', 'none', 'none']
   return (
     <div className="flex gap-1" aria-label="7 day scheduler status">
       {items.map((status, index) => (
         <span
           key={`${status}-${index}`}
-          className={`h-2 flex-1 rounded-full ${
-            status === 'success' ? 'bg-emerald-400' : status === 'failed' ? 'bg-rose-400' : 'bg-slate-700'
-          }`}
+          title={historyCellStyle(status).label}
+          className={`h-2 flex-1 rounded-full ${historyCellStyle(status).className}`}
         />
       ))}
     </div>
@@ -99,16 +103,21 @@ function MetricCell({ label, value, tone = 'neutral', detail }: {
 function JobRow({ job }: { job: SchedulerJob }) {
   const suspicious = suspiciousDuration(job)
   const consolidation = job.consolidation
+  const attention = attentionSkipReason(job)
+  const replay = historicalReplayLabel(job)
   return (
     <div className="grid min-h-[92px] grid-cols-1 gap-2 border-b border-[#263247] px-3 py-2 sv-num text-[11px] sm:grid-cols-[1fr_96px_92px_112px] sm:items-center">
       <div className="min-w-0">
         <div className="flex items-center gap-2">
-          <WorkstationPill tone={statusTone(job.lastStatus)}>{statusLabel(job.lastStatus)}</WorkstationPill>
+          <WorkstationPill tone={jobTone(job)}>{statusLabel(job.lastStatus)}</WorkstationPill>
+          {replay && <WorkstationPill tone="info">{replay}</WorkstationPill>}
           <WorkstationPill tone={consolidationTone(job)}>{consolidationLabel(job)}</WorkstationPill>
           <p className="truncate text-slate-100">{job.name}</p>
-          {suspicious && <AlertTriangle className="h-3.5 w-3.5 text-amber-300" />}
+          {(suspicious || attention) && <AlertTriangle className="h-3.5 w-3.5 text-amber-300" />}
         </div>
-        <p className="mt-1 truncate text-[#70809b]">{job.group} / {job.summary || job.schedule}</p>
+        <p className={`mt-1 truncate ${attention ? 'text-amber-300' : 'text-[#70809b]'}`} title={job.summary || undefined}>
+          {job.group} / {attention || job.summary || job.schedule}
+        </p>
         {consolidation && (
           <p className="mt-1 truncate text-[#8a92a6]">
             {consolidation.replacementOwner
@@ -139,7 +148,7 @@ export default function SchedulerPage() {
 
   const jobs = scheduler.data?.jobs ?? []
   const failedJobs = jobs.filter((job) => job.lastStatus === 'failed')
-  const suspiciousJobs = jobs.filter((job) => job.lastStatus === 'failed' || suspiciousDuration(job))
+  const suspiciousJobs = jobs.filter((job) => job.lastStatus === 'failed' || suspiciousDuration(job) || attentionSkipReason(job))
   const stats = scheduler.data?.stats ?? {
     total: 0,
     active: 0,
@@ -222,22 +231,22 @@ export default function SchedulerPage() {
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <p className="truncate sv-num text-[11px] normal-case text-slate-100">{job.name}</p>
-                      <p className="mt-1 text-xs leading-5 text-[#8a92a6]">{job.summary || job.schedule}</p>
+                      <p className="mt-1 text-xs leading-5 text-[#8a92a6]">{attentionSkipReason(job) ? `${attentionSkipReason(job)} · ` : ''}{job.summary || job.schedule}</p>
                       {job.consolidation && (
                         <p className="mt-1 text-xs leading-5 text-[#70809b]">
                           Consolidation: {consolidationLabel(job)} / risk {job.consolidation.operatorRisk}
                         </p>
                       )}
                     </div>
-                    <WorkstationPill tone={statusTone(job.lastStatus)}>{statusLabel(job.lastStatus)}</WorkstationPill>
+                    <WorkstationPill tone={jobTone(job)}>{statusLabel(job.lastStatus)}</WorkstationPill>
                   </div>
-                  <p className="mt-2 sv-num text-[10px] text-[#70809b]">last {job.lastRun} / duration {job.lastDuration} / next {job.nextRun}</p>
+                  <p className="mt-2 sv-num text-[10px] text-[#70809b]">last {job.lastRun}{historicalReplayLabel(job) ? ` / run_date ${historicalReplayLabel(job)}` : ''} / duration {job.lastDuration} / next {job.nextRun}</p>
                 </div>
               ))}
               {!suspiciousJobs.length && (
                 <div className="flex items-start gap-2 rounded-xl border border-emerald-400/20 bg-emerald-400/[0.05] p-3 text-sm text-emerald-300">
                   <Activity className="mt-0.5 h-4 w-4" />
-                  目前沒有 failed 或 suspicious duration job。
+                  目前沒有 failed、suspicious duration 或未正式執行的 job。
                 </div>
               )}
               <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3 text-xs leading-5 text-slate-400">

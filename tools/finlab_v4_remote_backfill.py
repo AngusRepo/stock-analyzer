@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+import numpy as np
 import pandas as pd
 
 
@@ -433,6 +434,24 @@ def controller_d1_proxy_configured() -> bool:
     return bool(controller_proxy_token() and controller_d1_query_url())
 
 
+CF_D1_ENV = ("CF_API_TOKEN", "CF_ACCOUNT_ID", "CF_D1_DB_ID")
+# Read-only D1 steps skipped because this run has no D1 credentials (recorded in the manifest).
+D1_UNAVAILABLE_SKIPS: list[str] = []
+
+
+def d1_credentials_available() -> bool:
+    return controller_d1_proxy_configured() or all(os.environ.get(key) for key in CF_D1_ENV)
+
+
+def d1_unavailable(step: str) -> bool:
+    """True (and recorded) when a read-only D1 step must be skipped for missing credentials."""
+    if d1_credentials_available():
+        return False
+    if step not in D1_UNAVAILABLE_SKIPS:
+        D1_UNAVAILABLE_SKIPS.append(step)
+    return True
+
+
 def controller_d1_request(sql: str, params: list[Any] | None = None, *, domain: str | None = None) -> dict[str, Any] | None:
     url = controller_d1_query_url()
     token = controller_proxy_token()
@@ -709,6 +728,12 @@ TRAINING_AUX_FIELDS = {
     "fundamental_factor_diversity": {"eps":"eps", "roe":"roe", "pe":"pe", "pb":"pb",
         "dividend_yield":"dividend_yield", "revenue_growth_yoy":"revenue_growth_yoy"},
 }
+# Training (training_auxiliary_full_vintage) and serving (canonical_fundamental_features /
+# daily composition) consume only these fundamental fields; the other ~60 lane fields
+# feed neither, so a training capture need not fetch or gate them.
+MONTHLY_RELEASE_LANES = frozenset({"revenue"})
+MONTHLY_RELEASE_WINDOW_DAYS = 45
+FUNDAMENTAL_TRAINING_KEY_SCOPE = {"fundamental_factor_diversity": set(TRAINING_AUX_FIELDS["fundamental_factor_diversity"])}
 
 def write_training_auxiliary_vintage(frames, *, lane, run_dir, years, end_date, start_date=None, requested_fields=None):
     """Preserve full vendor windows before daily-tail materialization clips them."""
@@ -809,16 +834,18 @@ def filter_rows_date_range(
     start_date: str | None = None,
     end_date: str | None = None,
 ) -> pd.DataFrame:
-    out = pd.DataFrame(df).copy()
+    out = pd.DataFrame(df)
     if out.empty or date_col not in out.columns or (not start_date and not end_date):
-        return out
+        return out.copy()
+    # take() equals out[mask].copy() (same rows/labels, no is_copy flag) but makes
+    # one row-filtered copy instead of full copy + masked copy + copy.
     parsed = pd.to_datetime(out[date_col], errors="coerce")
     mask = parsed.notna()
     if start_date:
         mask &= parsed >= pd.Timestamp(start_date)
     if end_date:
         mask &= parsed <= pd.Timestamp(end_date)
-    return out[mask.to_numpy()].copy()
+    return out.take(np.flatnonzero(mask.to_numpy()))
 
 
 def non_null_cells(df: pd.DataFrame) -> int:
@@ -1040,8 +1067,30 @@ def source_key_report_row(
         "error_code": type(error).__name__ if error else None,
         "error_message": str(error)[:500] if error else None,
         "generated_at": generated_at,
+        # C28-02 C8: wall-clock time this run held the field (generated_at is the run start).
+        "observed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "metadata_json": json.dumps(metadata or {}, ensure_ascii=False, sort_keys=True, default=str),
     }
+
+
+def lane_first_seen(reports: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """C28-02 C8: when this capture itself first held each lane field's target-date rows.
+
+    Comparing these across daily captures lets a later month reach PIT level O
+    (observed vintage). Only a field that held target-date rows (status ok) is a
+    sighting; reused, empty, missing-target or failed fields are not.
+    """
+    seen: dict[str, dict[str, Any]] = {}
+    for row in reports:
+        if (row.get("status") != "ok" or row.get("error_code") or not row.get("observed_at")
+                or int(row.get("target_rows") or 0) <= 0):
+            continue
+        key = f"{row.get('lane')}:{row.get('field')}"
+        if key not in seen or row["observed_at"] < seen[key]["observed_at"]:
+            seen[key] = {"target_date": row.get("target_date"), "observed_at": row["observed_at"],
+                         "status": row.get("status"), "rows": row.get("rows"), "target_rows": row.get("target_rows"),
+                         "latest_date": row.get("latest_date"), "artifact_checksum": row.get("artifact_checksum")}
+    return dict(sorted(seen.items()))
 
 
 def parse_gcs_uri(uri: str) -> tuple[str, str] | None:
@@ -1091,7 +1140,7 @@ def read_ready_source_key_artifacts(
     fields: Iterable[str],
 ) -> dict[str, dict[str, Any]]:
     wanted = sorted({str(field).strip() for field in fields if str(field).strip()})
-    if not wanted:
+    if not wanted or d1_unavailable("source_key_report_reuse"):
         return {}
     placeholders = ",".join("?" for _ in wanted)
     try:
@@ -1223,6 +1272,7 @@ def required_wide_field_errors(
     *,
     target_date: str | None = None,
     requested_fields: set[str] | None = None,
+    target_window_days: int = 0,
 ) -> list[str]:
     required = REQUIRED_ATOMIC_WIDE_FIELDS.get(lane)
     if not required:
@@ -1237,9 +1287,12 @@ def required_wide_field_errors(
             errors.append(f"{field}=missing")
             continue
         if target_date:
-            target = filter_date_range(frame, start_date=target_date, end_date=target_date)
+            window_start = (str((pd.Timestamp(target_date) - pd.Timedelta(days=target_window_days)).date())
+                            if target_window_days else target_date)
+            target = filter_date_range(frame, start_date=window_start, end_date=target_date)
             if non_null_cells(target) <= 0:
-                errors.append(f"{field}=missing_target_date:{target_date}")
+                errors.append(f"{field}=missing_target_date:{target_date}"
+                              + (f":window_days={target_window_days}" if target_window_days else ""))
                 continue
         elif non_null_cells(frame) <= 0:
             errors.append(f"{field}=empty")
@@ -1368,7 +1421,7 @@ def write_official_training_calendar(*, run_dir: Path, allow_historical_fetch: b
                     cached=read_cached(cache_key)
                     if cached is None and not allow_historical_fetch and ym not in {end[:7], previous_month}:
                         raise ValueError(f"daily_official_history_cache_missing:{cache_key}")
-                    body=json.loads(cached) if cached is not None else official_json_get(url,label=f"training_calendar_{market}_{ym}")
+                    body=json.loads(cached) if cached is not None else official_history_json_get(url,label=f"training_calendar_{market}_{ym}")
                     official_month_sessions(body,market,ym)
                     write_json(path,body)
                     if cached is None:
@@ -1400,7 +1453,7 @@ def write_training_breadth_capture(*,run_dir: Path, allow_historical_fetch: bool
             key="breadth/TWSE-"+day+".json";raw=read_cached(key)
             if raw is None and not allow_historical_fetch and day != manifest["end_date"]:
                 raise ValueError(f"daily_official_history_cache_missing:{key}")
-            body=json.loads(raw) if raw is not None else official_json_get("https://www.twse.com.tw/exchangeReport/MI_INDEX?date="+day.replace("-","")+"&response=json&type=MS",label="training_breadth_"+day)
+            body=json.loads(raw) if raw is not None else official_history_json_get("https://www.twse.com.tw/exchangeReport/MI_INDEX?date="+day.replace("-","")+"&response=json&type=MS",label="training_breadth_"+day)
             parse_breadth(body,day);write_json(path,body)
             if raw is None:write_cached(key,path.read_bytes());time.sleep(4)
         raw=path.read_bytes();parse_breadth(json.loads(raw),day)
@@ -1449,6 +1502,36 @@ def write_chip_pit_window(frames: dict[str, pd.DataFrame], *, lane: str, run_dir
             write_parquet(run_dir / "raw" / "chip_pit_window" / f"{field}.parquet", frame.tail(CAPTURE_WINDOW_SESSIONS))
 
 
+def chip_pit_window_failed(errors: list[dict[str, Any]], *, lane: str, step: str, exc: Exception) -> None:
+    print(f"[finlab-backfill] chip_pit_window {step} failed lane={lane}: {type(exc).__name__}: {exc}",
+          file=sys.stderr, flush=True)
+    errors.append({"lane": lane, "step": step, "error": f"{type(exc).__name__}: {exc}"[:500]})
+
+
+def chip_pit_lane_fields_soft(lane: str, errors: list[dict[str, Any]]) -> tuple[str, ...]:
+    """Evidence only: on failure the lane is captured exactly as with the flag off."""
+    try:
+        return chip_pit_lane_fields(lane)
+    except Exception as exc:
+        chip_pit_window_failed(errors, lane=lane, step="lane_fields", exc=exc)
+        return ()
+
+
+def write_chip_pit_window_soft(frames: dict[str, pd.DataFrame], *, lane: str, fields: tuple[str, ...], run_dir: Path,
+                               end_date: str | None, errors: list[dict[str, Any]]) -> None:
+    """Evidence only: a failed window write never fails the lane."""
+    try:
+        write_chip_pit_window(frames, lane=lane, run_dir=run_dir, end_date=end_date)
+    except Exception as exc:
+        chip_pit_window_failed(errors, lane=lane, step="write_window", exc=exc)
+        # record_daily_capture reads the lane's own files when a class's window is incomplete.
+        for field in fields:
+            try:
+                (run_dir / "raw" / "chip_pit_window" / f"{field}.parquet").unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 OFFICIAL_USER_AGENT = "StockVisionDataPipeline/1.0 (+GCP materialization)"
 OFFICIAL_MARKET_SUMMARY_LOOKBACK_DAYS = int(os.environ.get("OFFICIAL_MARKET_SUMMARY_LOOKBACK_DAYS", "10"))
 # Ops pacing for a late exchange index publication; not a trading parameter.
@@ -1472,6 +1555,21 @@ def official_json_get(url: str, *, label: str, timeout: float = 30.0) -> Any:
     except Exception as exc:
         print(f"[finlab-backfill] official_fetch_failed label={label} error={type(exc).__name__}:{exc}", flush=True)
         return None
+
+
+# A full training capture fetches ~1600 uncached history days; one throttled
+# non-JSON reply used to abort it. Bounded backoff, then fail closed.
+OFFICIAL_HISTORY_RETRY_SLEEPS = (30, 90)
+
+
+def official_history_json_get(url: str, *, label: str) -> Any:
+    for pause in (*OFFICIAL_HISTORY_RETRY_SLEEPS, None):
+        body = official_json_get(url, label=label)
+        if body is not None:
+            return body
+        if pause is not None:
+            time.sleep(pause)
+    raise ValueError(f"official_history_fetch_failed:{label}:attempts={len(OFFICIAL_HISTORY_RETRY_SLEEPS) + 1}")
 
 
 def parse_official_number(value: Any) -> float | None:
@@ -1822,7 +1920,10 @@ def upload_dir_to_gcs(local_dir: Path, *, bucket_name: str, prefix: str,
                           uploaded_files=uploaded_files if uploaded_files is not None else {})
 
 
-def d1_counts(start: str) -> dict[str, int]:
+def d1_counts(start: str) -> dict[str, int] | None:
+    """StockVision row counts for the diff report; None when D1 is not observable."""
+    if d1_unavailable("d1_counts"):
+        return None
     queries = {
         "daily_price": "SELECT COUNT(*) AS n FROM stock_prices WHERE date >= ?",
         "chip_diversity": "SELECT COUNT(*) AS n FROM chip_data WHERE date >= ?",
@@ -1964,6 +2065,11 @@ def build_broker_rank_daily(
     ]
     if broker_daily.empty:
         return pd.DataFrame(columns=columns)
+    buy, sell = _broker_rank_sides(broker_daily)
+    return _finish_broker_rank([buy], [sell], market_segment=market_segment, source=source)
+
+
+def _broker_rank_sides(broker_daily: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     base = broker_daily.copy()
     base["broker_code"] = base["broker_code"].astype(str).str.strip()
     base["broker_name"] = None
@@ -1981,17 +2087,24 @@ def build_broker_rank_daily(
     ).groupby(["date", "stock_id"], observed=True).head(3).copy()
     sell["rank_side"] = "sell"
     sell["rank_no"] = sell.groupby(["date", "stock_id"], observed=True).cumcount() + 1
+    return buy, sell
 
-    ranked = pd.concat([buy, sell], ignore_index=True)
+
+def _finish_broker_rank(buys: list[pd.DataFrame], sells: list[pd.DataFrame], *, market_segment: str, source: str) -> pd.DataFrame:
+    columns = ["date", "stock_id", "market_segment", "rank_side", "rank_no", "broker_code",
+               "broker_name", "buy_lots", "sell_lots", "net_lots", "source"]
+    # Date-ordered window pieces concatenate to the same rows as one global pass.
+    ranked = pd.concat([*buys, *sells], ignore_index=True)
+    buys.clear(), sells.clear()  # release window pieces before the column copy below
     if ranked.empty:
         return pd.DataFrame(columns=columns)
     ranked["market_segment"] = market_segment
     ranked["source"] = source
-    ranked = ranked.rename(columns={
+    ranked.rename(columns={
         "broker_buy_shares": "buy_lots",
         "broker_sell_shares": "sell_lots",
         "broker_net": "net_lots",
-    })
+    }, inplace=True)
     return ranked[columns]
 
 
@@ -2008,23 +2121,6 @@ def broker_source_observation(frame: pd.DataFrame, target_date: str) -> dict[str
         "raw_min_date": str(dates.min().date()) if dates.notna().any() else None,
         "raw_max_date": str(dates.max().date()) if dates.notna().any() else None,
         "target_date": target_date, "target_rows": int((dates == pd.Timestamp(target_date)).sum())}
-
-
-_SYMBOL_ROW_FIELDS = ("stock_id", "symbol", "code", "股票代號", "證券代號", "公司代號")
-
-
-def _symbol_field_codes(values: pd.Series, vocab: dict[str, int]) -> Any:
-    """Per-row ``_clean_symbol`` of one field, as an index into ``vocab`` (-1: no symbol)."""
-    import numpy as np
-
-    if values.dtype == object:
-        # factorize would merge 1, 1.0 and True; _clean_symbol reads str(value).
-        values = values.map(str)
-    codes, uniques = pd.factorize(values)
-    mapped = [_clean_symbol(value) for value in uniques]
-    lookup = np.array([vocab.setdefault(symbol, len(vocab)) if symbol else -1 for symbol in mapped] + [-1],
-                      dtype=np.int32)
-    return lookup[codes]
 
 
 def normalize_broker_transactions_daily(frame: pd.DataFrame, start: str) -> pd.DataFrame:
@@ -2046,154 +2142,109 @@ def normalize_broker_transactions_daily(frame: pd.DataFrame, start: str) -> pd.D
         print(f"[finlab-backfill] broker_transactions schema unsupported missing={missing} columns={list(frame.columns)[:12]}", flush=True)
         return pd.DataFrame()
 
-    import numpy as np
-    import polars as pl
-
     columns = (date_col, stock_col, broker_col, buy_col, sell_col)
     if not frame.columns.is_unique:
         return _broker_pandas_fallback("duplicate_columns", frame, start, columns)
-    # Only the date column is read over the full frame; every other column is read for
-    # the target rows alone (no frame copy, no per-row dicts).
-    dates = frame[date_col]
-    if not pd.api.types.is_datetime64_dtype(dates.dtype):  # naive datetime64 parses to itself
-        dates = pd.to_datetime(dates, errors="coerce")
-    if not pd.api.types.is_datetime64_dtype(dates.dtype):
+    # Groups never span dates, so 7-day windows give the same rows as one pass
+    # while only one window is copied; the vendor archive itself is never copied.
+    parsed = pd.to_datetime(frame[date_col], errors="coerce")
+    if not pd.api.types.is_datetime64_dtype(parsed.dtype):  # pyarrow or tz-aware dates
         return _broker_pandas_fallback("date_dtype", frame, start, columns)
-    rows = np.flatnonzero((dates >= pd.Timestamp(start)).to_numpy())
-    if not len(rows):
+    first = pd.Timestamp(start)
+    if not (parsed >= first).any():
         return pd.DataFrame()
-    buy = pd.to_numeric(frame[buy_col].iloc[rows], errors="coerce").fillna(0)
-    sell = pd.to_numeric(frame[sell_col].iloc[rows], errors="coerce").fillna(0)
-    if not _broker_shares_sum_exactly(buy, sell):
-        return _broker_pandas_fallback("shares_not_exact", frame, start, columns)
-    net = buy - sell
-    date_dtype = dates.to_numpy().dtype
-    date_values = dates.to_numpy().view("i8")[rows]
-    del dates
-    present = set(frame.columns)
-    vocab: dict[str, int] = {}
-    field_codes = [_symbol_field_codes(frame[key].iloc[rows], vocab)
-                   for key in dict.fromkeys((stock_col, *_SYMBOL_ROW_FIELDS)) if key in present]
-    if len(field_codes) == 1:
-        stock = field_codes[0]
-    elif field_codes:
-        stacked = np.vstack(field_codes)
-        high = np.where(stacked >= 0, stacked, -1).max(axis=0)
-        low = np.where(stacked >= 0, stacked, np.iinfo(np.int32).max).min(axis=0)
-        stock = np.where(high == low, high, -1)  # _clean_symbol: exactly one distinct symbol
-        del stacked, high, low
-    else:
-        stock = np.full(len(rows), -1, dtype=np.int32)
-    del field_codes
-    symbols = np.array(sorted(vocab), dtype=object)
-    rank = np.empty(len(symbols), dtype=np.int32)
-    rank[[vocab[symbol] for symbol in symbols]] = np.arange(len(symbols), dtype=np.int32)
-    if broker_col:
-        broker_text = frame[broker_col].iloc[rows].astype(str).str.strip()
-        broker, brokers = pd.factorize(broker_text, sort=True)
-        broker_dtype, brokers = broker_text.dtype, np.asarray(brokers, dtype=object)
-        del broker_text
-    else:
-        broker = np.zeros(len(rows), dtype=np.int64)
-        brokers = np.array(["unknown"], dtype=object)
-        broker_dtype = pd.Series(["unknown"]).dtype
-    keep = stock >= 0
-    if not keep.any():
+    values = parsed.to_numpy()
+    keys = [key for key in _SYMBOL_ROW_KEYS if key in frame.columns]
+    window_columns = list(dict.fromkeys([date_col, stock_col, *([broker_col] if broker_col else []), buy_col, sell_col, *keys]))
+    positions = [frame.columns.get_loc(column) for column in window_columns]
+    pieces, buys, sells = [], [], []
+    lower, last = first, parsed.max()
+    while lower <= last:
+        upper = lower + pd.Timedelta(days=7)
+        rows = np.flatnonzero((values >= lower.to_datetime64()) & (values < upper.to_datetime64()))
+        lower = upper
+        if not len(rows):
+            continue
+        # take() rows first: iloc[rows, cols] copies the chosen columns in full first.
+        out = frame.take(rows).iloc[:, positions].copy()
+        out["date"] = values[rows]
+        piece = _normalize_broker_window(out, stock_col=stock_col, broker_col=broker_col,
+                                         buy_col=buy_col, sell_col=sell_col, keys=keys)
+        if piece is not None:
+            pieces.append(piece[0]);buys.append(piece[1]);sells.append(piece[2])
+    if not pieces:
         return pd.DataFrame()
-    pick = slice(None) if keep.all() else np.flatnonzero(keep)
-    raw = pl.DataFrame({
-        "date": date_values[pick],
-        "stock_id": rank[stock[pick]],
-        "broker_code": broker[pick].astype(np.int64),
-        "buy": buy.to_numpy()[pick], "sell": sell.to_numpy()[pick], "net": net.to_numpy()[pick],
-    }).with_columns(pl.when(pl.col("broker_code") >= 0).then(pl.col("broker_code")).alias("broker_code"))
-    dtypes = {"buy": buy.dtype, "sell": sell.dtype, "net": net.dtype}
-    del rows, date_values, stock, keep, pick, broker, buy, sell, net
+    grouped = pd.concat(pieces, ignore_index=True)
+    pieces.clear()
+    grouped.attrs["broker_rank_daily"] = _finish_broker_rank(
+        buys, sells, market_segment="LISTED_OTC", source="finlab.broker_transactions")
+    return grouped
 
-    keys = ["date", "stock_id"]
-    totals = raw.group_by(keys).agg(
-        pl.col("buy").sum(), pl.col("sell").sum(),
-        pl.col("broker_code").drop_nulls().n_unique().cast(pl.Int64).alias("broker_count")).sort(keys)
-    # Per-broker table in pandas groupby order (date, stock_id, broker_code); rows with no
-    # broker code drop out, as pandas groupby drops NaN keys.
-    branch = (raw.filter(pl.col("broker_code").is_not_null())
-              .group_by([*keys, "broker_code"]).agg(pl.col("buy").sum(), pl.col("sell").sum(), pl.col("net").sum())
-              .sort([*keys, "broker_code"]).with_columns(pl.col("net").abs().alias("abs")))
-    del raw
-    # Rows keep broker order within a group, so arg_max picks the lowest broker code among
-    # tied leaders, as the reference's stable sort did.
-    lead = pl.col("abs").arg_max()
-    per_symbol = branch.group_by(keys).agg(
-        pl.col("broker_code").get(lead), pl.col("net").get(lead), pl.col("abs").get(lead),
-        pl.col("abs").sum().alias("gross"), (pl.col("abs") > 0).sum().cast(pl.Int64).alias("directional")).sort(keys)
-    # build_broker_rank_daily keeps the top three buy and sell brokers per symbol-day;
-    # hand it only those candidates, in per-broker table order, instead of every broker row.
-    ranked = branch.with_row_index("row")
-    candidates = pl.concat([
-        ranked.filter(pl.col("net") > 0).sort([*keys, "net", "broker_code"], descending=[False, False, True, False])
-        .group_by(keys, maintain_order=True).head(3).select("row"),
-        ranked.filter(pl.col("net") < 0).sort([*keys, "net", "broker_code"])
-        .group_by(keys, maintain_order=True).head(3).select("row"),
-    ])["row"].unique().sort()
-    branch = branch[candidates]
-    del ranked
 
-    def to_pandas(table: pl.DataFrame, fields: dict[str, tuple[str, Any]]) -> pd.DataFrame:
-        out = {"date": pd.Series(table["date"].to_numpy().view(date_dtype)),
-               "stock_id": pd.Series(symbols[table["stock_id"].to_numpy()])}
-        for name, (source, dtype) in fields.items():
-            values = table[source].to_numpy()
-            out[name] = (pd.Series(brokers[values], dtype=broker_dtype) if source == "broker_code"
-                         else pd.Series(values).astype(dtype))
-        return pd.DataFrame(out)
+_SYMBOL_ROW_KEYS = ("stock_id", "symbol", "code", "股票代號", "證券代號", "公司代號")
 
-    net_dtype = dtypes["net"]
-    # The reference counted with a Python lambda; ask pandas which dtype that yields.
-    count_dtype = pd.Series([1], dtype=net_dtype).groupby([0]).agg(lambda values: int((values > 0).sum())).dtype
-    broker_daily = to_pandas(branch, {
-        "broker_code": ("broker_code", None),
-        "broker_buy_shares": ("buy", dtypes["buy"]),
-        "broker_sell_shares": ("sell", dtypes["sell"]),
-        "broker_net": ("net", net_dtype),
-    })
-    grouped = to_pandas(totals, {
-        "buy_shares": ("buy", dtypes["buy"]),
-        "sell_shares": ("sell", dtypes["sell"]),
-        "broker_count": ("broker_count", np.dtype("int64")),
-    }).merge(to_pandas(per_symbol, {
-        "dominant_broker_code": ("broker_code", None),
-        "dominant_net_shares": ("net", net_dtype),
-        "dominant_abs_net_shares": ("abs", net_dtype),
-        "gross_imbalance_shares": ("gross", net_dtype),
-        "directional_broker_count": ("directional", count_dtype),
-    }), on=keys, how="left")
-    return _finish_broker_daily(grouped, broker_daily)
+
+def _clean_symbol_column(out: pd.DataFrame, stock_col: str, keys: list[str]) -> list[str]:
+    """_clean_symbol(row[stock_col], row) memoized on the identity fields it reads."""
+    memo: dict[tuple, str] = {}
+    result = []
+    for item in zip(out[stock_col].tolist(), *(out[key].tolist() for key in keys)):
+        try:
+            symbol = memo[item]
+        except KeyError:
+            symbol = memo[item] = _clean_symbol(item[0], dict(zip(keys, item[1:])))
+        except TypeError:
+            symbol = _clean_symbol(item[0], dict(zip(keys, item[1:])))
+        result.append(symbol)
+    return result
+
+
+def _normalize_broker_window(out: pd.DataFrame, *, stock_col: str, broker_col: str | None,
+                             buy_col: str, sell_col: str, keys: list[str]):
+    out["stock_id"] = _clean_symbol_column(out, stock_col, keys)
+    out["broker_code"] = out[broker_col].astype(str).str.strip() if broker_col else "unknown"
+    out["buy_shares_raw"] = pd.to_numeric(out[buy_col], errors="coerce").fillna(0)
+    out["sell_shares_raw"] = pd.to_numeric(out[sell_col], errors="coerce").fillna(0)
+    out["broker_net"] = out["buy_shares_raw"] - out["sell_shares_raw"]
+    out = out[(out["stock_id"] != "") & out["date"].notna()]
+    if out.empty:
+        return None
+
+    broker_daily = out.groupby(["date", "stock_id", "broker_code"], observed=True).agg(
+        broker_buy_shares=("buy_shares_raw", "sum"),
+        broker_sell_shares=("sell_shares_raw", "sum"),
+        broker_net=("broker_net", "sum"),
+    ).reset_index()
+    broker_daily["abs_broker_net"] = broker_daily["broker_net"].abs()
+    dominant = (
+        broker_daily.sort_values(["date", "stock_id", "abs_broker_net"], ascending=[True, True, False])
+        .groupby(["date", "stock_id"], observed=True)
+        .head(1)[["date", "stock_id", "broker_code", "broker_net", "abs_broker_net"]]
+        .rename(columns={
+            "broker_code": "dominant_broker_code",
+            "broker_net": "dominant_net_shares",
+            "abs_broker_net": "dominant_abs_net_shares",
+        })
+    )
+    pressure = broker_daily.groupby(["date", "stock_id"], observed=True).agg(
+        gross_imbalance_shares=("abs_broker_net", "sum"),
+        directional_broker_count=("abs_broker_net", lambda values: int((values > 0).sum())),
+    ).reset_index()
+    grouped = out.groupby(["date", "stock_id"], observed=True).agg(
+        buy_shares=("buy_shares_raw", "sum"),
+        sell_shares=("sell_shares_raw", "sum"),
+        broker_count=("broker_code", "nunique"),
+    ).reset_index()
+    grouped = grouped.merge(dominant, on=["date", "stock_id"], how="left").merge(pressure, on=["date", "stock_id"], how="left")
+    grouped["buy_sell_net"] = grouped["dominant_net_shares"].fillna(0)
+    grouped["source"] = "finlab.broker_transactions"
+    grouped["market_segment"] = "LISTED_OTC"
+    return (grouped, *_broker_rank_sides(broker_daily))
 
 
 def _broker_pandas_fallback(reason: str, frame: pd.DataFrame, start: str, columns: tuple) -> pd.DataFrame:
     print(f"[finlab-backfill] broker normalize path=pandas reason={reason}", flush=True)
     return _normalize_broker_transactions_daily_pandas(frame, start, *columns)
-
-
-def _broker_shares_sum_exactly(buy: pd.Series, sell: pd.Series) -> bool:
-    """The polars path covers int64/float64 shares whose sums are exact in any order:
-    integer-valued, finite, and far below 2**53. Anything else keeps the pandas path,
-    whose dtype and NaN/summation-order rules differ across pandas versions."""
-    import numpy as np
-
-    supported = (np.dtype("int64"), np.dtype("float64"))
-    if not all(isinstance(values.dtype, np.dtype) and values.dtype in supported for values in (buy, sell)):
-        return False
-    if buy.dtype == np.int64 and sell.dtype == np.int64:
-        return True  # integer sums wrap identically in pandas and polars
-    bound = 0.0
-    for values in (buy.to_numpy(), sell.to_numpy()):
-        if values.dtype == np.float64 and not (np.isfinite(values).all() and (values == np.floor(values)).all()):
-            return False
-        if values.dtype == np.float64 and np.signbit(values[values == 0]).any():
-            return False  # pandas sums -0.0 groups to +0.0, polars keeps -0.0
-        bound += float(np.abs(values, dtype=np.float64).sum())
-    return bound < 2.0 ** 52
 
 
 def _finish_broker_daily(grouped: pd.DataFrame, broker_daily: pd.DataFrame) -> pd.DataFrame:
@@ -2217,8 +2268,8 @@ def _normalize_broker_transactions_daily_pandas(
     buy_col: str,
     sell_col: str,
 ) -> pd.DataFrame:
-    """Reference pandas path for inputs outside the polars path (extension dtypes,
-    narrow ints, fractional or non-finite shares, duplicate column labels)."""
+    """Reference pandas path for inputs outside the windowed path (pyarrow or
+    tz-aware dates, duplicate column labels)."""
     out = frame.copy()
     out["date"] = pd.to_datetime(out[date_col], errors="coerce")
     out = out[out["date"] >= pd.Timestamp(start)]
@@ -2301,9 +2352,11 @@ def materialize_specs(
     monthly_contract_sha256: str | None = None,
     price_venue_scope_manifest: str | Path | None = None,
     price_venue_scope_sha256: str | None = None,
+    chip_pit_window_errors: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     start = source_start_date or start_date_for_years(years)
     chip_pit_daily = daily_refresh and chip_pit_daily_enabled()
+    chip_pit_errors = chip_pit_window_errors if chip_pit_window_errors is not None else []
     if bool(price_venue_scope_manifest) != bool(price_venue_scope_sha256):
         raise ValueError("price_venue_scope_pair_required")
     if price_venue_scope_manifest and (reuse_successful_artifacts or not sealed_raw_root):
@@ -2391,7 +2444,8 @@ def materialize_specs(
     if financial_keys:
         date_owners = (data.get("etl:financial_statements_disclosure_dates"),
                        data.get("etl:financial_statements_deadline"))
-        financial_sessions = data.get("price:收盤價").index
+        financial_prices = data.get("price:收盤價")
+        financial_sessions = financial_prices.index
         financial_native = {}
         for key in sorted(financial_keys):
             financial_native[key] = data.get(key)
@@ -2402,6 +2456,20 @@ def materialize_specs(
                 selected_native, scope_proof = scope_financial_history(
                     selected_native, date_owners, financial_sessions,
                     symbols=sealed_source.roster, start_date=start, lifecycle=lifecycle)
+            elif training_capture_start_date is not None:
+                # Live training capture: gate the requested window, not 2013+ delisted history.
+                from services.financial_scope import live_price_universe_symbols, scope_financial_history
+                symbols, roster_proof = live_price_universe_symbols(
+                    selected_native, financial_prices,
+                    start_date=training_capture_start_date, end_date=target_date)
+                selected_native, scope_proof = scope_financial_history(
+                    selected_native, date_owners, financial_sessions, symbols=symbols,
+                    start_date=training_capture_start_date, omit_deadline_absent_from_start=True)
+                scope_proof["live_roster"] = roster_proof
+                if scope_proof["remaining_unresolved_cells"]:
+                    raise ValueError("financial_request_unresolved_cells:%s:%d:%s" % (
+                        key, scope_proof["remaining_unresolved_cells"],
+                        json.dumps(scope_proof["remaining_unresolved_sample"][:5], ensure_ascii=False)))
             financial_frames[key] = normalize_finlab_wide_field(
                 selected_native, api_key_name=key, date_owners=date_owners, sessions=financial_sessions)
             if scope_proof is not None:
@@ -2471,6 +2539,7 @@ def materialize_specs(
         if spec.kind == "wide_fields":
             field_frames: dict[str, pd.DataFrame] = {}
             unsliced_frames: dict[str, pd.DataFrame] = {}
+            chip_pit_fields = chip_pit_lane_fields_soft(spec.lane, chip_pit_errors) if chip_pit_daily else ()
             if spec.lane == "daily_price":
                 # Daily raw prices are clipped to one date. Keep source-calendar
                 # facts from the full FinLab window so a failed prior date is
@@ -2523,7 +2592,7 @@ def materialize_specs(
                         unsliced_frames[field] = source_frame
                     if ((spec.lane == "chip_diversity" and field in {"foreign_net", "trust_net", "dealer_self_net", "dealer_hedge_net"})
                             or field in TRAINING_AUX_FIELDS.get(spec.lane, {})
-                            or (chip_pit_daily and field in chip_pit_lane_fields(spec.lane))):
+                            or field in chip_pit_fields):
                         unsliced_frames[field] = source_frame
                     frame = filter_date_range(
                         source_frame,
@@ -2606,8 +2675,9 @@ def materialize_specs(
                         seal_daily_history(run_dir,updated_history)
             if spec.lane == "chip_diversity":
                 write_institutional_vintage(unsliced_frames, run_dir=run_dir, years=years, end_date=source_end_date, start_date=training_capture_start_date)
-            if chip_pit_daily and chip_pit_lane_fields(spec.lane):
-                write_chip_pit_window(unsliced_frames, lane=spec.lane, run_dir=run_dir, end_date=source_end_date)
+            if chip_pit_fields:
+                write_chip_pit_window_soft(unsliced_frames, lane=spec.lane, fields=chip_pit_fields, run_dir=run_dir,
+                                           end_date=source_end_date, errors=chip_pit_errors)
             if spec.lane in TRAINING_AUX_FIELDS:
                 write_training_auxiliary_vintage(unsliced_frames, lane=spec.lane, run_dir=run_dir,
                     years=years, end_date=source_end_date,
@@ -2617,6 +2687,10 @@ def materialize_specs(
                 spec.lane,
                 field_frames,
                 target_date=target_date,
+                # Monthly revenue is indexed by release date (~10th); a training capture ending
+                # on any other session still requires a release within the last 45 days.
+                target_window_days=(MONTHLY_RELEASE_WINDOW_DAYS
+                                    if training_capture_start_date and spec.lane in MONTHLY_RELEASE_LANES else 0),
                 requested_fields=(
                     set(spec_keys)
                     if key_scope and spec.lane in key_scope
@@ -2860,9 +2934,13 @@ def materialize_specs(
             if not frame.empty:
                 from services.training_long_sources import write_broker_capture
                 write_broker_capture(frame,run_dir=run_dir,
-                    start=start if daily_refresh else start_date_for_years(years),end=source_end_date or target_date)
+                    start=start if daily_refresh else (training_capture_start_date or start_date_for_years(years)),
+                    end=source_end_date or target_date)
             source_observation = broker_source_observation(frame, target_date)
-            grouped = normalize_broker_transactions_daily(frame, start)
+            # broker_daily/broker_rank_daily feed only canonical D1 windows, never
+            # training (that reads training_long_full_vintage/broker.parquet), so a
+            # longer --source-start-date does not widen them past --years.
+            grouped = normalize_broker_transactions_daily(frame, max(start, start_date_for_years(years)))
             rank_rows = grouped.attrs.get("broker_rank_daily")
             grouped = filter_rows_date_range(
                 grouped,
@@ -3036,8 +3114,9 @@ def materialize_specs(
         else:
             raise ValueError(f"unsupported spec kind: {spec.kind}")
 
-        stockvision_rows = stockvision_count_for_lane(counts, spec.lane)
-        missing = max(finlab_rows - stockvision_rows, 0)
+        # Without D1 the StockVision side is unobserved: report None, never a fake zero.
+        stockvision_rows = None if counts is None else stockvision_count_for_lane(counts, spec.lane)
+        missing = None if stockvision_rows is None else max(finlab_rows - stockvision_rows, 0)
         conflicts = 0
         diff = {
             "schema_version": "finlab-remote-diff-aggregate-v1",
@@ -3051,9 +3130,9 @@ def materialize_specs(
             "summary": {
                 "finlab_rows": finlab_rows,
                 "stockvision_rows": stockvision_rows,
-                "matched": min(finlab_rows, stockvision_rows),
+                "matched": None if stockvision_rows is None else min(finlab_rows, stockvision_rows),
                 "missing_in_stockvision": missing,
-                "missing_in_finlab": max(stockvision_rows - finlab_rows, 0),
+                "missing_in_finlab": None if stockvision_rows is None else max(stockvision_rows - finlab_rows, 0),
                 "value_conflicts": conflicts,
                 "schema_extra_fields": schema_fields,
             },
@@ -3074,6 +3153,13 @@ def materialize_specs(
             flush=True,
         )
 
+    if training_capture_start_date is not None:
+        # Training captures fail closed: a requested lane that was skipped or came back empty
+        # without its own recorded blocker makes the run partial_failed (exit 2), never ready.
+        produced = {s["lane"] for s in dataset_summaries if s["artifacts"] or s["finlab_rows"]}
+        blocked = {str(b.get("lane")) for b in source_key_blockers}
+        for lane in sorted({spec.lane for spec in specs} - produced - blocked):
+            source_key_blockers.append({"lane": lane, "reason": "requested_lane_produced_no_dataset"})
     return dataset_summaries, diff_reports, source_key_reports, source_key_blockers
 
 
@@ -4164,6 +4250,8 @@ def main() -> int:
     parser.add_argument("--canonical-dry-run", action="store_true")
     parser.add_argument("--lanes", default="", help="Comma-separated FinLab source lanes to materialize. Empty means all CORE_SPECS lanes.")
     parser.add_argument("--key-scope-json", default="", help="JSON object/list limiting data.get calls to lane fields.")
+    parser.add_argument("--fundamental-training-fields-only", action="store_true",
+                        help="Limit fundamental_factor_diversity to the fields training/serving consume.")
     parser.add_argument("--reuse-successful-artifacts", action="store_true", help="Allow materializer repair to reuse previous successful key artifacts.")
     parser.add_argument("--sealed-raw-root", default="", help="Explicit sealed daily numeric capture; no SDK fallback.")
     parser.add_argument("--sealed-raw-receipt-sha256", default="", help="Exact SHA256 of the sealed capture.json.")
@@ -4181,8 +4269,10 @@ def main() -> int:
     args = parser.parse_args()
 
     required_env = [] if args.sealed_raw_root else ["FINLAB_API_KEY"]
-    if not controller_d1_proxy_configured():
-        required_env.extend(["CF_API_TOKEN", "CF_ACCOUNT_ID", "CF_D1_DB_ID"])
+    # D1 credentials are required only when this run writes D1; read-only D1 steps
+    # skip cleanly without them and are listed under manifest["d1_unavailable"].
+    if (args.write_d1 or args.apply_canonical_d1) and not controller_d1_proxy_configured():
+        required_env.extend(CF_D1_ENV)
     missing = [key for key in required_env if not os.environ.get(key)]
     if missing:
         raise SystemExit(f"missing env vars: {','.join(missing)}")
@@ -4199,6 +4289,14 @@ def main() -> int:
     requested_lanes = parse_lanes(args.lanes)
     if key_scope and not requested_lanes:
         requested_lanes = sorted(key_scope)
+    if args.fundamental_training_fields_only:
+        if key_scope:
+            raise SystemExit("fundamental_training_fields_only_conflicts_with_key_scope_json")
+        if "fundamental_factor_diversity" not in requested_lanes:
+            raise SystemExit("fundamental_training_fields_only_requires_explicit_fundamental_lane")
+        # A key_scope skips every lane it does not name; an empty field set keeps all of a lane's keys.
+        key_scope = {lane: set() for lane in requested_lanes}
+        key_scope.update({lane: set(fields) for lane, fields in FUNDAMENTAL_TRAINING_KEY_SCOPE.items()})
     source_start_date = args.source_start_date or None
     source_end_date = args.source_end_date or None
     effective_reuse_successful_artifacts = bool(args.reuse_successful_artifacts and finlab_artifact_reuse_enabled())
@@ -4212,10 +4310,12 @@ def main() -> int:
         daily_history = load_daily_history(storage.Client().bucket(args.gcs_bucket),
             run_date=source_end_date,capture_prefix=args.gcs_prefix,
             bootstrap_ref=json.loads(bootstrap) if bootstrap else None)
+    chip_pit_window_errors: list[dict[str, Any]] = []
     dataset_summaries, diff_reports, source_key_reports, source_key_blockers = materialize_specs(
         years=args.years,
         run_dir=run_dir,
         lanes=requested_lanes,
+        chip_pit_window_errors=chip_pit_window_errors,
         source_start_date=source_start_date,
         training_capture_start_date=args.training_capture_start_date or None,
         daily_refresh=args.daily_refresh,
@@ -4241,9 +4341,9 @@ def main() -> int:
     summary = {
         "dataset_count": len(dataset_summaries),
         "finlab_rows": sum(int(item["finlab_rows"]) for item in dataset_summaries),
-        "gap_fill_rows": sum(1 for item in diff_reports if item["summary"]["missing_in_stockvision"] > 0),
+        "gap_fill_rows": sum(1 for item in diff_reports if (item["summary"]["missing_in_stockvision"] or 0) > 0),
         "value_conflicts": sum(int(item["summary"]["value_conflicts"]) for item in diff_reports),
-        "missing_in_stockvision": sum(int(item["summary"]["missing_in_stockvision"]) for item in diff_reports),
+        "missing_in_stockvision": sum(int(item["summary"]["missing_in_stockvision"] or 0) for item in diff_reports),
     }
     manifest = {
         "schema_version": "finlab-v4-remote-backfill-v1",
@@ -4262,9 +4362,12 @@ def main() -> int:
         "datasets": dataset_summaries,
         "diff_reports": diff_reports,
         "source_key_reports": source_key_reports,
+        "lane_first_seen": lane_first_seen(source_key_reports),
         "source_key_blockers": source_key_blockers,
         "backfill_status": "partial_failed" if source_key_blockers else "ready",
         **sealed_raw_source_binding(run_dir),
+        **({"d1_unavailable": {"reason": "no_d1_credentials", "skipped": list(D1_UNAVAILABLE_SKIPS),
+                               "stockvision_rows_observed": False}} if D1_UNAVAILABLE_SKIPS else {}),
     }
     manifest["checksum"] = checksum_manifest({"run_id": run_id, "summary": summary, "datasets": dataset_summaries})
     write_json(run_dir / "manifest.json", manifest)
@@ -4321,6 +4424,8 @@ def main() -> int:
         except Exception as exc:
             print(f"[finlab-backfill] chip_pit_daily failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
             manifest["chip_pit_daily"] = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"[:500]}
+        if chip_pit_window_errors:
+            manifest["chip_pit_daily"]["window_errors"] = chip_pit_window_errors
         write_json(run_dir / "manifest.json", manifest)
 
     if args.write_d1 and finlab_key_report_enabled():

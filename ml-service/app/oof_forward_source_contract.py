@@ -37,6 +37,11 @@ def assess_fold_forward_sources(
                 'reasons':['reused_forward_source_invalid:' + str(exc)], 'window_id':window_id}
 
     metrics = window.get("model_metrics") if isinstance(window.get("model_metrics"), dict) else {}
+    # A declared roster without a core model (R33 drops XGBoost) owns no artifact for it.
+    coverage = window.get("model_coverage") if isinstance(window.get("model_coverage"), dict) else {}
+    roster = set(coverage.get("active8_models") or CORE_MODELS)
+    core_models = [name for name in CORE_MODELS if name in roster]
+    tree_models = [name for name in TREE_MODELS if name in roster]
 
     def require_object(path: object, reason: str) -> None:
         normalized = str(path or "").strip()
@@ -51,7 +56,7 @@ def assess_fold_forward_sources(
         except Exception as exc:  # noqa: BLE001 - storage preflight must fail closed.
             reasons.append(f"{reason}:storage_error:{type(exc).__name__}")
 
-    for model_name in CORE_MODELS:
+    for model_name in core_models:
         metric = metrics.get(model_name) if isinstance(metrics.get(model_name), dict) else {}
         if metric.get("status") != "ready":
             reasons.append(f"core_oof_metric_not_ready:{model_name}")
@@ -65,7 +70,7 @@ def assess_fold_forward_sources(
         if isinstance(tree_result.get("artifact_registrations"), dict)
         else {}
     )
-    for model_name in TREE_MODELS:
+    for model_name in tree_models:
         artifact = registrations.get(model_name) if isinstance(registrations.get(model_name), dict) else {}
         if artifact.get("status") != "shadow_source" or artifact.get("promotion_eligible") is not False:
             reasons.append(f"exact_tree_source_state_invalid:{model_name}")

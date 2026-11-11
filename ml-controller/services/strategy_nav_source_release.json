@@ -4,10 +4,10 @@
   "source_equivalence": false,
   "maturity_transfer": false,
   "production_baseline_verified": true,
-  "production_baseline_source": "28be01943d0028c35dfbef312c332b92af12f498",
+  "production_baseline_source": "83bd093e8d7dacc1465987cd0a4edd8eed7189cc",
   "production_baseline_receipt_checksum": "238894ef978980142ed7c051b1c0c6a03e29a8ae8afd18c70c17bcbac2df91ab",
-  "prior_approval_checksum": "7c0f8dd9eccb37fb88485c5f86fb4fc9360d4b40d8f56930c5623d166db4a606",
-  "prior_configuration_checksum": "7275b4ec0283f7fe65ba3ca0ed7ae55cca43ae7425a8a1948012d18f09e08606",
+  "prior_approval_checksum": "5c25cc98d9a3d582723818e535134a56827223b23546b7a39b0f94527072da8a",
+  "prior_configuration_checksum": "48e3e865bf7b67ce50fbf30f80467afa9705c2f391be2f3846b0f55c6e95b972",
   "approved_sources": {
     "allocator_source_identity": {
       "recommendation_service.py": "27adb552db02dba9ffb32a87ca9731f0fc4fd1f9eeb7da5069ce68822d09f56d",
@@ -85,59 +85,6 @@
       "sector_flow_pit_history.py": "3344d8c0b078bc1067765847dbf200067a7b599f4ff3a90d614f3b3a77efd3a6"
     }
   },
-  "execution_owner_version": "native-paper-v1:533930fa1edb436637b62cec506a8477f196b0f2c2be142d1b3dc8f719e4f184",
-  "review": "output/herdr-handoff-20261018/sys-cleanup-20261028/wrel/plan_WREL.md",
-  "policy_activations": [
-    {
-      "schema_version": "l4-policy-activation-v2",
-      "scope": "paper",
-      "maturity_transfer": false,
-      "account_reset": false,
-      "return_history_lookback_sessions": 252,
-      "cost_objective": "single_side_v1",
-      "circuit_position_scales": {
-        "highVol": 0.5,
-        "severeHighVol": 0.5,
-        "momentumZone": {
-          "RED": 0.3,
-          "YELLOW": 0.7
-        },
-        "lossStreak": 0.5
-      },
-      "risk_config_filled_fields": {
-        "portfolio.marketShockOrangePct": -0.03,
-        "portfolio.marketShockRedPct": -0.05,
-        "portfolio.marketShockBlackPct": -0.08,
-        "portfolio.breadthOrangeAdvanceRatio": 0.25,
-        "portfolio.breadthRedAdvanceRatio": 0.15,
-        "portfolio.breadthBlackAdvanceRatio": 0.08,
-        "portfolio.greenTargetExposure": 0.95,
-        "portfolio.yellowTargetExposure": 0.68,
-        "portfolio.orangeTargetExposure": 0.45,
-        "portfolio.redTargetExposure": 0.2,
-        "portfolio.blackTargetExposure": 0
-      },
-      "previous_policy_checksum": "6b57659317774eac0cf1cd4a88c0dae7a13a189e11ed5dfa459b4ac21989d7f3",
-      "next_policy_checksum": "fba4fe7652532ee59602998922a7799735cff9d93dedc3d7821e5d7cb3f23981",
-      "previous_risk_config_checksum": "b03a2a05a80183778fc823eb7c47dea98fc6b10c30d66baaee19c98c1ad51f86",
-      "next_risk_config_checksum": "40f866656c7f986a69fbe886d0ee3f97e7f24d798c2714be5c2fbca97a08c613",
-      "next_policy_identity": "555c16a5eb20ece71e48ebcbd3c5ba569aa712c121ad3840972d7a96711dbf90",
-      "engineering_receipt_checksum": "83dcd281330a63ddae795fb60bfb99089e2c8e42e29a9a20fe2e83d796c41fda",
-      "source_reference": "r31-20261031 release; Wei go 2026-10-28 21:0x TW in merge/deploy owner session (\"go：10/31 release r31-20261031 變體 B（#93＋#95＋#91＋monthly／weekly PAUSED），由你跑正式 admission 和 re-pin 後推\")"
-    },
-    {
-      "schema_version": "l4-policy-constraints-change-v1",
-      "scope": "paper",
-      "maturity_transfer": false,
-      "account_reset": false,
-      "changes": {
-        "cost_objective": "entry_round_trip_v1"
-      },
-      "previous_policy_checksum": "fba4fe7652532ee59602998922a7799735cff9d93dedc3d7821e5d7cb3f23981",
-      "next_policy_checksum": "c01ba9e3425aa5c85896ca893039a3c92011fd89633729e079735d312aadb338",
-      "next_policy_identity": "7436aec8fdf347e0b81a740fb6401f440b7fed3dd381d0159aa599608615fa58",
-      "engineering_receipt_checksum": "83dcd281330a63ddae795fb60bfb99089e2c8e42e29a9a20fe2e83d796c41fda",
-      "source_reference": "r31-20261031 release; Wei go 2026-10-28 21:0x TW in merge/deploy owner session (\"go：10/31 release r31-20261031 變體 B（#93＋#95＋#91＋monthly／weekly PAUSED），由你跑正式 admission 和 re-pin 後推\")"
-    }
-  ]
+  "execution_owner_version": "native-paper-v1:d05c9d9986dbe33a5fd9e74cf68ae45e621c2b5686ca57a0dde82ea1d4ee672c",
+  "review": "output/herdr-handoff-20261018/sys-cleanup-20261028/runbook_k20_repin_grant.md"
 }

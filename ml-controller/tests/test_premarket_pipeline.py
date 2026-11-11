@@ -474,6 +474,42 @@ def test_actual_oct12_night_source_passes_original_96h_and_future_still_fails():
             cutoff=cutoff,trade_date='2026-10-12',required_sources=('taifex-night',),max_age_seconds={'taifex-night':96*3600})
 
 
+def test_long_closure_session_floor_lifts_only_the_night_age_limit(monkeypatch):
+    # 10/27 07:45: Oct 23 typhoon, weekend, Oct 26 holiday. The Worker report recorded the
+    # last trading day (newsAnalyst taifex_session_floor); the Oct 22 session is ~99h old.
+    monkeypatch.setenv('GCS_BUCKET_NAME','local-fixture')
+    class Clock(datetime):
+        @classmethod
+        def now(cls,tz=None):return datetime(2026,10,26,23,45,tzinfo=timezone.utc)
+    monkeypatch.setattr(m,'datetime',Clock)
+    night={'date':'20261022','time':'045959','lastPrice':45654,'changePct':-1.25,'changePoints':-580}
+    def run(floor,opened='20261022'):
+        s=Storage()
+        state={'run_date':'2026-10-22','producer_run_id':'root','payloads':[{'symbol':'2330'}],
+            'predictions':{'2330':{'score':.5}},'metrics':{},'premarket_baseline':{
+              'signal_date':'2026-10-22','available_at':'2026-10-22T14:00:00+00:00','sources':[]}}
+        macro={'taifex_night':{**night,'date':opened}}
+        if floor is not None:macro['taifex_session_floor']=floor
+        c={'trade_date':'2026-10-27','cutoff':'2026-10-26T23:40:00+00:00',
+          'us':{'date':'2026-10-27','fetched_at':'2026-10-26T23:00:00+00:00','source_times':{'sox':'2026-10-26T20:00:00+00:00'},'sox_close':100},
+          'news':{'date':'2026-10-27','cutoff':'2026-10-26T23:00:00+00:00','evidence_receipt':{'sha256':'f'*64},
+            'evidence':[],'macro_evidence':macro}}
+        c['checksum']=m.digest(c)
+        r=m.seal_l3(state,client=s);j=Jobs();m.dispatch(r,c,jobs_client=j,client=s)
+        uri=j.calls[0]['env_overrides']['PIPELINE_PREMARKET_INPUT_GCS_URI'];seen=[]
+        async def l4(value):
+            seen.append(value['premarket_information']['source_age_seconds']['taifex-night']);return {}
+        asyncio.run(m.resume(uri,nodes=[l4],merge=lambda st,up:st.update(up),client=s))
+        return seen[0]
+    assert run('2026-10-22')>96*3600
+    for floor,opened in [(None,'20261022'),('2026-10-12','20261022'),('2026-10-27','20261022'),
+                         ('2026-10-23','20261022'),('20261022','20261022')]:
+        with pytest.raises(ValueError,match='premarket_source_stale:taifex-night'):run(floor,opened)
+    for opened in ('2026/10/22','2026-10-22X'):
+        assert m.taifex_night_max_age({'macro_evidence':{'taifex_session_floor':'2026-10-22',
+            'taifex_night':{**night,'date':opened}}},'2026-10-27')==96*3600
+
+
 def test_authorized_after_close_recovery_retains_actual_capture(monkeypatch):
     monkeypatch.setenv('PIPELINE_DAILY_PLAN_OWNER',m.OWNER)
     receipt={'run_date':'2026-10-08'}

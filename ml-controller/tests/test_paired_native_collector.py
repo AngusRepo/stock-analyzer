@@ -250,11 +250,14 @@ def test_new_pending_entry_two_arm_publication_reconciles_actual_fees_and_nav(na
         private.executescript(raw)
         # Force this test through the real shared corporate source owner.
         private.execute("DELETE FROM _native_private_kv WHERE key='market:corporate_actions:v1:2026-09-07'")
+        # The sealed configuration is the private state's: it carries the L4 policy.
+        trading = json.loads(private.execute("SELECT value FROM _native_private_kv WHERE key='trading:config'").fetchone()[0])
         raw = '\n'.join(private.iterdump())
     state = {'state_sql': raw, 'state_checksum': checksum(raw)}
-    configuration = {**packet['configuration'], 'risk_config': {**packet['configuration']['risk_config'],
+    configuration = {**packet['configuration'], 'trading_config': trading, 'risk_config': {**packet['configuration']['risk_config'],
         'system': {**packet['configuration']['risk_config']['system'], 'killSwitch': False}}}
-    packet.update(pair_id='new-entry-collector-fixture', variables=variables, schedule=schedule,
+    # Production registers the native private account as account 1, the L4 plan owner.
+    packet.update(pair_id='new-entry-collector-fixture', account_id=1, variables=variables, schedule=schedule,
         configuration=configuration, configuration_checksum=digest(configuration),
         capture_kv_reads=True, kv_read_policy=KV_READ_POLICY,
         initial_account={'cash': 5000000., 'nav': 5000000., 'positions': {}, 'marks': {}},

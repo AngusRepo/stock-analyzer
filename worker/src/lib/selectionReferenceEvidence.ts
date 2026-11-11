@@ -860,7 +860,7 @@ export async function persistSelectionEvidenceV4(
                   AND r.feature_contract_version=? AND r.evidence_artifact_id=?
                  THEN 1 ELSE 0 END) contract_count
           FROM selection_reference_snapshots_v1 r
-         WHERE r.producer_run_id=?
+         WHERE r.signal_date=? AND r.producer_run_id=?
       `).bind(
         expectedReferenceIdentity,
         input.signalDate,
@@ -868,6 +868,7 @@ export async function persistSelectionEvidenceV4(
         input.strategyRegistryChecksum,
         SELECTION_REFERENCE_CONTRACT_VERSION,
         input.evidenceArtifactId,
+        input.signalDate,
         input.producerRunId,
       ).first<{ row_count: number; identity_count: number; contract_count: number }>(),
       db.prepare(`
@@ -885,7 +886,7 @@ export async function persistSelectionEvidenceV4(
                   AND m.strategy_registry_checksum=? AND m.reference_contract_version=?
                  THEN 1 ELSE 0 END) contract_count
           FROM strategy_label_matrix_v4 m
-         WHERE m.producer_run_id=?
+         WHERE m.signal_date=? AND m.producer_run_id=?
       `).bind(
         expectedReferenceSymbols,
         expectedStrategies,
@@ -893,6 +894,7 @@ export async function persistSelectionEvidenceV4(
         input.labelerVersion,
         input.strategyRegistryChecksum,
         SELECTION_REFERENCE_CONTRACT_VERSION,
+        input.signalDate,
         input.producerRunId,
       ).first<{
         row_count: number
@@ -1197,12 +1199,12 @@ export async function persistSelectionEvidenceV4(
     await db.batch([
       db.prepare(`
         DELETE FROM strategy_label_matrix_v4
-         WHERE producer_run_id=? AND EXISTS (${validatedAttempt})
-      `).bind(input.producerRunId, input.producerRunId, attemptId, payloadChecksum),
+         WHERE signal_date=? AND producer_run_id=? AND EXISTS (${validatedAttempt})
+      `).bind(input.signalDate, input.producerRunId, input.producerRunId, attemptId, payloadChecksum),
       db.prepare(`
         DELETE FROM selection_reference_snapshots_v1
-         WHERE producer_run_id=? AND EXISTS (${validatedAttempt})
-      `).bind(input.producerRunId, input.producerRunId, attemptId, payloadChecksum),
+         WHERE signal_date=? AND producer_run_id=? AND EXISTS (${validatedAttempt})
+      `).bind(input.signalDate, input.producerRunId, input.producerRunId, attemptId, payloadChecksum),
       db.prepare(`
         INSERT INTO selection_reference_snapshots_v1 (
           signal_date, symbol, producer_run_id, stock_id, name, market_segment, sector,

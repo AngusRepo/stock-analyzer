@@ -6,6 +6,10 @@ from .formal_feature_contract import PROFILES131
 import os
 from dataclasses import asdict, dataclass
 
+# R33 prep: leading sessions per stock that only feed 252-session features (ret252, 52w).
+R33_FEATURE_WARMUP_SESSIONS = 252
+R33_PREP_SUFFIX = "-r33w252"  # R33 preps never mix with exo131 expanded1280 preps.
+
 
 def _env_int(name: str, default: int) -> int:
     raw = os.environ.get(name, "").strip()

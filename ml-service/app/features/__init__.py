@@ -6,7 +6,9 @@ Triple Barrier Label (Prado 2018) 保留作為 SLTP 執行層使用。
 2.0 新增：Cross-sectional rank label 在 P1 實作。
 """
 import os
+import hashlib
 import json
+from functools import reduce
 from pathlib import Path
 import numpy as np
 import polars as pl
@@ -200,11 +202,21 @@ def build_feature_matrix(
     barrier_params: dict | None = None,
     stock_meta: dict | None = None,
     historical_training: bool = False,
+    pit_contract_version: str | None = None,
 ) -> pl.DataFrame:
     """
     整合所有資料來源，建立特徵矩陣。
     回傳 Polars DataFrame，含 features + target_5d + target_dir。
+    pit_contract_version: apply that PIT contract's availability lags (C28-02), fixed
+    feature windows (NEW-75) and registry feature definitions;
+    None keeps the pre-contract output byte-identical.
     """
+    pit_lags, pit_windows, pit_definitions = {}, {}, {}
+    if pit_contract_version is not None:
+        from ..pit_contract import feature_definitions, feature_lags, feature_windows
+        pit_lags = feature_lags(pit_contract_version)
+        pit_windows = feature_windows(pit_contract_version)
+        pit_definitions = feature_definitions(pit_contract_version)
     # ── 1. Prices base frame ─────────────────────────────────────────────────
     # infer_schema_length=None: D1 JSON 混 int/float（如 close=106 vs 105.5），需掃全量推斷
     df = (
@@ -322,6 +334,12 @@ def build_feature_matrix(
             ).alias("dealer_ratio_5d")
         )
 
+    # A value first usable n price rows after its availability date (contract
+    # lag_sessions). Rows are this stock's sessions, so a suspension only delays.
+    lagged = [(name, lag) for name, lag in pit_lags.items() if name in df.columns]
+    if lagged:
+        df = df.with_columns([pl.col(name).forward_fill().shift(lag).alias(name) for name, lag in lagged])
+
     # margin_balance time-series features
     if "margin_balance" in df.columns:
         df = df.with_columns(pl.col("margin_balance").forward_fill().alias("margin_balance"))
@@ -413,7 +431,13 @@ def build_feature_matrix(
         ])
 
     # ── 5. VWAP features ────────────────────────────────────────────────────
-    if "avg_price" in df.columns and df["avg_price"].cast(pl.Float64, strict=False).is_not_null().sum() > len(df) * 0.1:
+    if pit_contract_version is not None:
+        # Per row under a PIT contract: a whole-window coverage test would let later
+        # rows decide how an earlier row was built (E6, PIT-P0 7).
+        _typical_p = (pl.col("high").fill_null(pl.col("close")) + pl.col("low").fill_null(pl.col("close")) + pl.col("close")) / 3.0
+        _avg_p = pl.col("avg_price").cast(pl.Float64, strict=False).forward_fill() if "avg_price" in df.columns else pl.lit(None, pl.Float64)
+        df = df.with_columns(_avg_p.fill_null(_typical_p).alias("_avg_p"))
+    elif "avg_price" in df.columns and df["avg_price"].cast(pl.Float64, strict=False).is_not_null().sum() > len(df) * 0.1:
         df = df.with_columns(pl.col("avg_price").cast(pl.Float64, strict=False).forward_fill().alias("_avg_p"))
     else:
         df = df.with_columns(
@@ -736,7 +760,8 @@ def build_feature_matrix(
             isinstance(values, dict) and values.get(name) is not None
             for values in per_stock_ts.values()
         )
-        if has_history or historical_training:
+        # A latest serving scalar is same-day; a lagged field never falls back to it.
+        if has_history or historical_training or name in pit_lags:
             return default
         return safe_float((market_env or {}).get(name), default)
 
@@ -756,7 +781,8 @@ def build_feature_matrix(
         "revenue_growth_yoy": _pit_default("revenue_growth_yoy"),
     }
     # Capture missing source values before compatibility defaults hide gaps.
-    source_masks = feature_missing_masks(df, market_env or {}, stock_meta or {}, historical_training)
+    source_masks = feature_missing_masks(df, market_env or {}, stock_meta or {}, historical_training,
+                                         no_scalar=frozenset(pit_lags))
     if "margin_balance" in df.columns and "margin_change_5d" not in df.columns:
         mb = pl.col("margin_balance").cast(pl.Float64, strict=False).forward_fill()
         df = df.with_columns(_clip_expr(_safe_div(mb - mb.shift(5), mb.shift(5)), -1.0, 1.0).alias("margin_change_5d"))
@@ -831,6 +857,13 @@ def build_feature_matrix(
             return pl.lit(default)
         return pl.lit(_series_scalar(name, default))
 
+    # Under a PIT contract the fallback is per row: whether a later indicator
+    # record exists must not change how an earlier row was built (E6, PIT-P0 7).
+    _vmd_expr = _feature_col("volumeMomentumDivergence132710", _feature_col("CORD_10"))
+    if pit_contract_version is not None and "volumeMomentumDivergence132710" in df.columns:
+        _vmd_source = pl.col("volumeMomentumDivergence132710").cast(pl.Float64, strict=False)
+        _vmd_expr = pl.when(_vmd_source.is_finite()).then(_vmd_source).otherwise(_feature_col("CORD_10"))
+
     def _add_missing(exprs: list[tuple[str, pl.Expr]]) -> None:
         nonlocal df
         todo = [expr.alias(name) for name, expr in exprs if name not in df.columns]
@@ -842,6 +875,31 @@ def build_feature_matrix(
     low_expr = _feature_col("low", close_expr)
     open_expr = _feature_col("open", close_expr)
     volume_expr = _feature_col("volume")
+    # Pre-contract gap forms (raw open against raw previous close).
+    gap_down_expr = _safe_div(open_expr - close_expr.shift(1), close_expr.shift(1)).clip(None, 0.0)
+    gap_up_expr = _safe_div(open_expr - close_expr.shift(1), close_expr.shift(1)).clip(0.0, None)
+    if pit_definitions:
+        # Registry definitions under a PIT contract (data/feature_registry/pit_feature_definitions_v1.json):
+        # adjusted high/low = raw x same-day adj_close/close, which is FinLab's adj_high/adj_low.
+        def _positive(expr: pl.Expr) -> pl.Expr:
+            return expr.is_finite() & (expr > 0)
+
+        adj_factor = pl.col("adj_close") / close_expr
+        factor_ok = _positive(close_expr) & _positive(pl.col("adj_close"))
+        adj_high_expr, adj_low_expr = high_expr * adj_factor, low_expr * adj_factor
+        high_ok, low_ok = factor_ok & _positive(high_expr), factor_ok & _positive(low_expr)
+        if "tech_gap_down" in pit_definitions:
+            spec = pit_definitions["tech_gap_down"]
+            defined = high_ok & low_ok.shift(1)
+            gap_down_expr = (
+                pl.when(defined & (adj_high_expr < adj_low_expr.shift(1) * (1.0 - float(spec["tie_rel_tolerance"]))))
+                .then(1.0).when(defined).then(0.0).otherwise(float(spec["undefined_value"])))
+        if "tech_gap_up" in pit_definitions:
+            spec = pit_definitions["tech_gap_up"]
+            defined = low_ok & high_ok.shift(1)
+            gap_up_expr = (
+                pl.when(defined & (adj_low_expr > adj_high_expr.shift(1) * (1.0 + float(spec["tie_rel_tolerance"]))))
+                .then(1.0).when(defined).then(0.0).otherwise(float(spec["undefined_value"])))
     dollar_volume = (volume_expr * close_expr).abs().clip(1.0, None)
     bb_mid_expr = ((pl.col("bb_upper") + pl.col("bb_lower")) / 2.0) if {"bb_upper", "bb_lower"}.issubset(set(df.columns)) else close_expr.rolling_mean(20)
     bb_width_expr = _safe_div(_feature_col("bb_upper") - _feature_col("bb_lower"), bb_mid_expr)
@@ -851,6 +909,14 @@ def build_feature_matrix(
     ret126_raw = _safe_div(pl.col("adj_close") - pl.col("adj_close").shift(126), pl.col("adj_close").shift(126))
     ret189_raw = _safe_div(pl.col("adj_close") - pl.col("adj_close").shift(189), pl.col("adj_close").shift(189))
     ret252_raw = _safe_div(pl.col("adj_close") - pl.col("adj_close").shift(252), pl.col("adj_close").shift(252))
+    # Pre-contract form: CV of adjusted daily returns.
+    vola_cv_expr = _safe_div(ret1_raw.rolling_std(90), ret1_raw.rolling_mean(90).abs().clip(1e-9, None))
+    if "vola_cv_90d" in pit_definitions:
+        # Registry price CV on raw close (price_basis in the definitions file), sample std as pandas rolling().std().
+        spec = pit_definitions["vola_cv_90d"]
+        window = int(spec["window"])
+        vola_cv_expr = _safe_div(close_expr.rolling_std(window, ddof=int(spec["ddof"])), close_expr.rolling_mean(window),
+                                 default=float(spec["undefined_value"]))
     ma50_expr = close_expr.rolling_mean(50)
     ma200_expr = close_expr.rolling_mean(200)
     ema12_expr = close_expr.ewm_mean(span=12, adjust=False)
@@ -863,7 +929,18 @@ def build_feature_matrix(
     neg_flow = pl.when(typical_price < typical_price.shift(1)).then(money_flow).otherwise(0.0).rolling_sum(14)
     cmo_num = ret1_raw.clip(0, None).rolling_sum(14) - (-ret1_raw.clip(None, 0)).rolling_sum(14)
     cmo_den = ret1_raw.abs().rolling_sum(14)
-    obv_expr = pl.when(close_expr > close_expr.shift(1)).then(volume_expr).when(close_expr < close_expr.shift(1)).then(-volume_expr).otherwise(0.0).cum_sum()
+    obv_flow = pl.when(close_expr > close_expr.shift(1)).then(volume_expr).when(close_expr < close_expr.shift(1)).then(-volume_expr).otherwise(0.0)
+    if pit_windows:
+        # Under a PIT contract OBV is the last N rows' signed volume (NEW-75), added in a fixed
+        # order per row: a running rolling_sum would carry rounding from where the history starts.
+        # The oldest flow needs its previous close, so a value needs N + 1 rows.
+        obv_window = pit_windows["tech_obv"]
+        obv_flow = obv_flow.fill_nan(0.0).fill_null(0.0)
+        obv_expr = pl.when(pl.int_range(pl.len()) >= obv_window).then(
+            reduce(lambda total, lag: total + obv_flow.shift(lag), range(1, obv_window), obv_flow))
+    else:
+        # Pre-contract: cumulative from the payload's first row, so the level depends on its start.
+        obv_expr = obv_flow.cum_sum()
     kd_low9 = low_expr.rolling_min(9)
     kd_high9 = high_expr.rolling_max(9)
     kd_k_expr = _safe_div(close_expr - kd_low9, (kd_high9 - kd_low9).clip(1e-9, None)) * 100.0
@@ -916,7 +993,7 @@ def build_feature_matrix(
         ("l1_squeezeMomentum", (bb_width_expr - bb_width_expr.rolling_mean(20)) * close_expr.sign()),
         ("l1_squeezeRelease", (bb_width_expr > bb_width_expr.rolling_mean(20)).cast(pl.Float64)),
         ("l1_volumeExpansion20", _safe_div(volume_expr, volume_expr.rolling_mean(20))),
-        ("l1_volumeMomentumDivergence132710", _feature_col("volumeMomentumDivergence132710", _feature_col("CORD_10"))),
+        ("l1_volumeMomentumDivergence132710", _vmd_expr),
         ("liq_amihud_21d", _safe_div(ret1_raw.abs(), dollar_volume).rolling_mean(21)),
         ("mom_12m_1m", ret252_raw - ret21_raw),
         ("mom_9m", ret189_raw),
@@ -941,8 +1018,8 @@ def build_feature_matrix(
         ("tech_donchian_pos_20", _safe_div(close_expr - donchian_low20, donchian_range20)),
         ("tech_ema_12_pos", _safe_div(close_expr, ema12_expr) - 1.0),
         ("tech_emv_14", _safe_div(((high_expr + low_expr) / 2.0 - (high_expr.shift(1) + low_expr.shift(1)) / 2.0) * (high_expr - low_expr), volume_expr.clip(1.0, None)).rolling_mean(14)),
-        ("tech_gap_down", _safe_div(open_expr - close_expr.shift(1), close_expr.shift(1)).clip(None, 0.0)),
-        ("tech_gap_up", _safe_div(open_expr - close_expr.shift(1), close_expr.shift(1)).clip(0.0, None)),
+        ("tech_gap_down", gap_down_expr),
+        ("tech_gap_up", gap_up_expr),
         ("tech_granville_score", ((close_expr > close_expr.rolling_mean(20)).cast(pl.Float64) + (close_expr.rolling_mean(20) > close_expr.rolling_mean(20).shift(1)).cast(pl.Float64)) / 2.0),
         ("tech_kd9_k", kd_k_expr),
         ("tech_kdj_j_9", 3.0 * kd_k_expr - 2.0 * kd_d_expr),
@@ -975,7 +1052,7 @@ def build_feature_matrix(
         ("vol_money_flow_5d", money_flow.rolling_sum(5)),
         ("vol_share_turnover_21d", volume_expr.rolling_mean(21)),
         ("vol_signal_5d", _safe_div(volume_expr.rolling_mean(5), volume_expr.rolling_mean(20)) - 1.0),
-        ("vola_cv_90d", _safe_div(ret1_raw.rolling_std(90), ret1_raw.rolling_mean(90).abs().clip(1e-9, None))),
+        ("vola_cv_90d", vola_cv_expr),
         ("vola_min_130d", ret1_raw.rolling_min(130)),
         ("vola_realized_12m", ret1_raw.rolling_std(252)),
         ("vola_realized_1m", ret1_raw.rolling_std(21)),
@@ -1153,6 +1230,9 @@ def _registry_search_paths() -> list[Path]:
     ]
 
 
+FORMAL_FEATURE_DECLARATION = "market_conditioner_contract_v1.json"
+
+
 def _load_formal_feature_cols() -> list[str]:
     errors: list[str] = []
     for path in _registry_search_paths():
@@ -1169,8 +1249,13 @@ def _load_formal_feature_cols() -> list[str]:
                 and row.get("active_pool_status") == "candidate"
                 and row.get("feature_id")
             ]
-            if len(features) != 137:
+            # Count and order are pinned by the declaration next to the registry (W4a S1).
+            declared = json.loads(path.with_name(FORMAL_FEATURE_DECLARATION).read_text(encoding="utf-8"))
+            names_sha256 = hashlib.sha256(json.dumps(features, separators=(",", ":")).encode()).hexdigest()
+            if len(features) != int(declared["formal_feature_count"]):
                 raise RuntimeError(f"formal137_feature_count_mismatch:{len(features)}:{path}")
+            if names_sha256 != declared["formal_feature_names_sha256"]:
+                raise RuntimeError(f"formal137_feature_order_mismatch:{names_sha256}:{path}")
             return features
         except Exception as exc:  # noqa: BLE001 - fail closed with path context.
             errors.append(f"{path}:{exc}")

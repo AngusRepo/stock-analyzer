@@ -26,7 +26,7 @@ export default function DailyReadinessBoard({ stageView, renderStage, pipelineSu
         const running = views.filter(view => view.status === 'running')
         const main = READINESS_MAIN_STAGES[phase.id]
         const supporting = views.filter(view => !main.includes(view.id))
-        const attention = supporting.filter(view => ['running', 'blocked'].includes(view.status))
+        const attention = supporting.filter(view => ['running', 'blocked', 'attention'].includes(view.status))
         return <section key={phase.id} aria-labelledby={'daily-phase-' + phase.id}
           className={'daily-readiness-board__phase is-' + phase.id} title={phase.id === 'models' ? pipelineSummary : undefined}>
           <div className="daily-readiness-board__phase-info"><header className="daily-readiness-board__phase-title">

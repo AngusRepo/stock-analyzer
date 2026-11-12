@@ -114,10 +114,16 @@ test('a producer killed inside either batch leaves no partial rows and the rerun
 test('metric backfill rerun skips the date the dead producer already published', async () => {
   const f = await fixture()
   await materializeStrategyEvidenceMetrics(f.env, { outcomeAsOfDate: date, publicationScope: 'canonical:run-1102' })
-  // The observations view joins several owners; a same-shape table stands in for one observed date.
-  f.sql.exec(`CREATE TABLE observations AS SELECT * FROM strategy_evidence_observations_v1 WHERE 0;
-    DROP VIEW strategy_evidence_observations_v1; ALTER TABLE observations RENAME TO strategy_evidence_observations_v1;
-    INSERT INTO strategy_evidence_observations_v1(outcome_known_date) VALUES('2026-10-30')`)
+  // One outcome known on 2026-10-30 whose selection has an evaluable strategy hit: the backfill's
+  // candidate dates come from these base tables.
+  f.sql.exec(`INSERT INTO canonical_selection_outcomes_v1(signal_date,symbol,producer_run_id,horizon_days,
+      entry_date,exit_date,outcome_known_date,gross_return,transaction_cost_bps,absolute_return_net,
+      benchmark_return_net,benchmark_scope,residual_return_net,cross_section_rank,adjustment_source,reference_contract_version)
+    VALUES('2026-10-23','2330','run-1023',5,'2026-10-24','2026-10-30','2026-10-30',0.01,30,0.007,0.002,'market',0.005,0.5,'test','test');
+    INSERT INTO strategy_label_matrix_v4(signal_date,symbol,producer_run_id,strategy_id,strategy_version,strategy_status,
+      alpha_bucket,family_id,production_owner,strategy_hit,evaluable,weak_label,affinity,position_weight,overlap,
+      labeler_version,strategy_registry_checksum,reference_contract_version)
+    VALUES('2026-10-23','2330','run-1023','s','v1','active','b','f',0,1,1,1,0.5,0.1,0,'t','c','test')`)
   const first = await backfillMissingStrategyEvidenceMetricSnapshots(f.env, { knowledgeCutoffDate: date, maxDates: 1 })
   assert.deepEqual(first.processedDates, ['2026-10-30'])
   const runs = f.count('strategy_evidence_metric_snapshot_runs_v2')

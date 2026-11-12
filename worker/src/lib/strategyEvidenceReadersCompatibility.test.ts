@@ -6,7 +6,7 @@ import { loadDateReturns } from './strategyEvidenceOwnerCalibration'
 
 async function main() {
 const db = new DatabaseSync(':memory:')
-// The readers query the VIEW's base tables; backfill selection still reads the VIEW.
+// The readers and the backfill selection query the VIEW's base tables.
 const view = readFileSync(new URL('../../domain-migrations/learning/0020_evidence_session_owner_read_models.sql', import.meta.url), 'utf8')
   .match(/CREATE VIEW strategy_evidence_observations_v1 AS[\s\S]*?;/)![0]
 db.exec(`CREATE TABLE strategy_label_matrix_v4 (signal_date TEXT,symbol TEXT,producer_run_id TEXT,strategy_id TEXT,strategy_version TEXT,

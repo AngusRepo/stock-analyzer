@@ -21,13 +21,16 @@ assert(manifest.jobs.some(job => job.id === 'active8-oof-daily' && job.task === 
 const retryEnabled = manifest.jobs.filter((job) => Number(job.retryConfig?.retryCount ?? 0) > 0)
 assert.deepEqual(
   retryEnabled.map((job) => job.id).sort(),
-  ['external-evidence', 'market-close-refresh', 'retention-archive-only', 'weekly-cleanup', 'weekly-s12-smcvwap-calibration'],
+  ['evening-chain', 'external-evidence', 'market-close-refresh', 'retention-archive-only', 'weekly-cleanup', 'weekly-s12-smcvwap-calibration'],
 )
 for (const job of retryEnabled) {
-  assert.equal(job.attemptDeadline, ['retention-archive-only','market-close-refresh'].includes(job.id) ? '300s' : '60s')
+  assert.equal(job.attemptDeadline, ['retention-archive-only','market-close-refresh','evening-chain'].includes(job.id) ? '300s' : '60s')
   assert.equal(job.retryConfig?.retryCount, 2)
   assert.equal(job.retryConfig?.maxRetryDuration, '900s')
 }
+// A 5xx/timeout evening-chain root is redelivered like market-close-refresh; ticket admission dedupes it.
+const retryOf = (id: string) => manifest.jobs.find((job) => job.id === id)?.retryConfig
+assert.deepEqual(retryOf('evening-chain'), retryOf('market-close-refresh'))
 assert.match(migration, /CREATE TABLE IF NOT EXISTS scheduler_execution_tickets_v1/)
 assert.match(migration, /dedupe_key TEXT NOT NULL UNIQUE/)
 assert.match(migration, /ticket_kind IN \('physical_root','logical_child','manual'\)/)

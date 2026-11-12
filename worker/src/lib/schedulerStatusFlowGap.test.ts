@@ -201,7 +201,7 @@ test('U3: the watchdog logs recoverable_run_missing as a skip, not a success', a
   const { runStrategyLearningRecoveryWatchdog } = await import('./strategyLearningRecoveryWatchdog')
   const { twToday } = await import('./dateUtils')
   const values = new Map<string, any>()
-  const db = { prepare: () => ({ bind: () => ({ first: async () => null }) }) }
+  const db = { prepare: () => ({ bind: () => ({ first: async () => null, all: async () => ({ results: [] }) }) }) }
   const kv = {
     get: async (key: string) => values.get(key) ?? null,
     put: async (key: string, value: string) => { values.set(key, JSON.parse(value)) },

@@ -194,3 +194,23 @@ assert.match(finalizedTelemetry, /closeEveningChainRootAndLog\(kv, db,/)
 const leaseBusyBranch = queueBlock.slice(queueBlock.indexOf('if (!claimed) {'), queueBlock.indexOf('let materializationValidated'))
 assert.match(leaseBusyBranch, /lease busy; durable retry scheduled/)
 assert.doesNotMatch(leaseBusyBranch, /logSchedulerResult\(/, 'lease-busy duplicates must not write the scheduler run log')
+
+// A durably recorded defer/terminal failure is acknowledged: queue redeliveries reran the
+// learning-db finalizer up to 9 times per message (11/10–11/11). Fence and lease losses
+// still throw so the queue redelivers work nobody owns.
+const queueCatch = queueBlock.slice(
+  queueBlock.indexOf('} catch (error) {', queueBlock.indexOf('durableFinalized = true')),
+  queueBlock.lastIndexOf('} finally {'),
+)
+assert.match(queueCatch, /if \(durableFinalized\) throw error/)
+assert.match(queueCatch, /if \(isStrategyLearningLeaseLost\(error\)\) \{[\s\S]*?throw error\s*\}/)
+assert.match(queueCatch, /if \(!transitioned\) \{[\s\S]*?queue retry required[\s\S]*?throw error\s*\}/)
+const afterTransition = queueCatch.slice(queueCatch.indexOf('if (!transitioned) {'))
+const afterFenceCheck = afterTransition.slice(afterTransition.indexOf('throw error') + 'throw error'.length)
+// Only a date outside the watchdog lookback keeps the queue retry (manual replays).
+assert.deepEqual(
+  afterFenceCheck.match(/^.*throw error.*$/gm)?.map((line) => line.trim()),
+  ['if (!isStrategyLearningRecoveryWindowDate(triggerTime)) throw error'],
+  'a recorded finalizer failure inside the watchdog lookback must not be redelivered by the queue',
+)
+assert.match(afterFenceCheck, /propagateStrategyLearningTerminalFailure[\s\S]*Promise\.allSettled[\s\S]*isStrategyLearningRecoveryWindowDate[\s\S]*deferred to watchdog[\s\S]*\n\s*return\s*$/)

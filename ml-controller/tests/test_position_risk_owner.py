@@ -13,7 +13,7 @@ from services import kv_client, position_risk_owner, trading_config_loader
 from services.position_risk_owner import PositionRiskConfigUnavailable
 
 RISK = {'position': {'maxPerSector': 3, 'maxSingleNamePct': 0.12,
-                     'correlationThreshold': 0.65, 'correlationWindow': 60}}
+                     'correlationThreshold': 0.65, 'correlationWindow': 60, 'minCorrelationOverlap': 25}}
 # Post-P1 trading:config: position.maxPctOfPortfolio is deleted.
 POST_P1 = {'position': {'maxPositions': 5}, 'fees': {'commission': 0.001425, 'tax': 0.003}}
 
@@ -45,6 +45,9 @@ def test_helper_reads_the_risk_config_owner(monkeypatch):
     assert reads == ['trading:risk_config']
     assert merged['positionRiskDistribution']['maxSingleNamePct'] == 0.12
     assert merged['positionRiskDistribution']['maxPerSector'] == 3
+    # C28-01: the minimum overlap is KV-owned too.
+    assert merged['positionRiskDistribution']['minCorrelationOverlap'] == 25
+    assert engine.FormalPositionRiskParams.from_config(merged['positionRiskDistribution']).min_correlation_overlap == 25
     assert 'positionRiskDistribution' not in POST_P1
     assert cap_of(merged) == 0.12
 
@@ -53,7 +56,13 @@ def test_helper_reads_the_risk_config_owner(monkeypatch):
                                  {'position': {**RISK['position'], 'maxSingleNamePct': None}},
                                  {'position': {k: v for k, v in RISK['position'].items() if k != 'maxSingleNamePct'}},
                                  {'position': {**RISK['position'], 'maxSingleNamePct': 1.5}},
-                                 {'position': {**RISK['position'], 'maxSingleNamePct': 'x'}}])
+                                 {'position': {**RISK['position'], 'maxSingleNamePct': 'x'}},
+                                 {'position': {k: v for k, v in RISK['position'].items() if k != 'minCorrelationOverlap'}},
+                                 {'position': {**RISK['position'], 'minCorrelationOverlap': 2}},
+                                 {'position': {**RISK['position'], 'minCorrelationOverlap': 61}},
+                                 {'position': {**RISK['position'], 'minCorrelationOverlap': 20.5}},
+                                 {'position': {**RISK['position'], 'minCorrelationOverlap': '20'}},
+                                 {'position': {**RISK['position'], 'minCorrelationOverlap': True}}])
 def test_helper_fails_closed_without_a_valid_owner_value(monkeypatch, raw):
     kv(monkeypatch, raw)
     with pytest.raises(PositionRiskConfigUnavailable, match='position_risk_config_'):
@@ -92,13 +101,73 @@ def test_replay_fails_closed_without_contract(params):
         position_risk_owner.require_position_risk_contract(params)
 
 
-def test_entry_simulation_refuses_an_unresolved_cap():
+@pytest.mark.parametrize('pos', [engine.PositionSizeParams(), engine.PositionSizeParams(max_pct_of_portfolio=0.25)])
+def test_entry_simulation_refuses_without_the_contract_even_with_a_cap(pos):
+    # C28-01: no sector or correlation fallback when the contract is missing.
     candidate = SimpleNamespace(has_buy_signal=1)
     account = SimpleNamespace(reset_daily=lambda day: None)
     with pytest.raises(engine.PositionRiskContractMissing):
         engine.simulate_entries_for_date(
             dataset=None, decision_date='2026-01-02', entry_date='2026-01-05', candidates=[candidate],
-            account=account, pos=engine.PositionSizeParams(), sltp=engine.SLTPParams(), fees=engine.FeeParams())
+            account=account, pos=pos, sltp=engine.SLTPParams(), fees=engine.FeeParams())
+
+
+def test_entry_simulation_takes_the_sector_limit_from_the_contract(monkeypatch):
+    monkeypatch.setattr(engine, '_gap_pct_from_benchmark', lambda *a: 0)
+    monkeypatch.setattr(engine, '_get_atr14', lambda *a: 2)
+    monkeypatch.setattr(engine, '_formal_position_correlation_skip', lambda **_: None)
+    bar = {'open': 100, 'high': 101, 'low': 95, 'close': 100, 'volume': 1_000_000}
+    dataset = SimpleNamespace(get_bar=lambda *a: bar)
+
+    def statuses(max_per_sector):
+        formal = position_risk_owner.formal_position_risk(
+            {'position': {**RISK['position'], 'maxPerSector': max_per_sector}})
+        account = engine.AccountState(cash=1_000_000, initial_capital=1_000_000)
+        candidates = [engine.Candidate(symbol=s, date='2026-08-25', close=100, industry='semi', base_score=80,
+                                       chip_score=30, tech_score=30, momentum_score=20, combined_score=80,
+                                       has_buy_signal=1) for s in ('2330', '2303', '2454')]
+        attempts = engine.simulate_entries_for_date(
+            dataset, '2026-08-25', '2026-08-26', candidates, account,
+            engine.PositionSizeParams(min_position_value=1), engine.SLTPParams(), engine.FeeParams(),
+            position_risk_distribution_cfg=formal)
+        return [a.status for a in attempts]
+    assert statuses(1) == ['filled', 'skipped_industry', 'skipped_industry']
+    assert statuses(3) == ['filled', 'filled', 'filled']
+
+
+def test_dev_scripts_read_the_contract_through_the_shared_helper(monkeypatch):
+    import importlib.util
+    from pathlib import Path
+    scripts = Path(__file__).resolve().parents[1] / 'scripts'
+
+    def load(name):
+        spec = importlib.util.spec_from_file_location('c28_' + name, scripts / f'{name}.py')
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+    reads = kv(monkeypatch, RISK)
+    profile = load('profile_replay')
+    params = profile._default_params()
+    assert params['positionRiskDistribution'] == position_risk_owner.formal_position_risk(RISK)
+    entries = []
+    monkeypatch.setattr(profile, 'step_all_positions', lambda *a: [])
+    monkeypatch.setattr(profile, '_mark_to_market', lambda *a: None)
+    monkeypatch.setattr(profile, 'replay_screener_for_date', lambda **kw: ['candidate'])
+    monkeypatch.setattr(profile, 'simulate_entries_for_date', lambda **kw: entries.append(kw) or [])
+    profile.instrumented_replay(SimpleNamespace(trading_days=['2026-01-02', '2026-01-05']), '2026-01-01', '2026-01-31', params)
+    assert [e['position_risk_distribution_cfg'] for e in entries] == [params['positionRiskDistribution']]
+    smoke = load('backtest_smoke_test')
+    captured = {}
+    monkeypatch.setattr(smoke, 'replay_period', lambda **kw: captured.update(kw))
+    monkeypatch.setattr(smoke, 'assert_smoke', lambda metrics: None)
+    monkeypatch.setattr(smoke, 'print_report', lambda metrics: None)
+    monkeypatch.setattr(sys, 'argv', ['backtest_smoke_test.py', '--mode', 'mock'])
+    assert smoke.main() == 0
+    assert captured['params']['positionRiskDistribution'] == position_risk_owner.formal_position_risk(RISK)
+    assert reads == ['trading:risk_config', 'trading:risk_config']
+    kv(monkeypatch, None)
+    with pytest.raises(PositionRiskConfigUnavailable):
+        profile._default_params()
 
 
 # ── Optuna entries ────────────────────────────────────────────────────────────

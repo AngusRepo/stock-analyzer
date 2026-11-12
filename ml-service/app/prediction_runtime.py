@@ -323,13 +323,20 @@ def predict_stock_v2(req: PredictRequest) -> dict:
         raise ValueError("active8_frozen_model_pool_required")
     _require_model_pool_contract(pool_snapshot, stage="predict_v2_feature_evidence")
 
+    # R33: one model's non-finite score is that model missing for this symbol (z=0,
+    # denominator seven); the row keeps its other scores. Other modes fail the row.
+    r33 = (pool_snapshot.get("active8_ensemble") or {}).get("kind") == "r33_equal7_isotonic"
     rank_scores: dict[str, float] = {}
+    non_finite: list[str] = []
     for model_name, raw_score in precomputed.items():
         if model_name not in _FEATURE_MODEL_NAMES_V2:
             continue
         score = float(raw_score)
         if not np.isfinite(score):
-            raise ValueError(f"active8_base_score_non_finite:{model_name}")
+            if not r33:
+                raise ValueError(f"active8_base_score_non_finite:{model_name}")
+            non_finite.append(f"active8_base_score_non_finite:{model_name}")
+            continue
         rank_scores[model_name] = float(np.clip(score, 0.0, 1.0))
     if not rank_scores:
         raise ValueError("active8_feature_evidence_empty")
@@ -338,7 +345,7 @@ def predict_stock_v2(req: PredictRequest) -> dict:
         str(value)
         for value in (runtime_options.get(_BATCH_FEATURE_MODEL_ERRORS_KEY) or [])
         if value
-    ]
+    ] + non_finite
     challengers = {
         str(name): round(float(np.clip(float(value), 0.0, 1.0)), 6)
         for name, value in (runtime_options.get(_BATCH_CHALLENGER_RANK_SCORES_KEY) or {}).items()

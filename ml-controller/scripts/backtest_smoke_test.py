@@ -3,6 +3,7 @@ backtest_smoke_test.py — Sprint 6a.7 local smoke test
 
 Usage:
   # Mocked mode: hand-crafted 3 stocks × 60 days, no D1 credentials needed
+  # (the position-risk contract is still read from KV `trading:risk_config`)
   python scripts/backtest_smoke_test.py --mode mock
 
   # D1 mode: 5-10 symbols × 1 quarter, requires CF env vars
@@ -36,6 +37,7 @@ from services.backtest_engine import (
     replay_period_loading,
     MODE_A_DEVIATIONS,
 )
+from services.position_risk_owner import with_formal_position_risk
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -335,7 +337,8 @@ def main() -> int:
     parser.add_argument("--capital", type=float, default=1_000_000)
     args = parser.parse_args()
 
-    default_params: dict = {}  # use all dataclass defaults
+    # Dataclass defaults, plus the position-risk contract read from KV (C28-01).
+    default_params: dict = with_formal_position_risk({})
 
     if args.mode == "mock":
         logger.info("Building mocked dataset (3 stocks × 60 trading days)...")

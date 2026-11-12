@@ -49,7 +49,10 @@ def record(state, *, client=None):
         trade_date=context['trade_date'],context_checksum=context['checksum'],l3_checksum=l3['checksum'],
         plan_id=plan['plan_id'],policy_identity=plan['policy_identity'],
         allocation_snapshot_id=allocation['snapshot_id'],target_count=len(plan['targets']),
-        closure={k:metrics[k] for k in keys},research_status='separate_owner_pending',nav_maturity_credit=0)
+        closure={**{k:metrics[k] for k in keys},
+                 # R33 only (absent or zero otherwise, so other closures are unchanged)
+                 **{k:metrics[k] for k in ('r33_unscored_missing_prediction_count',
+                                           'r33_held_outside_seed_prediction_symbols') if metrics.get(k)}},research_status='separate_owner_pending',nav_maturity_credit=0)
     old = read(day,run_id,client=client)
     if old:
         if {k:old[k] for k in body} != body:

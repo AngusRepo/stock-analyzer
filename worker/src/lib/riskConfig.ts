@@ -37,6 +37,7 @@ export interface RiskConfig {
     maxSingleNamePct: number                // N2: fraction of portfolio
     correlationThreshold: number            // N3: pairwise 60d return corr
     correlationWindow: number               // trading days
+    minCorrelationOverlap: number           // N3: shared daily returns needed before a pair is judged
   }
   order: {
     maxSingleOrderValue: number             // G5 fat finger, NT$
@@ -48,9 +49,9 @@ export interface RiskConfig {
   }
 }
 
-// K16a: KV is the only owner of these fields. They have no program default:
-// a missing or invalid value fails closed at runtime and is never seeded.
-const KV_OWNED_POSITION_FIELDS = ['maxSingleNamePct'] as const
+// K16a / C28-01: KV is the only owner of these fields. They have no program default:
+// a missing or invalid value fails closed (to 0) at runtime and is never seeded.
+const KV_OWNED_POSITION_FIELDS = ['maxSingleNamePct', 'minCorrelationOverlap'] as const
 type KvOwnedPositionField = typeof KV_OWNED_POSITION_FIELDS[number]
 
 export type RiskConfigDefaults = Omit<RiskConfig, 'position'> & {
@@ -106,6 +107,7 @@ export const FAIL_CLOSED_RISK_CONFIG: RiskConfig = {
   position: {
     ...DEFAULT_RISK_CONFIG.position,
     maxSingleNamePct: 0,
+    minCorrelationOverlap: 0,
   },
   order: {
     ...DEFAULT_RISK_CONFIG.order,
@@ -147,11 +149,25 @@ function validSingleNameCap(value: unknown): boolean {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1
 }
 
-/** Runtime view: a missing or invalid single-name cap means no new single-name exposure. */
+/** Same bounds as the backtest contract (FormalPositionRiskParams.validate). */
+function validMinCorrelationOverlap(value: unknown, position: Record<string, unknown>): boolean {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 3 && value <= Number(position.correlationWindow)
+}
+
+const VALID_OWNED_POSITION_FIELD: Record<KvOwnedPositionField, (value: unknown, position: Record<string, unknown>) => boolean> = {
+  maxSingleNamePct: validSingleNameCap,
+  minCorrelationOverlap: validMinCorrelationOverlap,
+}
+
+/** Runtime view: a missing or invalid owned field is 0, which admits no new position (no cap / no correlation verdict). */
 function failClosedOwnedFields(cfg: RiskConfig): RiskConfig {
-  if (validSingleNameCap(cfg.position.maxSingleNamePct)) return cfg
-  console.warn('[RiskConfig] trading:risk_config.position.maxSingleNamePct missing or invalid, single-name cap fails closed to 0')
-  return { ...cfg, position: { ...cfg.position, maxSingleNamePct: 0 } }
+  const position = { ...cfg.position }
+  for (const key of KV_OWNED_POSITION_FIELDS) {
+    if (VALID_OWNED_POSITION_FIELD[key](position[key], position)) continue
+    console.warn(`[RiskConfig] trading:risk_config.position.${key} missing or invalid, fails closed to 0`)
+    position[key] = 0
+  }
+  return { ...cfg, position }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -172,9 +188,10 @@ function collectMissingFields(raw: unknown): string[] {
     }
   }
   if (isRecord(raw.position)) {
+    const merged = mergeProgramDefaults(raw).position as unknown as Record<string, unknown>
     for (const key of KV_OWNED_POSITION_FIELDS) {
       if (!(key in raw.position)) reasons.push(`missing_position.${key}`)
-      else if (!validSingleNameCap(raw.position[key])) reasons.push(`invalid_position.${key}`)
+      else if (!VALID_OWNED_POSITION_FIELD[key](raw.position[key], merged)) reasons.push(`invalid_position.${key}`)
     }
   }
   if (isRecord(raw.system) && typeof raw.system.killSwitch !== 'boolean') {

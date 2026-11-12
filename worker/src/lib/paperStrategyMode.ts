@@ -1,17 +1,28 @@
+import { L4_R33_FEATURE_SCHEMA, validL4FeatureSchema } from './l4ReleaseEvidence'
 export const SINGLE_B_TABPACK = 'single_b_tabpack_v1' as const
 export const SINGLE_B_FULL_MLP_MEDIAN = 'single_b_full_mlp_median_v1' as const
 export const SINGLE_B_TABPACK_CORE16_MEDIAN = 'single_b_tabpack_core16_median_v1' as const
+/** R33 seven-model equal z + cross-fit isotonic E-hat; one Paper strategy, like the single-B modes. */
+export const R33_EQUAL7_ISOTONIC = 'r33_equal7_isotonic_v1' as const
 export type SingleBMode = typeof SINGLE_B_TABPACK | typeof SINGLE_B_FULL_MLP_MEDIAN | typeof SINGLE_B_TABPACK_CORE16_MEDIAN
+  | typeof R33_EQUAL7_ISOTONIC
 export const MLP_MEDIAN_SCHEMA = 'l4-three-head-residual-mlp-median-v1'
+export const R33_MODEL_SCHEMA = 'r33-seven-model-equal-z-isotonic-v1'
 
 export function isSingleBMode(mode: unknown): mode is SingleBMode {
   return mode === SINGLE_B_TABPACK || mode === SINGLE_B_FULL_MLP_MEDIAN || mode === SINGLE_B_TABPACK_CORE16_MEDIAN
+    || mode === R33_EQUAL7_ISOTONIC
 }
 
 /** Structural admission; the Controller also verifies every weight/checksum. */
 export function validSingleBModel(policy: any): boolean {
   if (!isSingleBMode(policy?.operating_mode) || policy.strategy_role !== 'B' || policy.scope !== 'paper') return false
   const model = policy.artifact?.model
+  if (policy.operating_mode === R33_EQUAL7_ISOTONIC) {
+    return model?.schema_version === R33_MODEL_SCHEMA && model.residual_mlp == null && model.residual_tabpack == null
+      && validL4FeatureSchema(policy.artifact) && policy.artifact.feature_schema === L4_R33_FEATURE_SCHEMA
+  }
+  if (model?.schema_version === R33_MODEL_SCHEMA) return false
   if (policy.operating_mode === SINGLE_B_TABPACK_CORE16_MEDIAN) {
     return model?.residual_mlp == null && validTabPackMedian(model?.residual_tabpack)
   }
@@ -35,7 +46,14 @@ export function validSingleBModel(policy: any): boolean {
         .every(k => hex(v.provenance[k])))
 }
 
+/** The R33 feature schema and the R33 operating mode only occur together. */
+export function l4OperatingModeError(policy: any): string | null {
+  const r33Schema=policy?.artifact?.feature_schema===L4_R33_FEATURE_SCHEMA
+  return r33Schema===(policy?.operating_mode===R33_EQUAL7_ISOTONIC) ? null : 'l4_operating_mode_feature_schema_mismatch'
+}
+
 export function primaryModelLabel(mode: unknown): string {
+  if (mode === R33_EQUAL7_ISOTONIC) return 'R33 七模型等權（isotonic Ê）'
   if (mode === SINGLE_B_TABPACK_CORE16_MEDIAN) return 'TabPack median（官方核心16 × 3 seeds）'
   return mode === SINGLE_B_FULL_MLP_MEDIAN ? 'Full MLP median（3 seeds，λ=1）' : 'TabPack'
 }

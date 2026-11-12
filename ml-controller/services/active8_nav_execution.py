@@ -26,13 +26,16 @@ def attach_execution_receipt(*, predictions, manifest, pool_models, run_id, run_
     restore_frozen_nav_inference(context, artifact=artifact, pool_models=pool_models)
     if not isinstance(run_id, str) or not run_id.strip() or date.fromisoformat(run_date).isoformat() != run_date:
         raise ValueError('active8_nav_execution_run_identity_missing')
+    from services.r33_ensemble import is_r33
+    # R33: an unscored name is a per-name gap (NO_SIGNAL, lineage "unscored"), still bound to the grant.
+    lineage = ('complete', 'unscored') if is_r33(artifact) else ('complete',)
     outputs = []
     for symbol, prediction in sorted(predictions.items()):
         ev = prediction.get('ensemble_v2') or {}
         if (not symbol or prediction.get('error') or ev.get('adoption_basis') != 'committed_paired_nav'
                 or ev.get('artifact_checksum') != artifact['payload_checksum']
                 or ev.get('nav_inference_context_checksum') != context['context_checksum']
-                or ev.get('lineage_status') != 'complete' or not ev.get('signal')):
+                or ev.get('lineage_status') not in lineage or not ev.get('signal')):
             raise ValueError('active8_nav_execution_output_identity_mismatch')
         outputs.append([symbol, digest(_output(ev))])
     if not outputs:

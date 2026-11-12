@@ -70,11 +70,19 @@ export function assessPositionCorrelation(input: {
   holdingSymbols: string[]
   priceRows: PositionPriceRow[]
   threshold: number
-  minimumOverlappingReturns?: number
+  /** trading:risk_config.position.minCorrelationOverlap (C28-01); an invalid value blocks. */
+  minimumOverlappingReturns: number
 }): PositionCorrelationAssessment {
   const threshold = Math.max(0, Math.min(1, Number(input.threshold) || 0.7))
-  const minimum = Math.max(5, Math.floor(input.minimumOverlappingReturns ?? 20))
+  const minimum = input.minimumOverlappingReturns
   const candidate = String(input.candidateSymbol ?? '').trim()
+  if (!Number.isInteger(minimum) || minimum < 3) {
+    return {
+      status: 'blocked', candidate_symbol: candidate, max_positive_correlation: null,
+      max_correlation_peer: null, overlapping_returns: 0, threshold,
+      minimum_overlapping_returns: minimum,
+    }
+  }
   const peers = [...new Set(input.holdingSymbols.map((value) => String(value).trim()))]
     .filter((value) => value && value !== candidate)
   if (!peers.length) {

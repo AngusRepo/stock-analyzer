@@ -26,6 +26,9 @@ def _identity(row):
 
 
 def _validate_payload_identity(row, payload):
+    from services.r33_ensemble import is_r33
+    if is_r33(payload):
+        return _validate_r33_row(row, payload)
     validate_active8_ensemble_candidate(payload)
     expected_id = f"active8-ensemble:{payload['cohort_id']}:{payload['payload_checksum'][:16]}"
     if (row.get('artifact_id') != expected_id or row.get('validation_decision') != payload['validation']['decision']
@@ -37,6 +40,30 @@ def _validate_payload_identity(row, payload):
             or digest(payload['observation_artifacts']) != payload.get('observation_artifact_set_checksum')
             or any(payload['base_artifacts'][name] != payload['observation_artifacts'][name]
                    for name in payload['selected_models'])):
+        raise ValueError('paired_nav_l3_artifact_registry_mismatch')
+
+
+def _validate_r33_row(row, payload):
+    """An R33 object stored in the active8 ensemble table (R33-NEW-15).
+
+    The table's schema_version column names its row format and admits one value,
+    so an R33 row keeps it; the payload's own schema is proven by validate_ensemble.
+    knowledge_cutoff_date is the bundle's full-fit cutoff, supplied by the switch tool.
+    """
+    from services.ensemble_v2 import ARTIFACT_SCHEMA_VERSION
+    from services.r33_ensemble import r33_artifact_id, validate_ensemble
+    validate_ensemble(payload)
+    try:
+        cutoff = date.fromisoformat(str(row.get('knowledge_cutoff_date') or ''))
+    except ValueError:
+        cutoff = None
+    if (row.get('artifact_id') != payload['artifact_id'] or row.get('artifact_id') != r33_artifact_id(payload)
+            or row.get('schema_version') != ARTIFACT_SCHEMA_VERSION
+            or row.get('validation_decision') != payload['validation']['decision']
+            or json.loads(row.get('validation_json') or 'null') != payload['validation']
+            or not row.get('training_run_id') or not row.get('archive_uri')
+            or cutoff is None or cutoff.isoformat() != row['knowledge_cutoff_date']
+            or any(row.get(key) != payload[key] for key in ('cohort_id', 'payload_checksum', 'base_artifact_set_checksum'))):
         raise ValueError('paired_nav_l3_artifact_registry_mismatch')
 
 

@@ -51,7 +51,7 @@ assert.match(source, /SET evaluable=\?, evaluability_status=\?, unavailable_reas
 assert.match(source, /COALESCE\(r\.evaluation_contract_version, ''\) <> 'strategy-evaluation-v2'/)
 assert.match(source, /existingMatrix\.reference_contract_version\) === sourceReferenceContractVersion/)
 assert.match(source, /SET status='success'[\s\S]*evaluation_contract_version='strategy-evaluation-v2'/)
-assert.match(source, /valid_runs AS \([\s\S]*STRATEGY_FORMAL_LABELER_VERSION[\s\S]*STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION[\s\S]*LEFT JOIN valid_runs v ON v\.signal_date=d\.date[\s\S]*r\.status='success' AND v\.signal_date IS NULL/)
+assert.match(source, /r\.status <> 'success'[\s\S]*WHEN NOT \(\s+mr\.labeler_version IN \([\s\S]*STRATEGY_FORMAL_LABELER_VERSION[\s\S]*STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION[\s\S]*WHEN julianday\(mr\.updated_at\) <= julianday\(r\.updated_at\) THEN 0[\s\S]*ELSE 1\s+END=1/)
 assert.match(source, /m\.labeler_version=mr\.labeler_version/)
 assert.match(source, /m\.strategy_registry_checksum=mr\.strategy_registry_checksum/)
 assert.match(source, /m\.reference_contract_version=mr\.reference_contract_version/)

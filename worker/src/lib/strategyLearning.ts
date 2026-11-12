@@ -4587,6 +4587,12 @@ export async function listHistoricalStrategyEvidenceV5Dates(
     && requestedFrontierDate <= options.asOfDate
     ? requestedFrontierDate
     : options.asOfDate
+  // Ledger and run-header checks decide most dates; the matrix/reference
+  // coverage counts run only for a current success ledger whose run header
+  // changed after that success. Ready runs are never rewritten, and their cells
+  // change only inside a rebuild of that date, between a pending and a final
+  // ledger write. A migration or manual SQL that edits cells of a success date
+  // must set its ledger back to pending, or this selector will not see it.
   const dateRows = await db.prepare(`
     WITH source_dates AS (
       SELECT mr.signal_date date, mr.producer_run_id
@@ -4599,24 +4605,39 @@ export async function listHistoricalStrategyEvidenceV5Dates(
               AND h.value=mr.producer_run_id
          )
        GROUP BY mr.signal_date, mr.producer_run_id
-    ),
-    valid_runs AS (
-      SELECT mr.signal_date, mr.producer_run_id, mr.reference_contract_version
-        FROM strategy_label_matrix_runs_v4 mr
-       WHERE mr.signal_date<=?
-         AND mr.status='ready'
-         AND mr.labeler_version IN (
-           '${STRATEGY_FORMAL_LABELER_VERSION}',
-           '${STRATEGY_FORMAL_LABELER_LEGACY_VERSION}',
-           '${STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION}'
+    )
+    SELECT d.date
+      FROM source_dates d
+      JOIN strategy_label_matrix_runs_v4 mr ON mr.producer_run_id=d.producer_run_id
+      LEFT JOIN strategy_evidence_rebuild_runs_v5 r ON r.signal_date=d.date
+     WHERE CASE
+       WHEN r.signal_date IS NULL
+         OR COALESCE(r.evaluation_contract_version, '') <> 'strategy-evaluation-v2'
+         OR COALESCE(r.labeler_version, '') <> '${STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION}'
+         OR r.status <> 'success'
+         OR COALESCE(r.producer_run_id, '') <> d.producer_run_id
+         OR COALESCE(r.production_policy_id, '') = ''
+         OR COALESCE(r.production_policy_knowledge_cutoff_date, '') >= d.date
+         OR length(COALESCE(r.production_policy_checksum, '')) <> 64
+         OR COALESCE(r.production_policy_source_contract, '') = ''
+       THEN 1
+       WHEN NOT (
+           mr.labeler_version IN (
+             '${STRATEGY_FORMAL_LABELER_VERSION}',
+             '${STRATEGY_FORMAL_LABELER_LEGACY_VERSION}',
+             '${STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION}'
+           )
+           AND mr.reference_contract_version IN (
+             'selection-reference-snapshot-v4-regime-veto-evidence',
+             'selection-reference-snapshot-v3'
+           )
+           AND mr.expected_cell_count > 0
+           AND mr.persisted_cell_count=mr.expected_cell_count
          )
-         AND mr.reference_contract_version IN (
-           'selection-reference-snapshot-v4-regime-veto-evidence',
-           'selection-reference-snapshot-v3'
-         )
-         AND mr.expected_cell_count > 0
-         AND mr.persisted_cell_count=mr.expected_cell_count
-         AND (
+         OR COALESCE(r.source_reference_contract_version, '') <> mr.reference_contract_version
+       THEN 1
+       WHEN julianday(mr.updated_at) <= julianday(r.updated_at) THEN 0
+       WHEN (
            SELECT COUNT(*)
              FROM strategy_label_matrix_v4 m
             WHERE m.signal_date=mr.signal_date
@@ -4650,36 +4671,13 @@ export async function listHistoricalStrategyEvidenceV5Dates(
               AND sr.feature_contract_version=mr.reference_contract_version
               AND sr.strategy_challenger_affinity_version='strategy-threshold-margin-affinity-v2'
          )=mr.reference_candidate_count
-         AND EXISTS (
-           SELECT 1 FROM json_each(?) h
-            WHERE h.key=mr.signal_date
-              AND h.value=mr.producer_run_id
-         )
-       GROUP BY mr.signal_date, mr.producer_run_id, mr.reference_contract_version
-    )
-    SELECT d.date
-      FROM source_dates d
-      LEFT JOIN strategy_evidence_rebuild_runs_v5 r ON r.signal_date=d.date
-      LEFT JOIN valid_runs v ON v.signal_date=d.date AND v.producer_run_id=d.producer_run_id
-     WHERE (
-         r.signal_date IS NULL
-         OR COALESCE(r.evaluation_contract_version, '') <> 'strategy-evaluation-v2'
-         OR COALESCE(r.labeler_version, '') <> '${STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION}'
-         OR r.status <> 'success'
-         OR (r.status='success' AND v.signal_date IS NULL)
-         OR COALESCE(r.producer_run_id, '') <> d.producer_run_id
-         OR COALESCE(r.source_reference_contract_version, '') <> COALESCE(v.reference_contract_version, '')
-         OR COALESCE(r.production_policy_id, '') = ''
-         OR COALESCE(r.production_policy_knowledge_cutoff_date, '') >= d.date
-         OR length(COALESCE(r.production_policy_checksum, '')) <> 64
-         OR COALESCE(r.production_policy_source_contract, '') = ''
-       )
+       THEN 0
+       ELSE 1
+     END=1
      ORDER BY d.date ASC
      LIMIT ?
   `).bind(
     STRATEGY_EVIDENCE_V5_LIVE_FRONTIER_START_DATE,
-    frontierEndDate,
-    JSON.stringify(canonicalRunIds),
     frontierEndDate,
     JSON.stringify(canonicalRunIds),
     maxDates,
@@ -4695,6 +4693,8 @@ export async function rebuildHistoricalStrategyEvidenceV5(
     identityDb?: D1Database
     priorityDate?: string | null
     priorityOnly?: boolean
+    // Dates the caller just listed with these same options.
+    candidateDates?: string[]
     resolveCanonicalScreenerRunIds?: (asOfDate: string) => Promise<Record<string, string>>
     resolveHistoricalRegime?: (signalDate: string) => Promise<string | null>
     resolveHistoricalArtifactEvidence?: (
@@ -4708,7 +4708,8 @@ export async function rebuildHistoricalStrategyEvidenceV5(
   },
 ): Promise<{ attemptedDates: number; successfulDates: number; blockedDates: number; rebuiltDecisions: number; rebuiltMatrixRows: number }> {
   await ensureStrategyLearningTables(db)
-  const candidateDates = await listHistoricalStrategyEvidenceV5Dates(db, options)
+  const candidateDates = options.candidateDates
+    ?? await listHistoricalStrategyEvidenceV5Dates(db, options)
   const canonicalRunIds = await options.resolveCanonicalScreenerRunIds?.(options.asOfDate) ?? {}
   const {
     persistSelectionEvidenceV4,
@@ -5460,17 +5461,22 @@ export async function drainHistoricalStrategyEvidenceV5(
     batches: 0,
     remainingDates: [] as string[],
   }
+  let drained = false
   for (let batch = 0; batch < 4; batch += 1) {
     const pending = await listHistoricalStrategyEvidenceV5Dates(db, {
       ...options,
       maxDates: 5,
       priorityOnly: false,
     })
-    if (!pending.length) break
+    if (!pending.length) {
+      drained = true
+      break
+    }
     const report = await rebuildHistoricalStrategyEvidenceV5(db, {
       ...options,
       maxDates: 5,
       priorityOnly: false,
+      candidateDates: pending,
     })
     totals.attemptedDates += report.attemptedDates
     totals.successfulDates += report.successfulDates
@@ -5480,7 +5486,7 @@ export async function drainHistoricalStrategyEvidenceV5(
     totals.batches += 1
     if (report.successfulDates === 0) break
   }
-  totals.remainingDates = await listHistoricalStrategyEvidenceV5Dates(db, {
+  totals.remainingDates = drained ? [] : await listHistoricalStrategyEvidenceV5Dates(db, {
     ...options,
     maxDates: 5,
     priorityOnly: false,

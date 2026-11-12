@@ -8,6 +8,7 @@ import {
   type StrategyEvidenceProfile,
 } from './strategyEvidenceProfile'
 import { listStrategySpecsForLearning } from './strategyLearning'
+import { STRATEGY_EVIDENCE_HORIZON_DAYS } from './priceHorizonProjection'
 import { buildStrategyFormalMatureCompatibilitySql } from './selectionReferenceEvidence'
 
 export const STRATEGY_EVIDENCE_METRIC_DEFINITION_VERSION = 'strategy-evidence-metrics-v4'
@@ -1250,21 +1251,53 @@ export async function backfillMissingStrategyEvidenceMetricSnapshots(
     ? (shadowDatabaseForDataDomain(env, 'learning') ?? databaseForDataDomain(env, 'learning'))
     : databaseForDataDomain(env, 'learning')
   const sourceMode = options.sourceMode ?? 'authority_bridge'
+  // The dates strategy_evidence_observations_v1 would return, without its plan:
+  // through the VIEW the planner scanned the whole matrix every night. A loose
+  // index scan walks each horizon's distinct outcome dates on
+  // idx_canonical_selection_outcomes_v1_known, and only dates without a
+  // snapshot probe the matrix for an evaluable hit by primary-key prefix.
   const candidates = await db.prepare(`
-    SELECT DISTINCT v.outcome_known_date
-      FROM strategy_evidence_observations_v1 v
-     WHERE v.outcome_known_date < ?
+    WITH RECURSIVE horizons(horizon_days) AS (
+      VALUES ${STRATEGY_EVIDENCE_HORIZON_DAYS.map((horizon) => `(${horizon})`).join(',')}
+    ), outcome_dates(horizon_days, outcome_known_date) AS (
+      SELECT h.horizon_days, (
+        SELECT MIN(o.outcome_known_date) FROM canonical_selection_outcomes_v1 o
+         WHERE o.horizon_days=h.horizon_days
+      ) FROM horizons h
+      UNION ALL
+      SELECT d.horizon_days, (
+        SELECT MIN(o.outcome_known_date) FROM canonical_selection_outcomes_v1 o
+         WHERE o.horizon_days=d.horizon_days AND o.outcome_known_date>d.outcome_known_date
+      ) FROM outcome_dates d
+       WHERE d.outcome_known_date < ?
+    )
+    SELECT DISTINCT d.outcome_known_date
+      FROM outcome_dates d
+     WHERE d.outcome_known_date < ?
        AND NOT EXISTS (
          SELECT 1 FROM strategy_evidence_metric_snapshot_runs_v2 r
-          WHERE r.outcome_as_of_date=v.outcome_known_date
+          WHERE r.outcome_as_of_date=d.outcome_known_date
             AND r.status='ready'
             AND r.definition_version='strategy-evidence-metrics-v4'
             AND r.source_mode=?
             AND r.publication_scope LIKE ?
        )
-     ORDER BY v.outcome_known_date
+       AND EXISTS (
+         SELECT 1 FROM canonical_selection_outcomes_v1 o
+           JOIN strategy_label_matrix_v4 m
+             ON m.signal_date=o.signal_date AND m.symbol=o.symbol AND m.producer_run_id=o.producer_run_id
+          WHERE o.horizon_days=d.horizon_days AND o.outcome_known_date=d.outcome_known_date
+            AND m.strategy_hit=1 AND m.evaluable=1
+       )
+     ORDER BY d.outcome_known_date
      LIMIT ?
-  `).bind(options.knowledgeCutoffDate, sourceMode, `%:reader:${STRATEGY_METRIC_READER_REVISION}`, maxDates).all<{ outcome_known_date: string }>()
+  `).bind(
+    options.knowledgeCutoffDate,
+    options.knowledgeCutoffDate,
+    sourceMode,
+    `%:reader:${STRATEGY_METRIC_READER_REVISION}`,
+    maxDates,
+  ).all<{ outcome_known_date: string }>()
   const processedDates: string[] = []
   let materializedRows = 0
   let readyRows = 0

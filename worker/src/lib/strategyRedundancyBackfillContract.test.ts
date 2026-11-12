@@ -25,7 +25,8 @@ test('strategy redundancy backfill reuses canonical PIT matrix and mature OOF la
   assert.doesNotMatch(screener, /strategy-decision-log-pit-reconstruction-v6/)
   assert.match(screener, /SELECTION_REFERENCE_CONTRACT_VERSION/)
   assert.match(screener, /loadCanonicalScreenerRunIds\(env, asOfDate\)/)
-  assert.match(screener, /SELECT 1 FROM json_each\(\?\) h/)
+  // Mature OOF returns keep only the canonical run of each date (canonical_dates join).
+  assert.match(screener, /JOIN json_each\(\?\) h ON h\.key=d\.signal_date/)
   assert.match(screener, /mature_oof_residual_returns_with_same_day_overlap_diagnostic/)
   assert.match(screener, /status: pendingMaturity \? 'pending_maturity' : 'unavailable_blocked'/)
   assert.match(screener, /\['modal_python', 'pending_maturity'\]\.includes\(result\.status\)/)

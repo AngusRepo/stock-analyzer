@@ -53,6 +53,64 @@ const legacySql = `
      ORDER BY m.strategy_id, m.signal_date
 `
 
+// The 2026-11-07 seek form: hit cells only, but every hit re-scanned the canonical
+// run-id JSON and mature_dates read every label row of the newest dates
+// (3.7M rows per call on 2026-11-12). Kept verbatim as a second reference.
+const formerSeekSql = `
+    WITH RECURSIVE mature_dates AS (
+      SELECT DISTINCT signal_date
+        FROM canonical_selection_labels_v4
+       WHERE +outcome_known_date <= ?
+         AND signal_date < ?
+         AND label_schema_version = 'canonical-strategy-selection-label-v4'
+       ORDER BY signal_date DESC
+       LIMIT 60
+    ),
+    strategies(signal_date, strategy_id) AS (
+      SELECT d.signal_date,
+             (SELECT MIN(m.strategy_id) FROM strategy_label_matrix_v4 m
+               WHERE m.signal_date=d.signal_date)
+        FROM mature_dates d
+      UNION ALL
+      SELECT s.signal_date,
+             (SELECT MIN(m.strategy_id) FROM strategy_label_matrix_v4 m
+               WHERE m.signal_date=s.signal_date AND m.strategy_id>s.strategy_id)
+        FROM strategies s
+       WHERE s.strategy_id IS NOT NULL
+    )
+    SELECT m.strategy_id, m.signal_date,
+           AVG(l.residual_return_net) residual_return,
+           COUNT(*) sample_count
+      FROM strategies s
+      CROSS JOIN strategy_label_matrix_v4 m
+        ON m.signal_date=s.signal_date
+       AND m.strategy_id=s.strategy_id
+       AND m.evaluable=1
+       AND m.strategy_hit=1
+      CROSS JOIN canonical_selection_labels_v4 l
+        ON l.signal_date=m.signal_date
+       AND l.symbol=m.symbol
+       AND l.producer_run_id=m.producer_run_id
+       AND l.label_schema_version='canonical-strategy-selection-label-v4'
+       AND l.adjustment_source=?
+       AND l.reference_contract_version=m.reference_contract_version
+     WHERE s.strategy_id IS NOT NULL
+       AND EXISTS (
+         SELECT 1 FROM strategy_label_matrix_runs_v4 mr
+          WHERE mr.producer_run_id=m.producer_run_id AND mr.status='ready'
+            AND mr.reference_contract_version=m.reference_contract_version
+            AND ${compat.sql}
+            AND mr.labeler_version=m.labeler_version
+       )
+       AND EXISTS (
+         SELECT 1 FROM json_each(?) h
+          WHERE h.key=m.signal_date AND h.value=m.producer_run_id
+       )
+     GROUP BY m.strategy_id, m.signal_date
+    HAVING COUNT(*) >= 3
+     ORDER BY m.strategy_id, m.signal_date
+`
+
 function openDb(): DatabaseSync {
   const db = new DatabaseSync(':memory:')
   for (const table of TABLES) {
@@ -134,6 +192,17 @@ function seed(db: DatabaseSync, seedValue: number): Record<string, string> {
 
 type Row = { strategy_id: string; signal_date: string; residual_return: number; sample_count: number }
 
+function assertSameRows(actualRows: Row[], expectedRows: Row[], label: string): void {
+  assert.equal(actualRows.length, expectedRows.length, label)
+  for (const [index, expected] of expectedRows.entries()) {
+    const actual = actualRows[index]
+    assert.equal(actual.strategy_id, expected.strategy_id, `${label} row ${index}`)
+    assert.equal(actual.signal_date, expected.signal_date, `${label} row ${index}`)
+    assert.equal(Number(actual.sample_count), Number(expected.sample_count), `${label} row ${index}`)
+    assert.ok(Math.abs(Number(actual.residual_return) - Number(expected.residual_return)) < 1e-12, `${label} row ${index}`)
+  }
+}
+
 test('the strategy seek returns the same mature OOF rows as the date scan', () => {
   for (const seedValue of [7, 42, 20261106]) {
     const db = openDb()
@@ -141,17 +210,12 @@ test('the strategy seek returns the same mature OOF rows as the date scan', () =
       const canonical = seed(db, seedValue)
       const json = JSON.stringify(canonical)
       const legacy = db.prepare(legacySql).all(AS_OF, AS_OF, CANONICAL_SELECTION_ADJUSTMENT_SOURCE, ...compat.binds, json) as Row[]
+      const formerSeek = db.prepare(formerSeekSql).all(AS_OF, AS_OF, CANONICAL_SELECTION_ADJUSTMENT_SOURCE, ...compat.binds, json) as Row[]
       const seek = db.prepare(buildMatureStrategyOofReturnsSql(compat))
-        .all(AS_OF, AS_OF, CANONICAL_SELECTION_ADJUSTMENT_SOURCE, ...compat.binds, json) as Row[]
+        .all(AS_OF, AS_OF, AS_OF, json, CANONICAL_SELECTION_ADJUSTMENT_SOURCE, ...compat.binds) as Row[]
       assert.ok(legacy.length > 20, `seed ${seedValue} produced only ${legacy.length} rows`)
-      assert.equal(seek.length, legacy.length, `seed ${seedValue}`)
-      for (const [index, expected] of legacy.entries()) {
-        const actual = seek[index]
-        assert.equal(actual.strategy_id, expected.strategy_id, `seed ${seedValue} row ${index}`)
-        assert.equal(actual.signal_date, expected.signal_date, `seed ${seedValue} row ${index}`)
-        assert.equal(Number(actual.sample_count), Number(expected.sample_count), `seed ${seedValue} row ${index}`)
-        assert.ok(Math.abs(Number(actual.residual_return) - Number(expected.residual_return)) < 1e-12, `seed ${seedValue} row ${index}`)
-      }
+      assertSameRows(formerSeek, legacy, `seed ${seedValue} former seek`)
+      assertSameRows(seek, legacy, `seed ${seedValue}`)
     } finally {
       db.close()
     }
@@ -162,7 +226,7 @@ test('the matrix is only ever reached through the (signal_date, strategy_id, eva
   const db = openDb()
   try {
     const plan = db.prepare(`EXPLAIN QUERY PLAN ${buildMatureStrategyOofReturnsSql(compat)}`)
-      .all(AS_OF, AS_OF, CANONICAL_SELECTION_ADJUSTMENT_SOURCE, ...compat.binds, '{}')
+      .all(AS_OF, AS_OF, AS_OF, '{}', CANONICAL_SELECTION_ADJUSTMENT_SOURCE, ...compat.binds)
       .map((row) => String(row.detail))
     const joined = plan.join(' | ')
     assert.ok(!plan.some((detail) => /^SCAN (m|l|mr|canonical_selection_labels_v4|strategy_label_matrix_v4)\b/.test(detail)), joined)
@@ -176,5 +240,140 @@ test('the matrix is only ever reached through the (signal_date, strategy_id, eva
     assert.ok(!plan.some((detail) => /TEMP B-TREE FOR ORDER BY/.test(detail)), joined)
   } finally {
     db.close()
+  }
+})
+
+// Mature-date edge cases: maturity scattered over every date (fully mature, mixed, fully
+// immature, mature only through another label schema, unlabelled), and 0 / <60 / exactly
+// 60 / exactly 61 / >61 mature dates. The mutants prove the seeds can tell the bounded
+// recursive walk from plausible wrong rewrites of it.
+const DATE_KINDS = ['mature', 'mixed', 'immature', 'other_schema_mature', 'unlabelled'] as const
+
+function seedMaturity(db: DatabaseSync, seedValue: number, totalDates: number, matureDates: number): string {
+  const random = rng(seedValue)
+  const contract = CONTRACTS[0]
+  const labeler = contract.labelerVersions[0]
+  const insertMatrix = db.prepare(`
+    INSERT INTO strategy_label_matrix_v4 (
+      signal_date, symbol, producer_run_id, strategy_id, strategy_version, strategy_status, alpha_bucket, family_id,
+      production_owner, strategy_hit, evaluable, weak_label, affinity, position_weight, overlap,
+      labeler_version, strategy_registry_checksum, reference_contract_version
+    ) VALUES (?, ?, ?, ?, 'v1', 'active', 'core', 'fam', 0, ?, 1, 0, 0, 0, 0, ?, 'chk', ?)
+  `)
+  const insertRun = db.prepare(`
+    INSERT INTO strategy_label_matrix_runs_v4 (
+      producer_run_id, signal_date, status, reference_candidate_count, strategy_count, expected_cell_count,
+      strategy_registry_checksum, labeler_version, reference_contract_version
+    ) VALUES (?, ?, 'ready', 0, 0, 0, 'chk', ?, ?)
+  `)
+  const insertLabel = db.prepare(`
+    INSERT INTO canonical_selection_labels_v4 (
+      signal_date, symbol, label_schema_version, producer_run_id, entry_date, exit_date, outcome_known_date,
+      entry_raw_open, exit_raw_close, entry_adjustment_factor, exit_adjustment_factor, gross_return, transaction_cost_bps,
+      absolute_return_net, benchmark_return_net, benchmark_scope, residual_return_net, cross_section_rank,
+      adjustment_source, reference_contract_version
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, 1, 1, 0, 0, 0, 0, 'market', ?, 0, ?, ?)
+  `)
+  const dates = Array.from({ length: totalDates }, (_, index) => new Date(Date.UTC(2026, 2, 1) + index * 86_400_000).toISOString().slice(0, 10))
+  // Exactly matureDates of the dates are mature or mixed; the rest are scattered over the other kinds.
+  const order = dates.map((date) => ({ date, key: random() })).sort((left, right) => left.key - right.key)
+  const kindByDate = new Map(order.map(({ date }, index) => [
+    date,
+    index < matureDates
+      ? (random() < 0.5 ? 'mature' : 'mixed')
+      : DATE_KINDS[2 + Math.floor(random() * 3)],
+  ]))
+  const canonical: Record<string, string> = {}
+  for (const date of dates) {
+    const kind = kindByDate.get(date)!
+    const runs = [`run-${date}`, `alt-${date}`]
+    canonical[date] = runs[Math.floor(random() * runs.length)]
+    for (const run of runs) {
+      insertRun.run(run, date, labeler, contract.referenceContractVersion)
+      for (let symbolIndex = 0; symbolIndex < 8; symbolIndex += 1) {
+        const symbol = `${2300 + symbolIndex}`
+        for (const strategy of ['S1', 'S2']) {
+          insertMatrix.run(date, symbol, run, strategy, random() < 0.8 ? 1 : 0, labeler, contract.referenceContractVersion)
+        }
+        if (kind === 'unlabelled') continue
+        // One mature row is enough for a mixed date; the as-of date itself counts as known.
+        const mature = kind === 'mature' || (kind === 'mixed' && (symbolIndex === 0 || random() < 0.4))
+        const known = mature ? (random() < 0.3 ? AS_OF : '2026-11-01') : '2026-11-20'
+        insertLabel.run(
+          date, symbol, 'canonical-strategy-selection-label-v4', run, '2026-10-01', known, known,
+          Math.round((random() - 0.5) * 2000) / 10000, CANONICAL_SELECTION_ADJUSTMENT_SOURCE, contract.referenceContractVersion,
+        )
+        // Schema noise: other-schema rows that are mature, including on dates whose canonical rows are not.
+        if (kind === 'other_schema_mature' || random() < 0.3) {
+          insertLabel.run(
+            date, symbol, 'other-label-schema', run, '2026-10-01', '2026-11-01', '2026-11-01',
+            0.5, CANONICAL_SELECTION_ADJUSTMENT_SOURCE, contract.referenceContractVersion,
+          )
+        }
+      }
+    }
+  }
+  return JSON.stringify(canonical)
+}
+
+const MATURITY_SCENARIOS = [
+  [0, 0], [1, 1], [12, 0], [30, 20], [75, 59], [80, 60], [85, 61], [95, 62], [130, 90],
+] as const
+
+function maturityRuns(sql: string): Array<{ label: string; former: Row[]; actual: Row[] }> {
+  const out: Array<{ label: string; former: Row[]; actual: Row[] }> = []
+  for (const [totalDates, matureDates] of MATURITY_SCENARIOS) {
+    for (const seedValue of [11, 2026]) {
+      const db = openDb()
+      try {
+        const json = seedMaturity(db, seedValue * 1000 + totalDates, totalDates, matureDates)
+        out.push({
+          label: `dates=${totalDates} mature=${matureDates} seed=${seedValue}`,
+          former: db.prepare(formerSeekSql).all(AS_OF, AS_OF, CANONICAL_SELECTION_ADJUSTMENT_SOURCE, ...compat.binds, json) as Row[],
+          actual: db.prepare(sql).all(AS_OF, AS_OF, AS_OF, json, CANONICAL_SELECTION_ADJUSTMENT_SOURCE, ...compat.binds) as Row[],
+        })
+      } finally {
+        db.close()
+      }
+    }
+  }
+  return out
+}
+
+function sameRows(left: Row[], right: Row[]): boolean {
+  try {
+    assertSameRows(left, right, '')
+    return true
+  } catch {
+    return false
+  }
+}
+
+test('the mature-date walk matches the DISTINCT scan for 0, <60, 60, 61 and >61 mature dates', () => {
+  const runs = maturityRuns(buildMatureStrategyOofReturnsSql(compat))
+  for (const { label, former, actual } of runs) assertSameRows(actual, former, label)
+  // Every scenario with mature dates yields rows, so a dropped or extra date is visible.
+  for (const { label, former } of runs) {
+    if (!/mature=0 /.test(label)) assert.ok(former.length > 0, label)
+  }
+  const distinctDates = (rows: Row[]) => new Set(rows.map((row) => row.signal_date)).size
+  assert.ok(runs.some(({ label, former }) => /mature=61 /.test(label) && distinctDates(former) === 60), 'the 61-date case must hit the LIMIT')
+})
+
+test('plausible wrong rewrites of the mature-date walk fail the maturity seeds', () => {
+  const sql = buildMatureStrategyOofReturnsSql(compat)
+  const mutants: Array<[string, string, string]> = [
+    ['limit 61', 'd.n < 60', 'd.n < 61'],
+    ['no maturity filter in the recursive step', 'WHERE +l.outcome_known_date <= ?', 'WHERE (+l.outcome_known_date <= ? OR 1)'],
+    [
+      'no schema filter in the recursive step',
+      "AND l.label_schema_version = 'canonical-strategy-selection-label-v4'), d.n + 1",
+      'AND 1), d.n + 1',
+    ],
+  ]
+  for (const [name, from, to] of mutants) {
+    assert.equal(sql.split(from).length, 2, `${name}: anchor must occur once`)
+    const runs = maturityRuns(sql.replace(from, to))
+    assert.ok(runs.some(({ former, actual }) => !sameRows(actual, former)), `${name} must change some result`)
   }
 })

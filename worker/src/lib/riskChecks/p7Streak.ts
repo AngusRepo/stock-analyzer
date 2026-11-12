@@ -22,24 +22,13 @@ export function independentPredictionCohorts(rows:PredictionCohort[]) {
   return chosen
 }
 
-export async function checkP7Streak(
-  db: D1Database,
-  cfg: TradingConfig,
-  deps: LegacyLayerDeps,
-): Promise<LegacyLayerResult> {
-  const cc = cfg.circuit
-  const { defaults } = deps
-
-  try {
-    const identity=await db.prepare('SELECT artifact_id,cohort_id,payload_checksum,base_artifact_set_checksum FROM active8_ensemble_pointer_v1 WHERE singleton_id=1')
-      .first<{artifact_id:string;cohort_id:string;payload_checksum:string;base_artifact_set_checksum:string}>()
-    if(!identity) return null // No published identity: P7 has no valid population.
-    const now=paperExecutionDate().toISOString(),today=new Date(paperExecutionDate().getTime()+8*3600000).toISOString().slice(0,10)
-    const { results: recent } = await db.prepare(`
+/** Latest ensemble row per (date, stock), grouped per date. Pinned to the model index: unpinned, the
+ * planner walked idx_predictions_verification_label, every model's v4 row (~290k reads per intraday call). */
+export const P7_COHORT_SQL = `
       WITH eligible AS (
         SELECT prediction_date,verification_label_end_date,direction_correct,
           ROW_NUMBER() OVER(PARTITION BY prediction_date,stock_id ORDER BY generated_at DESC,id DESC) AS n
-        FROM predictions WHERE model_name='ensemble' AND direction_correct IN (0,1)
+        FROM predictions INDEXED BY idx_pred_model_verified_date WHERE model_name='ensemble' AND direction_correct IN (0,1)
           AND verified_at IS NOT NULL AND datetime(verified_at)<=datetime(?) AND datetime(generated_at)<=datetime(?)
           AND verification_label_known_date<=? AND verification_label_end_date<=?
           AND prediction_date<verification_label_end_date
@@ -53,7 +42,22 @@ export async function checkP7Streak(
       ) SELECT prediction_date AS date,MAX(verification_label_end_date) AS end_date,
           AVG(CAST(direction_correct AS REAL)) AS accuracy,COUNT(*) AS samples
         FROM eligible WHERE n=1 GROUP BY prediction_date ORDER BY prediction_date DESC LIMIT 100
-    `).bind(now,now,today,today,identity.artifact_id,identity.cohort_id,identity.payload_checksum,identity.base_artifact_set_checksum)
+    `
+
+export async function checkP7Streak(
+  db: D1Database,
+  cfg: TradingConfig,
+  deps: LegacyLayerDeps,
+): Promise<LegacyLayerResult> {
+  const cc = cfg.circuit
+  const { defaults } = deps
+
+  try {
+    const identity=await db.prepare('SELECT artifact_id,cohort_id,payload_checksum,base_artifact_set_checksum FROM active8_ensemble_pointer_v1 WHERE singleton_id=1')
+      .first<{artifact_id:string;cohort_id:string;payload_checksum:string;base_artifact_set_checksum:string}>()
+    if(!identity) return null // No published identity: P7 has no valid population.
+    const now=paperExecutionDate().toISOString(),today=new Date(paperExecutionDate().getTime()+8*3600000).toISOString().slice(0,10)
+    const { results: recent } = await db.prepare(P7_COHORT_SQL).bind(now,now,today,today,identity.artifact_id,identity.cohort_id,identity.payload_checksum,identity.base_artifact_set_checksum)
       .all<PredictionCohort>()
     const cohorts=independentPredictionCohorts(recent ?? [])
     if(cohorts.length<5) return null

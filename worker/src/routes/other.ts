@@ -3284,10 +3284,13 @@ async function buildDailyPipelineSummaries(
   const holdCount = finiteNumber(signalCounts?.hold_count)
   const layers = buildDailyFunnelLayers(latestRun, stageRows ?? [], signalCounts)
 
+  // Cells carry their run header's signal_date; keying on it uses the matrix
+  // key prefix instead of scanning the whole matrix. rowid keeps the former order.
   const { results: rawMatrixRows } = await learningDb.prepare(`
     SELECT symbol, strategy_id
       FROM strategy_label_matrix_v4
-     WHERE producer_run_id = ?
+     WHERE signal_date = (SELECT signal_date FROM strategy_label_matrix_runs_v4 WHERE producer_run_id = ?)
+       AND producer_run_id = ?
        AND production_owner = 1
        AND strategy_hit = 1
        AND EXISTS (
@@ -3297,7 +3300,9 @@ async function buildDailyPipelineSummaries(
             AND mr.labeler_version IN (${STRATEGY_FORMAL_LABELER_VERSIONS.map(() => '?').join(',')})
             AND mr.labeler_version=strategy_label_matrix_v4.labeler_version
        )
+     ORDER BY strategy_label_matrix_v4.rowid
   `).bind(
+    latestRun.run_id,
     latestRun.run_id,
     ...STRATEGY_FORMAL_LABELER_VERSIONS,
   ).all<any>().catch(() => ({ results: [] as any[] }))

@@ -300,6 +300,32 @@ export function buildPredictionCoverageCheck(
   }
 }
 
+/**
+ * Verified rows per model whose date() falls in the last 7 days. date(prediction_date) cannot seek, so
+ * the planner walked every verified row of the models (~185k reads per run). Two seeks on the date index
+ * cover every TEXT value that date() can place in the window: date() puts a 'YYYY-MM-DD…' value at most
+ * 4 days after its text (day overflow 02-31 -> 03-03, then a -14:00 zone), hence the 11-day bound.
+ * A Julian-day text that date() places this century sorts above '24' or below '20' ('+2461360',
+ * '2.4613e6', leading zeros or spaces). The date() term still decides.
+ */
+export function modelIcEvidenceSql(modelPlaceholders: string): string {
+  const branch = (range: string) => `SELECT model_name, stock_id, verified_at
+         FROM predictions INDEXED BY idx_pred_date_model_stock
+        WHERE ${range}
+          AND model_name IN (${modelPlaceholders})
+          AND actual_return_pct IS NOT NULL
+          AND verified_at IS NOT NULL
+          AND date(prediction_date) >= date('now', '-7 days')`
+  return `SELECT model_name,
+              COUNT(*) AS count,
+              COUNT(DISTINCT stock_id) AS stocks,
+              MAX(date(verified_at)) AS latest_date
+       FROM (${branch(`prediction_date >= date('now', '-11 days')`)}
+        UNION ALL ${branch(`prediction_date < '20'`)})
+       GROUP BY model_name
+       ORDER BY model_name`
+}
+
 export function buildModelIcEvidenceCheck(
   rows: ModelIcEvidenceRow[],
   expectedModels: readonly string[] = EXPECTED_V2_MODELS,
@@ -1523,19 +1549,8 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
        WHERE prediction_date = ?`,
       targetDate,
     ).catch((): CountRow => ({})),
-    learningDb.prepare(
-      `SELECT model_name,
-              COUNT(*) AS count,
-              COUNT(DISTINCT stock_id) AS stocks,
-              MAX(date(verified_at)) AS latest_date
-       FROM predictions
-       WHERE model_name IN (${expectedModelPlaceholders})
-         AND actual_return_pct IS NOT NULL
-         AND verified_at IS NOT NULL
-         AND date(prediction_date) >= date('now', '-7 days')
-       GROUP BY model_name
-       ORDER BY model_name`,
-    ).bind(...expectedModels).all<ModelIcEvidenceRow>(),
+    learningDb.prepare(modelIcEvidenceSql(expectedModelPlaceholders))
+      .bind(...expectedModels, ...expectedModels).all<ModelIcEvidenceRow>(),
     coreDb.prepare('PRAGMA table_info(daily_recommendations)').all<{ name: string }>(),
     firstCount(
       learningDb,

@@ -2,7 +2,10 @@ import { Hono } from 'hono'
 import { twToday } from '../lib/dateUtils'
 import { requireAdminJWT, requireAdminOrServiceToken, requireServiceToken } from '../lib/auth'
 import { databaseForDataDomain } from '../lib/dataDomainRegistry'
-import { buildStrategyFormalMatureCompatibilitySql } from '../lib/selectionReferenceEvidence'
+import {
+  buildStrategyFormalMatureCompatibilitySql,
+  buildStrategyRedundancyBackfillDatesSql,
+} from '../lib/selectionReferenceEvidence'
 import {
   completeLearningDataDomainCutover,
   inspectLearningDataDomainCompletion,
@@ -1006,24 +1009,8 @@ adminWriteRoutes.post('/api/admin/strategy/redundancy/backfill', async (c) => {
     (canonicalRows.results ?? []).map((row) => [row.signal_date, row.run_id]),
   )
   const formalMatureCompatibility = buildStrategyFormalMatureCompatibilitySql('mr')
-  const dateRows = await learningDb.prepare(`
-    SELECT DISTINCT mr.signal_date, mr.producer_run_id
-      FROM strategy_label_matrix_runs_v4 mr
-     WHERE mr.signal_date BETWEEN ? AND ?
-       AND mr.status='ready'
-       AND ${formalMatureCompatibility.sql}
-       AND NOT EXISTS (
-         SELECT 1 FROM strategy_label_matrix_v4 m
-          WHERE m.producer_run_id=mr.producer_run_id
-            AND m.labeler_version IS NOT mr.labeler_version
-       )
-       AND NOT EXISTS (
-         SELECT 1 FROM selection_reference_snapshots_v1 r
-          WHERE r.producer_run_id=mr.producer_run_id
-            AND r.strategy_labeler_version IS NOT mr.labeler_version
-       )
-     ORDER BY mr.signal_date
-  `).bind(
+  const dateRows = await learningDb.prepare(buildStrategyRedundancyBackfillDatesSql(formalMatureCompatibility)).bind(
+    JSON.stringify(Object.fromEntries(canonicalRunByDate)),
     startDate,
     endDate,
     ...formalMatureCompatibility.binds,

@@ -540,6 +540,21 @@ class DatasetSnapshotExportRequest:
     corporate_history_checksum: str | None = None
 
 
+# One read per date chunk. Unpinned, the planner took idx_pred_model_verified_date
+# (model_name=?) and walked every ensemble row (~30k) on each chunk; the date index
+# reads only the chunk's rows, so a whole export reads the table about once.
+ENSEMBLE_SIGNALS_SQL = """
+            SELECT id, stock_id, generated_at, prediction_date, trade_signal,
+                   direction_accuracy, entry_price, stop_loss, target1, target2,
+                   forecast_data
+            FROM predictions INDEXED BY idx_pred_date_model_stock
+            WHERE model_name = 'ensemble'
+              AND prediction_date >= ?
+              AND prediction_date <= ?
+            ORDER BY stock_id, generated_at
+            """
+
+
 def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[str, Any]:
     """Export D1 research data into a GCS compute snapshot and D1 manifest."""
     history_frame = None
@@ -679,16 +694,7 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
     signal_queries = 0
     if req.include_signals:
         signals, signal_queries = _query_date_range(
-            """
-            SELECT id, stock_id, generated_at, prediction_date, trade_signal,
-                   direction_accuracy, entry_price, stop_loss, target1, target2,
-                   forecast_data
-            FROM predictions
-            WHERE model_name = 'ensemble'
-              AND prediction_date >= ?
-              AND prediction_date <= ?
-            ORDER BY stock_id, generated_at
-            """,
+            ENSEMBLE_SIGNALS_SQL,
             req.start_date,
             req.end_date,
             chunk_days,

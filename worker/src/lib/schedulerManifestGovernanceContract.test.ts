@@ -110,6 +110,10 @@ assert(rotation.includes("@('retryCount', 'maxRetryDuration', 'minBackoffDuratio
 const dryRunSync = fs.readFileSync('../scripts/sync_gcp_scheduler.ps1', 'utf8')
 assert(dryRunSync.includes('$governanceDefaults.attemptDeadline'), 'dry-run sync must use manifest attempt deadline')
 assert(dryRunSync.includes('$retryDefaults.retryCount'), 'dry-run sync must use manifest retry defaults')
+for (const field of ['retryCount', 'minBackoffDuration', 'maxBackoffDuration', 'maxRetryDuration', 'maxDoublings']) {
+  assert(dryRunSync.includes(`$jobRetry.${field}`), `dry-run sync must read per-job retryConfig.${field}`)
+}
+assert(!/\$job\.(maxRetryAttempts|minBackoff|maxBackoff|maxRetryDuration|maxDoublings)\b/.test(dryRunSync), 'dry-run sync must not read retry fields the manifest does not have')
 assert(dryRunSync.includes('state=$desiredState'), 'dry-run output must expose desired state')
 
 console.log('schedulerManifestGovernanceContract.test.ts: all assertions passed')

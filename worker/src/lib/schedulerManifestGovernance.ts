@@ -157,6 +157,38 @@ export function manifestRepeatingWindow(
   }
 }
 
+/**
+ * Taiwan-time label of a manifest job's cron, for display. Two forms only: one minute a day
+ * (`M H * * D`, label `HH:MM`) or a repeating window (`*\/N H1-H2 * * D`, label `HH:MM-HH:MM / Nm`),
+ * with D `*`, `1-5` or `0-4` (the label carries no weekday). Anything else throws.
+ */
+export function manifestTwWindow(
+  jobId: string,
+  source: { timeZone?: string; jobs: Array<{ id: string; schedule?: string; timeZone?: string }> } = schedulerManifest as any,
+): string {
+  const job = source.jobs.find((row) => row.id === jobId)
+  // A per-job timeZone overrides the manifest default.
+  const zone = job?.timeZone ?? source.timeZone
+  const offset = zone === 'UTC' ? 8 * 60 : zone === 'Asia/Taipei' ? 0 : null
+  const fields = String(job?.schedule ?? '').split(' ')
+  if (!job || offset == null || fields.length !== 5 || fields[2] !== '*' || fields[3] !== '*'
+    || !['*', '1-5', '0-4'].includes(fields[4])) throw new Error(`manifest_tw_window_unsupported:${jobId}`)
+  const [minute, hour] = fields
+  if (/^\d{1,2}$/.test(minute) && /^\d{1,2}$/.test(hour) && Number(minute) <= 59 && Number(hour) <= 23) {
+    return twHhMm(Number(hour) * 60 + Number(minute) + offset)
+  }
+  const every = /^\*\/(\d{1,2})$/.exec(minute)
+  const hours = /^(\d{1,2})-(\d{1,2})$/.exec(hour)
+  if (every && hours) {
+    const [interval, startHour, endHour] = [every[1], hours[1], hours[2]].map(Number)
+    if (interval >= 1 && interval <= 59 && startHour <= endHour && endHour <= 23) {
+      const last = endHour * 60 + Math.floor(59 / interval) * interval
+      return `${twHhMm(startHour * 60 + offset)}-${twHhMm(last + offset)} / ${interval}m`
+    }
+  }
+  throw new Error(`manifest_tw_window_unsupported:${jobId}`)
+}
+
 export type EodExitSchedule = {
   /** Manifest cron (UTC), the single owner of the EOD exit time. */
   cron: string

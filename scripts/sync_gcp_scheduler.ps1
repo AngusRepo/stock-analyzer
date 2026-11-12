@@ -93,12 +93,14 @@ foreach ($job in $manifest.jobs) {
   $attemptDeadline = if ($job.attemptDeadline) { [string]$job.attemptDeadline } else { [string]$governanceDefaults.attemptDeadline }
   $desiredState = if ($job.desiredState) { [string]$job.desiredState } else { [string]$governanceDefaults.desiredState }
   if ($desiredState -notin @('ENABLED', 'PAUSED')) { throw "Invalid desired state for job $($job.id): $desiredState" }
+  # The manifest keeps per-job retry settings under retryConfig (same field names as the governance defaults).
   $retryDefaults = $governanceDefaults.retryConfig
-  $maxRetryAttempts = if ($null -ne $job.maxRetryAttempts) { [string]$job.maxRetryAttempts } else { [string]$retryDefaults.retryCount }
-  $minBackoff = if ($job.minBackoff) { [string]$job.minBackoff } else { [string]$retryDefaults.minBackoffDuration }
-  $maxBackoff = if ($job.maxBackoff) { [string]$job.maxBackoff } else { [string]$retryDefaults.maxBackoffDuration }
-  $maxRetryDuration = if ($job.maxRetryDuration) { [string]$job.maxRetryDuration } else { [string]$retryDefaults.maxRetryDuration }
-  $maxDoublings = if ($null -ne $job.maxDoublings) { [string]$job.maxDoublings } else { [string]$retryDefaults.maxDoublings }
+  $jobRetry = $job.retryConfig
+  $maxRetryAttempts = if ($jobRetry -and $null -ne $jobRetry.retryCount) { [string]$jobRetry.retryCount } else { [string]$retryDefaults.retryCount }
+  $minBackoff = if ($jobRetry -and $jobRetry.minBackoffDuration) { [string]$jobRetry.minBackoffDuration } else { [string]$retryDefaults.minBackoffDuration }
+  $maxBackoff = if ($jobRetry -and $jobRetry.maxBackoffDuration) { [string]$jobRetry.maxBackoffDuration } else { [string]$retryDefaults.maxBackoffDuration }
+  $maxRetryDuration = if ($jobRetry -and $jobRetry.maxRetryDuration) { [string]$jobRetry.maxRetryDuration } else { [string]$retryDefaults.maxRetryDuration }
+  $maxDoublings = if ($jobRetry -and $null -ne $jobRetry.maxDoublings) { [string]$jobRetry.maxDoublings } else { [string]$retryDefaults.maxDoublings }
   $exists = $currentIds.Contains([string]$job.id)
 
   if ($exists) {

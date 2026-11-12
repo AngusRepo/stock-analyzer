@@ -66,3 +66,6 @@ assert.doesNotMatch(source, /JOIN canonical_run_heads h[\s\S]{0,240}m\.signal_da
 assert.match(source, /l\.outcome_known_date IS NOT NULL/)
 assert.match(source, /l\.outcome_known_date <= \?/)
 assert.match(source, /if \(!frozenProjectionComplete\)/)
+// strategy_label_matrix_v4 is keyed by signal_date first; a producer_run_id-only
+// filter scans the whole matrix (1.5M rows on 2026-11-12) and overloads learning-db.
+assert.doesNotMatch(source, /FROM strategy_label_matrix_v4(?:\s+\w+)?\s+WHERE\s+(?:\w+\.)?producer_run_id\s*=\s*\?/)

@@ -5206,7 +5206,7 @@ export async function rebuildHistoricalStrategyEvidenceV5(
       }
 
       const existingMatrix = await db.prepare(`
-        SELECT status, reference_candidate_count, strategy_count, expected_cell_count,
+        SELECT signal_date, status, reference_candidate_count, strategy_count, expected_cell_count,
                persisted_cell_count, strategy_registry_checksum, labeler_version, reference_contract_version
           FROM strategy_label_matrix_runs_v4
          WHERE producer_run_id=?
@@ -5220,13 +5220,15 @@ export async function rebuildHistoricalStrategyEvidenceV5(
                  SUM(CASE WHEN challenger_affinity_version=? THEN 1 ELSE 0 END) AS challenger_projection_rows,
                  SUM(CASE WHEN evaluable=1 AND strategy_hit=1 AND affinity_evidence_count>0 AND challenger_affinity_version=? THEN 1 ELSE 0 END) AS projected_threshold_rows
             FROM strategy_label_matrix_v4
-           WHERE producer_run_id=?
+           WHERE signal_date=? AND producer_run_id=?
         `).bind(
           cleanToken(existingMatrix.labeler_version),
           cleanToken(existingMatrix.strategy_registry_checksum),
           sourceReferenceContractVersion,
           STRATEGY_AFFINITY_CHALLENGER_VERSION,
           STRATEGY_AFFINITY_CHALLENGER_VERSION,
+          // Matrix cells carry their run's signal_date; the date keeps this on the PK prefix.
+          cleanToken(existingMatrix.signal_date),
           producerRunId,
         ).first<{
           count: number | string
@@ -5245,6 +5247,7 @@ export async function rebuildHistoricalStrategyEvidenceV5(
       const existingMatrixProjectedThresholdRows = Number(existingMatrixCoverage?.projected_threshold_rows ?? 0)
       let matrixRows = 0
       const reusableExistingMatrix = existingMatrix?.status === 'ready'
+        && cleanToken(existingMatrix.signal_date) === date
         && !artifactBackedV1Carrier
         && Number(existingMatrix.reference_candidate_count) === references.length
         && Number(existingMatrix.strategy_count) === strategyKeys.size

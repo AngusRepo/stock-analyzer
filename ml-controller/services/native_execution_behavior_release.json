@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:4983e48a5e76884cac061fd3ef9f8b95492bf9c6b1b14c96d6e895dab024aa32",
+  "execution_owner_version": "native-paper-v1:ef3dab2509d6e66f1ee441ee2ac11e0c7ff7d6152fead63fe0d76bc0c3a7dfde",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei 2026-11-11 13:40 TW in M1-c: 「同意今天處理 r33main-20261111」 - go for today's release from main, release id r33main-20261111: #131, #155, #141, #146 (with re-pin) merge, admission, build, rollout (writes the new paper runtime grant to KV; Modal deployed with CHIP_PIT_DAILY_RECORD=0), verify, all with --publish",
+  "authorization": "Wei 2026-11-12 20:38 TW in M1-c: 「今晚全上 (Recommended)」 - go for tonight's release from main, release id ldb-20261112: #168 (with re-pin) merge, admission, build, rollout (writes the new paper runtime grant to KV), verify, all with --publish; Worker deployed too",
   "review": "output/herdr-handoff-20261018/sys-cleanup-20261028/runbook_k20_repin_grant.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:r33main-20261111"
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:ldb-20261112"
 }

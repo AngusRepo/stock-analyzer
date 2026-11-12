@@ -23,6 +23,8 @@ type D1RestConfig = {
   databaseId: string
   apiToken: string
   maxRetries: number
+  rateLimitPolicy?: RateLimitRetryPolicy
+  rateLimitProcessDeadline?: RateLimitProcessDeadline
 }
 
 type KVRestConfig = {
@@ -30,6 +32,32 @@ type KVRestConfig = {
   namespaceId: string
   apiToken: string
   maxRetries: number
+  rateLimitPolicy?: RateLimitRetryPolicy
+  rateLimitProcessDeadline?: RateLimitProcessDeadline
+}
+
+/** 429 handling for the Cloudflare REST API (D1 / KV); 5xx keep the maxRetries backoff. */
+export type RateLimitRetryPolicy = {
+  /** Total sleep allowed across all 429 retries of one request. */
+  budgetMs: number
+  /** Cap for a single sleep, also when Retry-After asks for longer. */
+  maxDelayMs: number
+  /** Backoff start; a sleep is max(backoff, Retry-After) plus jitter. */
+  baseDelayMs: number
+  /** Upper bound of the random jitter added to every sleep. */
+  jitterMs: number
+  /** Hard cap on 429 retries of one request. */
+  maxAttempts: number
+}
+
+/**
+ * Wall-clock window for 429 waiting in the whole process, shared by every D1 / KV REST binding in it.
+ * The first 429 opens it (deadlineMs = now + windowMs); afterwards a 429 only gets the short retries.
+ */
+export type RateLimitProcessDeadline = { windowMs: number; deadlineMs: number | null }
+
+export function createRateLimitProcessDeadline(windowMs: number): RateLimitProcessDeadline {
+  return { windowMs: Math.max(0, windowMs), deadlineMs: null }
 }
 
 type EvidenceArtifactWriterConfig = {
@@ -86,6 +114,69 @@ function retryDelayMs(attempt: number): number {
   return Math.min(500 * (2 ** attempt), 4000) + Math.floor(Math.random() * 250)
 }
 
+// The Cloudflare API limits a token per 5-minute window and blocks it for the rest of the window once
+// exceeded; a 429 is rejected before the SQL runs, so replaying a write is safe. One request may wait out
+// one full window plus slack, which maxRetries=3 (~3.5 s) never did (11/10-11/12 similarity artifact miss).
+export const CLOUDFLARE_API_RATE_LIMIT_POLICY: RateLimitRetryPolicy = {
+  budgetMs: 330_000,
+  maxDelayMs: 120_000,
+  baseDelayMs: 2_000,
+  jitterMs: 1_000,
+  maxAttempts: 30,
+}
+
+// ml-controller/screener_job_main.py kills the node runner at SCREENER_JOB_TIMEOUT_SECONDS (default 5400 s,
+// job --max-retries=0), and a normal screener run takes 358-839 s (audits/perf-evening-20261028). 429
+// waiting is therefore confined to one wall-clock window of 900 s per process, opened by the first 429:
+// three full 5-minute API windows however many requests wait concurrently, and the slowest observed run
+// plus the whole window stays under 1800 s. After the deadline a 429 gets the former short maxRetries
+// handling again, so the callers' own fail-soft paths degrade instead of the run being killed.
+// s12StructureBatchJobMain (21600 s timeout) and atomicPopulationJobMain share the same per-process window.
+// The window is one-shot: it never reopens, so a later storm in a long-lived process gets only short retries.
+export const CLOUDFLARE_API_RATE_LIMIT_PROCESS_WINDOW_MS = 900_000
+const cloudflareApiRateLimitProcessDeadline = createRateLimitProcessDeadline(CLOUDFLARE_API_RATE_LIMIT_PROCESS_WINDOW_MS)
+
+/**
+ * Retry-After as delta-seconds or IMF-fixdate (RFC 9110 10.2.3). Absent, signed, listed, unparsable,
+ * zero and past values return null, so the caller falls back to its own backoff.
+ */
+export function parseRetryAfterMs(value: string | null | undefined, nowMs: number): number | null {
+  const trimmed = value?.trim()
+  if (!trimmed) return null
+  let delayMs: number
+  if (/^\d+(?:\.\d+)?$/.test(trimmed)) {
+    delayMs = Math.round(Number(trimmed) * 1000)
+  } else if (/^[A-Za-z]{3}, \d{2} [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT$/.test(trimmed)) {
+    delayMs = Date.parse(trimmed) - nowMs
+  } else {
+    return null
+  }
+  return Number.isFinite(delayMs) && delayMs > 0 ? delayMs : null
+}
+
+function rateLimitDelayMs(
+  policy: RateLimitRetryPolicy,
+  retryAfter: string | null,
+  attempt: number,
+  nowMs: number,
+  random: () => number,
+): number {
+  // Same shape as ml-controller/services/d1_client.py: a tiny Retry-After cannot undercut the backoff,
+  // and the jitter spreads concurrent callers released by the same window.
+  const backoffMs = policy.baseDelayMs * (2 ** Math.min(attempt, 16))
+  const requestedMs = Math.max(backoffMs, parseRetryAfterMs(retryAfter, nowMs) ?? 0)
+  // Cap before adding the jitter, so callers held at the cap still spread out.
+  return Math.max(0, Math.min(requestedMs, policy.maxDelayMs - policy.jitterMs)) + Math.floor(random() * policy.jitterMs)
+}
+
+function redactedRequestPath(url: string): string {
+  try {
+    return new URL(url).pathname.replace(/\/accounts\/[^/]+/, '/accounts/<id>')
+  } catch {
+    return '<invalid-url>'
+  }
+}
+
 function firstSqlToken(sql: string): string {
   return sql.trim().replace(/^--.*(?:\r?\n|$)/, '').trim().split(/\s+/, 1)[0]?.toLowerCase() ?? ''
 }
@@ -109,22 +200,74 @@ function noopD1Result<T>(changes = 1): D1Result<T> {
   }
 }
 
-async function fetchWithRetry(
+export async function fetchWithRetry(
   url: string,
   init: RequestInit,
   maxRetries: number,
+  options: {
+    rateLimit?: RateLimitRetryPolicy
+    processDeadline?: RateLimitProcessDeadline
+    sleep?: (ms: number) => Promise<void>
+    now?: () => number
+    random?: () => number
+  } = {},
 ): Promise<Response> {
+  const wait = options.sleep ?? sleep
+  const now = options.now ?? Date.now
+  const random = options.random ?? Math.random
+  const processDeadline = options.processDeadline ?? cloudflareApiRateLimitProcessDeadline
   let lastError: unknown = null
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+  let attempt = 0
+  let rateLimitAttempts = 0
+  let rateLimitSleptMs = 0
+  let shortRetryLogged = false
+  while (true) {
     try {
       const res = await fetch(url, init)
+      if (res.status === 429 && options.rateLimit) {
+        const policy = options.rateLimit
+        const nowMs = now()
+        processDeadline.deadlineMs ??= nowMs + processDeadline.windowMs
+        const windowLeftMs = processDeadline.deadlineMs - nowMs
+        if (windowLeftMs <= 0) {
+          if (!shortRetryLogged) {
+            shortRetryLogged = true
+            console.warn(
+              `[CloudflareRest] HTTP 429 process wait window closed path=${redactedRequestPath(url)} ` +
+              `retries=${rateLimitAttempts}; short retries only`,
+            )
+          }
+        } else {
+          // Own budget, independent of maxRetries, so 429s do not eat the 5xx retries.
+          const remainingMs = Math.min(policy.budgetMs - rateLimitSleptMs, windowLeftMs)
+          if (rateLimitAttempts >= policy.maxAttempts || remainingMs <= 0) {
+            console.warn(
+              `[CloudflareRest] HTTP 429 retry budget exhausted path=${redactedRequestPath(url)} ` +
+              `retries=${rateLimitAttempts} slept_ms=${rateLimitSleptMs}`,
+            )
+            return res
+          }
+          const retryAfter = res.headers.get('retry-after')
+          const delayMs = Math.min(rateLimitDelayMs(policy, retryAfter, rateLimitAttempts, nowMs, random), remainingMs)
+          console.warn(
+            `[CloudflareRest] HTTP 429 path=${redactedRequestPath(url)} retry=${rateLimitAttempts + 1} ` +
+            `retry_after=${retryAfter ?? 'none'} sleep_ms=${delayMs} slept_ms=${rateLimitSleptMs}`,
+          )
+          await res.body?.cancel().catch(() => undefined)
+          rateLimitAttempts++
+          rateLimitSleptMs += delayMs
+          await wait(delayMs)
+          continue
+        }
+      }
       if (!RETRYABLE_STATUS.has(res.status) || attempt >= maxRetries) return res
-      await sleep(retryDelayMs(attempt))
+      await wait(retryDelayMs(attempt))
     } catch (error) {
       lastError = error
       if (attempt >= maxRetries) break
-      await sleep(retryDelayMs(attempt))
+      await wait(retryDelayMs(attempt))
     }
+    attempt++
   }
   throw lastError instanceof Error ? lastError : new Error(String(lastError ?? 'fetch failed'))
 }
@@ -548,7 +691,10 @@ export class RestD1Database implements D1Database {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify(body),
-    }, this.config.maxRetries)
+    }, this.config.maxRetries, {
+      rateLimit: this.config.rateLimitPolicy ?? CLOUDFLARE_API_RATE_LIMIT_POLICY,
+      processDeadline: this.config.rateLimitProcessDeadline,
+    })
     const text = await res.text()
     if (!res.ok) throw new Error(`D1 REST HTTP ${res.status}: ${text.slice(0, 300)}`)
     const data = JSON.parse(text) as D1RestResponse
@@ -578,7 +724,10 @@ export class RestKVNamespace implements KVNamespace {
     const res = await fetchWithRetry(`${this.baseUrl}/values/${encodeURIComponent(key)}`, {
       method: 'GET',
       headers: { Authorization: `Bearer ${this.config.apiToken}` },
-    }, this.config.maxRetries)
+    }, this.config.maxRetries, {
+      rateLimit: this.config.rateLimitPolicy ?? CLOUDFLARE_API_RATE_LIMIT_POLICY,
+      processDeadline: this.config.rateLimitProcessDeadline,
+    })
     if (res.status === 404) return null
     const value = type === 'arrayBuffer'
       ? await res.arrayBuffer()
@@ -611,7 +760,10 @@ export class RestKVNamespace implements KVNamespace {
       method: 'PUT',
       headers: { Authorization: `Bearer ${this.config.apiToken}` },
       body,
-    }, this.config.maxRetries)
+    }, this.config.maxRetries, {
+      rateLimit: this.config.rateLimitPolicy ?? CLOUDFLARE_API_RATE_LIMIT_POLICY,
+      processDeadline: this.config.rateLimitProcessDeadline,
+    })
     const text = await res.text()
     if (!res.ok) throw new Error(`KV put HTTP ${res.status}: ${text.slice(0, 300)}`)
   }
@@ -624,7 +776,10 @@ export class RestKVNamespace implements KVNamespace {
     const res = await fetchWithRetry(`${this.baseUrl}/values/${encodeURIComponent(key)}`, {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${this.config.apiToken}` },
-    }, this.config.maxRetries)
+    }, this.config.maxRetries, {
+      rateLimit: this.config.rateLimitPolicy ?? CLOUDFLARE_API_RATE_LIMIT_POLICY,
+      processDeadline: this.config.rateLimitProcessDeadline,
+    })
     if (res.status === 404) return
     const text = await res.text()
     if (!res.ok) throw new Error(`KV delete HTTP ${res.status}: ${text.slice(0, 300)}`)
@@ -639,7 +794,10 @@ export class RestKVNamespace implements KVNamespace {
     const res = await fetchWithRetry(`${this.baseUrl}/keys${suffix}`, {
       method: 'GET',
       headers: { Authorization: `Bearer ${this.config.apiToken}` },
-    }, this.config.maxRetries)
+    }, this.config.maxRetries, {
+      rateLimit: this.config.rateLimitPolicy ?? CLOUDFLARE_API_RATE_LIMIT_POLICY,
+      processDeadline: this.config.rateLimitProcessDeadline,
+    })
     const text = await res.text()
     if (!res.ok) throw new Error(`KV list HTTP ${res.status}: ${text.slice(0, 300)}`)
     const data = JSON.parse(text) as {

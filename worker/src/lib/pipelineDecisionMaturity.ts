@@ -554,19 +554,21 @@ export async function buildPipelineDecisionMaturityPacket(
       SELECTION_REFERENCE_CONTRACT_VERSION,
       ...STRATEGY_FORMAL_LABELER_VERSIONS,
     ).first<any>() : Promise.resolve(null)),
+    // Matrix counts stay within the run's signal_date (the matrix key prefix);
+    // a producer_run_id-only filter scans the whole matrix.
     safeQuery(() => head ? learningDb.prepare(`
       SELECT r.status, r.reference_candidate_count, r.strategy_count,
              r.expected_cell_count, r.persisted_cell_count, r.labeler_version,
              (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
-               WHERE m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.evaluable=1 AND m.strategy_hit=1) matched_rows,
+               WHERE m.signal_date=r.signal_date AND m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.evaluable=1 AND m.strategy_hit=1) matched_rows,
              (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
-               WHERE m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.evaluable=1 AND m.strategy_hit=1
+               WHERE m.signal_date=r.signal_date AND m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.evaluable=1 AND m.strategy_hit=1
                  AND m.affinity_evidence_count>0) raw_threshold_rows,
              (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
-               WHERE m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.evaluable=1 AND m.strategy_hit=1
+               WHERE m.signal_date=r.signal_date AND m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.evaluable=1 AND m.strategy_hit=1
                  AND m.affinity_evidence_count>0 AND m.challenger_affinity_version=?) projected_threshold_rows,
              (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
-               WHERE m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.challenger_affinity_version=?) challenger_projection_cells,
+               WHERE m.signal_date=r.signal_date AND m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.challenger_affinity_version=?) challenger_projection_cells,
              r.updated_at
         FROM strategy_label_matrix_runs_v4 r
        WHERE r.signal_date=? AND r.producer_run_id=?
@@ -865,15 +867,15 @@ export async function buildPipelineDecisionMaturityPacket(
       SELECT r.status, r.reference_candidate_count, r.strategy_count,
              r.expected_cell_count, r.persisted_cell_count, r.labeler_version,
              (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
-               WHERE m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.evaluable=1 AND m.strategy_hit=1) matched_rows,
+               WHERE m.signal_date=r.signal_date AND m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.evaluable=1 AND m.strategy_hit=1) matched_rows,
              (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
-               WHERE m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.evaluable=1 AND m.strategy_hit=1
+               WHERE m.signal_date=r.signal_date AND m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.evaluable=1 AND m.strategy_hit=1
                  AND m.affinity_evidence_count>0) raw_threshold_rows,
              (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
-               WHERE m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.evaluable=1 AND m.strategy_hit=1
+               WHERE m.signal_date=r.signal_date AND m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.evaluable=1 AND m.strategy_hit=1
                  AND m.affinity_evidence_count>0 AND m.challenger_affinity_version=?) projected_threshold_rows,
              (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
-               WHERE m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.challenger_affinity_version=?) challenger_projection_cells,
+               WHERE m.signal_date=r.signal_date AND m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.challenger_affinity_version=?) challenger_projection_cells,
              r.updated_at
         FROM strategy_label_matrix_runs_v4 r
        WHERE r.signal_date=? AND r.producer_run_id=?

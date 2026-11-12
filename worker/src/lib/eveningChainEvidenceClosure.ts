@@ -313,17 +313,25 @@ export async function auditEveningChainEvidenceClosure(
     throw new Error(`evening_chain_decision_reconciliation_incomplete:${decisionReconciledRows}/${referenceRows}`)
   }
 
+  // One pass over the run's cells within its signal_date, the matrix key
+  // prefix; matrix cells always carry their run's signal_date. Five COUNTs
+  // filtered by producer_run_id alone scanned the whole matrix (7.56M rows per
+  // call on 2026-11-12).
   const matrix = await learningDb.prepare(`
     SELECT r.expected_cell_count, r.persisted_cell_count,
-           (SELECT COUNT(*) FROM strategy_label_matrix_v4 m WHERE m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version) matrix_rows,
-           (SELECT COUNT(*) FROM strategy_label_matrix_v4 m WHERE m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.evaluable=1 AND m.strategy_hit=1) matched_rows,
-           (SELECT COUNT(*) FROM strategy_label_matrix_v4 m WHERE m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.evaluable=1 AND m.strategy_hit=1 AND m.affinity_evidence_count>0) threshold_evidence_rows,
-           (SELECT COUNT(*) FROM strategy_label_matrix_v4 m WHERE m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.challenger_affinity_version=?) challenger_projection_rows,
-           (SELECT COUNT(*) FROM strategy_label_matrix_v4 m WHERE m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.evaluable=1 AND m.strategy_hit=1 AND m.affinity_evidence_count>0 AND m.challenger_affinity_version=?) projected_threshold_rows
+           COUNT(m.producer_run_id) matrix_rows,
+           SUM(CASE WHEN m.evaluable=1 AND m.strategy_hit=1 THEN 1 ELSE 0 END) matched_rows,
+           SUM(CASE WHEN m.evaluable=1 AND m.strategy_hit=1 AND m.affinity_evidence_count>0 THEN 1 ELSE 0 END) threshold_evidence_rows,
+           SUM(CASE WHEN m.challenger_affinity_version=? THEN 1 ELSE 0 END) challenger_projection_rows,
+           SUM(CASE WHEN m.evaluable=1 AND m.strategy_hit=1 AND m.affinity_evidence_count>0 AND m.challenger_affinity_version=? THEN 1 ELSE 0 END) projected_threshold_rows
       FROM strategy_label_matrix_runs_v4 r
+      LEFT JOIN strategy_label_matrix_v4 m
+        ON m.signal_date=r.signal_date AND m.producer_run_id=r.producer_run_id
+       AND m.labeler_version=r.labeler_version
      WHERE r.signal_date=? AND r.status='ready' AND r.producer_run_id=?
        AND r.reference_contract_version=?
        AND r.labeler_version IN (?, ?)
+     GROUP BY r.producer_run_id
      LIMIT 1
   `).bind(
     STRATEGY_ROUTE_AFFINITY_VERSION,
@@ -409,7 +417,7 @@ export async function auditEveningChainEvidenceClosure(
       SELECT reference_candidate_count, expected_cell_count, persisted_cell_count,
              labeler_version, reference_contract_version,
              (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
-               WHERE m.producer_run_id=mr.producer_run_id
+               WHERE m.signal_date=mr.signal_date AND m.producer_run_id=mr.producer_run_id
                  AND m.labeler_version=mr.labeler_version
                  AND m.reference_contract_version=mr.reference_contract_version) matrix_rows,
              (SELECT COUNT(*) FROM selection_reference_snapshots_v1 r
@@ -426,7 +434,7 @@ export async function auditEveningChainEvidenceClosure(
          )
          AND NOT EXISTS (
            SELECT 1 FROM strategy_label_matrix_v4 m
-            WHERE m.producer_run_id=mr.producer_run_id
+            WHERE m.signal_date=mr.signal_date AND m.producer_run_id=mr.producer_run_id
               AND m.labeler_version<>mr.labeler_version
          )
        LIMIT 1

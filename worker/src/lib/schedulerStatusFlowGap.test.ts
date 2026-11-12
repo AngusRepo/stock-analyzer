@@ -529,3 +529,56 @@ test('review4: no watchdog is a chain step, durable job or premarket producer/ph
     assert.equal(sealed(id), null, `${id}: sealed display`)
   }
 })
+
+test('EC-B-2: a gap-filled per-task error shows on the row but the gate keeps main\'s aggregate reading', async () => {
+  const f = fixture()
+  try {
+    // daily-snapshot ran on Friday; today's run is missing from the aggregate (lost update) and errored.
+    f.daily('2026-10-30', [{ task: 'daily-snapshot', status: 'success', timestamp: '2026-10-30T06:20:00Z', summary: 'ok' }])
+    f.values.set(`scheduler:run:daily-snapshot:${today}`, { task: 'daily-snapshot', status: 'error', timestamp: ago(30),
+      summary: 'snapshot failed', error: 'boom', duration_ms: 1, run_date: today })
+    const status = await getSchedulerStatus(f.env, today, nowMs)
+    assert.equal(status.jobs.find((row) => row.id === 'daily-snapshot')!.lastStatus, 'failed', 'the row shows the direct read')
+    assert.equal(status.stats.failed24h, 0, 'main never read the per-task key, so the gate does not count it')
+    const { schedulerFailedGateCheck } = await import('./deployGate')
+    assert.equal(schedulerFailedGateCheck(status).status, 'ok')
+  } finally { f.sql.close() }
+})
+
+test('EC-B-2: a gap-filled blocked receipt cannot exclude a stuck run the gate counted on main', async () => {
+  const f = fixture()
+  try {
+    f.daily(today, [{ task: 'daily-snapshot', status: 'running', timestamp: ago(240), summary: 'started' }])
+    f.values.set(`scheduler:run:daily-snapshot:${today}`, { task: 'daily-snapshot', status: 'blocked', timestamp: ago(30),
+      summary: 'paused', duration_ms: 1, run_date: today })
+    const status = await getSchedulerStatus(f.env, today, nowMs)
+    assert.equal(status.jobs.find((row) => row.id === 'daily-snapshot')!.lastStatus, 'blocked', 'the row shows the direct read')
+    assert.equal(status.stats.failed24h, 1, 'main counts the aggregate run stuck past its SLA')
+  } finally { f.sql.close() }
+})
+
+test('EC-B-2: at 09:00 jobs not yet due today do not crowd out yesterday\'s lost receipts', async () => {
+  const { SCHEDULER_STATUS_JOB_DEFS } = await import('./schedulerStatus')
+  const f = fixture()
+  try {
+    const day = '2026-11-12', yesterday = '2026-11-11'
+    const ids = SCHEDULER_STATUS_JOB_DEFS.map((def) => def.id).filter((id) => !id.endsWith('-watchdog'))
+    for (const date of ['2026-11-10', yesterday]) {
+      f.daily(date, ids.filter((id) => !(date === yesterday && id === 'daily-snapshot'))
+        .map((task) => ({ task, status: 'success' as const, timestamp: `${date}T01:00:00Z`, summary: 'ok' })))
+    }
+    f.values.set(`scheduler:run:daily-snapshot:${yesterday}`, { task: 'daily-snapshot', status: 'error', timestamp: `${yesterday}T06:30:00Z`,
+      summary: 'snapshot failed', error: 'boom', duration_ms: 1, run_date: yesterday })
+    const reads: string[] = []
+    const get = f.env.KV.get
+    f.env.KV.get = async (key: string, type?: string) => { reads.push(key); return get(key, type) }
+    await getSchedulerStatus(f.env, day, Date.parse('2026-11-12T01:00:00Z'))
+    assert.ok(reads.includes(`scheduler:run:daily-snapshot:${yesterday}`), 'yesterday\'s lost receipt is read')
+    assert.ok(!reads.includes(`scheduler:run:external-evidence:${day}`), 'a job due at 23:15 tonight is not read at 09:00')
+    assert.ok(reads.includes(`scheduler:run:us-leading:${day}`), 'a job due at 06:30 that has no receipt yet is read')
+    // Late evening: more jobs are due today than there are slots, and yesterday still goes first.
+    reads.length = 0
+    await getSchedulerStatus(f.env, day, Date.parse('2026-11-12T15:50:00Z'))
+    assert.ok(reads.includes(`scheduler:run:daily-snapshot:${yesterday}`), 'yesterday is read before today\'s gaps')
+  } finally { f.sql.close() }
+})

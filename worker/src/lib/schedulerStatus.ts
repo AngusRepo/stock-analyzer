@@ -195,11 +195,17 @@ const PIPELINE_CHILD_TASKS = new Set(['ml-predict', 'recommendation'])
 export const DURABLE_EVENT_TASK_IDS = new Set(['dataset-snapshot-export', 'active8-oof-daily'])
 const SCHEDULER_STATUS_SCAN_DAYS = 7
 const SCHEDULER_STATUS_LEGACY_FALLBACK_DAYS = 2
+// Today and yesterday still change and the daily aggregate is a best-effort read-modify-write, so a displayed
+// job it lacks, or still holds as non-terminal, is filled from its per-task key (display only, bounded).
+const SCHEDULER_STATUS_DIRECT_READ_DAYS = 2
+const SCHEDULER_STATUS_DIRECT_READ_LIMIT = 30
+const SCHEDULER_STATUS_NON_TERMINAL = new Set(['running', 'triggered', 'waiting'])
 
 export function estimateSchedulerStatusKvReads(): number {
   // + today's holiday marker and canonical keys for idle scheduled watchdogs
   const watchdogs = JOB_DEFS.filter((def) => def.id.endsWith('-watchdog') && watchdogWindowOpenTwMinute(def) != null).length
   return SCHEDULER_STATUS_SCAN_DAYS * 2 + CHAIN_STEP_IDS.filter((task) => task !== 'evening-chain').length + 3 + watchdogs
+    + SCHEDULER_STATUS_DIRECT_READ_LIMIT
 }
 
 export interface SchedulerDisplayLogCandidate {
@@ -836,6 +842,53 @@ type IdleJobDef = Pick<JobDef, 'id' | 'group' | 'chainIndex'> & Partial<Pick<Job
 // One sync attempt (up to 10m) plus a missed tick may pass before the first receipt lands.
 const WATCHDOG_FIRST_RECEIPT_GRACE_MS = 20 * 60_000
 
+const CRON_DOW_NAMES = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT']
+
+/** Values of one cron field (`*`, `*\/N`, `a`, `a-b`, `a-b/N`, lists, day names); null when it cannot be read. */
+function cronFieldValues(field: string, min: number, max: number): number[] | null {
+  const values = new Set<number>()
+  for (const part of field.split(',')) {
+    const match = /^(\*|[0-9A-Z]+(?:-[0-9A-Z]+)?)(?:\/(\d+))?$/.exec(part.toUpperCase())
+    if (!match) return null
+    const parse = (token: string) => (/^\d+$/.test(token) ? Number(token) : CRON_DOW_NAMES.indexOf(token))
+    const [from, to] = match[1] === '*' ? [min, max] : match[1].split('-').map(parse)
+    const end = to ?? (match[2] ? max : from)
+    const step = Number(match[2] ?? 1)
+    if (!Number.isInteger(from) || !Number.isInteger(end) || from < min || end > max || from > end || step < 1) return null
+    for (let value = from; value <= end; value += step) values.add(value === 7 && max === 7 ? 0 : value)
+  }
+  return [...values]
+}
+
+/**
+ * Earliest Taiwan-time instant on this Taiwan date at which the job's cron fires; null when it does not fire
+ * that day or its cron cannot be read (event-driven, monthly phrases, day-of-month fields).
+ */
+export function firstScheduledRunMsOnTwDate(def: Pick<JobDef, 'cron' | 'timeZone'>, twDate: string): number | null {
+  const twMidnightMs = Date.parse(`${twDate}T00:00:00.000Z`) - 8 * 3600_000
+  let first: number | null = null
+  for (const expression of (def.cron ?? '').split(' + ')) {
+    const fields = expression.trim().split(/\s+/)
+    const taipei = def.timeZone === 'Asia/Taipei' || fields.at(-1) === 'taipei'
+    if (fields.at(-1) === 'taipei') fields.pop()
+    if (fields.length !== 5 || fields[2] !== '*' || fields[3] !== '*') return null
+    const minutes = cronFieldValues(fields[0], 0, 59)
+    const hours = cronFieldValues(fields[1], 0, 23)
+    const days = cronFieldValues(fields[4], 0, 7)
+    if (!minutes?.length || !hours?.length || !days) return null
+    // A UTC cron day overlaps the Taiwan date on that date and on the day before it.
+    for (const dayShift of taipei ? [0] : [-1, 0]) {
+      const cronDay = new Date(Date.parse(`${twDate}T00:00:00.000Z`) + dayShift * 86400_000)
+      if (!days.includes(cronDay.getUTCDay())) continue
+      for (const hour of hours) {
+        const fireMs = cronDay.getTime() + (hour * 60 + Math.min(...minutes)) * 60_000 - (taipei ? 8 * 3600_000 : 0)
+        if (fireMs >= twMidnightMs && fireMs < twMidnightMs + 86400_000 && (first == null || fireMs < first)) first = fireMs
+      }
+    }
+  }
+  return first
+}
+
 /** Minute of the Taiwan day when a weekday repeating window (`*\/N H-H * * 1-5`) opens; null when it cannot be read. */
 export function watchdogWindowOpenTwMinute(def: IdleJobDef): number | null {
   const match = /^\*\/\d{1,2} (\d{1,2})-\d{1,2} \* \* 1-5$/.exec(def.cron ?? '')
@@ -1158,12 +1211,49 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string, now
       allLogs[chainDisplayDate] ?? [],
     )
   }
+  // An event-driven job (no readable cron) is due at the Taiwan time of day of its latest receipt on another day.
+  const usualRunMsOnTwDate = (def: JobDef, date: string): number => {
+    const previous = dates.filter((other) => other < date).map((other) => getJobDisplayLog(allLogs[other], def)?.timestamp)
+      .map((timestamp) => parseLogTime(timestamp)).find((ms): ms is number => ms != null)
+    if (previous == null) return Number.POSITIVE_INFINITY
+    return Date.parse(`${date}T00:00:00.000Z`) - 8 * 3600_000 + (((previous + 8 * 3600_000) % 86400_000) + 86400_000) % 86400_000
+  }
+  // Gap fill: skip jobs read directly above (root, today's close and warmup, chain display, cadence) and
+  // watchdogs (window-gated below). A missing row is read only for a job logged on another scanned day,
+  // so jobs that do not run daily cost nothing, and today only once the job is due (its cron fired today,
+  // or for an event-driven job its usual time passed); jobs that have not run yet would take every slot. Non-terminal rows first, then yesterday, then today.
+  const directGapReads = dates.slice(0, SCHEDULER_STATUS_DIRECT_READ_DAYS).flatMap((date, dayIndex) => JOB_DEFS
+    .filter((def) => !def.id.endsWith('-watchdog') && def.group !== 'weekly' && def.group !== 'monthly'
+      && def.id !== 'evening-chain'
+      && !(dayIndex === 0 && (def.id === 'market-close-refresh' || def.id === 'pre-market-warmup'))
+      && !(date === chainDisplayDate && CHAIN_STEP_IDS.includes(def.id)))
+    .flatMap((def) => {
+      const log = getJobDisplayLog(allLogs[date], def)
+      if (log ? !SCHEDULER_STATUS_NON_TERMINAL.has(log.status)
+        : !dates.some((other) => other !== date && getJobDisplayLog(allLogs[other], def))) return []
+      if (!log && dayIndex === 0 && !((firstScheduledRunMsOnTwDate(def, date) ?? usualRunMsOnTwDate(def, date)) <= nowMs)) return []
+      return [{ def, date, rank: log ? 0 : 2 - dayIndex }]
+    }))
+    .sort((a, b) => a.rank - b.rank)
+    .slice(0, SCHEDULER_STATUS_DIRECT_READ_LIMIT)
+  // Display only, merged after the gate snapshot: an unreadable key keeps the aggregate's reading.
+  const directGapLogsPromise = Promise.all(directGapReads.map(async (read) => ({
+    ...read,
+    log: await (env.KV.get(`scheduler:run:${read.def.id}:${read.date}`, 'json') as Promise<CronLogEntry | null>).catch(() => null),
+  })))
   // Q41: the deploy gate keeps main's failed24h. Snapshot the logs it reads (no canonical watchdog keys,
   // no FinLab watchdog receipts, no dispatch wait_until) before the display-only enrichment below.
   const gateLogs: Record<string, CronLogEntry[]> = Object.fromEntries(Object.entries(allLogs)
     .map(([date, logs]) => [date, logs
       .filter((entry) => !GATE_UNREAD_TASKS.has(entry.task))
       .map((entry) => (entry.wait_until === undefined ? entry : { ...entry, wait_until: undefined }))]))
+  // Jobs whose display log the gap fill changed; their gate view is replayed on gateLogs below.
+  const gapFilledJobIds = new Set<string>()
+  for (const { def, date, log } of await directGapLogsPromise) {
+    const before = getJobDisplayLog(allLogs[date], def)
+    allLogs[date] = mergeDirectSchedulerLog(allLogs[date] ?? [], log)
+    if (getJobDisplayLog(allLogs[date], def) !== before) gapFilledJobIds.add(def.id)
+  }
   // Watchdog ticks fire together and the daily aggregate is a best-effort read-modify-write, so before a
   // watchdog can be judged missed its canonical per-task key decides whether it ran inside today's window.
   const directWatchdogLogs = await Promise.all(JOB_DEFS
@@ -1200,7 +1290,8 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string, now
   const gateViewByJob = new Map<string, {
     lastStatus: string; todayLog?: CronLogEntry; cells: ReturnType<typeof resolveSchedulerHistoryCell>[]
   }>()
-  const jobs = await Promise.all(JOB_DEFS.map(async (def) => {
+  // `allLogs` is a parameter so a gap-filled job can be replayed on gateLogs for its gate view.
+  const deriveJob = async (def: JobDef, allLogs: Record<string, CronLogEntry[]>) => {
     const todayLog = getJobDisplayLog(allLogs[today], def)
     const chainReplayLog = chainDisplayDate && CHAIN_STEP_IDS.includes(def.id)
       ? getJobDisplayLog(allLogs[chainDisplayDate], def)
@@ -1360,7 +1451,7 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string, now
     })() : null
     const producerDisplay = premarketProducerDisplay(def.id, today, producerStates)
     const lastStatus = producerDisplay?.lastStatus ?? watchdogDisplay?.lastStatus ?? phaseDisplay?.lastStatus ?? executionTicketOverride?.lastStatus ?? baseLastStatus
-    gateViewByJob.set(def.id, watchdogGateView ?? { lastStatus, todayLog, cells: gateCells })
+    gateViewByJob.set(def.id, watchdogGateView ?? { lastStatus, todayLog: getJobDisplayLog(gateLogs[today], def), cells: gateCells })
     const displayTime = executionTicketOverride
       ? { timestamp: executionTicketOverride.lastRunAt, basis: 'updated' as const }
       : resolveSchedulerRunDisplayTime({
@@ -1469,7 +1560,11 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string, now
       canonicalRunId: durableState?.canonical_run_id ?? null,
       finlabRunId: def.id === 'finlab-v4-backfill' ? displayLog?.run_id ?? null : null,
     }
-  }))
+  }
+  const jobs = await Promise.all(JOB_DEFS.map((def) => deriveJob(def, allLogs)))
+  // Q41: the gate never sees the gap fill. Replaying a gap-filled job on gateLogs resets its gate view
+  // (status, today's log, cells) to main's aggregate reading; the returned display row is discarded.
+  await Promise.all(JOB_DEFS.filter((def) => gapFilledJobIds.has(def.id)).map((def) => deriveJob(def, gateLogs)))
 
   const failed24hJobIds = new Set(jobs.filter((job) => {
     const gate = gateViewByJob.get(job.id)

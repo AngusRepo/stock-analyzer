@@ -93,6 +93,12 @@ export async function runFinLabCompletionStage(
     await heartbeat.assertActive('before_complete')
     const waiting = result.startsWith('source waiting;')
     if (!await markPipelineStageFenced(db,{...identity,status:waiting?'waiting':'success'})) throw new Error('finlab_completion_stale_owner')
+    // Another path completed the canonical market data: close the producer's failed display receipt and keep
+    // its cursor_key as evidence. Observability only, so it cannot turn this success into an error.
+    if (!waiting && stage === 'finlab_market') await db.prepare(`UPDATE pipeline_stage_runs
+      SET status='success',last_error='superseded_by_finlab_market',completed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
+      WHERE business_date=? AND stage='finlab_progress' AND status<>'success'`)
+      .bind(date).run().catch(error => console.warn('[finlabCompletion] finlab_progress close failed:', error))
     if (waiting) await db.prepare(`UPDATE pipeline_stage_runs SET attempt_count=MAX(0,attempt_count-1)
       WHERE business_date=? AND stage=? AND canonical_run_id=? AND status='waiting' AND lease_owner IS NULL`)
       .bind(date,stage,runId).run()

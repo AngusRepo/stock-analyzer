@@ -77,3 +77,36 @@ test('explicit new force run can reopen a terminal stage, duplicate force and su
   assert.equal(work,2)
  }finally{await f.mf.dispose()}
 })
+
+test('finlab_market success closes a same-day failed producer progress receipt and keeps its evidence',async()=>{
+ const f=await fixture()
+ try{
+  const evidence=JSON.stringify({run_id:'finlab-v4-daily-20261001-failed',dispatch_attempt:1,sequence:4,phases:[{phase:'validate',status:'failed'}]})
+  await f.db.prepare(`INSERT INTO pipeline_stage_runs(business_date,stage,canonical_run_id,status,cursor_key)
+    VALUES (?,'finlab_progress','finlab-v4-daily-20261001-failed','error',?),('2026-09-30','finlab_progress','other-day','error','{}')`)
+    .bind(date,evidence).run()
+  await queueFinLabCompletion(f.env,date,run,false,false)
+  const sequence=f.sent.find(m=>m.type==='finlab_sequence_refresh')
+  await runFinLabCompletionStage(f.env,sequence,'finlab_sequence',async()=>'ready')
+  const progress=()=>f.db.prepare("SELECT status,last_error,cursor_key FROM pipeline_stage_runs WHERE business_date=? AND stage='finlab_progress'").bind(date).first<any>()
+  assert.equal((await progress()).status,'error','sequence completion is not market data')
+  const msg={type:'finlab_backfill_complete' as const,triggerTime:date,runId:run,cursor:0}
+  await queueFinLabCompletion(f.env,date,run)
+  await runFinLabCompletionStage(f.env,msg,'finlab_market',async()=>'ready')
+  assert.deepEqual(await progress(),{status:'success',last_error:'superseded_by_finlab_market',cursor_key:evidence})
+  const other=await f.db.prepare("SELECT status FROM pipeline_stage_runs WHERE business_date='2026-09-30' AND stage='finlab_progress'").first<any>()
+  assert.equal(other.status,'error','other dates are untouched')
+ }finally{await f.mf.dispose()}
+})
+
+test('finlab_market waiting does not close the producer progress receipt',async()=>{
+ const f=await fixture()
+ try{
+  await f.db.prepare(`INSERT INTO pipeline_stage_runs(business_date,stage,canonical_run_id,status,cursor_key)
+    VALUES (?,'finlab_progress','failed-run','error','{}')`).bind(date).run()
+  const msg={type:'finlab_backfill_complete' as const,triggerTime:date,runId:run,cursor:0}
+  await runFinLabCompletionStage(f.env,msg,'finlab_market',async()=>'source waiting; queued retry')
+  const row=await f.db.prepare("SELECT status,last_error FROM pipeline_stage_runs WHERE stage='finlab_progress'").first<any>()
+  assert.deepEqual(row,{status:'error',last_error:null})
+ }finally{await f.mf.dispose()}
+})

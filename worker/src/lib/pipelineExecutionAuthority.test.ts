@@ -13,12 +13,17 @@ class Statement {
   constructor(private readonly db: FakeDispatchD1, private readonly sql: string) {}
   bind(...values: unknown[]) { this.values = values; return this }
   async first<T>(): Promise<T | null> { return this.db.first(this.sql, this.values) as T | null }
+  // The fake keeps only the pipeline_execution row; child progress rows are covered by pipelineProgress.test.ts.
+  run() { return this.sql.includes("stage IN ('pipeline_progress'") ? null : this.db.first(this.sql, this.values) }
 }
 
 class FakeDispatchD1 {
   row: PipelineStageRow | null = null
   leaseLive = true
   prepare(sql: string) { return new Statement(this, sql) }
+  async batch(statements: Statement[]) {
+    return statements.map((statement) => { const row = statement.run(); return { results: row ? [row] : [] } })
+  }
 
   first(sql: string, values: unknown[]): PipelineStageRow | null {
     if (sql.includes("INSERT INTO pipeline_stage_runs") && sql.includes("'pipeline_execution'")) {

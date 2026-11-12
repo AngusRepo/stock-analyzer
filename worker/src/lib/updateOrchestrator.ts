@@ -65,6 +65,7 @@ import {
 } from './s12ReplaySplitReadModels'
 import {
   INDICATOR_QUEUE_SHARD_COUNT,
+  indicatorFinalizeDeferredKey,
   recordIndicatorQueueBatchProgress,
 } from './indicatorQueueRecovery'
 
@@ -1865,6 +1866,12 @@ async function deferFinalizeContinuation(
     type: 'finalize_update', cursor: 0, triggerTime, runId, shardCount, attempt: 1,
     continuationAttempt: continuationAttempt + 1,
   }, { delaySeconds } as any)
+  // The lease is released until the delayed retry runs; tell the indicator watchdog this run still has an
+  // owner so it does not spend its recovery budget or enqueue a second finalizer chain.
+  await env.KV.put(indicatorFinalizeDeferredKey(triggerTime, runId), JSON.stringify({
+    continuation_attempt: continuationAttempt + 1, delay_seconds: delaySeconds, reason: reason.slice(0, 300),
+  }), { expirationTtl: Math.max(60, Math.ceil(delaySeconds) + 180) })
+    .catch((error) => console.warn('[Queue] finalizer deferred marker write failed:', error))
 }
 
 async function finalizeLeaseWaitSeconds(env: Bindings, triggerTime: string, runId: string): Promise<number> {
@@ -1873,6 +1880,14 @@ async function finalizeLeaseWaitSeconds(env: Bindings, triggerTime: string, runI
   if (!Number.isFinite(expiresAtMs)) return FINALIZE_CONTINUATION_RETRY_DELAY_SECONDS
   const untilExpiry = Math.ceil((expiresAtMs - Date.now()) / 1000) + 30
   return Math.min(FINALIZE_LEASE_TTL_MS / 1000 + 30, Math.max(FINALIZE_CONTINUATION_RETRY_DELAY_SECONDS, untilExpiry))
+}
+
+/** A failed post-pipeline or post-verify stage is terminal for the root: close its durable ticket now. */
+async function closeEveningChainRootAfterStageError(env: Bindings, triggerTime: string, runId: string): Promise<void> {
+  const { closeEveningChainRootAndLog } = await import('./eveningChainRootClosure')
+  await closeEveningChainRootAndLog(env.KV, databaseForDataDomain(env, 'ops'), {
+    businessDate: triggerTime, canonicalRunId: runId, alertEnv: env,
+  }).catch((error) => console.warn(`[Queue] evening-chain root closure failed date=${triggerTime} run_id=${runId}:`, error))
 }
 
 export async function refreshMatureStrategyEvidenceBeforeScreener(
@@ -3996,6 +4011,8 @@ export async function processUpdateBatch(
       })
       if (!finalized) {
         console.warn(`[Queue] stale post-pipeline finalizer ignored date=${triggerTime} run_id=${runId}`)
+      } else if (status === 'error') {
+        await closeEveningChainRootAfterStageError(env, triggerTime, runId)
       }
     } catch (error) {
       if (isPipelineStageLeaseLost(error) || heartbeat.leaseError()) {
@@ -4020,6 +4037,8 @@ export async function processUpdateBatch(
         console.warn(`[Queue] stale post-pipeline error finalizer ignored date=${triggerTime} run_id=${runId}`)
         return
       }
+      // No root closure here: the queue retries this stage (resumeWaiting). A failure that outlives its
+      // retries is closed by the root deadline sweep.
       throw error
     } finally {
       await heartbeat.stop()
@@ -4210,6 +4229,8 @@ export async function processUpdateBatch(
         console.warn(`[Queue] stale post-verify error telemetry ignored date=${triggerTime} run_id=${runId}`)
         return
       }
+      // Close the durable root first; the KV receipt below then keeps the post-verify error detail.
+      await closeEveningChainRootAfterStageError(env, triggerTime, runId)
       await logSchedulerResult(env.KV, 'evening-chain', {
         status: 'error',
         summary: `root chain stopped in post-verify callback chain: ${errorMessage}`,
@@ -4568,7 +4589,7 @@ export async function processUpdateBatch(
       const { propagateStrategyLearningTerminalFailure } = await import('./strategyLearningRunState')
       await propagateStrategyLearningTerminalFailure(runStateDb, {
         businessDate: triggerTime, canonicalRunId: state.canonical_run_id,
-      })
+      }, env.KV)
       // Terminal errors require an explicit repaired continuation, not a fresh
       // pagination run on every queue redelivery.
       return
@@ -4969,7 +4990,7 @@ export async function processUpdateBatch(
       if (terminalPolicyClosureFailure || !materializationValidated) {
         await propagateStrategyLearningTerminalFailure(runStateDb, {
           businessDate: triggerTime, canonicalRunId,
-        })
+        }, env.KV)
       }
       await Promise.allSettled([
         logSchedulerResult(env.KV, 'strategy-learning', {

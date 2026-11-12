@@ -355,13 +355,20 @@ export async function logSchedulerRunResult(
       kv.put(`cron:log:${task}:${today}`, payload, { expirationTtl: DAILY_RUN_LOG_TTL_SECONDS }),
     ])
 
-    const aggregateKey = `scheduler:run:daily:${today}`
-    const aggregate = await kv.get(aggregateKey, 'json') as Record<string, SchedulerRunLogEntry> | null
-    await kv.put(
-      aggregateKey,
-      JSON.stringify({ ...(aggregate ?? {}), [task]: entry }),
-      { expirationTtl: DAILY_RUN_LOG_TTL_SECONDS },
-    )
+    // The daily aggregate is an unfenced read-modify-write shared by every task (lost updates, and KV's
+    // one-write-per-second-per-key limit). It is a best-effort read cache: `strict` covers only the
+    // per-task keys above, which readers treat as the source of truth.
+    try {
+      const aggregateKey = `scheduler:run:daily:${today}`
+      const aggregate = await kv.get(aggregateKey, 'json') as Record<string, SchedulerRunLogEntry> | null
+      await kv.put(
+        aggregateKey,
+        JSON.stringify({ ...(aggregate ?? {}), [task]: entry }),
+        { expirationTtl: DAILY_RUN_LOG_TTL_SECONDS },
+      )
+    } catch (error) {
+      console.warn(`[schedulerRunLogger] daily aggregate write failed for task=${task}:`, error)
+    }
   } catch (error) {
     // Scheduler run logging should never break the task itself, but silent failure
     // makes Scheduler incidents impossible to diagnose.

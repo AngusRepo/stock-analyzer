@@ -38,13 +38,16 @@ export async function claimIndicatorQueueDispatch(
 
 /** A durable screener producer owns recovery after this handoff, even if a
  * duplicate legacy indicator run still has messages in the queue. */
-export async function closeHandedOffIndicatorRun(env: Bindings, date: string, runId: string): Promise<boolean> {
+export async function closeHandedOffIndicatorRun(
+  env: Bindings, date: string, runId: string, options: { sameRunOnly?: boolean } = {},
+): Promise<boolean> {
   const row = await databaseForDataDomain(env, 'ops').prepare(`
     SELECT canonical_run_id FROM pipeline_stage_runs
      WHERE business_date=? AND stage='screener_v2' AND cursor_key IS NOT NULL AND cursor_key<>''
        AND status IN ('running','success','waiting')
   `).bind(date).first<{ canonical_run_id: string }>()
   if (!row?.canonical_run_id) return false
+  if (options.sameRunOnly && row.canonical_run_id !== runId) return false
   await env.KV.put(`cron:indicator-queue:${date}:${runId}:finalized`,
     JSON.stringify({handoff_owner:row.canonical_run_id,stage:'screener_v2',superseded:row.canonical_run_id!==runId}),
     {expirationTtl:7*86400})

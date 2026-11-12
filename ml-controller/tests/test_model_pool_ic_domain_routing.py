@@ -10,12 +10,16 @@ def test_weekly_ic_reads_canonical_learning_d1() -> None:
     ).read_text(encoding="utf-8")
 
     assert "LEARNING_D1_CLIENT = client_for_domain(D1DataDomain.LEARNING)" in source
-    function = next(node for node in ast.parse(source).body
+    tree = ast.parse(source).body
+    function = next(node for node in tree
         if isinstance(node, ast.AsyncFunctionDef) and node.name == 'compute_weekly_ic')
     weekly_ic = ast.get_source_segment(source, function)
-    assert weekly_ic.count("rows = LEARNING_D1_CLIENT.query(") == 2
-    assert "rows = d1_query(" not in weekly_ic
-    assert "FROM predictions" in weekly_ic
+    assert "_load_weekly_ic_rows(all_tracked, req.run_date, req.lookback_days)" in weekly_ic
+    loader = ast.get_source_segment(source, next(node for node in tree
+        if isinstance(node, ast.FunctionDef) and node.name == '_load_weekly_ic_rows'))
+    assert loader.count("LEARNING_D1_CLIENT.query(") == 1
+    assert "d1_query(" not in loader
+    assert "FROM predictions" in loader
 
 
 def test_training_price_queries_use_core_market_read_model_after_cutover() -> None:

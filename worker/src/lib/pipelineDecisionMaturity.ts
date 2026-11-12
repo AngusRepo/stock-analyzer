@@ -1763,7 +1763,8 @@ export async function buildPipelineDecisionMaturityPacket(
              SUM(CASE WHEN matrix.evaluable=1 AND matrix.strategy_hit=1 THEN 1 ELSE 0 END) target
         FROM ranked_runs run
         JOIN strategy_label_matrix_v4 matrix
-          ON matrix.producer_run_id=run.producer_run_id
+          ON matrix.signal_date=run.signal_date
+         AND matrix.producer_run_id=run.producer_run_id
          AND matrix.labeler_version=run.labeler_version
        WHERE run.ordinal=1
        GROUP BY run.signal_date

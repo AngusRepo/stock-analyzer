@@ -1,4 +1,6 @@
 import { eveningClosureDisplay } from './eveningClosureDisplay'
+import { postcloseDispatchLabel, withPostcloseDispatchWait } from './postcloseDispatchWait'
+import { isMissedWatchdog } from './missedWatchdog'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import {
@@ -40,7 +42,7 @@ import StandaloneJobRegistry from './StandaloneJobRegistry'
 import JobRunTiming from './JobRunTiming'
 import DailyReadinessBoard from './DailyReadinessBoard'
 import { pipelinePreparationLabel, PipelinePhaseDetails, SchedulerStageCard } from '../SchedulerPipelineChain'
-import { PREMARKET_READINESS_IDS } from './dailyReadinessPhases'
+import { dailyPhaseForStage, PREMARKET_READINESS_IDS } from './dailyReadinessPhases'
 import { FINLAB_STAGE_CARDS, expandFinlabStages, finlabStageCards } from '@/lib/finlabStageCards'
 import { PIPELINE_STAGE_CARDS, expandPipelineStages, pipelineStageCards, pipelineRunSummary } from '@/lib/pipelineStageCards'
 import './ExecutionChainPanel.css'
@@ -544,6 +546,10 @@ export default function ExecutionChainPanel({
       if (rootClosure) {
         next.set('evening-closure', eveningClosureDisplay(rootClosure))
       }
+      const dispatchLabel = postcloseDispatchLabel(rootClosure)
+      next.forEach((job, id) => {
+        if (dailyPhaseForStage(id) === 'evidence') next.set(id, withPostcloseDispatchWait(job, dispatchLabel))
+      })
     }
     scopeExecutionStageIds(scope).forEach((id) => {
       const definition = STAGES[id]
@@ -567,7 +573,7 @@ export default function ExecutionChainPanel({
   const scopeJobs = stageIds.map((id) => scopedJobMap.get(id))
   const availableJobs = scopeJobs.filter((job): job is SchedulerJob => Boolean(job))
   const currentJob = [...availableJobs]
-    .filter((job) => ['running', 'blocked', 'waiting'].includes(visualStatus(job)))
+    .filter((job) => ['running', 'blocked', 'waiting'].includes(visualStatus(job)) && !isMissedWatchdog(job))
     .sort((a, b) => statusPriority(visualStatus(a)) - statusPriority(visualStatus(b)))[0]
     ?? [...availableJobs].reverse().find((job) => visualStatus(job) === 'completed')
     ?? availableJobs[0]

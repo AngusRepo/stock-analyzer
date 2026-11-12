@@ -325,6 +325,8 @@ export type SchedulerJob = {
   lastStatus: 'success' | 'failed' | 'blocked' | 'running' | 'skip' | 'waiting' | 'sleep'
   /** Set on a skip that stands in for work which should have run for real. */
   attentionReason?: string | null
+  /** A watchdog with no receipt from inside today's open window. */
+  missedWindow?: boolean
   statusScope?: 'today' | 'historical_replay' | 'schedule' | 'cadence_cycle' | 'durable_event'
   statusRunDate?: string | null
   lastDuration: string
@@ -385,6 +387,8 @@ export type SchedulerStatus = {
     total: number
     active: number
     failed24h: number
+    /** Watchdogs that missed today's window; shown with 24h Failed, not read by the deploy gate. */
+    missed24h?: number
     successRate7d: number
     nextJob: string
     nextIn: string

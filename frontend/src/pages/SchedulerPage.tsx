@@ -157,6 +157,9 @@ export default function SchedulerPage() {
     nextJob: 'N/A',
     nextIn: 'N/A',
   }
+  // Missed watchdog windows count here for the reader; stats.failed24h stays the deploy gate's count.
+  const missed24h = stats.missed24h ?? 0
+  const failed24hShown = stats.failed24h + missed24h
   const pipelineLast = jobs.find((job) => job.id === 'pipeline')
 
   return (
@@ -195,7 +198,7 @@ export default function SchedulerPage() {
         <section className="grid grid-cols-1 overflow-hidden rounded-2xl border border-[#3a3125] bg-[#3a3125] md:grid-cols-5">
           <MetricCell label="Jobs" value={String(stats.total)} tone="info" detail={`${stats.active} active`} />
           <MetricCell label="7d SLO" value={`${stats.successRate7d}%`} tone={stats.successRate7d >= 95 ? 'ok' : stats.successRate7d >= 80 ? 'warn' : 'error'} />
-          <MetricCell label="24h Failed" value={String(stats.failed24h)} tone={stats.failed24h ? 'error' : 'ok'} detail={`${failedJobs.length} current failed`} />
+          <MetricCell label="24h Failed" value={String(failed24hShown)} tone={failed24hShown ? 'error' : 'ok'} detail={`${failedJobs.length} current failed${missed24h ? ` · ${missed24h} watchdog missed` : ''}`} />
           <MetricCell label="Next Job" value={stats.nextJob || 'N/A'} tone="neutral" detail={stats.nextIn || 'N/A'} />
           <MetricCell label="Pipeline" value={pipelineLast?.lastDuration ?? 'N/A'} tone={pipelineLast && !suspiciousDuration(pipelineLast) ? 'ok' : 'warn'} detail={pipelineLast?.lastRun ?? 'no run'} />
         </section>

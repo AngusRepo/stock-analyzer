@@ -46,6 +46,8 @@ export type SchedulerDisplayStatus = {
   statusScope: SchedulerStatusScope
   statusRunDate: string | null
   staleReason?: string
+  /** A watchdog owing a receipt for this window: only an execution ticket from inside it can replace the status. */
+  windowOpenedAt?: string
 }
 type SchedulerDurationConcern = 'expected_short' | 'suspicious_short' | null
 
@@ -54,7 +56,7 @@ const JOB_DEF_METADATA: JobDef[] = [
   { id: 'market-close-refresh', name: 'Market Close Refresh', schedule: 'Weekdays 18:10', cron: '10 10 * * 1-5', group: 'pipeline_chain', chainIndex: 1 },
   { id: 'evening-chain', name: 'Evening Chain', schedule: 'Weekdays 21:45', cron: '45 13 * * 1-5', group: 'pipeline_chain', chainIndex: 2 },
   { id: 'finlab-v4-backfill', name: 'FinLab V4 Backfill', schedule: 'Inside evening chain', cron: '', group: 'pipeline_chain', chainIndex: 3 },
-  { id: 'finlab-backfill-watchdog', name: 'FinLab Pending Watchdog', schedule: 'Weekdays 22:00-23:50 / 10m', cron: '*/10 13-15 * * 1-5', group: 'pipeline_chain', chainIndex: 3 },
+  { id: 'finlab-backfill-watchdog', name: 'FinLab Pending Watchdog', schedule: 'Weekdays 21:00-23:50 / 10m', cron: '*/10 13-15 * * 1-5', group: 'pipeline_chain', chainIndex: 3 },
   { id: 'indicator-queue-watchdog', name: 'Indicator Queue Watchdog', schedule: 'Weekdays 21:00-01:55 / 5m', cron: '*/5 13-17 * * 1-5', group: 'pipeline_chain', chainIndex: 5 },
   { id: 'allocator-ev-lifecycle-watchdog', name: 'Allocator EV Lifecycle Watchdog', schedule: 'Weekdays 21:00-01:50 / 10m', cron: '*/10 13-17 * * 1-5', group: 'daily' },
   { id: 'active8-oof-daily', name: 'Active-8 Daily Evidence', schedule: 'Snapshot-ready event + daily recovery (waits for premarket)', cron: '55 17 * * 1-5', group: 'pipeline_chain' },
@@ -163,7 +165,7 @@ const JOB_DEFS: JobDef[] = JOB_DEF_METADATA.map((def) => ({
 
 export const SCHEDULER_STATUS_JOB_DEFS = JOB_DEFS
 
-const CHAIN_STEP_IDS = [
+export const CHAIN_STEP_IDS = [
   'market-close-refresh',
   'evening-chain',
   'finlab-v4-backfill',
@@ -190,12 +192,14 @@ const CHAIN_STEP_IDS = [
   'strategy-learning',
 ]
 const PIPELINE_CHILD_TASKS = new Set(['ml-predict', 'recommendation'])
-const DURABLE_EVENT_TASK_IDS = new Set(['dataset-snapshot-export', 'active8-oof-daily'])
+export const DURABLE_EVENT_TASK_IDS = new Set(['dataset-snapshot-export', 'active8-oof-daily'])
 const SCHEDULER_STATUS_SCAN_DAYS = 7
 const SCHEDULER_STATUS_LEGACY_FALLBACK_DAYS = 2
 
 export function estimateSchedulerStatusKvReads(): number {
-  return SCHEDULER_STATUS_SCAN_DAYS * 2 + CHAIN_STEP_IDS.filter((task) => task !== 'evening-chain').length + 2
+  // + today's holiday marker and canonical keys for idle scheduled watchdogs
+  const watchdogs = JOB_DEFS.filter((def) => def.id.endsWith('-watchdog') && watchdogWindowOpenTwMinute(def) != null).length
+  return SCHEDULER_STATUS_SCAN_DAYS * 2 + CHAIN_STEP_IDS.filter((task) => task !== 'evening-chain').length + 3 + watchdogs
 }
 
 export interface SchedulerDisplayLogCandidate {
@@ -366,7 +370,7 @@ export type DurablePipelineStageDisplayRow = {
   last_error: string | null
 }
 
-const DURABLE_STAGE_JOB_IDS: Record<DurablePipelineStageDisplayRow['stage'], string> = {
+export const DURABLE_STAGE_JOB_IDS: Record<DurablePipelineStageDisplayRow['stage'], string> = {
   pipeline_execution: 'pipeline',
   post_pipeline_chain: 'post-pipeline-chain',
   verify_v2: 'verify-v2',
@@ -738,7 +742,13 @@ export function resolveSchedulerLogStatus(
   if (log.status === 'error') return { status: 'failed', staleRunning: false }
   if (log.status === 'skipped') return { status: 'skip', staleRunning: false }
   if (log.status === 'triggered' || log.status === 'running') {
-    const ageMs = logAgeMs(log, nowMs)
+    // Parked on a scheduled dispatch: waiting until then, and the stall SLA starts at the dispatch.
+    const waitUntilMs = parseLogTime(log.wait_until)
+    if (waitUntilMs != null && nowMs < waitUntilMs) return { status: 'waiting', staleRunning: false }
+    const ageMs = logAgeMs(
+      waitUntilMs != null && waitUntilMs > (parseLogTime(log.timestamp) ?? 0) ? { ...log, timestamp: log.wait_until! } : log,
+      nowMs,
+    )
     const slaMs = runningSlaMs(def)
     const runDate = log.run_date || timestampTwDate(log.timestamp)
     if (def?.id === 'evening-chain' && log.status === 'running' && AFTER_CLOSE_WAIT_SUMMARY.test(log.summary ?? '')
@@ -817,7 +827,55 @@ export function resolveSchedulerHistoryCell(input: {
   return { cell: due ? 'missing' : 'none', evidenceAt: null, stuck: false }
 }
 
-function inferIdleStatus(def: Pick<JobDef, 'group' | 'chainIndex'>, nextRun: string, today: string): SchedulerLastStatus {
+// Read for the status page only; the PR-base aggregate read (and so the deploy gate's failed24h) never saw them.
+const GATE_UNREAD_TASKS = new Set(['finlab-backfill-watchdog'])
+
+type IdleJobDef = Pick<JobDef, 'id' | 'group' | 'chainIndex'> & Partial<Pick<JobDef, 'cron' | 'timeZone'>>
+
+// The trigger route writes a receipt (or ticket) on every tick, including no-ops and holiday skips.
+// One sync attempt (up to 10m) plus a missed tick may pass before the first receipt lands.
+const WATCHDOG_FIRST_RECEIPT_GRACE_MS = 20 * 60_000
+
+/** Minute of the Taiwan day when a weekday repeating window (`*\/N H-H * * 1-5`) opens; null when it cannot be read. */
+export function watchdogWindowOpenTwMinute(def: IdleJobDef): number | null {
+  const match = /^\*\/\d{1,2} (\d{1,2})-\d{1,2} \* \* 1-5$/.exec(def.cron ?? '')
+  if (!match) return null
+  const minute = Number(match[1]) * 60 + (def.timeZone === 'Asia/Taipei' ? 0 : 8 * 60)
+  // A UTC window opening after Taiwan midnight would fall on the next Taiwan weekday; no watchdog has one.
+  return minute < 1440 ? minute : null
+}
+
+/** When a scheduled watchdog's window opens on this Taiwan weekday; null on a weekend or without a window of its own. */
+function watchdogWindowOpenMs(def: IdleJobDef, today: string): number | null {
+  if (!def.id.endsWith('-watchdog') || !isWeekdayTw(today)) return null
+  const openMinute = watchdogWindowOpenTwMinute(def)
+  return openMinute == null ? null : Date.parse(`${today}T00:00:00.000Z`) + (openMinute - 8 * 60) * 60_000
+}
+
+/** Once today's window is open a watchdog owes a receipt from inside it: waiting through the grace, then missed. */
+function watchdogWindowGap(
+  def: IdleJobDef, today: string, nowMs: number, holiday: boolean, todayLog?: CronLogEntry,
+): SchedulerDisplayStatus | null {
+  const openMs = watchdogWindowOpenMs(def, today)
+  if (openMs == null || holiday || nowMs < openMs) return null
+  // Ticks after midnight of last night's window land on today's key; they say nothing about tonight's window.
+  if ((parseLogTime(todayLog?.timestamp) ?? Number.NEGATIVE_INFINITY) >= openMs) return null
+  const openedAt = new Date(openMs).toISOString()
+  if (nowMs < openMs + WATCHDOG_FIRST_RECEIPT_GRACE_MS) {
+    return { status: 'waiting', statusScope: 'schedule', statusRunDate: null, windowOpenedAt: openedAt }
+  }
+  return {
+    status: 'failed',
+    statusScope: 'today',
+    statusRunDate: today,
+    staleReason: `missed: no ${today} receipt since its window opened at ${new Date(openMs + 8 * 3600_000).toISOString().slice(11, 16)} TW`,
+    windowOpenedAt: openedAt,
+  }
+}
+
+function inferIdleStatus(def: Pick<JobDef, 'id' | 'group' | 'chainIndex'>, nextRun: string, today: string): SchedulerLastStatus {
+  // Outside its open window a watchdog acts only when its owner stalls; nothing is pending on it.
+  if (def.id.endsWith('-watchdog')) return 'sleep'
   if (nextRunTwDate(nextRun) === today) return 'waiting'
   if (def.group === 'pipeline_chain' && def.chainIndex != null && def.chainIndex > 1 && isWeekdayTw(today)) return 'waiting'
   return 'sleep'
@@ -838,9 +896,13 @@ export function resolveSchedulerDisplayStatus(input: {
   activeReplayHeartbeatAt?: string | null
   activeReplayClosureAt?: string | null
   activeReplayIsRunning?: boolean
-  def: Pick<JobDef, 'id' | 'group' | 'chainIndex'>
+  def: IdleJobDef
   nextRun: string
   today: string
+  /** `holiday:<today>` is set: an idle watchdog is out of window. */
+  holiday?: boolean
+  /** false replays the PR-base reading (no watchdog window judgment) for the deploy gate. */
+  windowGap?: boolean
   nowMs?: number
 }): SchedulerDisplayStatus {
   const {
@@ -857,6 +919,8 @@ export function resolveSchedulerDisplayStatus(input: {
     today,
     nowMs = Date.now(),
   } = input
+  const windowGap = input.windowGap === false ? null : watchdogWindowGap(def, today, nowMs, input.holiday ?? false, todayLog)
+  if (windowGap) return windowGap
   const activeRunDate = String(activeReplayRunDate ?? '').trim()
   const activeLogRunDate = String(activeReplayLog?.run_date ?? '').trim()
   const replayObservedToday = timestampTwDate(activeReplayLog?.timestamp) === today
@@ -933,6 +997,8 @@ export function resolveBusinessDateScopedChainDisplay(input: {
   chainStatusDate: string | null
   today: string
   exactLog?: CronLogEntry
+  /** Latest chain step log of this chain date; the root is alive while its steps keep writing. */
+  heartbeatAt?: string
   nowMs?: number
 }): { displayLog?: CronLogEntry; resolvedDisplay: SchedulerDisplayStatus } | null {
   const chainDate = String(input.chainStatusDate ?? '').trim()
@@ -953,7 +1019,11 @@ export function resolveBusinessDateScopedChainDisplay(input: {
     }
   }
 
-  const resolved = resolveSchedulerLogStatus(exactLog, input.def, input.nowMs)
+  const heartbeatMs = input.def.id === 'evening-chain' ? parseLogTime(input.heartbeatAt) : null
+  const statusLog = heartbeatMs != null && heartbeatMs > (parseLogTime(exactLog.timestamp) ?? 0)
+    ? { ...exactLog, timestamp: String(input.heartbeatAt) }
+    : exactLog
+  const resolved = resolveSchedulerLogStatus(statusLog, input.def, input.nowMs)
   return {
     displayLog: exactLog,
     resolvedDisplay: {
@@ -1088,6 +1158,23 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string, now
       allLogs[chainDisplayDate] ?? [],
     )
   }
+  // Q41: the deploy gate keeps main's failed24h. Snapshot the logs it reads (no canonical watchdog keys,
+  // no FinLab watchdog receipts, no dispatch wait_until) before the display-only enrichment below.
+  const gateLogs: Record<string, CronLogEntry[]> = Object.fromEntries(Object.entries(allLogs)
+    .map(([date, logs]) => [date, logs
+      .filter((entry) => !GATE_UNREAD_TASKS.has(entry.task))
+      .map((entry) => (entry.wait_until === undefined ? entry : { ...entry, wait_until: undefined }))]))
+  // Watchdog ticks fire together and the daily aggregate is a best-effort read-modify-write, so before a
+  // watchdog can be judged missed its canonical per-task key decides whether it ran inside today's window.
+  const directWatchdogLogs = await Promise.all(JOB_DEFS
+    .filter((def) => {
+      const openMs = watchdogWindowOpenMs(def, today)
+      return openMs != null && nowMs >= openMs + WATCHDOG_FIRST_RECEIPT_GRACE_MS
+        && (parseLogTime(getJobDisplayLog(allLogs[today], def)?.timestamp) ?? Number.NEGATIVE_INFINITY) < openMs
+    })
+    // Display only: an unreadable or malformed key leaves the aggregate's reading, never fails the page or the gate.
+    .map((def) => (env.KV.get(`scheduler:run:${def.id}:${today}`, 'json') as Promise<CronLogEntry | null>).catch(() => null)))
+  allLogs[today] = directWatchdogLogs.reduce((logs, directLog) => mergeDirectSchedulerLog(logs, directLog), allLogs[today] ?? [])
   const activeReplayHeartbeatAt = activeChainDate
     ? (allLogs[activeChainDate] ?? [])
       .filter((entry) => (
@@ -1105,7 +1192,14 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string, now
     ? (allLogs[chainStatusDate] ?? []).find((entry) => entry.task === 'evening-chain' && entry.status === 'success')?.timestamp
     : undefined
 
-  const historyCellsByJob = new Map<string, ReturnType<typeof resolveSchedulerHistoryCell>[]>()
+  // One read, only once a watchdog window has opened on a weekday.
+  // A failed read counts as a trading day, so a missed watchdog stays visible.
+  let todayHoliday: Promise<boolean> | undefined
+  const isTodayHoliday = () => todayHoliday ??= (async () => Boolean(await env.KV.get(`holiday:${today}`)))().catch(() => false)
+
+  const gateViewByJob = new Map<string, {
+    lastStatus: string; todayLog?: CronLogEntry; cells: ReturnType<typeof resolveSchedulerHistoryCell>[]
+  }>()
   const jobs = await Promise.all(JOB_DEFS.map(async (def) => {
     const todayLog = getJobDisplayLog(allLogs[today], def)
     const chainReplayLog = chainDisplayDate && CHAIN_STEP_IDS.includes(def.id)
@@ -1133,8 +1227,15 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string, now
       durable: durableStageStates.get(`${date}:${def.id}`),
       nowMs,
     }))
-    historyCellsByJob.set(def.id, historyCells)
     const history7d = historyCells.map(({ cell }) => cell).reverse()
+    const gateCells = displayDates.map((date) => resolveSchedulerHistoryCell({
+      def,
+      date,
+      log: getJobDisplayLog(gateLogs[date], def),
+      rootLog: gateLogs[date]?.find((entry) => entry.task === 'evening-chain'),
+      durable: durableStageStates.get(`${date}:${def.id}`),
+      nowMs,
+    }))
 
     const baseResolvedDisplay = resolveSchedulerDisplayStatus({
       todayLog,
@@ -1148,6 +1249,7 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string, now
       cadenceCycleLog,
       nextRun,
       today,
+      holiday: nowMs >= (watchdogWindowOpenMs(def, today) ?? Number.POSITIVE_INFINITY) ? await isTodayHoliday() : false,
       nowMs,
     })
     const chainScopedDisplay = resolveBusinessDateScopedChainDisplay({
@@ -1155,6 +1257,7 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string, now
       chainStatusDate: chainDisplayDate,
       today,
       exactLog: chainReplayLog,
+      heartbeatAt: chainDisplayDate === activeChainDate ? activeReplayHeartbeatAt : undefined,
       nowMs,
     })
     let resolvedDisplay = chainScopedDisplay?.resolvedDisplay ?? baseResolvedDisplay
@@ -1206,7 +1309,8 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string, now
     })
     const executionTicketOverride = reconcileSchedulerExecutionTicketStatus({
       baseStatus: baseLastStatus,
-      baseTimestamp,
+      // A ticket left by last night's after-midnight tick cannot stand in for tonight's missed window.
+      baseTimestamp: resolvedDisplay.windowOpenedAt ?? baseTimestamp,
       ticket: executionTicket,
       expectedRunDate: resolvedDisplay.statusRunDate,
     })
@@ -1226,9 +1330,37 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string, now
       log: allLogs[resolvedDisplay.statusRunDate ?? '']?.find(row => row.task === 'pipeline'),
       ticketStatus: executionTicket?.status,
     }))
-    const watchdogDisplay = premarketWatchdogDisplay(def.id, displayLog, executionTicket?.status)
+    // A watchdog owing tonight's receipt is judged on this window only, never on an older receipt's note.
+    const watchdogDisplay = resolvedDisplay.windowOpenedAt ? null : premarketWatchdogDisplay(def.id, displayLog, executionTicket?.status)
+    // Only watchdog rows are enriched (window gap, canonical keys, FinLab watchdog receipts): for them the gate
+    // replays the PR-base reading on gateLogs. No durable, phase or producer display applies to a watchdog.
+    const watchdogGateView = def.id.endsWith('-watchdog') ? (() => {
+      const gateTodayLog = getJobDisplayLog(gateLogs[today], def)
+      const base = selectSchedulerDisplayLogs(dates.map((date) => ({ date, log: getJobDisplayLog(gateLogs[date], def) })))
+      const baseLog = base.lastAttempt ?? base.lastEffective
+      const resolved = resolveSchedulerDisplayStatus({
+        todayLog: gateTodayLog, lastAttempt: base.lastAttempt, def, nextRun, today, nowMs, windowGap: false,
+      })
+      const ticketDate = resolved.statusRunDate ?? today
+      const ticket = selectSchedulerExecutionTicketForDisplay({
+        exactTaskTicket: executionTicketsByTaskDate.get(`${ticketDate}:${accounting.task}`),
+        exactJobTicket: accounting.schedulerJobId ? executionTicketsByJobDate.get(`${ticketDate}:${accounting.schedulerJobId}`) : undefined,
+        latestTaskTicket: latestExecutionTicketByTask.get(accounting.task),
+        physicalRoot: accounting.physicalRoot,
+        scopedRunDate: resolved.statusRunDate,
+      })
+      const ticketStatus = reconcileSchedulerExecutionTicketStatus({
+        baseStatus: resolved.status, baseTimestamp: baseLog?.timestamp ?? null, ticket, expectedRunDate: resolved.statusRunDate,
+      })?.lastStatus
+      return {
+        lastStatus: premarketWatchdogDisplay(def.id, baseLog, ticket?.status)?.lastStatus ?? ticketStatus ?? resolved.status,
+        todayLog: gateTodayLog,
+        cells: gateCells,
+      }
+    })() : null
     const producerDisplay = premarketProducerDisplay(def.id, today, producerStates)
     const lastStatus = producerDisplay?.lastStatus ?? watchdogDisplay?.lastStatus ?? phaseDisplay?.lastStatus ?? executionTicketOverride?.lastStatus ?? baseLastStatus
+    gateViewByJob.set(def.id, watchdogGateView ?? { lastStatus, todayLog, cells: gateCells })
     const displayTime = executionTicketOverride
       ? { timestamp: executionTicketOverride.lastRunAt, basis: 'updated' as const }
       : resolveSchedulerRunDisplayTime({
@@ -1268,6 +1400,10 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string, now
 
     if (producerDisplay) history7d[history7d.length - 1] = producerDisplay.lastStatus === 'error' ? 'failed'
       : producerDisplay.lastStatus === 'success' ? 'success' : producerDisplay.lastStatus === 'waiting' ? 'waiting' : 'running'
+    // A missed watchdog window is today's missing run in the strip and the SLO; failed24h (the deploy gate) does not see it.
+    // An in-window ticket that failed is a real failure with its own error, not a miss.
+    const missedWindow = Boolean(resolvedDisplay.windowOpenedAt) && lastStatus === 'failed' && !executionTicketOverride
+    if (missedWindow && history7d[history7d.length - 1] !== 'failed') history7d[history7d.length - 1] = 'missing'
     const successCount = history7d.filter((item) => item === 'success').length
     const totalCount = history7d.filter((item) => SLO_COUNTED_CELLS.has(item)).length
 
@@ -1288,6 +1424,7 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string, now
       lastEffectiveRunAt: lastEffective?.timestamp ?? null,
       lastEffectiveStatus: lastEffective?.status ?? 'none',
       lastStatus,
+      missedWindow,
       attentionReason: lastStatus === 'skip' ? schedulerSkipAttentionReason(displayLog) : null,
       statusScope: resolvedDisplay.statusScope,
       statusRunDate: resolvedDisplay.statusRunDate,
@@ -1334,20 +1471,21 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string, now
     }
   }))
 
-  const failed24h = jobs.filter((job) => {
-    if (job.lastStatus === 'blocked') return false
-    const def = JOB_DEFS.find((row) => row.id === job.id)
-    const todayLog = def ? getJobDisplayLog(allLogs[today], def) : undefined
+  const failed24hJobIds = new Set(jobs.filter((job) => {
+    const gate = gateViewByJob.get(job.id)
+    if ((gate?.lastStatus ?? job.lastStatus) === 'blocked') return false
+    const todayLog = gate?.todayLog
     if (job.statusAuthority === 'durable_pipeline_stage' && ['news-analyst','us-leading'].includes(job.id)
       && job.statusRunDate === today) return job.lastStatus === 'error'
     if (todayLog?.status === 'error') return true
     // By run_date: a replay-date failure seen in the last 24h, or a run still stuck past its SLA
     // that no later successful run of the job has replaced (cells run newest first).
-    const cells = historyCellsByJob.get(job.id) ?? []
+    const cells = gate?.cells ?? []
     return cells.some(({ cell, evidenceAt, stuck }, index) => cell === 'failed' && (stuck
       ? !cells.slice(0, index).some((later) => later.cell === 'success')
       : nowMs - (parseLogTime(evidenceAt ?? undefined) ?? Number.NEGATIVE_INFINITY) <= 24 * 3600_000))
-  }).length
+  }).map((job) => job.id))
+  const failed24h = failed24hJobIds.size
 
   const allRuns = jobs.flatMap((job) => job.history7d.filter((item) => SLO_COUNTED_CELLS.has(item)))
   const successRate = allRuns.length > 0
@@ -1388,6 +1526,8 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string, now
       total: JOB_DEFS.length,
       active: JOB_DEFS.length,
       failed24h,
+      // Display only: watchdogs that missed today's window and are not already in failed24h, which the deploy gate reads.
+      missed24h: jobs.filter((job) => job.missedWindow && !failed24hJobIds.has(job.id)).length,
       successRate7d: successRate,
       nextJob: nextJob?.name || 'N/A',
       nextIn: nextJob?.nextRun || 'N/A',

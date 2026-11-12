@@ -16,6 +16,8 @@ export interface SchedulerRunLogEntry {
   run_date?: string
   run_scope?: 'live_canonical' | 'historical_replay' | 'derived'
   error?: string
+  /** ISO time before which a running entry is parked on a scheduled dispatch, not stalled. */
+  wait_until?: string
 }
 
 export interface SchedulerRunLogReadOptions {
@@ -106,6 +108,7 @@ const TASK_NAMES: Record<string, string> = {
   'model-ic-rolling': 'Model IC Rolling',
   'model-ic-full-check': 'Model IC Full Check',
   'finlab-v4-backfill': 'FinLab V4 Backfill',
+  'finlab-backfill-watchdog': 'FinLab Pending Watchdog',
   'allocator-ev-lifecycle-watchdog': 'Allocator EV Lifecycle Watchdog',
   'active8-oof-daily': 'Active-8 OOF Daily Materialize',
   'active8-oof-weekly': 'Active-8 OOF Weekly Cohort',
@@ -337,6 +340,7 @@ export async function logSchedulerRunResult(
     run_date: today,
     run_scope: result.run_scope,
     error: typeof result.error === 'string' ? redactSchedulerRunText(result.error, env) : result.error,
+    wait_until: result.wait_until,
     timestamp: new Date().toISOString(),
   }
 

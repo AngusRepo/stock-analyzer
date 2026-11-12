@@ -184,6 +184,15 @@ export function eodExitSchedule(manifest: { timeZone?: string; jobs: Array<{ id:
   return { cron: job.schedule!, twMinute, twTime: twClock(twMinute), windowEndTwMinute: twMinute + EOD_EXIT_TRIGGER_WINDOW_MINUTES }
 }
 
+/** HH:MM Taiwan time of the scheduled post-close research dispatch, read from the manifest. */
+export function postcloseDispatchTwTime(manifest: { timeZone?: string; jobs: Array<{ id: string; schedule?: string; timeZone?: string }> } = schedulerManifest as any): string {
+  const job = manifest.jobs.find(row => row.id === 'postclose-research-dispatch')
+  const match = /^(\d{1,2}) (\d{1,2}) \* \* 1-5$/.exec(job?.schedule ?? '')
+  if (!job || !match || (job.timeZone ?? manifest.timeZone) !== 'UTC' || Number(match[1]) > 59 || Number(match[2]) > 15)
+    throw new Error('postclose_dispatch_schedule_invalid')
+  return twClock(Number(match[2]) * 60 + Number(match[1]) + 8 * 60)
+}
+
 export function eodExitWindowLabel(schedule: EodExitSchedule = eodExitSchedule()): string {
   return `${schedule.twTime}-${twClock(schedule.windowEndTwMinute - 1)}`
 }

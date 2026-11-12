@@ -121,7 +121,7 @@ PAPER_D1_CLIENT = client_proxy_for_domain(D1DataDomain.PAPER)
 
 
 DEFAULT_TIMESFM_SEQUENCE_CONTRACT_POINTS = daily_sequence_target_points()
-from services.alpha_model_roster import model_order, validate_order, is_complete_roster, SUPPORTED_MODELS
+from services.alpha_model_roster import model_order, validate_order, is_complete_roster, SUPPORTED_MODELS, R33_MODELS
 
 ACTIVE_ALPHA_MODEL_SET = set(SUPPORTED_MODELS)
 MODEL_POOL_REQUIRED_MODEL_SET = set(SUPPORTED_MODELS)
@@ -1167,6 +1167,14 @@ async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False
         logger.debug("[Pipeline V2] Modal wait telemetry write skipped: %s", exc)
 
 
+    # R33 (Wei 10/30, m-d): a model with no usable score all day is left to the coverage
+    # check, which writes the error ops line first and then aborts with
+    # r33_model_missing_for_day; batch failures and invalid payloads still raise here.
+    from services.r33_ensemble import is_r33
+    r33_day_outage_to_coverage = is_r33(
+        ((serving_context.get("serving_manifest") or {}) if isinstance(serving_context.get("serving_manifest"), dict)
+         else {}).get("active8_ensemble"))
+
     def _active_required_model(model_name: str, series: list[dict]) -> bool:
         if model_name not in model_order(model_status):
             return False
@@ -1185,7 +1193,7 @@ async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False
         if gnn_map:
             logger.info("[Pipeline V2] GNN GraphSAGE full-universe: %s/%s succeeded", len(gnn_map), len(payloads))
         else:
-            if _active_required_model("GNN", payloads):
+            if _active_required_model("GNN", payloads) and not r33_day_outage_to_coverage:
                 raise RuntimeError(f"GNN active model returned zero usable predictions; summary={gnn_result_summary}")
             logger.warning("[Pipeline V2] GNN GraphSAGE full-universe: 0 succeeded summary=%s", gnn_result_summary)
     elif isinstance(gnn_raw, dict) and gnn_raw.get("results") == []:
@@ -1213,6 +1221,7 @@ async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False
                 f"[Pipeline V2] DLinear universal: {len(dlinear_map)}/{len(sequence_series_by_model.get('DLinear') or [])} succeeded"
             )
         else:
+            # Not an R33 model (model_order rejects DLinear beside TimeXer); never yields to the coverage abort.
             if _active_required_model("DLinear", sequence_series_by_model.get("DLinear") or []):
                 raise RuntimeError("DLinear active model returned zero usable predictions")
             logger.info("[Pipeline V2] DLinear universal: 0 succeeded (likely no trained weights in GCS yet)")
@@ -1241,7 +1250,8 @@ async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False
                 f"[Pipeline V2] PatchTST universal: {len(patchtst_map)}/{len(sequence_series_by_model.get('PatchTST') or [])} succeeded"
             )
         else:
-            if _active_required_model("PatchTST", sequence_series_by_model.get("PatchTST") or []):
+            if (_active_required_model("PatchTST", sequence_series_by_model.get("PatchTST") or [])
+                    and not r33_day_outage_to_coverage):
                 raise RuntimeError("PatchTST active model returned zero usable predictions")
             logger.info("[Pipeline V2] PatchTST universal: 0 succeeded (likely no trained weights in GCS yet)")
     elif isinstance(patchtst_raw, dict) and patchtst_raw.get("results") == []:
@@ -1268,7 +1278,7 @@ async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False
                     out[sym] = row
             summary = _modal_batch_result_summary(raw)
             error_summary = summary.get("error_summary")
-            if len(out) == 0 and series and required:
+            if len(out) == 0 and series and required and not r33_day_outage_to_coverage:
                 raise RuntimeError(
                     f"{name} active model returned zero usable predictions; "
                     f"contract_error_summary={error_summary or 'none'}"
@@ -1335,6 +1345,11 @@ async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False
 
     pred_map: dict[str, dict] = {}
     feature_missing_count = 0
+    # R33 (NEW-1030-06): a failed or absent feature row loses only the three feature models;
+    # the name keeps a skeleton row so its GNN and sequence scores still count.
+    r33_feature_models = tuple(m for m in R33_MODELS if m != "GNN" and m not in SUPPORTED_SEQUENCE_MODELS)
+    feature_schemas = {str(r.get("feature_version") or "").split(":", 1)[0] for r in feature_by_symbol.values()} - {""}
+    r33_feature_schema = next(iter(feature_schemas)) if len(feature_schemas) == 1 else None
     for payload in payloads:
         sym = payload.get("symbol") if isinstance(payload, dict) else None
         if not sym:
@@ -1342,7 +1357,11 @@ async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False
         row = feature_by_symbol.get(sym)
         if row is None:
             feature_missing_count += 1
-            continue
+            if not r33_day_outage_to_coverage:
+                continue
+            from services.r33_serving_inputs import feature_gap_row
+            row = feature_gap_row(payload, feature_errors_by_symbol.get(sym), r33_feature_models,
+                                  feature_schema=r33_feature_schema)
         if isinstance(payload, dict):
             row["stock_meta"] = payload.get("stock_meta") or {}
         sequence_model_eligibility = {}
@@ -1557,7 +1576,8 @@ def _r33_serving_inputs(state, *, payloads, predictions, ensemble, serving_manif
     C28-16 S3). Under R33 the attested rank pool is built from the OPS screener
     pool, the holdings read in load_market_env and the stale set, and the cost
     comes from trading:config.fees (LV5#2). The day's per-model coverage goes to ops
-    system_logs (warn on any gap; a name with a Modal row error is prediction_missing)."""
+    system_logs (warn on any gap; a name with a Modal row error is prediction_missing); a model
+    with no score on any pool row is an error line and aborts the day."""
     from services.r33_ensemble import is_r33, round_trip_cost
     from services.r33_serving_inputs import stale_inputs, staleness_report
     r33 = is_r33(ensemble)
@@ -1575,8 +1595,10 @@ def _r33_serving_inputs(state, *, payloads, predictions, ensemble, serving_manif
         l3_identity=baseline_model_identity(serving_manifest), stale=stale)
     cost = round_trip_cost((state.get('trading_config') or {})['fees'])
     logger.info("[Pipeline V2] R33 rank pool: %s", rank_pool['coverage'] | {'unscored': len(rank_pool['coverage']['unscored'])})
-    from services.r33_serving_inputs import write_coverage_log
-    write_coverage_log(ops_execute, rank_pool, row_errors=dict(row_errors or {}), logger=logger)
+    from services.r33_serving_inputs import require_full_day_coverage, write_coverage_log
+    model_errors = {s: p['model_errors'] for s, p in predictions.items() if isinstance(p, dict) and p.get('model_errors')}
+    require_full_day_coverage(write_coverage_log(ops_execute, rank_pool, row_errors=dict(row_errors or {}), logger=logger,
+                                                 model_errors=model_errors))
     return r33, staleness, rank_pool, cost
 
 
@@ -4415,6 +4437,20 @@ def _pit_feature_source_sets(state, semantics, *, research_only: bool) -> dict:
                                             for version, source in sorted(sources.items())}}
 
 
+def _r33_feature_prep_sources(state, serving_manifest) -> dict:
+    """R33-NEW-11: under R33 the feature models and GNN read their rows from the sealed prep
+    (the legacy daily capture and its PIT variants); absent in every other mode."""
+    from services.r33_ensemble import is_r33
+    if not is_r33(serving_manifest.get("active8_ensemble")):
+        return {}
+    base = state.get("timexer_feature_source")
+    if not isinstance(base, dict) or base.get("schema_version") != "timexer-feature-source-v1":
+        raise ValueError("r33_prep_source_missing")
+    pit = (state.get("timexer_pit_feature_sources") or {}).get("sources") or {}
+    return {"r33_feature_prep_sources": {"schema_version": "r33-feature-prep-sources-v1",
+                                         "base": base, "pit": dict(sorted(pit.items()))}}
+
+
 @artifact_reads
 async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, state_gcs_uri: str,
                                                   research_only: bool = False) -> dict:
@@ -4593,6 +4629,7 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
         "sequence_series": sequence_series,
         "timexer_feature_source": timexer_feature_source,
         **_pit_feature_source_sets(state, semantics if needs_timexer else None, research_only=research_only),
+        **_r33_feature_prep_sources(state, serving_manifest),
         "sequence_model_series_by_model": sequence_series_by_model,
         "sequence_model_contracts": _json_safe(sequence_contracts),
         "active8_shadow_sequence_series_by_model": active8_shadow_sequence_series_by_model,

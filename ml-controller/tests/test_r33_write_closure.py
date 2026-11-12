@@ -102,15 +102,15 @@ def test_one_model_missing_is_z0_for_that_model_and_the_whole_row_missing_is_uns
     assert rows["P6"]["unscored_reason"] == "prediction_missing" and rows["P6"]["score"] is None
 
 
-def test_coverage_log_counts_gaps_per_model_and_warns_on_a_full_outage():
+def test_coverage_log_counts_gaps_per_model_and_a_full_outage_is_an_error():
     predictions = _predictions(missing=("P6",))
     for p in predictions.values():
         del p["model_score_lineage"]["raw_scores"]["ExtraTrees"]
     level, message, meta = coverage_log(_pool(predictions), row_errors={"P6": "feature_context_failed:ValueError:x"})
-    assert level == "warn"
+    assert level == "error" and meta["day_aborted"] is True
     assert meta["by_model"]["ExtraTrees"] == {"missing": 6, "total": 6}
     assert meta["by_model"]["LightGBM"] == {"missing": 1, "total": 6}
-    assert meta["models_fully_missing"] == ["ExtraTrees"] and "ExtraTrees" in message
+    assert meta["models_fully_missing"] == ["ExtraTrees"] and message.startswith("R33 day aborted") and "ExtraTrees" in message
     assert meta["unscored_by_reason"] == {"prediction_missing": 1}
     assert meta["row_errors"] == {"P6": "feature_context_failed:ValueError:x"}
 
@@ -118,6 +118,15 @@ def test_coverage_log_counts_gaps_per_model_and_warns_on_a_full_outage():
 def test_full_coverage_is_an_info_line():
     level, _message, meta = coverage_log(_pool(_predictions()), row_errors={})
     assert level == "info" and meta["models_with_gaps"] == [] and meta["models_fully_missing"] == []
+    assert meta["day_aborted"] is False
+
+
+def test_a_per_name_gap_warns_and_keeps_the_day():
+    predictions = _predictions()
+    del predictions["P2"]["model_score_lineage"]["raw_scores"]["GNN"]
+    level, message, meta = coverage_log(_pool(predictions), row_errors={})
+    assert level == "warn" and meta["models_with_gaps"] == ["GNN"] and not meta["day_aborted"]
+    assert not message.startswith("R33 day aborted")
 
 
 def test_coverage_log_writes_ops_system_logs_and_a_failed_write_never_fails(caplog):
@@ -202,3 +211,32 @@ def test_held_names_outside_the_seed_stay_out_of_the_l3_model_closure(monkeypatc
     state.pop("layer2_recommendation_symbols", None)
     metrics = asyncio.run(pipeline.node_write_d1(state))["metrics"]
     assert metrics["incomplete_active_model_symbols"] == 0 and metrics["formal_evidence_prediction_symbols"] == len(POOL)
+
+
+@pytest.mark.parametrize("model", ["LightGBM", "GNN", "PatchTST"])
+def test_a_model_missing_for_the_whole_day_aborts_after_the_error_line(monkeypatch, model):
+    import json
+    from services import paired_nav_collection
+    monkeypatch.setattr(rank_pool, "load_serving_pool", lambda query, **kw: (list(POOL), {**RECEIPT, "screener_run_id": "run-1"}))
+    monkeypatch.setattr(paired_nav_collection, "baseline_model_identity", lambda manifest: dict(IDENTITY))
+    predictions = _predictions()
+    for p in predictions.values():
+        del p["model_score_lineage"]["raw_scores"][model]
+    calls = []
+    with pytest.raises(RuntimeError, match=f"r33_model_missing_for_day:{model}$"):
+        pipeline._r33_serving_inputs(
+            {"screener_run_id": "run-1", "r33_holdings": [], "trading_config": {"fees": {"commission": 0.001425, "tax": 0.003}}},
+            payloads=[{"symbol": s, "prices": [{"date": DAY}]} for s in POOL], predictions=predictions,
+            ensemble=_ensemble(), serving_manifest={}, run_date=DAY, evidence_only=False, ops_query=None,
+            row_errors={}, ops_execute=lambda sql, params: calls.append(params))
+    assert len(calls) == 1 and calls[0][:2] == ["error", COVERAGE_LOG_CRON]
+    assert json.loads(calls[0][3])["models_fully_missing"] == [model]
+    # A failed ops write still aborts the day.
+    def boom(sql, params):
+        raise RuntimeError("d1 down")
+    with pytest.raises(RuntimeError, match="r33_model_missing_for_day"):
+        pipeline._r33_serving_inputs(
+            {"screener_run_id": "run-1", "r33_holdings": [], "trading_config": {"fees": {"commission": 0.001425, "tax": 0.003}}},
+            payloads=[{"symbol": s, "prices": [{"date": DAY}]} for s in POOL], predictions=predictions,
+            ensemble=_ensemble(), serving_manifest={}, run_date=DAY, evidence_only=False, ops_query=None,
+            row_errors={}, ops_execute=boom)

@@ -45,7 +45,7 @@ test('production-policy recovery requires the complete cross-domain formal front
 
 test('historical strategy evidence preview and rebuild share one eligibility owner', () => {
   assert(learning.includes('export async function listHistoricalStrategyEvidenceV5Dates'))
-  assert(learning.includes('const candidateDates = await listHistoricalStrategyEvidenceV5Dates(db, options)'))
+  assert(learning.includes('?? await listHistoricalStrategyEvidenceV5Dates(db, options)'))
   assert(learning.includes("COALESCE(r.evaluation_contract_version, '') <> 'strategy-evaluation-v2'"))
   assert(learning.includes('SELECT status, evaluation_contract_version, labeler_version'))
   assert(learning.includes("ledgerStatus === 'blocked'"))

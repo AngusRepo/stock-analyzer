@@ -87,6 +87,16 @@ export function buildAdminGcpTriggerTaskMap(
       return runDailyAllocatorEvReadiness(c.env, requestedRunDate() || twToday())
     },
     'allocator-ev-lifecycle-watchdog': async () => {
+      // The nightly first tick also closes evening-chain roots past their deadline. Isolated: a sweep
+      // failure is logged and retried next tick, never failing the lifecycle watchdog itself.
+      try {
+        const { runEveningChainRootDeadlineSweepOnce } = await import('./eveningChainRootClosure')
+        const { databaseForDataDomain } = await import('./dataDomainRegistry')
+        console.log(`[allocator-ev-lifecycle-watchdog] ${await runEveningChainRootDeadlineSweepOnce(
+          c.env.KV, databaseForDataDomain(c.env, 'ops'), twToday())}`)
+      } catch (error) {
+        console.warn('[allocator-ev-lifecycle-watchdog] evening-chain root deadline sweep failed:', error)
+      }
       const { runAllocatorEvLifecycleWatchdog } = await import('./allocatorEvDailyLifecycle')
       return runAllocatorEvLifecycleWatchdog(c.env, requestedRunDate())
     },

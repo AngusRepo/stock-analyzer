@@ -38,6 +38,7 @@ export async function recordPipelineProgress(db: D1Database, runDate: string, ru
       FROM pipeline_stage_runs WHERE business_date=? AND stage='pipeline_execution'
        AND canonical_run_id=? AND status IN ('running','waiting')
     ON CONFLICT(business_date,stage) DO UPDATE SET canonical_run_id=excluded.canonical_run_id,
+      status='running',completed_at=NULL,
       cursor_key=CASE WHEN pipeline_stage_runs.canonical_run_id=excluded.canonical_run_id
         THEN json_set(CASE WHEN COALESCE(json_extract(pipeline_stage_runs.cursor_key,'$.phase_rank'),0)>json_extract(excluded.cursor_key,'$.phase_rank')
           THEN pipeline_stage_runs.cursor_key ELSE excluded.cursor_key END,

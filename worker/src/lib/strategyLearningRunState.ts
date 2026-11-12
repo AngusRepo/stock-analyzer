@@ -32,6 +32,7 @@ export function isStrategyLearningTerminalFailure(error: unknown): boolean {
 export async function propagateStrategyLearningTerminalFailure(
   db: D1Database,
   input: { businessDate: string; canonicalRunId: string },
+  kv?: KVNamespace,
 ): Promise<void> {
   await db.prepare(`
     UPDATE pipeline_stage_runs SET status='error', completed_at=CURRENT_TIMESTAMP,
@@ -43,8 +44,10 @@ export async function propagateStrategyLearningTerminalFailure(
         WHERE l.business_date=pipeline_stage_runs.business_date
           AND l.canonical_run_id=pipeline_stage_runs.canonical_run_id AND l.status='error')
   `).bind(input.businessDate, input.businessDate, input.canonicalRunId).run()
-  const { closeEveningChainRootIfComplete } = await import('./eveningChainRootClosure')
-  await closeEveningChainRootIfComplete(db, input)
+  const { closeEveningChainRootAndLog, closeEveningChainRootIfComplete } = await import('./eveningChainRootClosure')
+  // The failure itself is the outcome here, so a lost receipt must not mask it with a KV error.
+  if (kv) await closeEveningChainRootAndLog(kv, db, { ...input, strict: false })
+  else await closeEveningChainRootIfComplete(db, input)
 }
 
 export type StrategyLearningLeaseIdentity = {

@@ -154,7 +154,8 @@ const logs: SchedulerDisplayLogCandidate[] = [
     const dates = getSchedulerScanDates()
     assert(dates.length === 7, 'scheduler status scan window must stay bounded for Cloudflare Worker KV subrequest budget')
     assert(dates.includes('2026-05-03'), 'scheduler scan window must include weekends so weekly/monthly jobs can show lastRun')
-    assert(estimateSchedulerStatusKvReads() < 50, 'scheduler status must stay below Cloudflare Worker subrequest limits')
+    // EC-B-2 gap fill adds at most SCHEDULER_STATUS_DIRECT_READ_LIMIT (30) per-task reads for today and yesterday.
+    assert(estimateSchedulerStatusKvReads() < 80, 'scheduler status must stay below Cloudflare Worker subrequest limits')
     const anchoredDates = getSchedulerScanDates('2026-08-02')
     assert(anchoredDates[0] === '2026-08-02', 'scheduler scan must honor an explicit readiness run date after timezone rollover')
     assert(anchoredDates[6] === '2026-07-27', 'anchored scheduler scan must preserve the bounded seven-day window')
@@ -167,7 +168,7 @@ const logs: SchedulerDisplayLogCandidate[] = [
   const statusSource = fs.readFileSync('src/lib/schedulerStatus.ts', 'utf8')
   const loggerSource = fs.readFileSync('src/lib/schedulerRunLogger.ts', 'utf8')
   const policySource = fs.readFileSync('src/lib/schedulerPolicy.ts', 'utf8')
-  assert(statusSource.includes('directFallback: false'), 'scheduler status must not per-task scan KV logs')
+  assert(statusSource.includes('directFallback: false') && statusSource.includes('dates.slice(0, SCHEDULER_STATUS_DIRECT_READ_DAYS)') && statusSource.includes('const SCHEDULER_STATUS_DIRECT_READ_LIMIT = 30'), 'scheduler status must not per-task scan KV logs; only a bounded gap fill reads today and yesterday')
   assert(statusSource.includes('scheduler:run:market-close-refresh:${date}'), 'today close refresh must be read directly so aggregate lost updates cannot hide the current trading date')
   assert(statusSource.includes('const cadenceDirectReads = JOB_DEFS.flatMap') && statusSource.includes('isCurrentCadenceCycle(date, today, def.group)'), 'weekly/monthly current-cycle status must directly recover task logs lost from concurrent daily aggregate writes')
   assert(statusSource.includes('skipKvPolicy: true'), 'scheduler status nextRun must not probe KV policy per card')

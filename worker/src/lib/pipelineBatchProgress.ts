@@ -12,7 +12,7 @@ export async function recordPipelineBatchProgress(db:D1Database, date:string, ru
     SELECT business_date,?,canonical_run_id,'running',?,? FROM pipeline_stage_runs
      WHERE business_date=? AND stage='pipeline_execution' AND canonical_run_id=? AND status IN ('running','waiting')
     ON CONFLICT(business_date,stage) DO UPDATE SET canonical_run_id=excluded.canonical_run_id,
-      cursor_key=excluded.cursor_key,updated_at=excluded.updated_at
+      status='running',completed_at=NULL,cursor_key=excluded.cursor_key,updated_at=excluded.updated_at
     WHERE pipeline_stage_runs.canonical_run_id<>excluded.canonical_run_id
        OR (pipeline_stage_runs.updated_at<excluded.updated_at
          AND json_extract(pipeline_stage_runs.cursor_key,'$.stage_id')=json_extract(excluded.cursor_key,'$.stage_id')

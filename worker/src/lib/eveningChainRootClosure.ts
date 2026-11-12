@@ -3,6 +3,8 @@ import {
   updateSchedulerExecutionTicket,
   type SchedulerExecutionTicketRow,
 } from './schedulerExecutionTickets'
+import { logSchedulerResult } from './schedulerRunLogger'
+import { nextTwTradingDate } from './schedulerPolicy'
 
 const REQUIRED_STAGES = [
   'pipeline_execution',
@@ -47,6 +49,8 @@ export type EveningChainRootClosureOutcome = {
   root_ticket_id: string | null
   blockers: string[]
   summary: string
+  /** Set when the root was already terminal before this call; nothing was closed. */
+  already_terminal?: boolean
 }
 
 function parseMetadata(value: string | null): Record<string, unknown> {
@@ -102,9 +106,17 @@ function terminalFailure(status: string): boolean {
   return status === 'error' || status === 'blocked' || status === 'skipped'
 }
 
+export type EveningChainRootClosureInput = {
+  businessDate: string
+  canonicalRunId?: string
+  /** Past the closure deadline: missing or pending work is final, so the root closes as error. */
+  deadlineExceeded?: boolean
+  runScope?: 'live_canonical' | 'historical_replay' | 'derived'
+}
+
 export async function closeEveningChainRootIfComplete(
   db: D1Database,
-  input: { businessDate: string; canonicalRunId?: string },
+  input: EveningChainRootClosureInput,
 ): Promise<EveningChainRootClosureOutcome> {
   const businessDate = String(input.businessDate ?? '').slice(0, 10)
   if (!/^\d{4}-\d{2}-\d{2}$/.test(businessDate)) {
@@ -135,10 +147,34 @@ export async function closeEveningChainRootIfComplete(
       root_ticket_id: root.ticket_id,
       blockers: root.status === 'success' ? [] : [root.last_error || `root_${root.status}`],
       summary: root.last_summary || `evening-chain durable root already ${root.status}`,
+      already_terminal: true,
+    }
+  }
+
+  const closeAtDeadline = async (
+    blockers: string[],
+    runId: string | null,
+    guardRunId?: string,
+  ): Promise<EveningChainRootClosureOutcome> => {
+    const error = `root_closure_deadline_exceeded:${blockers.join(',')}`
+    const summary = `evening-chain durable DAG failed date=${businessDate} run_id=${runId ?? 'missing'} ${error}`
+    await updateSchedulerExecutionTicket(db, {
+      ticketId: root.ticket_id,
+      runId: root.run_id,
+      status: 'error',
+      authority: 'logical_child',
+      summary,
+      error,
+      expectedPipelineCanonicalRunId: guardRunId,
+    })
+    return {
+      status: 'closed_error', business_date: businessDate, canonical_run_id: runId,
+      root_ticket_id: root.ticket_id, blockers, summary,
     }
   }
 
   if (!canonicalRunId) {
+    if (input.deadlineExceeded) return closeAtDeadline(['pipeline_execution_canonical_run_id_missing'], null)
     return {
       status: 'pending',
       business_date: businessDate,
@@ -172,6 +208,9 @@ export async function closeEveningChainRootIfComplete(
   )
   const execution = stageByName.get('pipeline_execution')
   if (!execution || execution.canonical_run_id !== canonicalRunId) {
+    if (input.deadlineExceeded) {
+      return closeAtDeadline([`pipeline_execution:${execution ? 'canonical_run_id_mismatch' : 'missing'}`], canonicalRunId)
+    }
     return {
       status: 'pending', business_date: businessDate, canonical_run_id: canonicalRunId,
       root_ticket_id: root.ticket_id, blockers: ['pipeline_execution:canonical_run_id_mismatch'],
@@ -247,6 +286,7 @@ export async function closeEveningChainRootIfComplete(
   }
 
   if (blockers.length > 0 && !terminalError) {
+    if (input.deadlineExceeded) return closeAtDeadline(blockers, canonicalRunId, canonicalRunId)
     return {
       status: 'pending',
       business_date: businessDate,
@@ -259,9 +299,10 @@ export async function closeEveningChainRootIfComplete(
 
   const status = blockers.length === 0 ? 'success' : 'error'
   const historicalExclusion = learning?.policy_closure_reason?.match(/historical_excluded=\S+/)?.[0] ?? 'historical_excluded=none'
+  const scope = input.runScope === 'historical_replay' ? ' run_scope=historical_replay' : ''
   const summary = blockers.length === 0
-    ? `evening-chain durable DAG complete date=${businessDate} run_id=${canonicalRunId} stages=${REQUIRED_STAGES.length} strategy_learning=success dataset_snapshot=success active8_oof_daily=success ${historicalExclusion}`
-    : `evening-chain durable DAG failed date=${businessDate} run_id=${canonicalRunId} blockers=${blockers.join(',')}`
+    ? `evening-chain durable DAG complete date=${businessDate} run_id=${canonicalRunId} stages=${REQUIRED_STAGES.length} strategy_learning=success dataset_snapshot=success active8_oof_daily=success ${historicalExclusion}${scope}`
+    : `evening-chain durable DAG failed date=${businessDate} run_id=${canonicalRunId} blockers=${blockers.join(',')}${scope}`
   await updateSchedulerExecutionTicket(db, {
     ticketId: root.ticket_id,
     runId: root.run_id,
@@ -280,4 +321,131 @@ export async function closeEveningChainRootIfComplete(
     blockers,
     summary,
   }
+}
+
+/**
+ * Root closure plus its KV receipt. Both terminal outcomes are written, so KV evening-chain never stays
+ * at an earlier 'running' after the durable root closed as error.
+ */
+export async function closeEveningChainRootAndLog(
+  kv: KVNamespace,
+  db: D1Database,
+  input: EveningChainRootClosureInput & {
+    attemptId?: string
+    alertEnv?: { DISCORD_WEBHOOK_URL?: string }
+    /** Defaults to true; a caller whose own outcome must not hinge on the receipt passes false. */
+    strict?: boolean
+    supersedePrevious?: boolean
+  },
+): Promise<EveningChainRootClosureOutcome> {
+  const closure = await closeEveningChainRootIfComplete(db, input)
+  // An already-failed (or skipped) root was reported when it closed; re-sending it as error could replace a
+  // same-run success receipt. An already-successful root may re-send its success (receipt recovery).
+  if (closure.status === 'closed_success' || (closure.status === 'closed_error' && !closure.already_terminal)) {
+    await logSchedulerResult(kv, 'evening-chain', {
+      status: closure.status === 'closed_success' ? 'success' : 'error',
+      summary: closure.summary,
+      error: closure.blockers.length ? closure.blockers.join(',') : undefined,
+      duration_ms: 0,
+      run_id: closure.canonical_run_id ?? input.canonicalRunId,
+      attempt_id: input.attemptId,
+      run_date: closure.business_date,
+      run_scope: input.runScope,
+      strict: input.strict ?? true,
+      supersedePrevious: input.supersedePrevious,
+    }, input.alertEnv)
+  }
+  return closure
+}
+
+/**
+ * A root can no longer complete on its own once this many TW trading days have passed after its business
+ * date (the strategy-learning watchdog closes Friday's root on Monday night; long closures do not count).
+ */
+export const EVENING_CHAIN_ROOT_DEADLINE_TRADING_DAYS = 3
+// Calendar pre-filter for the SQL candidate scan; the trading-day deadline decides.
+const EVENING_CHAIN_ROOT_SWEEP_MIN_CALENDAR_DAYS = 4
+// A pipeline execution parked as waiting (premarket resume, Modal callback) keeps its root open this long.
+const EVENING_CHAIN_ROOT_WAITING_GRACE_DAYS = 14
+const EVENING_CHAIN_ROOT_SWEEP_LOOKBACK_DAYS = 30
+const EVENING_CHAIN_ROOT_SWEEP_LIMIT = 10
+const EVENING_CHAIN_ROOT_SWEEP_MARKER_TTL_SECONDS = 2 * 86400
+
+function calendarDaysBefore(date: string, days: number): string {
+  return new Date(Date.parse(`${date}T00:00:00Z`) - days * 86400_000).toISOString().slice(0, 10)
+}
+
+async function rootDeadlinePassed(kv: KVNamespace, businessDate: string, today: string): Promise<boolean> {
+  let deadline = businessDate
+  try {
+    for (let day = 0; day < EVENING_CHAIN_ROOT_DEADLINE_TRADING_DAYS; day += 1) {
+      deadline = await nextTwTradingDate(kv, deadline)
+    }
+  } catch (error) {
+    console.warn(`[eveningChainRootClosure] trading calendar unresolved after ${businessDate}; root kept open:`, error)
+    return false
+  }
+  return today > deadline
+}
+
+/**
+ * Close physical roots whose newest ticket is still non-terminal past the deadline (for example a
+ * postclose dispatch that failed before any stage existed). Recent roots, any date with a live stage
+ * lease, and a pipeline execution parked as waiting for up to 14 calendar days are left to their owners.
+ */
+export async function sweepExpiredEveningChainRoots(
+  kv: KVNamespace,
+  db: D1Database,
+  today: string,
+): Promise<EveningChainRootClosureOutcome[]> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(today)) throw new Error(`evening_chain_root_sweep_date_invalid:${today}`)
+  const { results } = await db.prepare(`
+    SELECT DISTINCT t.business_date
+      FROM scheduler_execution_tickets_v1 t
+     WHERE t.scheduler_job_id='evening-chain' AND t.ticket_kind='physical_root'
+       AND t.business_date BETWEEN ? AND ?
+       AND t.status NOT IN ('success','error','skipped','blocked')
+       AND NOT EXISTS (
+         SELECT 1 FROM scheduler_execution_tickets_v1 n
+          WHERE n.scheduler_job_id=t.scheduler_job_id AND n.business_date=t.business_date
+            AND n.ticket_kind='physical_root'
+            AND (n.updated_at>t.updated_at OR (n.updated_at=t.updated_at AND n.ticket_id>t.ticket_id)))
+       AND NOT EXISTS (
+         SELECT 1 FROM pipeline_stage_runs s
+          WHERE s.business_date=t.business_date
+            AND ((s.stage='pipeline_execution' AND s.status='waiting' AND t.business_date>=?)
+              OR (s.lease_owner IS NOT NULL AND s.lease_expires_at>=CURRENT_TIMESTAMP)))
+     ORDER BY t.business_date
+     LIMIT ?
+  `).bind(
+    calendarDaysBefore(today, EVENING_CHAIN_ROOT_SWEEP_LOOKBACK_DAYS),
+    calendarDaysBefore(today, EVENING_CHAIN_ROOT_SWEEP_MIN_CALENDAR_DAYS),
+    calendarDaysBefore(today, EVENING_CHAIN_ROOT_WAITING_GRACE_DAYS),
+    EVENING_CHAIN_ROOT_SWEEP_LIMIT,
+  ).all<{ business_date: string }>()
+  const outcomes: EveningChainRootClosureOutcome[] = []
+  for (const row of results ?? []) {
+    if (!await rootDeadlinePassed(kv, row.business_date, today)) continue
+    // Non-strict: the root is already terminal in D1 when the receipt is written, so a KV failure is
+    // logged instead of aborting the sweep (a retry would no longer select this root).
+    outcomes.push(await closeEveningChainRootAndLog(kv, db, {
+      businessDate: row.business_date, deadlineExceeded: true, strict: false,
+    }))
+  }
+  return outcomes
+}
+
+/** Runs the sweep at most once per TW day; a failed sweep is retried by the next caller tick. */
+export async function runEveningChainRootDeadlineSweepOnce(
+  kv: KVNamespace,
+  db: D1Database,
+  today: string,
+): Promise<string> {
+  const markerKey = `evening-chain:root-deadline-sweep:${today}`
+  if (await kv.get(markerKey)) return `skipped: evening-chain root deadline sweep already ran date=${today}`
+  const outcomes = await sweepExpiredEveningChainRoots(kv, db, today)
+  const summary = `evening-chain root deadline sweep date=${today} closed=${outcomes.length}`
+    + (outcomes.length ? ` dates=${outcomes.map((row) => `${row.business_date}:${row.status}`).join(',')}` : '')
+  await kv.put(markerKey, summary, { expirationTtl: EVENING_CHAIN_ROOT_SWEEP_MARKER_TTL_SECONDS })
+  return summary
 }

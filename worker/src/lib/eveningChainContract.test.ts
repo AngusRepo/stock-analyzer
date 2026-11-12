@@ -356,3 +356,12 @@ assert(
   finalizerBody.indexOf('if (await env.KV.get(finalKey))') < finalizerBody.indexOf('checkEveningChainSourceReadiness'),
   'a completed finalizer must ignore delayed retries before source checks can change root status',
 )
+const deferBody = updateOrchestrator.slice(
+  updateOrchestrator.indexOf('async function deferFinalizeContinuation('),
+  updateOrchestrator.indexOf('async function finalizeLeaseWaitSeconds('),
+)
+assert(
+  deferBody.indexOf('indicatorFinalizeDeferredKey(triggerTime, runId)') > deferBody.indexOf("type: 'finalize_update'") &&
+    /expirationTtl: Math\.max\(60, Math\.ceil\(delaySeconds\) \+ 180\)/.test(deferBody),
+  'a deferred finalizer must mark itself for the indicator watchdog after the delayed retry is queued, for the delay plus margin',
+)

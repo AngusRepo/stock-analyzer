@@ -164,10 +164,11 @@ assert.ok(
 )
 
 assert.match(finalizedTelemetry, /strict: true/)
-assert.match(finalizedTelemetry, /if \(input\.runScope === 'historical_replay'\) return/)
+// A historical replay closes its root (annotated run_scope=historical_replay) like the recovery watchdog.
+assert.doesNotMatch(finalizedTelemetry, /if \(input\.runScope === 'historical_replay'\) return/)
+assert.match(finalizedTelemetry, /runScope: input\.runScope,/)
 assert.match(finalizedTelemetry, /if \(!\(await closeStrategyLearningPostVerifyStage\(db, identity\)\)\) return false/)
-assert.ok(finalizedTelemetry.indexOf("'post-verify-chain'") < finalizedTelemetry.indexOf("if (input.runScope === 'historical_replay') return"))
-assert.ok(finalizedTelemetry.indexOf("if (input.runScope === 'historical_replay') return") < finalizedTelemetry.indexOf("await import('./eveningChainRootClosure')"))
+assert.ok(finalizedTelemetry.indexOf("'post-verify-chain'") < finalizedTelemetry.indexOf("await import('./eveningChainRootClosure')"))
 assert.doesNotMatch(
   finalizedTelemetry, /export async function reconcileStrategyLearningFinalizedTelemetry/,
 )
@@ -182,9 +183,11 @@ const telemetryWrites = guardedReconcile.indexOf('reconcileStrategyLearningFinal
 const fencedRelease = guardedReconcile.indexOf('releaseStrategyLearningFinalizedLease')
 assert.ok(authorityCheck >= 0 && authorityCheck < leaseRenewal && leaseRenewal < expiredReclaim
   && expiredReclaim < telemetryWrites && telemetryWrites < fencedRelease)
-for (const task of ['strategy-learning', 'post-verify-chain', 'evening-chain']) {
+for (const task of ['strategy-learning', 'post-verify-chain']) {
   assert.match(finalizedTelemetry, new RegExp(`logSchedulerResult\\(kv, '${task}'`))
 }
+// The root closure helper writes the evening-chain receipt for both terminal outcomes.
+assert.match(finalizedTelemetry, /closeEveningChainRootAndLog\(kv, db,/)
 
 // FG-10 U4: a duplicate queue message that loses the lease must not overwrite the
 // lease holder's scheduler KV entry (it has no attempt_id, so it would win the merge).

@@ -1,4 +1,5 @@
 import { indicatorFinalizeLeaseActive } from './indicatorFinalizeLease'
+import { closeHandedOffIndicatorRun } from './indicatorQueueDispatch'
 import type { Bindings, UpdateQueueMsg } from '../types'
 import { twToday } from './dateUtils'
 import { databaseForDataDomain } from './dataDomainRegistry'
@@ -54,6 +55,11 @@ export async function continueCompletedIndicatorFinalizer(
 
 function runPrefix(triggerTime: string, runId: string): string {
   return `cron:indicator-queue:${triggerTime}:${runId}`
+}
+
+/** Written by the finalizer when it defers itself with a delayed message; expires shortly after that delay. */
+export function indicatorFinalizeDeferredKey(triggerTime: string, runId: string): string {
+  return `${runPrefix(triggerTime, runId)}:finalize-deferred`
 }
 
 function boundedShardCount(value: unknown): number {
@@ -167,8 +173,14 @@ export async function runIndicatorQueueRecoveryWatchdog(
   if (!runId) throw new Error(`indicator_queue_watchdog_run_id_missing:${triggerTime}`)
   const shardCount = schedulerShardCount(entry)
   const prefix = runPrefix(triggerTime, runId)
-  if (entry.status === 'success' && await env.KV.get(`${prefix}:finalized`)) {
+  // The finalized marker is written only after the finalizer (or a screener handoff) closed the run;
+  // the KV receipt can still say running because the finalizer reports on evening-chain instead.
+  if (await env.KV.get(`${prefix}:finalized`)) {
     return `skipped: indicator queue and finalizer already complete for ${triggerTime}; run_id=${runId}`
+  }
+  const exhaustedKey = `${prefix}:watchdog-exhausted`
+  if (await env.KV.get(exhaustedKey)) {
+    return `skipped: indicator queue watchdog exhausted already reported for ${triggerTime}; run_id=${runId}`
   }
   const timestampMs = Date.parse(String(entry.timestamp ?? ''))
   const ageMs = Number.isFinite(timestampMs) ? Date.now() - timestampMs : Number.POSITIVE_INFINITY
@@ -180,6 +192,19 @@ export async function runIndicatorQueueRecoveryWatchdog(
   // finite recovery budget or enqueue duplicate work while its D1 lease is live.
   if (await indicatorFinalizeLeaseActive(env, triggerTime, runId)) {
     return `skipped: indicator finalizer lease active for ${triggerTime}; run_id=${runId}`
+  }
+  // The finalizer released its lease between its own delayed retries; it is still the owner.
+  if (await env.KV.get(indicatorFinalizeDeferredKey(triggerTime, runId))) {
+    return `skipped: indicator finalizer continuation deferred for ${triggerTime}; run_id=${runId}`
+  }
+  const done = await env.KV.list({ prefix: `${prefix}:done:` })
+  const doneShards = new Set(done.keys
+    .map((key) => Number(key.name.slice(key.name.lastIndexOf(':') + 1)))
+    .filter((index) => Number.isInteger(index) && index >= 0 && index < shardCount))
+  // Every shard is done and this same run already handed off to screener_v2: the finalizer closed it.
+  // A stuck shard, or a screener cursor from another run, still needs recovery.
+  if (doneShards.size >= shardCount && await closeHandedOffIndicatorRun(env, triggerTime, runId, { sameRunOnly: true })) {
+    return `skipped: indicator run handed off to screener_v2 for ${triggerTime}; run_id=${runId}`
   }
 
   const leaseKey = `${prefix}:watchdog-lease`
@@ -194,6 +219,8 @@ export async function runIndicatorQueueRecoveryWatchdog(
   const recoveryCount = Number.parseInt((await env.KV.get(recoveryKey)) ?? '0', 10) || 0
   if (recoveryCount >= INDICATOR_QUEUE_MAX_RECOVERIES) {
     const error = `indicator queue watchdog exhausted for ${triggerTime}; run_id=${runId}; recoveries=${recoveryCount}`
+    // Alert once. Later ticks until the cron window ends must not rewrite evening-chain or fail again.
+    await env.KV.put(exhaustedKey, new Date().toISOString(), { expirationTtl: INDICATOR_QUEUE_STATE_TTL_SECONDS })
     await Promise.all([
       logSchedulerResult(env.KV, 'indicator-queue', {
         status: 'error', summary: error, duration_ms: 0, run_id: runId, run_date: triggerTime, error,
@@ -205,10 +232,6 @@ export async function runIndicatorQueueRecoveryWatchdog(
     throw new Error(error)
   }
 
-  const done = await env.KV.list({ prefix: `${prefix}:done:` })
-  const doneShards = new Set(done.keys
-    .map((key) => Number(key.name.slice(key.name.lastIndexOf(':') + 1)))
-    .filter((index) => Number.isInteger(index) && index >= 0 && index < shardCount))
   if (doneShards.size >= shardCount) {
     await env.UPDATE_QUEUE.send({
       type: 'finalize_update', cursor: 0, triggerTime, runId, shardCount, attempt: 1, continuationAttempt: 1,

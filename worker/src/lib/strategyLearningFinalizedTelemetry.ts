@@ -42,19 +42,15 @@ async function reconcileStrategyLearningFinalizedTelemetry(
     ...common,
     summary: `strategy-learning durable finalize closed; ${durableSummary}`,
   })
-  // Historical evidence can finish this stage without granting root/live credit.
-  if (input.runScope === 'historical_replay') return
-  const { closeEveningChainRootIfComplete } = await import('./eveningChainRootClosure')
-  const closure = await closeEveningChainRootIfComplete(db, {
+  // A historical replay closes its root like the recovery watchdog does; the root summary and KV
+  // receipt carry run_scope=historical_replay so it is never read as live credit.
+  const { closeEveningChainRootAndLog } = await import('./eveningChainRootClosure')
+  await closeEveningChainRootAndLog(kv, db, {
     businessDate: input.runDate,
     canonicalRunId: input.canonicalRunId,
+    attemptId: input.attemptId,
+    runScope: input.runScope,
   })
-  if (closure.status === 'closed_success') {
-    await logSchedulerResult(kv, 'evening-chain', {
-      ...common,
-      summary: closure.summary,
-    })
-  }
 }
 
 export async function reconcileAndReleaseStrategyLearningFinalizedTelemetry(

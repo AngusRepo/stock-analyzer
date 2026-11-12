@@ -157,11 +157,39 @@ export async function commitPipelineExecutionDispatch(
   ).first<PipelineStageRow>()
 }
 
+/**
+ * Observability rows (pipeline_progress, pipeline_batches:*) are written as 'running' and have no terminal
+ * writer of their own. Run in the same batch right after the pipeline_execution UPDATE: the EXISTS guard
+ * reads the post-update parent, so a stale callback that did not move the parent leaves them alone.
+ */
+function closePipelineExecutionChildRows(
+  db: D1Database,
+  input: { businessDate: string; canonicalRunId: string; status: Extract<PipelineStageStatus, 'success' | 'error'> },
+): D1PreparedStatement {
+  return db.prepare(`
+    UPDATE pipeline_stage_runs
+       SET status=?, completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+     WHERE business_date=? AND canonical_run_id=?
+       AND stage IN ('pipeline_progress', 'pipeline_batches:input_prep', 'pipeline_batches:prepare_prediction_request')
+       AND EXISTS (SELECT 1 FROM pipeline_stage_runs e
+                    WHERE e.business_date=? AND e.stage='pipeline_execution'
+                      AND e.canonical_run_id=? AND e.status=?)
+  `).bind(
+    input.status,
+    input.businessDate,
+    input.canonicalRunId,
+    input.businessDate,
+    input.canonicalRunId,
+    input.status,
+  )
+}
+
 export async function failPipelineExecutionDispatch(
   db: D1Database,
   input: { businessDate: string; attemptId: string; error: string },
 ): Promise<boolean> {
-  const row = await db.prepare(`
+  const [closed] = await db.batch<{ status: PipelineStageStatus }>([
+    db.prepare(`
     UPDATE pipeline_stage_runs
        SET status='error', last_error=?, lease_owner=NULL, lease_expires_at=NULL,
            completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
@@ -169,12 +197,14 @@ export async function failPipelineExecutionDispatch(
        AND canonical_run_id=? AND status='running' AND lease_owner=?
     RETURNING status
   `).bind(
-    input.error.slice(0, 1000),
-    input.businessDate,
-    input.attemptId,
-    input.attemptId,
-  ).first<{ status: PipelineStageStatus }>()
-  return Boolean(row)
+      input.error.slice(0, 1000),
+      input.businessDate,
+      input.attemptId,
+      input.attemptId,
+    ),
+    closePipelineExecutionChildRows(db, { businessDate: input.businessDate, canonicalRunId: input.attemptId, status: 'error' }),
+  ])
+  return Boolean(closed?.results?.[0])
 }
 
 export async function acceptPipelineExecutionCallback(
@@ -186,7 +216,8 @@ export async function acceptPipelineExecutionCallback(
     error?: string | null
   },
 ): Promise<PipelineStageRow | null> {
-  return db.prepare(`
+  const [accepted] = await db.batch<PipelineStageRow>([
+    db.prepare(`
     UPDATE pipeline_stage_runs
        SET status=?, last_error=?, lease_owner=NULL, lease_expires_at=NULL,
            completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
@@ -197,12 +228,15 @@ export async function acceptPipelineExecutionCallback(
               processed_count, expected_count, persisted_count, attempt_count,
               lease_owner, lease_expires_at
   `).bind(
-    input.status,
-    input.error?.slice(0, 1000) ?? null,
-    input.businessDate,
-    input.runId,
-    input.status,
-  ).first<PipelineStageRow>()
+      input.status,
+      input.error?.slice(0, 1000) ?? null,
+      input.businessDate,
+      input.runId,
+      input.status,
+    ),
+    closePipelineExecutionChildRows(db, { businessDate: input.businessDate, canonicalRunId: input.runId, status: input.status }),
+  ])
+  return accepted?.results?.[0] ?? null
 }
 
 export async function isPipelineStageCanonicalState(

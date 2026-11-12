@@ -3,6 +3,8 @@ import { DatabaseSync } from 'node:sqlite'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { recordPipelineProgress, validPipelineProgress, pipelineProgressForDisplay, type PipelineProgress } from './pipelineProgress'
+import { recordPipelineBatchProgress } from './pipelineBatchProgress'
+import { acceptPipelineExecutionCallback, commitPipelineExecutionDispatch, failPipelineExecutionDispatch, reservePipelineExecutionDispatch } from './pipelineStageLease'
 
 test('progress is ordered, run-fenced, and cannot reopen a terminal pipeline or change its dispatch lease', async () => {
   const sql=new DatabaseSync(':memory:')
@@ -83,5 +85,68 @@ test('sequence-only freeze node keeps the rank of the L2 boundary it replaced', 
   assert.equal(await recordPipelineProgress(db,'2026-10-14','run-a',p),true)
   const row=sql.prepare("SELECT * FROM pipeline_stage_runs WHERE stage='pipeline_progress'").get() as any
   assert.equal(pipelineProgressForDisplay({canonical_run_id:'run-a',status:'running'},row)!.phase_rank,30)
+  sql.close()
+})
+
+function sqliteD1(sql: DatabaseSync) {
+  const prepare=(query:string)=>{let args:any[]=[];const stmt={bind(...v:any[]){args=v;return stmt},
+    async first(){return sql.prepare(query).get(...args)??null},
+    async run(){sql.prepare(query).run(...args);return {success:true}},
+    all(){return sql.prepare(query).all(...args)}};return stmt}
+  return {prepare,async batch(statements:Array<{all():unknown[]}>){
+    sql.exec('BEGIN')
+    try { const out=statements.map(s=>({results:s.all()}));sql.exec('COMMIT');return out }
+    catch(error){sql.exec('ROLLBACK');throw error}
+  }} as unknown as D1Database
+}
+
+test('terminal pipeline_execution closes its progress rows; stale callbacks and other runs leave them; re-dispatch reopens', async () => {
+  const sql=new DatabaseSync(':memory:')
+  sql.exec(readFileSync('migrations/0074_pipeline_stage_and_maintenance_control.sql','utf8'))
+  const db=sqliteD1(sql)
+  const day='2026-11-10'
+  const p:PipelineProgress={phase:'node_write_d1',status:'completed',started_at:'2026-11-10T14:00:00Z',phase_started_at:'2026-11-10T14:30:00Z',observed_at:'2026-11-10T14:30:01Z',execution_id:'execution-a',completed:[]}
+  const batch={stage_id:'a'.repeat(64),phase:'input_prep' as const,completed:23,total:23,observed_at:'2026-11-10T14:10:00Z'}
+  const row=(stage:string)=>({...sql.prepare('SELECT canonical_run_id,status,completed_at FROM pipeline_stage_runs WHERE business_date=? AND stage=?').get(day,stage)}) as any
+  sql.exec(`INSERT INTO pipeline_stage_runs(business_date,stage,canonical_run_id,status) VALUES('${day}','pipeline_execution','run-a','waiting'),
+    ('2026-11-09','pipeline_execution','run-a','success'),('2026-11-09','pipeline_progress','run-a','running')`)
+  assert.equal(await recordPipelineProgress(db,day,'run-a',p),true)
+  assert.equal(await recordPipelineBatchProgress(db,day,'run-a',batch),true)
+  assert.equal(await acceptPipelineExecutionCallback(db,{businessDate:day,runId:'run-stale',status:'success'}),null)
+  assert.equal(row('pipeline_progress').status,'running','a stale callback does not close the current run')
+  assert.equal((await acceptPipelineExecutionCallback(db,{businessDate:day,runId:'run-a',status:'success'}))?.status,'success')
+  assert.equal(row('pipeline_execution').status,'success')
+  assert.equal(row('pipeline_progress').status,'success')
+  assert.ok(row('pipeline_progress').completed_at)
+  assert.equal(row('pipeline_batches:input_prep').status,'success')
+  assert.equal((sql.prepare("SELECT status FROM pipeline_stage_runs WHERE business_date='2026-11-09' AND stage='pipeline_progress'").get() as any).status,'running','other dates untouched')
+  // An error parent recovered under a new canonical run reopens the progress row as running.
+  sql.exec(`UPDATE pipeline_stage_runs SET status='error' WHERE business_date='${day}' AND stage='pipeline_execution'`)
+  sql.exec(`UPDATE pipeline_stage_runs SET status='error' WHERE business_date='${day}' AND stage IN ('pipeline_progress','pipeline_batches:input_prep')`)
+  assert.ok(await reservePipelineExecutionDispatch(db,{businessDate:day,attemptId:'resume',expectedFailedRunId:'run-a'}))
+  assert.ok(await commitPipelineExecutionDispatch(db,{businessDate:day,attemptId:'resume',runId:'resume'}))
+  assert.equal(await recordPipelineProgress(db,day,'resume',{...p,execution_id:'execution-b',observed_at:'2026-11-10T23:00:00Z',phase_started_at:'2026-11-10T23:00:00Z',started_at:'2026-11-10T23:00:00Z'}),true)
+  assert.equal(await recordPipelineBatchProgress(db,day,'resume',{...batch,observed_at:'2026-11-10T23:00:00Z'}),true)
+  assert.deepEqual(row('pipeline_progress'),{canonical_run_id:'resume',status:'running',completed_at:null})
+  assert.deepEqual(row('pipeline_batches:input_prep'),{canonical_run_id:'resume',status:'running',completed_at:null})
+  assert.equal((await acceptPipelineExecutionCallback(db,{businessDate:day,runId:'resume',status:'error',error:'boom'}))?.status,'error')
+  assert.equal(row('pipeline_progress').status,'error')
+  assert.equal(row('pipeline_batches:input_prep').status,'error')
+  sql.close()
+})
+
+test('a failed dispatch closes progress rows of its own attempt only', async () => {
+  const sql=new DatabaseSync(':memory:')
+  sql.exec(readFileSync('migrations/0074_pipeline_stage_and_maintenance_control.sql','utf8'))
+  const db=sqliteD1(sql)
+  const day='2026-11-11'
+  assert.ok(await reservePipelineExecutionDispatch(db,{businessDate:day,attemptId:'attempt-a'}))
+  sql.exec(`INSERT INTO pipeline_stage_runs(business_date,stage,canonical_run_id,status) VALUES('${day}','pipeline_progress','attempt-a','running'),
+    ('${day}','pipeline_batches:prepare_prediction_request','older-run','running')`)
+  assert.equal(await failPipelineExecutionDispatch(db,{businessDate:day,attemptId:'attempt-other',error:'x'}),false)
+  assert.equal((sql.prepare("SELECT status FROM pipeline_stage_runs WHERE stage='pipeline_progress'").get() as any).status,'running')
+  assert.equal(await failPipelineExecutionDispatch(db,{businessDate:day,attemptId:'attempt-a',error:'dispatch failed'}),true)
+  assert.equal((sql.prepare("SELECT status FROM pipeline_stage_runs WHERE stage='pipeline_progress'").get() as any).status,'error')
+  assert.equal((sql.prepare("SELECT status FROM pipeline_stage_runs WHERE stage='pipeline_batches:prepare_prediction_request'").get() as any).status,'running')
   sql.close()
 })

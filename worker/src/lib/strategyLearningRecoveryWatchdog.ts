@@ -174,7 +174,7 @@ export async function runStrategyLearningRecoveryWatchdog(
       const { propagateStrategyLearningTerminalFailure } = await import('./strategyLearningRunState')
       await propagateStrategyLearningTerminalFailure(opsDb, {
         businessDate: row.business_date, canonicalRunId: row.canonical_run_id,
-      })
+      }, env.KV)
       const summary = `strategy-learning recovery blocked date=${row.business_date} reason=${decision.reason}`
       await logWatchdog(env, row, 'error', summary)
       throw new Error(summary)
@@ -203,21 +203,17 @@ export async function runStrategyLearningRecoveryWatchdog(
           strict: true,
         }, env)
       }
-      const { closeEveningChainRootIfComplete } = await import('./eveningChainRootClosure')
-      const closure = await closeEveningChainRootIfComplete(opsDb, {
+      const { closeEveningChainRootAndLog } = await import('./eveningChainRootClosure')
+      const closure = await closeEveningChainRootAndLog(env.KV, opsDb, {
         businessDate: row.business_date,
         canonicalRunId: row.canonical_run_id,
+        runScope: Number(row.production_authority_intent ?? 0) === 1 ? 'live_canonical' : 'historical_replay',
+        alertEnv: env,
+        strict: false,
+        supersedePrevious: true,
       })
       const summary = `success strategy-learning recovery date=${row.business_date} reason=run_success root=${closure.status}`
       await logWatchdog(env, row, 'success', summary)
-      if (closure.status === 'closed_success') {
-        await logSchedulerResult(env.KV, 'evening-chain', {
-          status: 'success', summary: closure.summary, duration_ms: 0,
-          run_id: row.canonical_run_id, run_date: row.business_date,
-          run_scope: Number(row.production_authority_intent ?? 0) === 1 ? 'live_canonical' : 'historical_replay',
-          supersedePrevious: true,
-        }, env)
-      }
       return summary
     }
     const summary = `running strategy-learning recovery date=${row.business_date} reason=${decision.reason}`

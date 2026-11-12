@@ -5008,7 +5008,13 @@ export async function processUpdateBatch(
           attempt_id: finalizerAttemptId, run_date: triggerTime,
         }),
       ])
-      throw error
+      // The run row now holds the failure, so a queue redelivery would only rerun the
+      // finalizer on learning-db; the recovery watchdog owns deferred retries. Outside its
+      // lookback nothing would retry, so a manual replay keeps the queue retry.
+      const { isStrategyLearningRecoveryWindowDate } = await import('./strategyLearningRecoveryWatchdog')
+      if (!isStrategyLearningRecoveryWindowDate(triggerTime)) throw error
+      console.error(`[Queue] strategy-learning ${terminalPolicyClosureFailure || !materializationValidated ? 'failed' : 'deferred to watchdog'}; acknowledged date=${triggerTime} run_id=${canonicalRunId}: ${errorMessage}`)
+      return
     } finally {
       await finalizerHeartbeat?.stop()
     }

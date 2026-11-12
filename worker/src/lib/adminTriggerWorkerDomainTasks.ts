@@ -350,7 +350,9 @@ export function buildAdminWorkerDomainTaskMap(
     },
     'strategy-learning-watchdog': async () => {
       const { runStrategyLearningRecoveryWatchdog } = await import('./strategyLearningRecoveryWatchdog')
-      return runStrategyLearningRecoveryWatchdog(c.env, requestedRunDate())
+      return runStrategyLearningRecoveryWatchdog(c.env, requestedRunDate(), {
+        overrideBackoff: c.req.query('override_backoff') === '1',
+      })
     },
     'screener-v2-watchdog': async () => {
       if (!deps.runScreenerV2) throw new Error('screener-v2 trigger dependency not configured')

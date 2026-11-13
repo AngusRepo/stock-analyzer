@@ -710,3 +710,31 @@ def test_verify_can_be_rerun_from_receipts_by_dispatch():
     assert 'release.py verify --from-receipts --sha' in block
     with pytest.raises(SystemExit):
         release.main(['verify', '--from-receipts', '--out', 'x'])
+
+
+def _job_resource(image, source_sha, modifier):
+    return {
+        'metadata': {
+            'annotations': {'run.googleapis.com/lastModifier': modifier, 'run.googleapis.com/client-version': '590.0.1'},
+            'labels': {'stockvision-source-sha': source_sha, 'stockvision-provenance-schema': 'v1',
+                       'run.googleapis.com/lastUpdatedTime': '2026-11-12T13:11:04Z'},
+        },
+        'spec': {'template': {'metadata': {'labels': {'stockvision-source-sha': source_sha}},
+                              'spec': {'taskCount': 1, 'template': {'spec': {'containers': [{
+                                  'image': image,
+                                  'env': [{'name': 'STOCKVISION_SOURCE_SHA', 'value': source_sha}],
+                              }]}}}}},
+    }
+
+
+def test_job_update_by_another_principal_is_source_only():
+    # 2026-11-13: the first CD job update after a local deploy changed run.googleapis.com/lastModifier
+    # and failed the rollout (and its rollback) as non_source_resource_configuration_changed:job.
+    before = _job_resource('img@sha256:old', 'a' * 40, 'wayne@example.com')
+    after = _job_resource('img@sha256:new', 'b' * 40, 'stockvision-cd-deployer@example.iam.gserviceaccount.com')
+    after['metadata']['annotations']['run.googleapis.com/client-version'] = '591.0.0'
+    after['metadata']['labels']['run.googleapis.com/lastUpdatedTime'] = '2026-11-13T01:36:21Z'
+    rollout.assert_source_only(before, after, 'job', 'img@sha256:new', {'STOCKVISION_SOURCE_SHA': 'b' * 40})
+    after['metadata']['annotations']['run.googleapis.com/vpc-access-egress'] = 'all-traffic'
+    with pytest.raises(RuntimeError, match='non_source_resource_configuration_changed:job'):
+        rollout.assert_source_only(before, after, 'job', 'img@sha256:new', {'STOCKVISION_SOURCE_SHA': 'b' * 40})

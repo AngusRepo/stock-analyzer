@@ -410,7 +410,7 @@ def test_the_prediction_request_forwards_research_only_to_the_pit_key():
 
 
 # ---- R33-NEW-11: the feature models and GNN read the prep of their own version ----
-R33_ENSEMBLE = {'kind': 'r33_equal7_isotonic'}
+R33_ENSEMBLE = {'kind': 'r33_roster_isotonic'}
 
 
 def test_r33_reads_the_feature_model_and_gnn_versions_too(monkeypatch):

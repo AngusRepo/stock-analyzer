@@ -193,9 +193,9 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
     signal_date = runtime['signal_date']
     identity = runtime['l3_identity']
     bundle = policy['artifact']
-    from services.l3_equal_weight_bundle import is_equal7
-    equal7 = is_equal7(bundle)
-    if equal7 and r2_shadow is not None:
+    from services.l3_equal_weight_bundle import is_r33_bundle
+    r33_bundle = is_r33_bundle(bundle)
+    if r33_bundle and r2_shadow is not None:
         raise ValueError('r33_multiple_model_owners')
     research = private_research and policy.get('scope') == 'private_research'
     if r2_shadow is not None and not research:
@@ -225,7 +225,7 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
     symbols = sorted(set(by_symbol)|set(holdings))
     predictions = runtime['predictions']
     r33_evidence = r33_projection = None
-    if equal7:
+    if r33_bundle:
         # R33: the attested rank pool owns z/score/E-hat. A name it did not score
         # is unavailable today with its reason; a missing model is z=0, not a drop.
         from services.l3_equal_weight_bundle import project
@@ -240,7 +240,7 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
     # coefficient is inert because zero/new or existing/held weights are fixed.
     locked.update(set(unavailable) & set(holdings))
     modeled = sorted(set(by_symbol) - set(unavailable))
-    if equal7:
+    if r33_bundle:
         pass
     elif r2_shadow is None:
         feature_rows = [{'symbol':s,'features':native_features(by_symbol[s],predictions[s],identity),
@@ -341,10 +341,10 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
     for i,symbol in enumerate(symbols):
         if symbol in forbidden and result['weights'][symbol]>current[i]+WEIGHT_SUPPORT:
             raise ValueError('l4_plan_selected_non_executable:'+symbol)
-    from services.l3_equal_weight_bundle import FEATURE_NAMES as R33_FEATURE_NAMES, UTILITY_SEMANTIC as R33_UTILITY
+    from services.l3_equal_weight_bundle import UTILITY_SEMANTIC as R33_UTILITY
     attribution=full_l3_attribution(by_symbol,predictions,outputs,feature_rows,
-        model_feature_names=R33_FEATURE_NAMES if equal7 else bundle['model']['recipe']['names'],unavailable=unavailable,
-        utility_semantic=R33_UTILITY if equal7 else 'five_session_gross_decimal')
+        model_feature_names=bundle['model']['feature_names'] if r33_bundle else bundle['model']['recipe']['names'],unavailable=unavailable,
+        utility_semantic=R33_UTILITY if r33_bundle else 'five_session_gross_decimal')
     plan = {'schema_version':PLAN_SCHEMA,'owner':OWNER,'signal_date':signal_date,
             'execution_scope':'counterfactual' if forced_arm is not None else 'private_research' if research else 'paper',
             'account_id':1,'account_anchor':account.get('account_anchor'),'parent_plan_id':account.get('active_plan_id'),'account_checksum':digest(account),'policy_identity':policy_identity,
@@ -358,7 +358,7 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
                 'expected_return_gross':outputs[s]['expected_return_gross'] if s in outputs else None,
                 'distribution':outputs.get(s)}
                 for i,s in enumerate(symbols)}}
-    if equal7:
+    if r33_bundle:
         # Held names carry E-hat (or why it is missing) for the decay exit.
         for s in symbols:
             plan['targets'][s].update(r33=r33_evidence.get(s),ehat_missing_reason=_ehat_missing_reason(r33_evidence.get(s),s in outputs))
@@ -402,8 +402,8 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
                    l4_distribution=output)
         row['alpha_allocation']={'engine':'sparse_tangent_inverse_risk','schema_version':PLAN_SCHEMA,
             'expected_return_owner':OWNER,'expected_return':expected,
-            'expected_return_semantic':R33_UTILITY if equal7 else 'five_session_gross_decimal' if r2_shadow is None or r2_shadow.get('comparison_arm')=='baseline' else 'five_session_relative_pool_decimal',
-            'expected_return_source':bundle['model']['schema_version'] if equal7 else SCHEMA if r2_shadow is None else 'l4-r2-daily-shadow-v1',
+            'expected_return_semantic':R33_UTILITY if r33_bundle else 'five_session_gross_decimal' if r2_shadow is None or r2_shadow.get('comparison_arm')=='baseline' else 'five_session_relative_pool_decimal',
+            'expected_return_source':bundle['model']['schema_version'] if r33_bundle else SCHEMA if r2_shadow is None else 'l4-r2-daily-shadow-v1',
             'selected':selected,'allocation_weight':weight,'allocation_rank':rank[symbol],
             'selection_reason':'l3_evidence_unavailable' if symbol in unavailable else 'portfolio_target' if selected else 'portfolio_cash_or_other_assets',
             'prediction_blockers':unavailable.get(symbol,[]),
@@ -411,7 +411,7 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
             'l4_distribution':output}
         if runtime.get('hmm_lineage') is not None:
             row['alpha_allocation']['hmm_lineage'] = dict(runtime['hmm_lineage'])
-        if equal7:
+        if r33_bundle:
             row['alpha_allocation'].update(r33=r33_evidence.get(symbol),
                 ehat_missing_reason=_ehat_missing_reason(r33_evidence.get(symbol),output is not None))
         row.setdefault('score_components',{})['mlAdvisory']=old_advice

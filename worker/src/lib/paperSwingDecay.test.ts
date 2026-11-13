@@ -9,7 +9,7 @@ import { swingExitEvaluator } from './paperSwingRuntime'
 import { checkExitConditions } from './paperExitPolicy'
 import { updateLifecycleS12TrailingStop } from './paperExitTasks'
 
-const R33 = 'r33_equal7_isotonic_v1'
+const R33 = 'r33_roster_isotonic_v1'
 const r33Config = (exit: unknown = { swingHardStopPct: -.08, swingMaxHoldSessions: 20 }) =>
   ({ l4Distribution: { operating_mode: R33 }, exit }) as any
 const state: SwingPositionState = { policy: SWING_POLICY_VERSION, entryDate: '2026-10-02', entryPrice: 100, entryOrLow: 97 }

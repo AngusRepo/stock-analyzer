@@ -1,6 +1,8 @@
-"""R33 ensemble object: seven equal-weight models and the cross-fit serving table (slice A §2).
+"""R33 ensemble object: an equal-weight model roster and the cross-fit serving table (slice A §2).
 
-The object binds the seven base artifacts, the sealed monthly bundle it came from
+The roster is the object's own model_order (the serving table's, set by the monthly
+lifecycle's R33_MODELS when it was trained), never this checkout's constant, so a
+published object stays valid when the training roster changes. The object binds the base artifacts, the sealed monthly bundle it came from
 and the serving calibration under one payload checksum. Every consumer validates
 the whole object first, so a pointer cannot claim one identity and carry another
 roster or table.
@@ -11,12 +13,13 @@ import math
 import re
 
 from services.r33_crossfit_serving import validate_serving
-from services.r33_isotonic_calibration import MODELS, checksum
+from services.alpha_model_roster import validate_r33_roster
+from services.r33_isotonic_calibration import checksum
 
 EVIDENCE_KEY = "r33_rank_evidence"     # predictions[symbol][EVIDENCE_KEY], written by services.r33_rank_pool
 
-SCHEMA = "r33-equal7-ensemble-v1"
-KIND = "r33_equal7_isotonic"
+SCHEMA = "r33-roster-ensemble-v1"
+KIND = "r33_roster_isotonic"
 _BODY = ("schema_version", "kind", "cohort_id", "model_order", "selected_models", "base_artifacts",
          "observation_artifacts", "base_artifact_set_checksum", "variant", "source_bundle",
          "serving_calibration", "validation")
@@ -33,7 +36,7 @@ def _sha(value) -> bool:
 
 def r33_artifact_id(ensemble: dict) -> str:
     """Derived from the claimed payload checksum, like the active8 id; validate_ensemble proves it."""
-    return f"r33-equal7:{ensemble.get('cohort_id')}:{str(ensemble.get('payload_checksum'))[:16]}"
+    return f"r33-roster:{ensemble.get('cohort_id')}:{str(ensemble.get('payload_checksum'))[:16]}"
 
 
 def _sealed(body: dict) -> dict:
@@ -43,9 +46,12 @@ def _sealed(body: dict) -> dict:
 
 def build_ensemble(*, cohort_id: str, base_artifacts: dict, source_bundle: dict, serving_calibration: dict,
                    validation: dict) -> dict:
-    artifacts = {m: {k: base_artifacts[m][k] for k in _ARTIFACT} for m in MODELS}
-    body = dict(schema_version=SCHEMA, kind=KIND, cohort_id=cohort_id, model_order=list(MODELS),
-                selected_models=list(MODELS), base_artifacts=artifacts,
+    roster = validate_r33_roster(serving_calibration.get("model_order"))
+    if set(base_artifacts) != set(roster):
+        raise ValueError("r33_ensemble_contract")
+    artifacts = {m: {k: base_artifacts[m][k] for k in _ARTIFACT} for m in roster}
+    body = dict(schema_version=SCHEMA, kind=KIND, cohort_id=cohort_id, model_order=list(roster),
+                selected_models=list(roster), base_artifacts=artifacts,
                 observation_artifacts={m: dict(v) for m, v in artifacts.items()},
                 base_artifact_set_checksum=checksum(artifacts), variant=serving_calibration["variant"],
                 source_bundle={k: source_bundle[k] for k in _SOURCE}, serving_calibration=serving_calibration,
@@ -69,15 +75,21 @@ def validate_ensemble(ensemble: dict) -> dict:
         raise ValueError("r33_ensemble_contract")
     artifacts, source = ensemble["base_artifacts"], ensemble["source_bundle"]
     validation = ensemble["validation"]
+    try:
+        roster = validate_r33_roster(ensemble["model_order"])
+    except ValueError:
+        raise ValueError("r33_ensemble_contract") from None
     if (ensemble["schema_version"] != SCHEMA or ensemble["kind"] != KIND
             or not isinstance(ensemble["cohort_id"], str) or not ensemble["cohort_id"]
-            or ensemble["model_order"] != list(MODELS) or ensemble["selected_models"] != list(MODELS)
-            or not isinstance(artifacts, dict) or set(artifacts) != set(MODELS)
+            or ensemble["selected_models"] != list(roster)
+            or not isinstance(ensemble["serving_calibration"], dict)
+            or ensemble["serving_calibration"].get("model_order") != list(roster)
+            or not isinstance(artifacts, dict) or set(artifacts) != set(roster)
             or any(not isinstance(artifacts[m], dict) or set(artifacts[m]) != set(_ARTIFACT)
                    or not isinstance(artifacts[m]["artifact_id"], str) or not artifacts[m]["artifact_id"]
                    or not isinstance(artifacts[m]["version"], str) or not artifacts[m]["version"]
                    or not isinstance(artifacts[m]["checksum"], str)
-                   or _REGISTRY_CHECKSUM.fullmatch(artifacts[m]["checksum"]) is None for m in MODELS)
+                   or _REGISTRY_CHECKSUM.fullmatch(artifacts[m]["checksum"]) is None for m in roster)
             or ensemble["observation_artifacts"] != artifacts
             or not isinstance(source, dict) or set(source) != set(_SOURCE)
             or not isinstance(source["path"], str) or not source["path"]
@@ -97,10 +109,10 @@ def validate_ensemble(ensemble: dict) -> dict:
     return ensemble
 
 
-RUNTIME_SCHEMA = "r33-equal7-runtime-v1"
-RECIPE = "r33-equal7-isotonic-v1"
+RUNTIME_SCHEMA = "r33-roster-runtime-v1"
+RECIPE = "r33-roster-isotonic-v1"
 SIGNAL_POLICY = "r33-ehat-round-trip-cost-signal-v1"
-COVERAGE_POLICY = "r33-equal7-missing-model-z0-v1"
+COVERAGE_POLICY = "r33-roster-missing-model-z0-v1"
 EHAT_SEMANTIC = "five_session_relative_pool_decimal"
 
 
@@ -113,20 +125,22 @@ def round_trip_cost(fees: dict) -> float:
     return cost
 
 
-def formal_contract(prediction: dict | None) -> dict:
+def formal_contract(prediction: dict | None, models) -> dict:
     """R33 coverage contract: a missing model is z=0 and an unscored name is a per-name gap
-    reported downstream (L4 unavailable with its reason), never a drop here (R4)."""
+    reported downstream (L4 unavailable with its reason), never a drop here (R4).
+    `models` is the published object's model_order."""
+    models = validate_r33_roster(models)
     evidence = (prediction or {}).get(EVIDENCE_KEY) if isinstance(prediction, dict) else None
     available = (evidence or {}).get("available") or {}
     reason = ("r33_rank_pool_missing" if evidence is None
               else None if evidence.get("expected_excess") is not None else "r33_unscored:" + evidence["unscored_reason"])
     return {
         "schema_version": "formal-layer3-r33-coverage-contract-v1",
-        "active_models": list(MODELS), "required_models": [], "minimum_required_cross_sectional_models": 0,
-        "optional_sequence_models": [], "available_models": [m for m in MODELS if available.get(m)],
-        "missing_models": [m for m in MODELS if not available.get(m)], "missing_core_models": [],
-        "missing_optional_models": [], "model_availability": {m: bool(available.get(m)) for m in MODELS},
-        "full_active8_coverage": all(available.get(m) for m in MODELS), "complete": True,
+        "active_models": list(models), "required_models": [], "minimum_required_cross_sectional_models": 0,
+        "optional_sequence_models": [], "available_models": [m for m in models if available.get(m)],
+        "missing_models": [m for m in models if not available.get(m)], "missing_core_models": [],
+        "missing_optional_models": [], "model_availability": {m: bool(available.get(m)) for m in models},
+        "full_active8_coverage": all(available.get(m) for m in models), "complete": True,
         "coverage_policy": COVERAGE_POLICY, "finite_scores_required": True,
         "score_semantic_version": None, "target_semantic_version": EHAT_SEMANTIC,
         "lineage_blockers": [], "r33_scored": reason is None, "r33_unscored_reason": reason}
@@ -153,10 +167,11 @@ def serving_view(prediction: dict, ensemble: dict, *, cost: float) -> dict:
     values = [float(block["mean_excess"]) for block in calibration["blocks"]]
     low, high = min(values), max(values)
     position = None if ehat is None else (0.5 if high == low else (ehat - low) / (high - low))
-    contract = formal_contract(prediction)
-    weights = {m: round(1 / len(MODELS), 8) for m in MODELS}
+    models = ensemble["model_order"]
+    contract = formal_contract(prediction, models)
+    weights = {m: round(1 / len(models), 8) for m in models}
     return {
-        "model_order": list(MODELS), "schema_version": RUNTIME_SCHEMA, "semantic_version": RECIPE,
+        "model_order": list(models), "schema_version": RUNTIME_SCHEMA, "semantic_version": RECIPE,
         "artifact_id": ensemble["artifact_id"], "artifact_checksum": ensemble["payload_checksum"],
         "cohort_id": ensemble["cohort_id"], "base_artifact_set_checksum": ensemble["base_artifact_set_checksum"],
         "calibration_checksum": calibration["payload_checksum"], "target_semantic_version": EHAT_SEMANTIC,
@@ -165,7 +180,7 @@ def serving_view(prediction: dict, ensemble: dict, *, cost: float) -> dict:
         "signal": signal, "unqualified_signal": signal, "advisory_signal": signal, "signal_role": "advisory_only",
         "final_decision_owner": "allocator_opb_policy",
         "signal_status": "unscored" if ehat is None else "market_hold" if signal == "HOLD" else "qualified",
-        "signal_blockers": [], "qualifications": None, "signal_source": "r33_equal7_isotonic",
+        "signal_blockers": [], "qualifications": None, "signal_source": "r33_roster_isotonic",
         "signal_policy": {"schema_version": SIGNAL_POLICY, "buy_rule": "ehat_gt_round_trip_cost",
                           "sell_rule": "ehat_le_zero", "round_trip_cost": cost,
                           "cost_owner": "trading:config.fees(buy_cost+sell_cost)", "top_k": None},
@@ -174,13 +189,13 @@ def serving_view(prediction: dict, ensemble: dict, *, cost: float) -> dict:
         "ehat_range_position": None if position is None else round(min(1.0, max(0.0, position)), 6),
         "forecast_pct": ehat, "forecast_pct_source": "r33_isotonic_pool_relative_excess",
         "forecast_return_5bar": ehat, "forecast_return_5bar_source": "r33_isotonic_pool_relative_excess",
-        "forecast_return_5bar_owner": "r33_equal7_isotonic", "forecast_horizon_bars": 5,
+        "forecast_return_5bar_owner": "r33_roster_isotonic", "forecast_horizon_bars": 5,
         "ml_expected_net_return": None,
         "expected_return": None, "expected_return_source": "allocator_ev_fusion_required",
         "expected_return_owner": "allocator_ev_fusion",
         "trade_expected_return_net_pct": None, "trade_expected_return_source": "allocator_ev_fusion_required",
         "contributing_models": contract["available_models"], "model_availability": contract["model_availability"],
-        "weights": weights, "weight_semantic": "r33_equal_weight_denominator_seven", "weight_total": 1.0,
+        "weights": weights, "weight_semantic": "r33_equal_weight_denominator_roster", "weight_total": 1.0,
         "formal_model_input_contract": contract, "validation": ensemble["validation"], "top_k": None,
         "r33": None if evidence is None else {k: evidence[k] for k in
                                               ("role", "held", "z", "available", "score", "expected_excess", "unscored_reason")},

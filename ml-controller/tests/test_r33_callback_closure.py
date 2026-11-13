@@ -9,7 +9,7 @@ from graphs import daily_pipeline_v2 as pipeline
 @pytest.fixture
 def r33(monkeypatch):
     original = fx._manifest
-    monkeypatch.setattr(fx, "_manifest", lambda: {**original(), "active8_ensemble": {"kind": "r33_equal7_isotonic"}})
+    monkeypatch.setattr(fx, "_manifest", lambda: {**original(), "active8_ensemble": {"kind": "r33_roster_isotonic"}})
 
 
 def test_r33_tolerates_row_errors_and_missing_model_ranks(r33):

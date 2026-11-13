@@ -50,7 +50,7 @@ async function main() {
     model_checksum:checksum,acceptance_mode:'paper_experiment',efficacy_status:'unproven',validation_receipt:receipt,validation_receipt_checksum:'f'.repeat(64)}}}}
 
   await assertL4PlanCurrentPolicy(policyEnv,first.plan,config)
-  await assert.rejects(assertL4PlanCurrentPolicy(policyEnv,first.plan,{l4Distribution:{...config.l4Distribution,operating_mode:'r33_equal7_isotonic_v1'}}),/l4_operating_mode_feature_schema_mismatch/)
+  await assert.rejects(assertL4PlanCurrentPolicy(policyEnv,first.plan,{l4Distribution:{...config.l4Distribution,operating_mode:'r33_roster_isotonic_v1'}}),/l4_operating_mode_feature_schema_mismatch/)
   await assert.rejects(assertL4PlanCurrentPolicy(policyEnv,first.plan,{l4Distribution:{artifact:{...config.l4Distribution.artifact,model_checksum:'f'.repeat(64)}}}),/config_model_changed/)
   sql.exec("UPDATE active8_ensemble_pointer_v1 SET artifact_id='l3-B'")
   await assert.rejects(assertL4PlanCurrentPolicy(policyEnv,first.plan,config),/paired_l3_changed/)

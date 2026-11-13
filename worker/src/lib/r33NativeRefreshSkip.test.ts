@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Bindings } from '../types'
 import { R33_MONTHLY_MODEL_PROFILE, runActive8OofLifecycle } from './controllerResearchWorkflows'
-import { R33_EQUAL7_ISOTONIC, SINGLE_B_TABPACK } from './paperStrategyMode'
+import { R33_ROSTER_ISOTONIC, SINGLE_B_TABPACK } from './paperStrategyMode'
 
 // Major 3: under R33 the exo137 weekly/monthly cohort would only feed the native L4 refresh.
 async function run(mode: string, cadence: 'daily' | 'weekly' | 'monthly', flag?: string, runDate: string | null = '2026-11-13') {
@@ -27,7 +27,7 @@ async function run(mode: string, cadence: 'daily' | 'weekly' | 'monthly', flag?:
 
 test('R33 weekly and monthly (without the R33 profile) skip the dispatch and write system_log', async () => {
   for (const cadence of ['weekly', 'monthly'] as const) {
-    const { summary, requests, logs } = await run(R33_EQUAL7_ISOTONIC, cadence)
+    const { summary, requests, logs } = await run(R33_ROSTER_ISOTONIC, cadence)
     assert.equal(requests.length, 0)
     assert.match(summary, /status=skipped reason=r33_has_no_native_l4_refresh job_dispatched=false/)
     assert.equal(logs.length, 1)
@@ -38,9 +38,9 @@ test('R33 weekly and monthly (without the R33 profile) skip the dispatch and wri
 
 test('R33 daily closure and the R33 monthly lifecycle still dispatch; other modes are unchanged', async () => {
   // Daily (no run date: no date fences) dispatches the closure job, never the R33 skip.
-  const daily = await run(R33_EQUAL7_ISOTONIC, 'daily', undefined, null)
+  const daily = await run(R33_ROSTER_ISOTONIC, 'daily', undefined, null)
   assert.equal(daily.requests.length, 1); assert.equal(daily.logs.length, 0)
-  const monthly = await run(R33_EQUAL7_ISOTONIC, 'monthly', '1')
+  const monthly = await run(R33_ROSTER_ISOTONIC, 'monthly', '1')
   assert.equal(monthly.requests[0].model_profile_schema_version, R33_MONTHLY_MODEL_PROFILE)
   assert.equal(monthly.logs.length, 0)
   for (const cadence of ['weekly', 'monthly'] as const) {

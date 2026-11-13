@@ -60,7 +60,7 @@ def _pool(symbols):
 
 def test_pool_rows_use_78_pool_scores_and_serving_table():
     symbols, raws = _book()
-    raws[symbols[0]].pop("TimeXer")
+    raws[symbols[0]].pop("GNN")
     predictions = {s: _prediction(raws[s]) for s in symbols}
     snapshot = rank_pool.build_rank_pool(signal_date=DAY, pool=_pool(symbols), predictions=predictions,
                                          holdings=[], ensemble=_ensemble(), l3_identity=IDENTITY)
@@ -72,8 +72,8 @@ def test_pool_rows_use_78_pool_scores_and_serving_table():
         assert evidence["role"] == "pool" and evidence["score"] == pytest.approx(score[i])
         assert [evidence["z"][m] for m in MODELS] == pytest.approx(list(z[i]))
         assert evidence["expected_excess"] == pytest.approx(expected[i])
-    assert predictions[symbols[0]]["r33_rank_evidence"]["available"]["TimeXer"] is False
-    assert snapshot["coverage"]["by_model"]["TimeXer"] == len(symbols) - 1
+    assert predictions[symbols[0]]["r33_rank_evidence"]["available"]["GNN"] is False
+    assert snapshot["coverage"]["by_model"]["GNN"] == len(symbols) - 1
     assert rank_pool.validate_rank_pool(snapshot, predictions) is snapshot
 
 
@@ -99,8 +99,8 @@ def test_holding_outside_pool_is_placed_without_moving_the_pool(variant):
         positions = np.argsort(np.argsort(column)) + 1.0
         place = positions[3] + 0.5
         assert held["z"][m] == pytest.approx((place - positions.mean()) / positions.std())
-    plain = np.array([sum(alone[s]["r33_rank_evidence"]["z"].values()) / 7 for s in symbols])
-    mine = sum(held["z"].values()) / 7
+    plain = np.array([sum(alone[s]["r33_rank_evidence"]["z"].values()) / len(MODELS) for s in symbols])
+    mine = sum(held["z"].values()) / len(MODELS)
     expected = mine if variant == "mean_z" else (mine - plain.mean()) / plain.std()
     assert held["score"] == pytest.approx(expected)
     assert held["expected_excess"] == pytest.approx(predict(_calibration()["blocks"], [expected])[0])
@@ -230,18 +230,18 @@ def _reseal(ensemble, **changes):
     body = {k: v for k, v in ensemble.items() if k not in ("artifact_id", "payload_checksum")}
     body.update(changes)
     payload = checksum(body)
-    return {**body, "artifact_id": f"r33-equal7:{body['cohort_id']}:{payload[:16]}", "payload_checksum": payload}
+    return {**body, "artifact_id": f"r33-roster:{body['cohort_id']}:{payload[:16]}", "payload_checksum": payload}
 
 
 @pytest.mark.parametrize("mutate,error", [
-    (lambda e: e["base_artifacts"]["TimeXer"].update(version="old"), "r33_ensemble_contract"),
+    (lambda e: e["base_artifacts"]["GNN"].update(version="old"), "r33_ensemble_contract"),
     (lambda e: [a.update(version="old") for k in ("base_artifacts", "observation_artifacts") for a in e[k].values()],
      "r33_ensemble_artifact_set_checksum"),
-    (lambda e: e.update(selected_models=list(MODELS)[:6]), "r33_ensemble_contract"),
+    (lambda e: e.update(selected_models=list(MODELS)[:-1]), "r33_ensemble_contract"),
     (lambda e: e["validation"].update(decision="FAIL"), "r33_ensemble_contract"),
     (lambda e: e["validation"].update(pit_certified=False), "r33_ensemble_contract"),
     (lambda e: e.update(extra=1), "r33_ensemble_contract"),
-    (lambda e: e.update(artifact_id="r33-equal7:c1:0000000000000000"), "r33_ensemble_payload_checksum"),
+    (lambda e: e.update(artifact_id="r33-roster:c1:0000000000000000"), "r33_ensemble_payload_checksum"),
     (lambda e: e["source_bundle"].update(sha256="0" * 64), "r33_ensemble_payload_checksum"),
     (lambda e: e.update(serving_calibration=build_payload(
         blocks=pava([-1.0, 1.0], [0.0, 0.01], [1, 1]), variant="mean_z", horizon_sessions=5,
@@ -268,28 +268,28 @@ def test_a_resealed_ensemble_with_another_roster_is_another_identity():
                                   ensemble=resealed, l3_identity=IDENTITY)
 
 
-def test_holding_missing_a_model_is_zero_over_seven_and_skips_uninformative_models():
+def test_holding_missing_a_model_is_zero_over_the_roster_and_skips_uninformative_models():
     symbols, raws = _book()
     for s in symbols:                                   # TabM gives the pool no spread: uninformative today
         raws[s]["TabM"] = 0.25
     holding = "9999"
-    raws[holding] = {m: raws[symbols[2]][m] + 1e-9 for m in MODELS if m != "TimeXer"}
+    raws[holding] = {m: raws[symbols[2]][m] + 1e-9 for m in MODELS if m != "GNN"}
     predictions = {s: _prediction(raws[s]) for s in [*symbols, holding]}
     snapshot = rank_pool.build_rank_pool(signal_date=DAY, pool=_pool(symbols), predictions=predictions,
                                          holdings=[holding], ensemble=_ensemble(), l3_identity=IDENTITY)
     assert snapshot["uninformative_models"] == ["TabM"]
     row = next(r for r in snapshot["rows"] if r["symbol"] == holding)
-    assert row["available"]["TimeXer"] is False and row["z"]["TimeXer"] == 0.0
+    assert row["available"]["GNN"] is False and row["z"]["GNN"] == 0.0
     assert row["available"]["TabM"] is True and row["z"]["TabM"] == 0.0
     for m in MODELS:
-        if m in ("TimeXer", "TabM"):
+        if m in ("GNN", "TabM"):
             continue
         column = np.array([raws[s][m] for s in symbols])
         x = raws[holding][m]
         ranks = np.argsort(np.argsort(column)) + 1.0     # distinct values: average rank == ordinal rank
         position = 0.5 + np.sum(column < x) + 0.5 * np.sum(column == x)
         assert row["z"][m] == pytest.approx((position - ranks.mean()) / ranks.std())
-    assert row["score"] == pytest.approx(sum(row["z"].values()) / 7)
+    assert row["score"] == pytest.approx(sum(row["z"].values()) / len(MODELS))
     assert row["expected_excess"] == pytest.approx(float(predict(_calibration()["blocks"], [row["score"]])[0]))
 
 
@@ -346,7 +346,7 @@ def _with_artifacts(mutate):
     lambda a: a["TabM"].update(checksum="md5:" + "a" * 32),
     lambda a: a["TabM"].update(version=""),
 ], ids=["extra_model", "missing_model", "no_checksum", "checksum_format", "empty_version"])
-def test_the_artifact_roster_must_be_exactly_seven_well_formed_artifacts(mutate):
+def test_the_artifact_roster_must_be_exactly_the_roster_of_well_formed_artifacts(mutate):
     with pytest.raises(ValueError, match="r33_ensemble_contract"):
         validate_ensemble(_with_artifacts(mutate))
 

@@ -119,7 +119,7 @@ def test_allocator_reads_rank_pool_ehat_as_pool_relative_excess():
         assert allocation["expected_return_source"] == equal7.MODEL_SCHEMA
         assert allocation["r33"]["score"] == next(r["score"] for r in snapshot["rows"] if r["symbol"] == row["symbol"])
     assert plan["r33_projection"]["rank_pool_checksum"] == snapshot["checksum"]
-    assert plan["input_attribution"]["model_feature_names"] == list(equal7.FEATURE_NAMES)
+    assert plan["input_attribution"]["model_feature_names"] == list(equal7.feature_names(MODELS))
     assert plan["prediction_coverage"]["unavailable"] == {}
     chosen = {s for s, w in plan["weights"].items() if w > 1e-7}
     assert chosen and all(ehat[s] > 0 for s in chosen)
@@ -267,7 +267,7 @@ def test_prepare_rejects_a_rank_pool_for_a_non_equal7_bundle(monkeypatch):
     # Any other (already validated) bundle: the rank pool would have no owner.
     monkeypatch.setattr(l4_distribution, "validate_bundle", lambda *a, **kw: None)
     policy["artifact"] = {**policy["artifact"], "model": {**policy["artifact"]["model"], "schema_version": "other"}}
-    with pytest.raises(ValueError, match="r33_rank_pool_without_equal7_bundle"):
+    with pytest.raises(ValueError, match="r33_rank_pool_without_r33_bundle"):
         _prepare(policy, policy["runtime"]["predictions"], r33_rank_pool=policy["runtime"]["r33_rank_pool"])
 
 

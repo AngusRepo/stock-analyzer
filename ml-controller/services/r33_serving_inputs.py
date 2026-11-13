@@ -99,7 +99,7 @@ def feature_gap_row(payload: dict, error: str | None, feature_models, *, feature
     No feature score and no fill: each feature model's gap is named with the row error's
     code (the full text stays on the in-memory row; the coverage line keeps counts and a
     sample), and GNN / sequence scores attach to it like any row. The rank pool unscores the
-    name only when none of the seven scored it. feature_version is the day's ml-service
+    name only when no roster model scored it. feature_version is the day's ml-service
     feature schema with zero features used, as ml-service writes it ("<schema>:<n>"); None
     when the day's feature rows do not agree on one schema, and the writer then fails closed."""
     error = str(error) if error else FEATURE_ROW_ABSENT
@@ -118,14 +118,13 @@ def feature_gap_row(payload: dict, error: str | None, feature_models, *, feature
             "feature_version": f"{feature_schema}:0" if feature_schema else None, "production_effect": False}
 
 
-def _model_error(text: str) -> tuple[str, str] | None:
-    """(model, reason) for one ml-service model_errors entry of the seven ("M: reason:..." or
-    "reason:M"); None for any other model (a retired XGBoost is outside R33)."""
-    from services.r33_isotonic_calibration import MODELS
-    for model in MODELS:
+def _model_error(text: str, models) -> tuple[str, str] | None:
+    """(model, reason) for one ml-service model_errors entry of a roster model ("M: reason:..." or
+    "reason:M"); None for any other model (one outside the served roster)."""
+    for model in models:
         if text.startswith(model + ":"):
             return model, text[len(model) + 1:].strip().split(":", 1)[0][:80]
-    for model in MODELS:
+    for model in models:
         if text.endswith(":" + model):
             return model, text[:-len(model) - 1].split(":", 1)[0][:80]
     return None
@@ -141,6 +140,7 @@ def coverage_log(rank_pool: dict, *, row_errors: dict[str, str],
     name). A model with no score on any pool row is an error and aborts the day (Wei 10/30,
     m-d): feature, GNN and sequence models are treated the same."""
     coverage = rank_pool["coverage"]
+    models = tuple(coverage["by_model"])  # the served roster: rank_pool coverage is per model_order
     total = int(coverage["pool_rows"])
     by_model = {m: {"missing": total - int(n), "total": total} for m, n in coverage["by_model"].items()}
     gaps = sorted(m for m, v in by_model.items() if v["missing"])
@@ -152,8 +152,8 @@ def coverage_log(rank_pool: dict, *, row_errors: dict[str, str],
     by_reason: dict[str, dict[str, int]] = {}
     per_name: dict[str, str] = {}
     for symbol, errors in sorted((model_errors or {}).items()):
-        kept = [str(e) for e in errors or [] if _model_error(str(e))]
-        for model, reason in map(_model_error, kept):
+        kept = [str(e) for e in errors or [] if _model_error(str(e), models)]
+        for model, reason in (_model_error(e, models) for e in kept):
             by_reason.setdefault(model, {})[reason] = by_reason.get(model, {}).get(reason, 0) + 1
         if kept:
             per_name[symbol] = "; ".join(kept)[:500]
@@ -199,6 +199,6 @@ def write_coverage_log(ops_execute, rank_pool: dict, *, row_errors: dict[str, st
 
 
 def require_full_day_coverage(meta: dict) -> None:
-    """Abort the day when any of the seven models scored no pool row (after the ops line)."""
+    """Abort the day when any roster model scored no pool row (after the ops line)."""
     if meta["models_fully_missing"]:
         raise RuntimeError("r33_model_missing_for_day:" + ",".join(meta["models_fully_missing"]))

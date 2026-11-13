@@ -9,10 +9,13 @@ import json
 import pytest
 
 from graphs import daily_pipeline_v2 as P
+from services.alpha_model_roster import R33_MODELS
 from services.r33_serving_inputs import coverage_log
 from test_r33_node_day_outage import SYMBOLS, r33_day  # noqa: F401 - fixture
 from test_pipeline_frozen_sequence_membership import dispatched  # noqa: F401 - the legacy (non-R33) day
 
+FEATURE_MODELS = ("LightGBM", "ExtraTrees", "TabM")
+OTHER_MODELS = tuple(m for m in R33_MODELS if m not in FEATURE_MODELS)
 GAPS = ["active8_base_score_non_finite:LightGBM", "ExtraTrees: r33_feature_input_non_finite:count=2:fields=pe,roe",
         "active8_base_score_non_finite:TabM", "XGBoost: skipped by model_pool status=retired"]
 
@@ -52,7 +55,7 @@ def test_a_feature_row_error_keeps_the_names_gnn_and_sequence_scores(r33_day, mo
     meta = json.loads(logged[0][3])
     assert logged[0][0] == "warn" and meta["unscored_by_reason"] == {} and meta["pool_scored_rows"] == len(SYMBOLS)
     assert {m: v["missing"] for m, v in meta["by_model"].items()} == {
-        "LightGBM": 1, "ExtraTrees": 1, "TabM": 1, "GNN": 0, "TimeXer": 0, "PatchTST": 0, "iTransformer": 0}
+        m: int(m in FEATURE_MODELS) for m in R33_MODELS}
     assert meta["model_errors_by_model"] == {m: {code: 1} for m in ("ExtraTrees", "LightGBM", "TabM")}
     assert meta["row_error_names"] == (0 if modal_row is None else 1)
     assert meta["row_errors_by_reason"] == ({} if modal_row is None else {code: 1})
@@ -67,13 +70,13 @@ def test_a_feature_gap_row_runs_through_the_ensemble_and_the_d1_writer(r33_day, 
     rows[0] = {"symbol": SYMBOLS[0], "error": "RuntimeError: feature_context_failed:ValueError:x"}
     predictions = asyncio.run(P.node_ml_predict(state))["predictions"]
     row = predictions[SYMBOLS[0]]
-    assert set(row["rank_scores"]) == {"GNN", "TimeXer", "PatchTST", "iTransformer"}
+    assert set(row["rank_scores"]) == set(OTHER_MODELS)
     assert row["model_errors"] == [f"{m}: feature_context_failed" for m in ("LightGBM", "ExtraTrees", "TabM")]
     assert row["feature_row_error"] == "RuntimeError: feature_context_failed:ValueError:x"
     evidence = row["r33_rank_evidence"]
     assert evidence["unscored_reason"] is None and evidence["score"] is not None
     assert {m for m, ok in evidence["available"].items() if not ok} == {"LightGBM", "ExtraTrees", "TabM"}
-    assert row["ensemble_v2"]["schema_version"] == "r33-equal7-runtime-v1"
+    assert row["ensemble_v2"]["schema_version"] == "r33-roster-runtime-v1"
     assert row["current_price"] == 100.0 and row["stock_meta"] == {"market_segment": "LISTED"}
     assert row["feature_version"] == "formal137:0" and row["feature_count"] == 0
     # The real prediction writer accepts the row: the ensemble line and one line per scoring model.
@@ -104,6 +107,8 @@ def test_a_feature_row_error_and_no_other_model_is_unscored(r33_day, monkeypatch
     bundle = state["modal_prediction_bundle"]
     bundle["predict_batch_v2_results"][0] = {"symbol": SYMBOLS[0], "error": "RuntimeError: feature_context_failed:x"}
     for field in ("gnn_graphsage_raw", "timexer_raw", "patchtst_raw", "itransformer_raw"):
+        if field not in bundle:
+            continue
         rows = bundle[field]["results"]
         rows[:] = [r if r["symbol"] != SYMBOLS[0] else {"symbol": SYMBOLS[0], "error": "x"} for r in rows]
     _run_to_coverage(state, monkeypatch)
@@ -167,8 +172,7 @@ def test_row_errors_in_the_line_are_a_sample_and_counted_by_reason():
     from services.r33_serving_inputs import MODEL_ERROR_SAMPLE
     pool = {"signal_date": "2026-09-09", "screener_run_id": "r", "uninformative_models": [],
             "coverage": {"pool_rows": 1, "pool_scored_rows": 1, "unscored": {},
-                         "by_model": dict.fromkeys(["LightGBM", "ExtraTrees", "TabM", "GNN", "TimeXer", "PatchTST",
-                                                    "iTransformer"], 1)}}
+                         "by_model": dict.fromkeys(R33_MODELS, 1)}}
     errors = {f"{i:04d}": "RuntimeError: feature_context_failed:" + "x" * 900 for i in range(MODEL_ERROR_SAMPLE + 5)}
     errors["9999"] = "KeyError: 'close'"
     level, message, meta = coverage_log(pool, row_errors=errors)
@@ -178,7 +182,7 @@ def test_row_errors_in_the_line_are_a_sample_and_counted_by_reason():
     assert meta["row_errors_by_reason"] == {"KeyError": 1, "feature_context_failed": MODEL_ERROR_SAMPLE + 5}
 
 
-def test_all_three_feature_models_non_finite_keeps_the_other_four(r33_day, monkeypatch):
+def test_all_three_feature_models_non_finite_keeps_the_other_models(r33_day, monkeypatch):
     state, logged = r33_day
     state["modal_prediction_bundle"]["predict_batch_v2_results"][0] = {
         "symbol": SYMBOLS[0], "rank_scores": {}, "model_errors": list(GAPS)}
@@ -187,7 +191,7 @@ def test_all_three_feature_models_non_finite_keeps_the_other_four(r33_day, monke
     meta = json.loads(logged[0][3])
     assert meta["unscored_by_reason"] == {} and meta["pool_scored_rows"] == len(SYMBOLS)
     assert {m: v["missing"] for m, v in meta["by_model"].items()} == {
-        "LightGBM": 1, "ExtraTrees": 1, "TabM": 1, "GNN": 0, "TimeXer": 0, "PatchTST": 0, "iTransformer": 0}
+        m: int(m in FEATURE_MODELS) for m in R33_MODELS}
     assert meta["model_errors_by_model"] == {"ExtraTrees": {"r33_feature_input_non_finite": 1},
                                              "LightGBM": {"active8_base_score_non_finite": 1},
                                              "TabM": {"active8_base_score_non_finite": 1}}
@@ -200,6 +204,8 @@ def test_a_name_no_model_scored_is_still_unscored(r33_day, monkeypatch):
     bundle = state["modal_prediction_bundle"]
     bundle["predict_batch_v2_results"][0] = {"symbol": SYMBOLS[0], "rank_scores": {}, "model_errors": list(GAPS)}
     for field in ("gnn_graphsage_raw", "timexer_raw", "patchtst_raw", "itransformer_raw"):
+        if field not in bundle:
+            continue
         rows = bundle[field]["results"]
         rows[:] = [r if r["symbol"] != SYMBOLS[0] else {"symbol": SYMBOLS[0], "error": "x"} for r in rows]
     _run_to_coverage(state, monkeypatch)
@@ -207,11 +213,10 @@ def test_a_name_no_model_scored_is_still_unscored(r33_day, monkeypatch):
     assert meta["unscored_by_reason"] == {"no_model_available": 1}
 
 
-def test_coverage_line_ignores_models_outside_the_seven_and_is_info_without_gaps():
+def test_coverage_line_ignores_models_outside_the_roster_and_is_info_without_gaps():
     pool = {"signal_date": "2026-09-09", "screener_run_id": "r", "uninformative_models": [],
             "coverage": {"pool_rows": 2, "pool_scored_rows": 2, "unscored": {},
-                         "by_model": dict.fromkeys(["LightGBM", "ExtraTrees", "TabM", "GNN", "TimeXer", "PatchTST",
-                                                    "iTransformer"], 2)}}
+                         "by_model": dict.fromkeys(R33_MODELS, 2)}}
     level, _message, meta = coverage_log(pool, row_errors={}, model_errors={"2330": [GAPS[3]]})
     assert level == "info" and meta["model_errors_by_model"] == {} and meta["model_errors_sample"] == {}
     # A held name outside the pool leaves no pool gap; its feature model error still warns.
@@ -223,8 +228,7 @@ def test_the_per_name_text_is_a_sample_and_the_counts_cover_every_name():
     from services.r33_serving_inputs import MODEL_ERROR_SAMPLE
     pool = {"signal_date": "2026-09-09", "screener_run_id": "r", "uninformative_models": [],
             "coverage": {"pool_rows": 1, "pool_scored_rows": 1, "unscored": {},
-                         "by_model": dict.fromkeys(["LightGBM", "ExtraTrees", "TabM", "GNN", "TimeXer", "PatchTST",
-                                                    "iTransformer"], 1)}}
+                         "by_model": dict.fromkeys(R33_MODELS, 1)}}
     errors = {f"{i:04d}": [GAPS[0]] for i in range(MODEL_ERROR_SAMPLE + 5)}
     _level, _message, meta = coverage_log(pool, row_errors={}, model_errors=errors)
     assert meta["model_error_names"] == MODEL_ERROR_SAMPLE + 5 and len(meta["model_errors_sample"]) == MODEL_ERROR_SAMPLE

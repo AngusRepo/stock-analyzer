@@ -134,7 +134,7 @@ def test_feature_model_scores_the_prep_row_and_a_missing_symbol_is_its_own_error
 def test_stage_runner_loads_once_for_both_stages_and_a_failed_load_fails_both():
     objects, opened = {}, []
     payload = {"run_date": DAY, "r33_feature_prep_sources": {"base": _source(objects)}}
-    pool = {"active8_ensemble": {"kind": "r33_equal7_isotonic"}}
+    pool = {"active8_ensemble": {"kind": "r33_roster_isotonic"}}
     run = r33_prep_rows.stage_runner(pool, payload, [{"symbol": "2330"}, {"symbol": None}, "x"],
                                      bucket_factory=lambda: opened.append(1) or Bucket(objects))
     assert set(run(lambda: r33_prep_rows.PREP_VIEWS.get())[None]["rows"]) == {"2330"}
@@ -185,7 +185,7 @@ def test_bundle_rows_under_r33_keep_row_errors_and_missing_ranks_but_not_structu
 
 
 def test_feature_and_gnn_stages_refuse_an_r33_pool_without_prep_views(monkeypatch):
-    pool = {"active8_ensemble": {"kind": "r33_equal7_isotonic"}}
+    pool = {"active8_ensemble": {"kind": "r33_roster_isotonic"}}
     monkeypatch.setattr(batch_prediction, "predict_stock_v2_batch_with_metrics",
                         lambda *a, **k: pytest.fail("rebuilt per stock"))
     with pytest.raises(ValueError, match="r33_prep_views_not_bound"):
@@ -213,7 +213,7 @@ def test_modal_bundle_runs_the_feature_and_gnn_stages_inside_the_prep_views():
     assert "feature_models=feature_models, require_rank=require_rank, r33=r33_bundle" in source
     assert 'r33_bundle = (frozen_pool.get("active8_ensemble") or {}).get("kind") == R33_KIND' in source
     from app.active8_ensemble_runtime import R33_KIND
-    assert R33_KIND == "r33_equal7_isotonic"
+    assert R33_KIND == "r33_roster_isotonic"
 
 
 def test_view_width_and_dtype_and_a_pit_request_serves_only_its_own_version():

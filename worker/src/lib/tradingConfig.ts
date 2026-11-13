@@ -1,4 +1,4 @@
-import { l4OperatingModeError, R33_EQUAL7_ISOTONIC, validSingleBModel } from './paperStrategyMode'
+import { l4OperatingModeError, R33_ROSTER_ISOTONIC, validSingleBModel } from './paperStrategyMode'
 import { swingExitConfigError } from './paperSwingPolicy'
 import { validateR2Learning } from './l4R2LearningConfig'
 import { validL4FeatureSchema, l4ReleaseEvidenceError } from './l4ReleaseEvidence'
@@ -1659,7 +1659,7 @@ export function validateTradingConfig(config: TradingConfig, privateResearch = f
     }
     if (policy.operating_mode != null && !validSingleBModel(policy)) errors.push('single B mode requires its matching complete Paper artifact')
     if (l4OperatingModeError(policy)) errors.push('l4Distribution R33 feature schema and R33 operating_mode must appear together')
-    if (policy.operating_mode === R33_EQUAL7_ISOTONIC && swingExitConfigError(config.exit))
+    if (policy.operating_mode === R33_ROSTER_ISOTONIC && swingExitConfigError(config.exit))
       errors.push('R33 operating_mode requires exit.swingHardStopPct (-1..0) and exit.swingMaxHoldSessions (integer >= 1)')
     if (policy.strategy_role != null && policy.operating_mode == null) errors.push('strategy_role requires an explicit operating_mode')
     const isolatedCandidate = privateResearch && policy.scope==='private_research'

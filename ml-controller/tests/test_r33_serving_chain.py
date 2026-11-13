@@ -46,7 +46,7 @@ def test_signal_is_ehat_against_cost_and_unscored_is_no_signal():
         expected = ("NO_SIGNAL" if ehat is None else "BUY" if ehat > COST else "SELL" if ehat <= 0 else "HOLD")
         assert ev2["signal"] == expected, symbol
         assert ev2["forecast_pct"] == ehat and ev2["probability_positive_net_return"] is None
-        assert ev2["confidence"] == 0.0 and ev2["weights"] == {m: round(1 / 7, 8) for m in MODELS}
+        assert ev2["confidence"] == 0.0 and ev2["weights"] == {m: round(1 / len(MODELS), 8) for m in MODELS}
         assert ev2["artifact_checksum"] == IDENTITY["payload_checksum"]
     assert {s for s, p in predictions.items() if p["ensemble_v2"]["signal"] == "NO_SIGNAL"} == {"P6", "X9"}
     assert predictions["X9"]["ensemble_v2"]["formal_model_input_contract"]["r33_unscored_reason"] == "r33_rank_pool_missing"

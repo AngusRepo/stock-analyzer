@@ -171,9 +171,9 @@ def predict(rows: list[dict], model: dict) -> list[dict]:
 
 def validate_bundle(bundle: dict, *, l3_identity: dict, signal_date: str,
                     require_paper_release: bool = True) -> None:
-    from services.l3_equal_weight_bundle import is_equal7, validate as validate_equal7
-    if is_equal7(bundle):
-        validate_equal7(bundle, l3_identity=l3_identity, signal_date=signal_date)
+    from services.l3_equal_weight_bundle import is_r33_bundle, validate as validate_r33_bundle
+    if is_r33_bundle(bundle):
+        validate_r33_bundle(bundle, l3_identity=l3_identity, signal_date=signal_date)
         if bundle.get("l4plus", {}).get("enabled") is True:
             raise ValueError("r33_multiple_calibration_owners")
         if require_paper_release:

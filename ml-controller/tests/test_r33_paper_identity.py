@@ -33,7 +33,7 @@ def _row(ensemble):
 def test_r33_table_row_keeps_the_row_format_and_binds_the_payload():
     ensemble = _ensemble()
     _validate_payload_identity(_row(ensemble), ensemble)
-    for key, value in (('schema_version', 'r33-equal7-ensemble-v1'), ('artifact_id', 'active8-ensemble:c1:x'),
+    for key, value in (('schema_version', 'r33-roster-ensemble-v1'), ('artifact_id', 'active8-ensemble:c1:x'),
                        ('knowledge_cutoff_date', '2026/10/30'), ('knowledge_cutoff_date', None),
                        ('validation_json', json.dumps({'decision': 'PASS'})), ('validation_decision', 'FAIL'),
                        ('cohort_id', 'c2'), ('payload_checksum', '0' * 64), ('archive_uri', ''),

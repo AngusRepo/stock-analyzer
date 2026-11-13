@@ -109,6 +109,8 @@ def r33_day(monkeypatch):
                   gnn_graphsage_raw={"results": [{"symbol": s, "rank_score": (i + 1) / 6.0}
                                                  for i, s in enumerate(SYMBOLS)]})
     for name, field in SEQUENCE.items():
+        if name not in R33_MODELS:
+            continue
         bundle[field] = {"results": [{"symbol": r["symbol"], "forecast_pct": (i + 1) * 0.01}
                                      for i, r in enumerate(request["sequence_model_series_by_model"][name])]}
     state["modal_prediction_bundle"] = bundle
@@ -141,8 +143,9 @@ def _all_rows_fail(bundle, field):
                                  for r in bundle[field]["results"]]}
 
 
-@pytest.mark.parametrize("model,field", [("GNN", "gnn_graphsage_raw"), ("PatchTST", "patchtst_raw"),
-                                         ("TimeXer", "timexer_raw"), ("iTransformer", "itransformer_raw")])
+@pytest.mark.parametrize("model,field", [(m, f) for m, f in (
+    ("GNN", "gnn_graphsage_raw"), ("PatchTST", "patchtst_raw"), ("TimeXer", "timexer_raw"),
+    ("iTransformer", "itransformer_raw")) if m in R33_MODELS])
 def test_a_whole_day_gnn_or_sequence_outage_reaches_the_coverage_abort(r33_day, model, field):
     state, logged = r33_day
     _all_rows_fail(state["modal_prediction_bundle"], field)

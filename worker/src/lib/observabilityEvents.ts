@@ -5,6 +5,7 @@ import { buildDataQualityReport, type DataQualityCheck } from './dataQualityMoni
 import { buildDeployGateReport } from './deployGate'
 import { getSchedulerStatus } from './schedulerStatus'
 import { controllerJson } from './controllerClient'
+import { publishedAlphaModelOrderProjected } from './alphaModelRoster'
 import {
   GA_CANDIDATE_LATEST_KEY,
   GA_CHAMPION_KEY,
@@ -623,6 +624,37 @@ export function buildEventsFromValidation(input: {
   })
 }
 
+/** Q7 A (Wei 2026-11-12): meta_layer roster fields are a descriptive echo of the published
+ *  order; a mismatch is reported (warn) and never blocks serving or a grant. */
+export function buildEventsFromAdaptiveRosterEcho(input: {
+  generatedAt: string
+  params?: Record<string, unknown>
+  publishedModelOrder?: string[]
+}): ObservabilityEvent[] {
+  const metaLayer = input.params?.meta_layer as Record<string, unknown> | undefined
+  const published = input.publishedModelOrder
+  if (!metaLayer || !Array.isArray(published)) return []
+  const expected = JSON.stringify(published)
+  const fields = ['alpha_vote_models', 'formal_layer3_slots'].filter(key => JSON.stringify(metaLayer[key]) !== expected)
+  if (!fields.length) return []
+  return [{
+    id: eventId('adaptive_meta', 'roster_echo', 'mismatch'),
+    ts: input.generatedAt,
+    severity: 'warn',
+    domain: 'adaptive_meta',
+    source: 'adaptive_params',
+    status: 'roster_echo_mismatch',
+    title: 'Adaptive roster echo differs from the published model order',
+    summary: `meta_layer ${fields.join(', ')} ≠ published order ${published.join(',')}; the echo is descriptive and does not block serving.`,
+    owner: 'Adaptive Meta Layer',
+    impact: 'confidence_delta / pf_quality_mult were last computed over another roster until the next adapt run.',
+    next_action: 'Expected for one session after an R33 promotion; if it persists, check the adapt step and publishedAlphaModelOrder.',
+    runbook: 'K20 runbook meta_layer (Q7 A)',
+    evidence: { published_model_order: published, mismatched_fields: fields,
+      alpha_vote_models: metaLayer.alpha_vote_models ?? null, formal_layer3_slots: metaLayer.formal_layer3_slots ?? null },
+  }]
+}
+
 export function buildEventsFromAdaptiveMeta(input: {
   generatedAt: string
   params?: Record<string, unknown>
@@ -988,6 +1020,7 @@ export function buildObservabilityEventReport(input: {
   validationError?: string
   adaptiveParams?: Record<string, unknown>
   adaptiveError?: string
+  publishedModelOrder?: string[]
   mlThresholdPolicy?: Record<string, unknown>
   mlThresholdPolicySampleCount?: number
   mlThresholdPolicyRequestedDate?: string | null
@@ -1020,6 +1053,11 @@ export function buildObservabilityEventReport(input: {
       generatedAt: input.generatedAt,
       params: input.adaptiveParams,
       sourceError: input.adaptiveError,
+    }),
+    ...buildEventsFromAdaptiveRosterEcho({
+      generatedAt: input.generatedAt,
+      params: input.adaptiveParams,
+      publishedModelOrder: input.publishedModelOrder,
     }),
     ...buildEventsFromMlThresholdPolicy({
       generatedAt: input.generatedAt,
@@ -1309,7 +1347,7 @@ export async function buildLiveObservabilityEventReport(env: Bindings, options: 
   const date = options.date ?? twToday()
   const generatedAt = new Date().toISOString()
 
-  const [scheduler, dataQuality, deployGate, modelPoolResult, validationResult, adaptiveResult, gaOptimizerResult, linucbLedgerSummary, thresholdPolicyResult] = await Promise.all([
+  const [scheduler, dataQuality, deployGate, modelPoolResult, validationResult, adaptiveResult, gaOptimizerResult, linucbLedgerSummary, thresholdPolicyResult, publishedOrderResult] = await Promise.all([
     getSchedulerStatus(env).catch((error: unknown) => ({ error: String(error), jobs: [] })),
     buildDataQualityReport(env, { date }).catch((error: unknown) => ({
       overall: 'fail' as const,
@@ -1350,6 +1388,8 @@ export async function buildLiveObservabilityEventReport(env: Bindings, options: 
       .catch((error: unknown) => ({ error: String(error) })),
     readLinUcbLedgerSummary(env),
     readLatestMlThresholdPolicyEvidence(env, date),
+    // Singleton pointer row (PK lookup), model_order only (json_extract); a read failure only drops the echo warn.
+    publishedAlphaModelOrderProjected(databaseForDataDomain(env, 'learning')).catch(() => undefined),
   ])
 
   const modelPoolPayload = 'payload' in modelPoolResult ? modelPoolResult.payload : undefined
@@ -1369,6 +1409,7 @@ export async function buildLiveObservabilityEventReport(env: Bindings, options: 
     validationError: validationResult.error,
     adaptiveParams: 'params' in adaptiveResult ? mergeLinUcbLedgerEvidence(adaptiveResult.params, linucbLedgerSummary) : undefined,
     adaptiveError: 'error' in adaptiveResult ? adaptiveResult.error : undefined,
+    publishedModelOrder: publishedOrderResult,
     mlThresholdPolicy: thresholdPolicyResult.policy ?? undefined,
     mlThresholdPolicySampleCount: thresholdPolicyResult.sampleCount,
     mlThresholdPolicyRequestedDate: thresholdPolicyResult.requestedDate,

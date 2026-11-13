@@ -77,7 +77,7 @@ def changed_paths(before, after):
 
 def validate_evidence(evidence, admission):
     """Bind the evidence to the admission's candidate identity and L4 artifact."""
-    from services.l3_equal_weight_bundle import FEATURE_SCHEMA, is_equal7
+    from services.l3_equal_weight_bundle import FEATURE_SCHEMA, is_r33_bundle
     from services.paper_strategy_mode import R33_MODE
     from services.r33_crossfit_serving import TABLE_NAME
     from services.r33_monthly_lifecycle import BUNDLE_PREFIX
@@ -89,7 +89,7 @@ def validate_evidence(evidence, admission):
     artifact = policy['artifact']
     candidate, calibration = evidence['candidate_bundle'], evidence['calibration']
     if (evidence['mode'] != R33_MODE or policy.get('operating_mode') != R33_MODE
-            or policy.get('strategy_role') != 'B' or policy.get('scope') != 'paper' or not is_equal7(artifact)):
+            or policy.get('strategy_role') != 'B' or policy.get('scope') != 'paper' or not is_r33_bundle(artifact)):
         raise _fail('mode')
     if (evidence['ensemble'] != {'artifact_id': identity['artifact_id'], 'payload_checksum': identity['payload_checksum']}
             or evidence['base_artifact_set_checksum'] != identity['base_artifact_set_checksum']

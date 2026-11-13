@@ -1,11 +1,13 @@
-"""R33-NEW-15: switch Paper to the R33 seven-model strategy in five go-gated steps.
+"""R33-NEW-15: switch Paper to the R33 roster strategy in five go-gated steps.
 
 kv-config -> admission -> grant -> r33-row -> promotion. `prepare` builds every value
 from read-only inputs; nothing here writes. Each step names one write with its before
 and after value, so a step runs only when the live state is exactly what the previous
 step left, and rollback is the same write reversed. The promotion step is the original
-atomic publisher (7 champion pointers, 7 registry rows, 1 ensemble pointer); this module
-never writes a pointer itself.
+atomic publisher (one champion pointer and one registry row per roster model, 1 ensemble
+pointer: 4+4+1 for the four-model roster); this module never writes a pointer itself.
+The roster is the sealed bundle's (its serving table's model_order). ml:adaptive_params
+meta_layer is not written or compared: its roster fields are a descriptive echo (Q7 A).
 """
 from copy import deepcopy
 
@@ -51,7 +53,7 @@ def ensemble_row(ensemble, bundle, *, archive_uri):
 
     schema_version is the table's row-format version: the column admits only the existing
     ARTIFACT_SCHEMA_VERSION, so an R33 row keeps it and the payload carries its own
-    r33-equal7-ensemble-v1 (Wei 10/29: no migration). knowledge_cutoff_date is the bundle's
+    r33-roster-ensemble-v1 (Wei 10/29: no migration). knowledge_cutoff_date is the bundle's
     last full-fit signal date. archive_uri names the sealed, write-once bundle the object is
     rebuilt from byte for byte.
     """
@@ -69,12 +71,54 @@ def ensemble_row(ensemble, bundle, *, archive_uri):
     return row
 
 
-def roster_status(meta_layer):
-    """Serving compares ml:adaptive_params meta_layer with the R33 order (verify_serving_configuration)."""
-    from services.alpha_model_roster import R33_MODELS
-    meta = meta_layer if isinstance(meta_layer, dict) else {}
-    found = {key: meta.get(key) for key in ('alpha_vote_models', 'formal_layer3_slots')}
-    return {'expected': list(R33_MODELS), **found, 'matches': all(v == list(R33_MODELS) for v in found.values())}
+def check_oof_checks_report(raw: bytes, bundle) -> dict:
+    """The sealed OOF checks behind the bundle are the v3 gate (C1 cost line and C2 net of cost);
+    a v1/v2 receipt never admits a cutover (HB1105 R1: r33_oof_checks must not regress)."""
+    import hashlib
+    import json
+    checks = bundle.get('oof_checks') or {}
+    if hashlib.sha256(raw).hexdigest() != checks.get('checksum'):
+        raise _fail('oof_checks_not_the_sealed_receipt')
+    report = json.loads(raw)
+    oof_checks_receipt(report, checksum=checks['checksum'])
+    return report
+
+
+OOF_CHECKS_GATES = ('crossfit_above_cost', 'net_of_cost')
+
+
+def oof_checks_receipt(report, *, checksum) -> dict:
+    """What the packet records of the sealed v3 receipt (the bytes were checked against `checksum`)."""
+    from services.r33_oof_checks import SCHEMA as OOF_CHECKS_SCHEMA
+    result = (report or {}).get('result') or {}
+    gates = ((result.get('checks') or {}).get('inversion') or {}).get('gates') or {}
+    if (result.get('schema_version') != OOF_CHECKS_SCHEMA or 'gate_cost' not in report
+            or not set(OOF_CHECKS_GATES) <= set(gates)):
+        raise _fail('oof_checks_schema_stale')
+    return {'schema_version': OOF_CHECKS_SCHEMA, 'checksum': checksum, 'gates': sorted(gates)}
+
+
+def check_packet_oof_checks(recorded, *, evidence, ensemble) -> None:
+    """validate_packet: the recorded receipt is v3 and is the one the bundle, grant and ensemble name."""
+    from services.r33_oof_checks import SCHEMA as OOF_CHECKS_SCHEMA
+    checksum = evidence['candidate_bundle']['oof_checks_checksum']
+    if (not isinstance(recorded, dict) or recorded.get('schema_version') != OOF_CHECKS_SCHEMA
+            or not set(OOF_CHECKS_GATES) <= set(recorded.get('gates') or ())
+            or recorded.get('checksum') != checksum
+            or ensemble['source_bundle']['oof_checks_checksum'] != checksum):
+        raise _fail('packet_oof_checks_not_the_sealed_v3_receipt')
+
+
+def check_serving_sanity(sanity, *, serving_table, trading_config):
+    """B-1 fail-closed: the sanity of exactly this table, at the round trip serving will charge."""
+    from services.r33_crossfit_serving import SANITY_SCHEMA
+    from services.r33_ensemble import round_trip_cost
+    if (not isinstance(sanity, dict) or sanity.get('schema_version') != SANITY_SCHEMA
+            or sanity.get('serving_table_checksum') != serving_table.get('payload_checksum')
+            or sanity.get('round_trip_cost') != round_trip_cost(trading_config['fees'])):
+        raise _fail('serving_sanity_not_this_table_or_cost')
+    if sanity.get('passed') is not True or sanity.get('reasons'):
+        raise _fail('serving_curve_sanity_failed:' + ','.join(sanity.get('reasons') or ['unknown']))
 
 
 def check_prior(prior, *, live_prior, merged_config, admission, pointer):
@@ -111,8 +155,12 @@ def next_raw_config(raw, next_merged):
 def prepare(*, raw_config, merged_config, prior, old_admission, pointer, current_plan_id, bundle, bundle_path,
             bundle_sha256, serving_table, training_label_known_max, source_evidence, exit_rules, business_date,
             effective_signal_date, wei_approval, source_reference, approved_at, runtime_key, runtime_before,
-            archive_uri, meta_layer, now):
-    """Every value the five steps write, validated with the same owners serving uses."""
+            archive_uri, serving_sanity, oof_checks_report, now):
+    """Every value the five steps write, validated with the same owners serving uses.
+
+    serving_sanity is r33_crossfit_serving.serving_curve_sanity of this serving table at the
+    granted round trip (B-1); a failed or foreign result fails closed. oof_checks_report is the
+    sealed receipt check_oof_checks_report verified against the bundle checksum."""
     from services.active8_paper_admission import (KEY, RUNTIME_SCHEMA, SCHEMA as ADMISSION_SCHEMA,
                                                   validate_admission, validate_runtime_approval)
     from services.l3_equal_weight_bundle import build_bundle
@@ -130,6 +178,8 @@ def prepare(*, raw_config, merged_config, prior, old_admission, pointer, current
         raise _fail('exit_rules_required')
     ensemble = ensemble_from_bundle(bundle, bundle_path=bundle_path, bundle_sha256=bundle_sha256,
                                     serving_table=serving_table)
+    oof_checks = oof_checks_receipt(oof_checks_report, checksum=bundle['oof_checks']['checksum'])
+    check_serving_sanity(serving_sanity, serving_table=serving_table, trading_config=merged_config)
     identity = l3_identity(ensemble)
     candidate = build_bundle(l3_identity=identity, ensemble=ensemble,
                              training_label_known_max=training_label_known_max)
@@ -217,7 +267,9 @@ def prepare(*, raw_config, merged_config, prior, old_admission, pointer, current
               'writes': {'kv-config': {'key': 'trading:config', 'before': raw_config, 'after': next_raw},
                          'admission': {'key': KEY, 'before': old_admission, 'after': admission},
                          'grant': {'key': runtime_key, 'before': runtime_before, 'after': approval}},
-              'roster': roster_status(meta_layer),
+              'roster': {'model_order': list(ensemble['model_order']), 'source': 'sealed_bundle_serving_table'},
+              'serving_sanity': deepcopy(serving_sanity),
+              'oof_checks': oof_checks,
               'e7_followup': 'trading:config is manifest-managed (E-7): upload the new raw value to GCS and '
                              'update the manifest digest by PR after the kv-config step; the drift alert is expected.',
               # NEW-L01#SliceA (Wei 10/28 Q40): accepted consequence, listed so nobody repairs it.
@@ -255,6 +307,9 @@ def validate_packet(packet, *, now):
     _validate_r33_row(packet['ensemble_row'], ensemble)
     if packet['serving_table'] != ensemble['serving_calibration']:
         raise _fail('serving_table_not_the_ensemble_table')
+    check_serving_sanity(packet.get('serving_sanity'), serving_table=packet['serving_table'],
+                         trading_config=approval['configuration']['trading_config'])
+    check_packet_oof_checks(packet.get('oof_checks'), evidence=evidence, ensemble=ensemble)
     before, after = writes['kv-config']['before'], writes['kv-config']['after']
     granted = approval['configuration']['trading_config']
     changed = changed_paths(before, after)

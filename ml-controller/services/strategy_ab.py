@@ -11,9 +11,9 @@ TABPACK_RECIPE = 'exo137_timexer_three_head_scalar_ev_tabpack'
 TABPACK_131_RECIPE = 'exo131_timexer_three_head_scalar_ev_tabpack'
 MLP_MEDIAN_SCHEMA = 'strategy-b-exo-full-mlp-median-paper-v1'
 MLP_MEDIAN_RECIPE = 'exo137_timexer_three_head_full_mlp_median_e0'
-# R33: one Paper strategy (role B) = seven-model equal z + cross-fit isotonic E-hat.
-R33_SCHEMA = 'strategy-b-r33-equal7-paper-v1'
-R33_RECIPE = 'r33_equal7_isotonic_v1'
+# R33: one Paper strategy (role B) = roster equal z + cross-fit isotonic E-hat.
+R33_SCHEMA = 'strategy-b-r33-roster-paper-v1'
+R33_RECIPE = 'r33_roster_isotonic_v1'
 RECIPES = {'A':'price_timexer_three_head', 'B':'exo137_timexer_three_head_scalar_ev_mlp'}
 FEE_TERMS = {'discount_factor':.25, 'minimum_net_commission':20.,
              'nominal_next_month_day':10, 'cash_credit':'confirmed_receipt_only',
@@ -110,14 +110,14 @@ def bind(bundle, *, role, experiment_id, ensemble, timexer_metadata):
 
 def bind_r33(bundle, *, experiment_id, ensemble):
     """Tag the R33 cutover bundle: role B, its own recipe; no TimeXer variant, no A primary."""
-    from services.l3_equal_weight_bundle import is_equal7
+    from services.l3_equal_weight_bundle import is_r33_bundle
     from services.paired_nav_strategy_bundle import validate_strategy_bundle
     from services.r33_ensemble import validate_ensemble
     validate_ensemble(ensemble)
     identity = bundle['candidate_l3_identity']
     if any(identity.get(k) != ensemble[k] for k in ('artifact_id','cohort_id','payload_checksum','base_artifact_set_checksum')):
         raise ValueError('strategy_ab_l3_identity_mismatch')
-    if not is_equal7(bundle['candidate_trading_config']['l4Distribution']['artifact']):
+    if not is_r33_bundle(bundle['candidate_trading_config']['l4Distribution']['artifact']):
         raise ValueError('strategy_ab_l4_recipe_mismatch')
     result = deepcopy(bundle)
     result['strategy_ab'] = validate_tag({'schema_version':R33_SCHEMA,'experiment_id':experiment_id,

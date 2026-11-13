@@ -163,10 +163,11 @@ test('explicit 131 monthly profile keeps candidate-only controls for both roles'
 
 test('R33 config validates only with its operating mode, and the mode only with the R33 artifact', () => {
   const f=fixture(), a:any=f.artifact
-  a.feature_schema=f.receipt.feature_schema='r33-seven-model-ranks-and-availability-v1'
-  a.model={schema_version:'r33-seven-model-equal-z-isotonic-v1',feature_names:['LightGBM','ExtraTrees','TabM','GNN','TimeXer','PatchTST','iTransformer']
-    .flatMap(m=>[`${m}_z`,`${m}_available`]).concat('score')}
-  Object.assign(f.config.l4Distribution!, {operating_mode:'r33_equal7_isotonic_v1',strategy_role:'B'})
+  a.feature_schema=f.receipt.feature_schema='r33-roster-ranks-and-availability-v1'
+  const order=['LightGBM','ExtraTrees','TabM','GNN']
+  a.model={schema_version:'r33-roster-equal-z-isotonic-v1',model_order:order,
+    feature_names:order.flatMap(m=>[`${m}_z`,`${m}_available`]).concat('score')}
+  Object.assign(f.config.l4Distribution!, {operating_mode:'r33_roster_isotonic_v1',strategy_role:'B'})
   const swingError='R33 operating_mode requires exit.swingHardStopPct (-1..0) and exit.swingMaxHoldSessions (integer >= 1)'
   assert.deepEqual(validateTradingConfig(f.config),[swingError])
   for(const bad of [{swingHardStopPct:0,swingMaxHoldSessions:20},{swingHardStopPct:-1,swingMaxHoldSessions:20},

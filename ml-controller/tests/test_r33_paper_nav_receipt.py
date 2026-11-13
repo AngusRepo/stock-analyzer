@@ -149,5 +149,5 @@ def test_the_object_is_validated_before_the_grant_when_both_fail():
 def test_the_r33_object_is_its_own_registry_id():
     from services.ensemble_v2 import ensemble_artifact_id
     ensemble = _ensemble()
-    assert ensemble_artifact_id(ensemble) == ensemble["artifact_id"] and ensemble["artifact_id"].startswith("r33-equal7:")
+    assert ensemble_artifact_id(ensemble) == ensemble["artifact_id"] and ensemble["artifact_id"].startswith("r33-roster:")
     assert ensemble_artifact_id({"cohort_id": "c1", "payload_checksum": "f" * 64}) == "active8-ensemble:c1:" + "f" * 16

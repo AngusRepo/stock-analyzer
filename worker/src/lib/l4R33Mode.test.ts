@@ -1,18 +1,19 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { isSingleBMode, primaryModelLabel, R33_EQUAL7_ISOTONIC, R33_MODEL_SCHEMA, validSingleBModel } from './paperStrategyMode'
-import { L4_R33_FEATURE_SCHEMA, R33_MODELS } from './l4ReleaseEvidence'
+import { isSingleBMode, primaryModelLabel, R33_ROSTER_ISOTONIC, R33_MODEL_SCHEMA, validSingleBModel } from './paperStrategyMode'
+import { L4_R33_FEATURE_SCHEMA } from './l4ReleaseEvidence'
+const R33_MODELS=['LightGBM','ExtraTrees','TabM','GNN'] as const
 
 function policy(): any {
-  return {operating_mode:R33_EQUAL7_ISOTONIC,strategy_role:'B',scope:'paper',
+  return {operating_mode:R33_ROSTER_ISOTONIC,strategy_role:'B',scope:'paper',
     artifact:{feature_schema:L4_R33_FEATURE_SCHEMA,model:{schema_version:R33_MODEL_SCHEMA,
-      feature_names:[...R33_MODELS.flatMap(m=>[`${m}_z`,`${m}_available`]),'score']}}}
+      model_order:[...R33_MODELS],feature_names:[...R33_MODELS.flatMap(m=>[`${m}_z`,`${m}_available`]),'score']}}}
 }
 
 test('R33 is one Paper strategy mode with its own structural admission',()=>{
-  assert.equal(isSingleBMode(R33_EQUAL7_ISOTONIC),true)
+  assert.equal(isSingleBMode(R33_ROSTER_ISOTONIC),true)
   assert.equal(validSingleBModel(policy()),true)
-  assert.match(primaryModelLabel(R33_EQUAL7_ISOTONIC),/R33/)
+  assert.match(primaryModelLabel(R33_ROSTER_ISOTONIC),/R33/)
 })
 
 for (const fault of ['role','scope','residual_mlp','residual_tabpack','model_schema','feature_schema','v3_feature_schema','feature_order','mode_on_old_model','old_mode_on_r33'])

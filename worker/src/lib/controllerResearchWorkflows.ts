@@ -1,4 +1,4 @@
-import { isSingleBMode, R33_EQUAL7_ISOTONIC } from './paperStrategyMode'
+import { isSingleBMode, R33_ROSTER_ISOTONIC } from './paperStrategyMode'
 import { writeSystemLog } from './notify'
 import { publishedAlphaModelOrder } from './alphaModelRoster'
 import { ACTIVE8_OOF_CONTINUATION_MAX_ATTEMPTS } from './active8OofContinuationPolicy'
@@ -499,13 +499,13 @@ export async function runActive8OofLifecycle(
     throw new Error('active8_feature_semantic_unknown')
   }
   const feature131 = featureSemantic === 'formal131-without-unverified-daily-owners-v1'
-  // R33 monthly: seven-model candidates for Wei; never promotes or moves serving pointers.
+  // R33 monthly: roster candidates for Wei; never promotes or moves serving pointers.
   const modelProfile = cadence === 'monthly' && env.R33_MONTHLY_PROFILE === '1'
     ? R33_MONTHLY_MODEL_PROFILE
     : isSingleBMode(trading?.l4Distribution?.operating_mode)
       ? (feature131 ? 'active8-release-model-profiles-v6-timexer-exo131' : 'active8-release-model-profiles-v4-timexer-exo137')
       : (feature131 ? 'active8-release-model-profiles-v6-timexer-price131' : 'active8-release-model-profiles-v4-timexer-price')
-  if (trading?.l4Distribution?.operating_mode === R33_EQUAL7_ISOTONIC && cadence !== 'daily' && modelProfile !== R33_MONTHLY_MODEL_PROFILE) {
+  if (trading?.l4Distribution?.operating_mode === R33_ROSTER_ISOTONIC && cadence !== 'daily' && modelProfile !== R33_MONTHLY_MODEL_PROFILE) {
     // R33 has no residual L4 family: the exo137 cohort would only feed the native L4 refresh.
     const reason = 'r33_has_no_native_l4_refresh'
     console.warn(`[Active8Oof] ${cadence} lifecycle skipped: ${reason}`)

@@ -19,7 +19,7 @@ test('pointer changes in the last week are logged once each; older ones are not'
         VALUES('GNN','GNN-v2','GNN:c2','r33_cutover','2026-10-29 06:00:00','2026-10-29 06:00:00'),
               ('TabM','TabM-v1','TabM:c1','old','2026-10-01 00:00:00','2026-10-01 00:00:00'),
               ('PatchTST','PatchTST-v1','PatchTST:c1','repaired','2026-09-20 00:00:00','2026-10-20 00:00:00');
-      INSERT INTO active8_ensemble_pointer_v1 VALUES(1,'r33-equal7:c2:abc','c2','${'a'.repeat(64)}','${'b'.repeat(64)}',
+      INSERT INTO active8_ensemble_pointer_v1 VALUES(1,'r33-roster:c2:abc','c2','${'a'.repeat(64)}','${'b'.repeat(64)}',
         '2026-10-30 04:00:00','r33_cutover','{}')`)
     assert.deepEqual(await alertPointerChanges(f.env), { changes: 3, logged: 3 })
     assert.deepEqual(await alertPointerChanges(f.env), { changes: 3, logged: 0 })
@@ -28,7 +28,7 @@ test('pointer changes in the last week are logged once each; older ones are not'
     assert.ok(rows.every(r => r.level === 'warn'))
     assert.match(rows[0].message, /^pointer changed: champion:GNN -> GNN:c2 \(GNN-v2\) at /)
     assert.match(rows[1].message, /^pointer changed: champion:PatchTST -> PatchTST:c1/)   // updated_at only
-    assert.match(rows[2].message, /^pointer changed: ensemble -> r33-equal7:c2:abc/)
+    assert.match(rows[2].message, /^pointer changed: ensemble -> r33-roster:c2:abc/)
   } finally { f.close() }
 })
 

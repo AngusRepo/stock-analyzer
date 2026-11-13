@@ -1,6 +1,6 @@
 /** Pure candidate policy. Activation requires the versioned account/runtime adapter. */
 import type { Or15Bar } from './or15VwapEntry'
-import { R33_EQUAL7_ISOTONIC } from './paperStrategyMode'
+import { R33_ROSTER_ISOTONIC } from './paperStrategyMode'
 export const SWING_POLICY_VERSION = 'or15-5m-orl8-20-v1' as const
 export const SWING_LAST_ENTRY_MINUTE_FROM_OPEN = 260 // 13:20; final signal starts 13:15.
 const MIN = 60_000
@@ -125,7 +125,7 @@ export const ORL_SWING_EXIT: SwingExitRules = {decay:false,hardStopMultiplier:.9
 export const SWING_DECAY_EXIT_POLICY = 'r33-ehat-decay-stop-age-v1' as const
 type SwingExitConfig={l4Distribution?:{operating_mode?:unknown}|null;exit?:{swingHardStopPct?:unknown;swingMaxHoldSessions?:unknown}|null}
 export function swingExitRules(cfg:SwingExitConfig):SwingExitRules {
-  if(cfg.l4Distribution?.operating_mode!==R33_EQUAL7_ISOTONIC) return ORL_SWING_EXIT
+  if(cfg.l4Distribution?.operating_mode!==R33_ROSTER_ISOTONIC) return ORL_SWING_EXIT
   const error=swingExitConfigError(cfg.exit)
   if(error) throw new Error('swing_exit_rules_invalid:'+error)
   const exit=cfg.exit as {swingHardStopPct:number;swingMaxHoldSessions:number}

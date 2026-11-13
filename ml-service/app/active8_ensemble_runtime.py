@@ -179,11 +179,11 @@ def validate_active8_ensemble_artifact(
     _validate_base_identity(selected, base, pool_models)
 
 
-R33_KIND = "r33_equal7_isotonic"
+R33_KIND = "r33_roster_isotonic"
 
 
 def _validate_r33_ensemble(payload, *, pool_models, nav_authority) -> None:
-    """R33 equal7 object: validated whole by its single owner (services.r33_ensemble, mounted
+    """R33 roster object: validated whole by its single owner (services.r33_ensemble, mounted
     at /root/services in Modal); there is no stacker fit or conformal policy. A paper/NAV
     inference grant must also name exactly this object and its base artifacts."""
     from services.r33_ensemble import validate_ensemble

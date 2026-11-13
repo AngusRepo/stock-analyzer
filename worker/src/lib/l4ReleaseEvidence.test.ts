@@ -1,8 +1,8 @@
 import test from 'node:test'
-import { R33_EQUAL7_ISOTONIC as L4_R33_OPERATING_MODE, l4OperatingModeError } from './paperStrategyMode'
+import { R33_ROSTER_ISOTONIC as L4_R33_OPERATING_MODE, l4OperatingModeError } from './paperStrategyMode'
 import assert from 'node:assert/strict'
-import { L4_FEATURE_SCHEMA, L4_ACCEPTANCE_CHECKS, L4_R33_FEATURE_SCHEMA, R33_MODELS,
-  l4ReleaseEvidenceError, validL4FeatureSchema } from './l4ReleaseEvidence'
+import { L4_FEATURE_SCHEMA, L4_ACCEPTANCE_CHECKS, L4_R33_FEATURE_SCHEMA,
+  l4ReleaseEvidenceError, r33FeatureNames, validL4FeatureSchema } from './l4ReleaseEvidence'
 
 function fixture() {
   const model='b'.repeat(64), hash='a'.repeat(64)
@@ -82,18 +82,30 @@ function r33Fixture() {
   r.acceptance_mode=receipt.acceptance_mode='paper_experiment';r.efficacy_status=receipt.efficacy_status='unproven'
   receipt.experiment_authorization={scope:'paper',approved:true,source_reference:'synthetic-test-only',model_checksum:a.model_checksum}
   a.feature_schema=receipt.feature_schema=L4_R33_FEATURE_SCHEMA
-  // The exact order l3_equal_weight_bundle.FEATURE_NAMES emits: z then available per model, score last.
-  a.model={feature_names:['LightGBM_z','LightGBM_available','ExtraTrees_z','ExtraTrees_available','TabM_z','TabM_available',
-    'GNN_z','GNN_available','TimeXer_z','TimeXer_available','PatchTST_z','PatchTST_available',
-    'iTransformer_z','iTransformer_available','score']}
+  // The exact order l3_equal_weight_bundle.feature_names(model_order) emits: z then available per model, score last.
+  a.model={model_order:['LightGBM','ExtraTrees','TabM','GNN'],
+    feature_names:['LightGBM_z','LightGBM_available','ExtraTrees_z','ExtraTrees_available','TabM_z','TabM_available',
+    'GNN_z','GNN_available','score']}
   return a
 }
 
-test('R33 feature schema is accepted only with the exact seven-model feature order',()=>{
+test('R33 feature schema is accepted only with the feature order of the bundle roster',()=>{
   const a=r33Fixture()
   assert.equal(validL4FeatureSchema(a),true)
   assert.equal(l4ReleaseEvidenceError(a),null)
-  assert.deepEqual([...R33_MODELS],['LightGBM','ExtraTrees','TabM','GNN','TimeXer','PatchTST','iTransformer'])
+  // The roster is the bundle's model_order: any canonical R33 roster, never DLinear/out of order/empty.
+  const three=r33Fixture();three.model.model_order=['LightGBM','TabM','GNN'];three.model.feature_names=r33FeatureNames(three.model.model_order)
+  assert.equal(validL4FeatureSchema(three),true)
+  const seven=r33Fixture();seven.model.model_order=['LightGBM','ExtraTrees','TabM','GNN','TimeXer','PatchTST','iTransformer']
+  seven.model.feature_names=r33FeatureNames(seven.model.model_order)
+  assert.equal(validL4FeatureSchema(seven),true)
+  const namesOnly=r33Fixture();delete namesOnly.model.model_order
+  assert.equal(l4ReleaseEvidenceError(namesOnly),'l4_release_feature_schema_mismatch')
+  for (const order of [[],['GNN','LightGBM'],['LightGBM','DLinear'],['LightGBM','LightGBM']]) {
+    assert.equal(r33FeatureNames(order),null)
+    const bad=r33Fixture();bad.model.model_order=order
+    assert.equal(l4ReleaseEvidenceError(bad),'l4_release_feature_schema_mismatch')
+  }
   const swapped=r33Fixture();[swapped.model.feature_names[0],swapped.model.feature_names[2]]=[swapped.model.feature_names[2],swapped.model.feature_names[0]]
   assert.equal(l4ReleaseEvidenceError(swapped),'l4_release_feature_schema_mismatch')
   const xgb=r33Fixture();xgb.model.feature_names.splice(2,0,'XGBoost_z','XGBoost_available')

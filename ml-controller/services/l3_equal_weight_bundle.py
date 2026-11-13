@@ -1,4 +1,4 @@
-"""R33 L4 bundle: seven-model equal z with the cross-fit isotonic E-hat (R33-NEW-05).
+"""R33 L4 bundle: equal z over the ensemble's roster with the cross-fit isotonic E-hat (R33-NEW-05).
 
 The bundle owns no numbers of its own. z, score and E-hat come from the attested
 rank pool (services.r33_rank_pool), which reads the L3 ensemble's serving table;
@@ -11,18 +11,24 @@ from datetime import date
 
 from services.l4_distribution import LABEL_SCHEMA, SCHEMA, digest
 from services.r33_ensemble import validate_ensemble
-from services.r33_isotonic_calibration import MODELS
+from services.alpha_model_roster import validate_r33_roster
 from services.r33_rank_pool import IDENTITY_FIELDS, validate_rank_pool
 
-MODEL_SCHEMA = "r33-seven-model-equal-z-isotonic-v1"
-RECIPE = "r33-equal7-isotonic-v1"
-FEATURE_SCHEMA = "r33-seven-model-ranks-and-availability-v1"
-FEATURE_NAMES = (*(f"{m}_{k}" for m in MODELS for k in ("z", "available")), "score")
+MODEL_SCHEMA = "r33-roster-equal-z-isotonic-v1"
+RECIPE = "r33-roster-isotonic-v1"
+FEATURE_SCHEMA = "r33-roster-ranks-and-availability-v1"
+
+
+def feature_names(models) -> tuple[str, ...]:
+    """Each roster model's z and availability, then the mean score (the Worker derives the same)."""
+    return (*(f"{m}_{k}" for m in validate_r33_roster(models) for k in ("z", "available")), "score")
+
+
 UTILITY_SEMANTIC = "five_session_relative_pool_decimal"
 _EVIDENCE_FIELDS = ("role", "held", "z", "available", "score", "expected_excess", "unscored_reason")
 
 
-def is_equal7(bundle) -> bool:
+def is_r33_bundle(bundle) -> bool:
     return ((bundle or {}).get("model") or {}).get("schema_version") == MODEL_SCHEMA
 
 
@@ -31,8 +37,9 @@ def build_bundle(*, l3_identity: dict, ensemble: dict, training_label_known_max:
     validate_ensemble(ensemble)
     if any(l3_identity.get(k) != ensemble.get(k) for k in IDENTITY_FIELDS):
         raise ValueError("r33_bundle_l3_identity")
-    model = dict(schema_version=MODEL_SCHEMA, recipe_version=RECIPE, model_order=list(MODELS),
-                 feature_names=list(FEATURE_NAMES), ensemble_payload_checksum=ensemble["payload_checksum"],
+    roster = tuple(ensemble["model_order"])
+    model = dict(schema_version=MODEL_SCHEMA, recipe_version=RECIPE, model_order=list(roster),
+                 feature_names=list(feature_names(roster)), ensemble_payload_checksum=ensemble["payload_checksum"],
                  calibration_checksum=ensemble["serving_calibration"]["payload_checksum"])
     return dict(schema_version=SCHEMA, feature_schema=FEATURE_SCHEMA, label_schema=LABEL_SCHEMA, horizon_sessions=5,
                 l3_identity=dict(l3_identity), training_label_known_max=training_label_known_max,
@@ -41,10 +48,14 @@ def build_bundle(*, l3_identity: dict, ensemble: dict, training_label_known_max:
 
 def validate(bundle: dict, *, l3_identity: dict, signal_date: str) -> None:
     model = bundle.get("model") or {}
-    if (not is_equal7(bundle) or bundle.get("schema_version") != SCHEMA
+    try:
+        names = list(feature_names(model.get("model_order")))
+    except ValueError:
+        raise ValueError("r33_bundle_contract") from None
+    if (not is_r33_bundle(bundle) or bundle.get("schema_version") != SCHEMA
             or bundle.get("feature_schema") != FEATURE_SCHEMA or bundle.get("label_schema") != LABEL_SCHEMA
             or bundle.get("horizon_sessions") != 5 or model.get("recipe_version") != RECIPE
-            or model.get("model_order") != list(MODELS) or model.get("feature_names") != list(FEATURE_NAMES)
+            or model.get("feature_names") != names
             or set(model) != {"schema_version", "recipe_version", "model_order", "feature_names",
                               "ensemble_payload_checksum", "calibration_checksum"}):
         raise ValueError("r33_bundle_contract")
@@ -70,7 +81,7 @@ def project(snapshot: dict, *, bundle: dict, identity: dict, signal_date: str, c
     validate_rank_pool(snapshot, predictions)
     model = bundle["model"]
     if (snapshot["signal_date"] != signal_date or snapshot["l3_identity"] != identity
-            or snapshot["model_order"] != list(MODELS)
+            or snapshot["model_order"] != model["model_order"]
             or snapshot["calibration_checksum"] != model["calibration_checksum"]):
         raise ValueError("r33_rank_pool_identity_mismatch")
     rows = {row["symbol"]: row for row in snapshot["rows"]}
@@ -82,13 +93,13 @@ def project(snapshot: dict, *, bundle: dict, identity: dict, signal_date: str, c
             reason = "r33_rank_pool_missing" if row is None else "r33_unscored:" + row["unscored_reason"]
             unscored[symbol] = [reason]
             continue
-        features = {**{f"{m}_z": row["z"][m] for m in MODELS},
-                    **{f"{m}_available": int(row["available"][m]) for m in MODELS}, "score": row["score"]}
+        features = {**{f"{m}_z": row["z"][m] for m in model["model_order"]},
+                    **{f"{m}_available": int(row["available"][m]) for m in model["model_order"]}, "score": row["score"]}
         outputs[symbol] = dict(expected_return_gross=row["expected_excess"], expected_return_semantic=UTILITY_SEMANTIC,
                                score=row["score"], role=row["role"], mean_policy=RECIPE,
                                model_checksum=bundle["model_checksum"])
         if symbol in candidates:
-            feature_rows.append(dict(symbol=symbol, features={k: features[k] for k in FEATURE_NAMES}))
+            feature_rows.append(dict(symbol=symbol, features={k: features[k] for k in model["feature_names"]}))
     projection = dict(schema_version="r33-rank-pool-projection-v1", recipe=RECIPE, signal_date=signal_date,
                       pool_checksum=snapshot["pool_checksum"], rank_pool_checksum=snapshot["checksum"],
                       calibration_checksum=model["calibration_checksum"],

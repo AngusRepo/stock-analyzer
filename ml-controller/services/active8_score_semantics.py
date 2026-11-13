@@ -4,7 +4,7 @@ import math
 from collections import defaultdict
 from typing import Any
 
-from services.alpha_model_roster import R33_MODELS, model_order, validate_order, SUPPORTED_MODELS
+from services.alpha_model_roster import is_r33_roster, model_order, validate_order, SUPPORTED_MODELS
 from services.active_model_policy import (
     ACTIVE_ALPHA_MODELS,
     CORE_CROSS_SECTIONAL_ALPHA_MODELS,
@@ -95,9 +95,9 @@ def normalize_active8_cross_sectional_scores(
     order = (validate_order(active8_ensemble["model_order"]) if active8_ensemble is not None
              else model_order(artifact_versions))
     from services.r33_ensemble import is_r33
-    if order == R33_MODELS and is_r33(active8_ensemble):
-        # R33 is the TimeXer roster without XGBoost; a served XGBoost score is simply
-        # outside the order, and a missing model is z=0 downstream, so only the slot matters.
+    if is_r33(active8_ensemble) and is_r33_roster(order):
+        # R33: the roster is the published object's model_order; a served score outside it
+        # is simply outside the order, and a missing model is z=0 downstream, so only the slot matters.
         if "DLinear" in artifact_versions:
             raise ValueError("active8_score_artifact_roster_mismatch")
     elif model_order(artifact_versions) != order:
@@ -136,7 +136,7 @@ def normalize_active8_cross_sectional_scores(
         from services.r33_ensemble import COVERAGE_POLICY, is_r33
         if is_r33(active8_ensemble):
             r33_coverage = COVERAGE_POLICY
-            # R33: a missing model is z=0 over a fixed denominator of seven, never a blocker.
+            # R33: a missing model is z=0 over the roster-size denominator, never a blocker.
             required_core_models, minimum_core_models = [], 0
     ineligible_artifact_models = [
         model_name for model_name in order if model_name not in eligible_models

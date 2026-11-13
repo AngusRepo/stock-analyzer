@@ -1,4 +1,4 @@
-"""R33-NEW-15: switch Paper to the R33 seven-model strategy, one go-gated step at a time.
+"""R33-NEW-15: switch Paper to the R33 roster strategy, one go-gated step at a time.
 
   prepare   read-only: KV, Worker-merged config, D1 pointers, GCS bundle; writes a local packet
   activate  dry-run unless --execute: run the next step (kv-config -> admission -> grant ->
@@ -7,7 +7,8 @@
 
 Every write re-reads the live value first and must find exactly what the previous step left;
 every write is read back. Each --execute needs Wei's go for that step. The promotion step is
-the original atomic publisher (7 champion pointers, 7 registry rows, 1 ensemble pointer).
+the original atomic publisher (per roster model one champion pointer and one registry row,
+plus 1 ensemble pointer: 4+4+1 for the four-model roster).
 Never dispatches a job, never touches Live, never writes a plan.
 """
 from __future__ import annotations
@@ -116,7 +117,9 @@ def prepare(args):
     from services import r33_switch
     from services.active8_paper_admission import KEY, verify_active_approval
     from services.d1_domain_client import client_for_domain
-    from services.r33_crossfit_serving import TABLE_NAME, table_bytes
+    from services.r33_crossfit_serving import TABLE_NAME, rebuild_and_check, table_bytes
+    from services.r33_ensemble import round_trip_cost
+    from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
     from services.r33_monthly_lifecycle import BUNDLE_PREFIX, _artifact_train_label_known_max
     from services.worker_config_client import load_active_trading_config
     out = args.out.resolve()
@@ -134,16 +137,25 @@ def prepare(args):
     bucket = _bucket()
     bundle_raw = bucket.blob(args.bundle_path).download_as_bytes()
     bundle = json.loads(bundle_raw)
+    oof_checks_report = r33_switch.check_oof_checks_report(
+        bucket.blob(bundle['oof_checks']['path']).download_as_bytes(), bundle)
     labels = {}
     for name, item in sorted(bundle['artifacts'].items()):
         labels[name] = _artifact_train_label_known_max(json.loads(bucket.blob(item['metadata_path']).download_as_text()))
     if not all(labels.values()) or max(labels.values()) > bundle['knowledge_cutoff_date']:
         raise RuntimeError('r33_artifact_label_attestation_invalid:' + json.dumps(labels))
     serving_table = json.loads(args.serving_table.read_bytes())
+    # B-7: the table must be the one the archived OOF and pool receipt rebuild, byte for byte
+    # (not only a file whose labels match); B-1: its sanity at the serving round trip.
+    rebuilt, sanity = rebuild_and_check(bundle, bucket=bucket, ops_query=client_proxy_for_domain(D1DataDomain.OPS).query,
+                                        round_trip_cost=round_trip_cost(merged['fees']))
+    if table_bytes(rebuilt) != table_bytes(serving_table):
+        raise RuntimeError('serving_table_not_rebuilt_from_archived_oof')
+    if not sanity['passed']:
+        raise RuntimeError('serving_curve_sanity_failed:' + json.dumps(sanity, default=str))
     stored = bucket.blob(f"{BUNDLE_PREFIX}/{bundle['cohort_id']}/{TABLE_NAME}")
     if stored.exists() and stored.download_as_bytes() != table_bytes(serving_table):
         raise RuntimeError('stored_serving_table_differs')
-    adaptive = _kv_read('ml:adaptive_params') or {}
     packet = r33_switch.prepare(
         raw_config=raw, merged_config=merged, prior=prior, old_admission=old_admission, pointer=pointers[0],
         current_plan_id=heads[0]['plan_id'], bundle=bundle, bundle_path=args.bundle_path,
@@ -153,7 +165,7 @@ def prepare(args):
         business_date=args.business_date, effective_signal_date=args.effective_signal_date,
         wei_approval=json.loads(args.wei_approval.read_text()), source_reference=args.source_reference,
         approved_at=_now(), runtime_key=runtime_key, runtime_before=_kv_read(runtime_key),
-        archive_uri=f'gs://{bucket.name}/{args.bundle_path}', meta_layer=adaptive.get('meta_layer'),
+        archive_uri=f'gs://{bucket.name}/{args.bundle_path}', serving_sanity=sanity, oof_checks_report=oof_checks_report,
         now=datetime.now(timezone.utc))
     if _kv_read('trading:config') != raw or _kv_read(KEY) != old_admission:
         raise RuntimeError('configuration_changed_during_prepare')
@@ -164,7 +176,8 @@ def prepare(args):
     print(json.dumps({'status': 'prepared_locally', 'cloud_writes': 0, 'packet_checksum': packet['packet_checksum'],
                       'ensemble_artifact_id': packet['ensemble']['artifact_id'],
                       'economics_change_scope': packet['approval']['approved_r33_cutover']['economics_change_scope'],
-                      'roster': packet['roster'], 'steps': list(r33_switch.STEPS)}))
+                      'roster': packet['roster'], 'serving_sanity': {k: sanity[k] for k in ('passed', 'reasons', 'top_block_mean_excess')},
+                      'steps': list(r33_switch.STEPS)}))
 
 
 def _execute(step, packet, observed):
@@ -232,8 +245,6 @@ def _promote(packet, *, confirm):
         evaluation_business_date=packet['admission']['business_date'], paper_admission=packet['admission'],
         confirm=confirm, reason='r33_cutover')
     result.pop('artifacts', None)
-    from services import r33_switch
-    result['roster'] = r33_switch.roster_status((_kv_read('ml:adaptive_params') or {}).get('meta_layer'))
     if confirm and result.get('status') != 'ok':
         raise RuntimeError('promotion_not_committed:' + str(result.get('decision')))
     return result

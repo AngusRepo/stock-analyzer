@@ -213,7 +213,7 @@ def test_held_names_outside_the_seed_stay_out_of_the_l3_model_closure(monkeypatc
     assert metrics["incomplete_active_model_symbols"] == 0 and metrics["formal_evidence_prediction_symbols"] == len(POOL)
 
 
-@pytest.mark.parametrize("model", ["LightGBM", "GNN", "PatchTST"])
+@pytest.mark.parametrize("model", ["LightGBM", "GNN", "TabM"])
 def test_a_model_missing_for_the_whole_day_aborts_after_the_error_line(monkeypatch, model):
     import json
     from services import paired_nav_collection

@@ -16,7 +16,7 @@ import numpy as np
 
 from services.ensemble_qualification import qualify_directional_signal
 
-from services.alpha_model_roster import R33_MODELS, model_order, validate_order, stacker_features
+from services.alpha_model_roster import model_order, validate_order, stacker_features
 from services.active_model_policy import (
     ACTIVE_ALPHA_MODELS,
     CORE_CROSS_SECTIONAL_ALPHA_MODELS,
@@ -49,7 +49,7 @@ def _canonical_json(value: Any) -> str:
 def ensemble_artifact_id(payload: dict) -> str:
     """Registry ID is derived, not inserted into the checksummed model payload.
 
-    An R33 object's id is derived from its own cohort and checksum (r33-equal7:...)."""
+    An R33 object's id is derived from its own cohort and checksum (r33-roster:...)."""
     from services.r33_ensemble import is_r33, r33_artifact_id
     if is_r33(payload):
         return r33_artifact_id(payload)
@@ -80,9 +80,12 @@ def build_formal_model_input_contract(pred: dict | None, *, selected_models: lis
     prediction = pred if isinstance(pred, dict) else {}
     declared = order if order is not None else (prediction.get("ensemble_v2") or {}).get("model_order") or (prediction.get("model_score_lineage") or {}).get("model_order")
     order = validate_order(declared) if declared is not None else model_order(prediction.get("rank_scores") or {})
-    if order == R33_MODELS:
-        from services.r33_ensemble import formal_contract
-        return formal_contract(prediction)
+    from services.r33_ensemble import COVERAGE_POLICY, RUNTIME_SCHEMA, formal_contract
+    lineage_policy = (prediction.get("model_score_lineage") or {}).get("coverage_policy") if isinstance(prediction.get("model_score_lineage"), dict) else None
+    if lineage_policy == COVERAGE_POLICY or (prediction.get("ensemble_v2") or {}).get("schema_version") == RUNTIME_SCHEMA:
+        # R33 is recognised by its own lineage/runtime schema, never by comparing the
+        # roster with this checkout's constant (a published object may carry another roster).
+        return formal_contract(prediction, order)
     scores = _formal_model_scores(prediction, order=order)
     lineage = prediction.get("model_score_lineage") if isinstance(prediction.get("model_score_lineage"), dict) else {}
     if selected_models is None and lineage.get('coverage_policy') == 'validated-bundle-selected-core-sequence-missingness-v1' and lineage.get('ensemble_payload_checksum'):

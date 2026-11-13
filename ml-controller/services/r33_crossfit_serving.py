@@ -40,10 +40,49 @@ def _compose(full_blocks: list[dict], honest: list[dict]) -> list[dict]:
 
 
 def _above_cost(table: dict, expected, cost: float) -> dict:
+    """The monthly gate's cost line (r33_oof_checks C1/C2) for one estimator: per day, the mean
+    realized excess of the names whose expected excess clears the round trip."""
+    from services.r33_oof_checks import _mean_se
     picks = [table["excess"][rows][expected[rows] > cost] for _, rows in sorted(table["day_rows"].items())]
-    realized = [float(p.mean()) for p in picks if len(p)]
+    realized = np.array([float(p.mean()) for p in picks if len(p)])
     return dict(days_with_picks=len(realized), picks_per_day=float(np.mean([len(p) for p in picks])),
-                realized_excess_mean=float(np.mean(realized)) if realized else None)
+                realized_excess_mean=float(np.mean(realized)) if len(realized) else None,
+                realized_excess=_mean_se(realized), net_of_cost=_mean_se(realized - cost), round_trip_cost=cost)
+
+
+SANITY_SCHEMA = "r33-serving-curve-sanity-v1"
+
+
+def serving_curve_sanity(payload: dict, *, table: dict, round_trip_cost: float) -> dict:
+    """B-1 (HB1105, Wei 2026-11-12 Q12): the monthly gate measures the cross-fit p, serving uses
+    T = G o F_full, and T had no gate. Before T serves, on the bundle's own pool rows (`table`,
+    pool_score_table of the archived OOF) at the serving round trip, T must clear the gate's own
+    cost lines (C1 realized excess, C2 net of cost: mean minus one SE > 0; the same rule, no new
+    constant), and its top block must clear that cost (else serving never buys). T is in-sample
+    on those rows, so a pass is a floor, not out-of-sample evidence. The monthly gate itself is
+    not changed here (Q12: before the December cohort). Report only; callers fail closed."""
+    from services.r33_oof_checks import _lower_bound_positive
+    validate_serving(payload)
+    if not (isinstance(round_trip_cost, float) and np.isfinite(round_trip_cost) and round_trip_cost > 0):
+        raise ValueError("r33_round_trip_cost_invalid")
+    line = _above_cost(table, predict(payload["blocks"], table["score"]), round_trip_cost)
+    top = max(float(b["mean_excess"]) for b in payload["blocks"])
+    reasons = [name for name, ok in (
+        ("top_block_not_above_cost", top > round_trip_cost),
+        ("realized_excess_lower_bound_not_positive", _lower_bound_positive(line["realized_excess"])),
+        ("net_of_cost_lower_bound_not_positive", _lower_bound_positive(line["net_of_cost"]))) if not ok]
+    return dict(schema_version=SANITY_SCHEMA, passed=not reasons, reasons=reasons, round_trip_cost=round_trip_cost,
+                serving_table_checksum=payload["payload_checksum"], top_block_mean_excess=top,
+                blocks=len(payload["blocks"]), serving_above_cost=line, in_sample=True)
+
+
+def rebuild_and_check(bundle: dict, *, bucket, ops_query, round_trip_cost: float) -> tuple[dict, dict]:
+    """B-7 + B-1: the serving table rebuilt from the bundle's archived OOF and pool receipt, and
+    its sanity at the serving cost. Callers compare the rebuilt bytes with the table they hold."""
+    source, oof, pool = load_bundle_inputs(bundle, bucket=bucket, ops_query=ops_query)
+    rebuilt = build_serving_table(source=source, oof=oof, pool_by_date=pool)
+    table = pool_score_table(oof, pool, variant=source["variant"])
+    return rebuilt, serving_curve_sanity(rebuilt, table=table, round_trip_cost=round_trip_cost)
 
 
 def build_serving_table(*, source: dict, oof, pool_by_date) -> dict:
@@ -129,12 +168,18 @@ def main(argv=None) -> int:
     bundle = json.loads(bucket.blob(args.bundle).download_as_bytes())
     source, oof, pool = load_bundle_inputs(bundle, bucket=bucket,
                                            ops_query=client_proxy_for_domain(D1DataDomain.OPS).query)
-    rebuilt = table_bytes(build_serving_table(source=source, oof=oof, pool_by_date=pool))
+    serving = build_serving_table(source=source, oof=oof, pool_by_date=pool)
+    rebuilt = table_bytes(serving)
     if args.out:
         with open(args.out, "wb") as handle:
             handle.write(rebuilt)
-        print(json.dumps({"written": args.out, "payload_checksum": json.loads(rebuilt)["payload_checksum"]}))
-        return 0
+        # B-1 sanity at the serving round trip (trading:config.fees); written for review either
+        # way, exit 2 when it fails. The switch re-runs it and fails closed.
+        from services.r33_monthly_lifecycle import gate_round_trip_cost
+        sanity = serving_curve_sanity(serving, table=pool_score_table(oof, pool, variant=source["variant"]),
+                                      round_trip_cost=gate_round_trip_cost()["round_trip_cost"])
+        print(json.dumps({"written": args.out, "payload_checksum": serving["payload_checksum"], "sanity": sanity}))
+        return 0 if sanity["passed"] else 2
     with open(args.verify, "rb") as handle:
         identical = handle.read() == rebuilt
     print(json.dumps({"verify": args.verify, "byte_identical": identical}))

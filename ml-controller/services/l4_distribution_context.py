@@ -25,13 +25,13 @@ def worker_request(path, payload, *, transport=None):
 def prepare_runtime_policy(*,policy,signal_date,predictions,manifest,account_reader=None,reward_reader=None,r33_rank_pool=None):
     from services.paired_nav_collection import baseline_model_identity
     from services.l4_distribution import validate_bundle
-    from services.l3_equal_weight_bundle import is_equal7
+    from services.l3_equal_weight_bundle import is_r33_bundle
     frozen=deepcopy(policy)
     if frozen.get('scope')!='paper':
         raise ValueError('l4_distribution_paper_scope_required')
     identity=baseline_model_identity(manifest)
     validate_bundle(frozen['artifact'],l3_identity=identity,signal_date=signal_date)
-    if is_equal7(frozen['artifact']):
+    if is_r33_bundle(frozen['artifact']):
         # The attested rank pool is the only source of z/score/E-hat; it is frozen
         # with the predictions so replan and replay project the same numbers.
         from services.r33_rank_pool import validate_rank_pool
@@ -41,7 +41,7 @@ def prepare_runtime_policy(*,policy,signal_date,predictions,manifest,account_rea
         if r33_rank_pool['signal_date']!=signal_date or r33_rank_pool['l3_identity']!=identity:
             raise ValueError('r33_rank_pool_identity_mismatch')
     elif r33_rank_pool is not None:
-        raise ValueError('r33_rank_pool_without_equal7_bundle')
+        raise ValueError('r33_rank_pool_without_r33_bundle')
     start=datetime.now(timezone.utc)
     account=(account_reader or (lambda day:worker_request('/api/internal/l4-distribution/account',{'signal_date':day})))(signal_date)
     if not account.get('risk_limits') or not account.get('fees'):

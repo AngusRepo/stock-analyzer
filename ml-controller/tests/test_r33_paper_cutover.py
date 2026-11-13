@@ -157,7 +157,7 @@ def test_serving_evidence_must_describe_the_published_object(monkeypatch, fault)
      'bundle_sha': lambda: e['candidate_bundle'].update(sha256='0' * 64),
      'source_calibration': lambda: e['calibration'].update(source_payload_checksum='0' * 64),
      'serving_table': lambda: e['calibration'].update(serving_table_checksum='0' * 64),
-     'ensemble_id': lambda: e['ensemble'].update(artifact_id='r33-equal7:c1:0')}[fault]()
+     'ensemble_id': lambda: e['ensemble'].update(artifact_id='r33-roster:c1:0')}[fault]()
     with pytest.raises(RuntimeError, match='r33_cutover_invalid:ensemble_mismatch'):
         r33_cutover.validate_against_ensemble(e, ensemble)
 

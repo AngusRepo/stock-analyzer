@@ -121,7 +121,7 @@ PAPER_D1_CLIENT = client_proxy_for_domain(D1DataDomain.PAPER)
 
 
 DEFAULT_TIMESFM_SEQUENCE_CONTRACT_POINTS = daily_sequence_target_points()
-from services.alpha_model_roster import model_order, validate_order, is_complete_roster, SUPPORTED_MODELS, R33_MODELS
+from services.alpha_model_roster import model_order, validate_order, is_complete_roster, SUPPORTED_MODELS
 
 ACTIVE_ALPHA_MODEL_SET = set(SUPPORTED_MODELS)
 MODEL_POOL_REQUIRED_MODEL_SET = set(SUPPORTED_MODELS)
@@ -790,8 +790,8 @@ async def node_load_market_env(state: PipelineStateV2) -> dict:
         adaptive_provenance.get("computed_at") if isinstance(adaptive_provenance, dict) else None,
     )
     r33_scope = {}
-    from services.l3_equal_weight_bundle import is_equal7
-    if is_equal7(((trading_cfg or {}).get('l4Distribution') or {}).get('artifact')):
+    from services.l3_equal_weight_bundle import is_r33_bundle
+    if is_r33_bundle(((trading_cfg or {}).get('l4Distribution') or {}).get('artifact')):
         # R33-NEW-03: inference scope = L2 pool + holdings (a held name outside the
         # pool needs E-hat for the decay exit); holdings join for inference only.
         from services.l4_distribution_context import worker_request
@@ -1171,12 +1171,17 @@ async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False
     # check, which writes the error ops line first and then aborts with
     # r33_model_missing_for_day; batch failures and invalid payloads still raise here.
     from services.r33_ensemble import is_r33
-    r33_day_outage_to_coverage = is_r33(
-        ((serving_context.get("serving_manifest") or {}) if isinstance(serving_context.get("serving_manifest"), dict)
-         else {}).get("active8_ensemble"))
+    r33_served_ensemble = ((serving_context.get("serving_manifest") or {}) if isinstance(serving_context.get("serving_manifest"), dict)
+                           else {}).get("active8_ensemble")
+    r33_day_outage_to_coverage = is_r33(r33_served_ensemble)
 
     def _active_required_model(model_name: str, series: list[dict]) -> bool:
-        if model_name not in model_order(model_status):
+        # Under R33 the served roster (sealed ensemble model_order) says which models are
+        # required; a model outside it (DLinear/XGBoost/sequence after G16) is not looked up.
+        if r33_day_outage_to_coverage:
+            if model_name not in tuple(r33_served_ensemble.get("model_order") or ()):
+                return False
+        elif model_name not in model_order(model_status):
             return False
         return _is_loaded_serving_model(model_status, model_name, "ml_predict_result_required") and bool(series)
 
@@ -1347,7 +1352,9 @@ async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False
     feature_missing_count = 0
     # R33 (NEW-1030-06): a failed or absent feature row loses only the three feature models;
     # the name keeps a skeleton row so its GNN and sequence scores still count.
-    r33_feature_models = tuple(m for m in R33_MODELS if m != "GNN" and m not in SUPPORTED_SEQUENCE_MODELS)
+    # The served object's roster, not this checkout's training constant.
+    r33_feature_models = tuple(m for m in ((r33_served_ensemble or {}).get("model_order") or ()) if r33_day_outage_to_coverage
+                               and m != "GNN" and m not in SUPPORTED_SEQUENCE_MODELS)
     feature_schemas = {str(r.get("feature_version") or "").split(":", 1)[0] for r in feature_by_symbol.values()} - {""}
     r33_feature_schema = next(iter(feature_schemas)) if len(feature_schemas) == 1 else None
     for payload in payloads:

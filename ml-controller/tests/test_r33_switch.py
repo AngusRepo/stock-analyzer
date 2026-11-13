@@ -43,6 +43,21 @@ def _bundle():
                            'sealed_status': 'pass', 'pit_certified': True, 'pit_certification_sha256': '9' * 64}}
 
 
+def _sanity(table, fees, **changes):
+    """A passing B-1 result for exactly this table at the granted round trip (synthetic)."""
+    from services.r33_crossfit_serving import SANITY_SCHEMA
+    from services.r33_ensemble import round_trip_cost
+    return {'schema_version': SANITY_SCHEMA, 'passed': True, 'reasons': [], 'round_trip_cost': round_trip_cost(fees),
+            'serving_table_checksum': table['payload_checksum'], 'in_sample': True, **changes}
+
+
+def _oof_checks_report(schema=None, gates=('crossfit_above_cost', 'net_of_cost')):
+    """The parsed sealed v3 OOF checks receipt (check_oof_checks_report verified its bytes)."""
+    from services.r33_oof_checks import SCHEMA
+    return {'result': {'schema_version': schema or SCHEMA, 'checks': {'inversion': {'gates': dict.fromkeys(gates, True)}}},
+            'gate_cost': {'round_trip_cost': 0.00585}}
+
+
 def _inputs():
     from services.active8_paper_admission import RUNTIME_SCHEMA
     merged = _merged()
@@ -71,7 +86,7 @@ def _inputs():
                               'source_reference': 'SYNTHETIC TEST ONLY'},
                 source_reference='SYNTHETIC TEST ONLY', approved_at='2026-11-08T14:00:00Z', runtime_key=RUNTIME_KEY,
                 runtime_before=deepcopy(prior), archive_uri='gs://stockvision-models/r33/monthly_candidates/c1/bundle.json',
-                meta_layer={'alpha_vote_models': ['LightGBM'], 'formal_layer3_slots': ['LightGBM']}, now=NOW)
+                serving_sanity=_sanity(_calibration(), merged['fees']), oof_checks_report=_oof_checks_report(), now=NOW)
 
 
 def test_prepare_builds_a_cutover_that_serving_accepts():
@@ -98,14 +113,20 @@ def test_prepare_builds_a_cutover_that_serving_accepts():
     assert set(raw) == set(inputs['raw_config'])
     row = packet['ensemble_row']
     assert row['knowledge_cutoff_date'] == '2026-10-26' and row['schema_version'] == 'active8-oof-ensemble-serving-artifact-v1'
-    assert packet['roster']['matches'] is False
+    assert packet['roster'] == {'model_order': list(_ensemble()['model_order']), 'source': 'sealed_bundle_serving_table'}
+    assert packet['serving_sanity'] == inputs['serving_sanity']
+    from services.r33_oof_checks import SCHEMA as OOF_CHECKS_SCHEMA
+    assert packet['oof_checks'] == {'schema_version': OOF_CHECKS_SCHEMA, 'checksum': 'c' * 64,
+                                    'gates': ['crossfit_above_cost', 'net_of_cost']}
     assert any('l3_identity_changed' in line for line in packet['expected_after_cutover'])
     assert packet['writes']['grant'] == {'key': RUNTIME_KEY, 'before': inputs['prior'], 'after': approval}
 
 
 @pytest.mark.parametrize('fault', ['prior_not_live_config', 'prior_admission', 'pointer_moved', 'exit_rules_missing',
                                    'bundle_not_pass', 'pit', 'bundle_path', 'serving_table_source', 'label_after_signal',
-                                   'raw_without_policy', 'constraints', 'raw_policy_differs'])
+                                   'raw_without_policy', 'constraints', 'raw_policy_differs', 'sanity_failed',
+                                   'sanity_other_table', 'sanity_other_cost', 'sanity_missing', 'oof_checks_v2',
+                                   'oof_checks_gate_missing', 'oof_checks_missing'])
 def test_prepare_fails_closed(fault):
     inputs = _inputs()
     edits = {
@@ -121,6 +142,13 @@ def test_prepare_fails_closed(fault):
         'raw_without_policy': lambda: inputs['raw_config'].pop('l4Distribution'),
         'constraints': lambda: inputs['merged_config']['l4Distribution']['constraints'].update(max_positions=4),
         'raw_policy_differs': lambda: inputs['raw_config']['l4Distribution'].update(scope='live'),
+        'sanity_failed': lambda: inputs['serving_sanity'].update(passed=False, reasons=['top_block_not_above_cost']),
+        'sanity_other_table': lambda: inputs['serving_sanity'].update(serving_table_checksum='0' * 64),
+        'sanity_other_cost': lambda: inputs['serving_sanity'].update(round_trip_cost=0.0018),
+        'sanity_missing': lambda: inputs.update(serving_sanity=None),
+        'oof_checks_v2': lambda: inputs.update(oof_checks_report=_oof_checks_report('r33-oof-checks-v2')),
+        'oof_checks_gate_missing': lambda: inputs.update(oof_checks_report=_oof_checks_report(gates=('crossfit_above_cost',))),
+        'oof_checks_missing': lambda: inputs.update(oof_checks_report={}),
     }
     edits[fault]()
     with pytest.raises((RuntimeError, ValueError)):
@@ -157,12 +185,16 @@ def test_steps_run_strictly_in_order_and_roll_back_in_reverse():
         r33_switch.next_step(packet, changed_row)
 
 
-def test_roster_status_needs_the_r33_order_in_both_meta_fields():
-    from services.alpha_model_roster import R33_MODELS
-    order = list(R33_MODELS)
-    assert r33_switch.roster_status({'alpha_vote_models': order, 'formal_layer3_slots': order})['matches'] is True
-    assert r33_switch.roster_status({'alpha_vote_models': order, 'formal_layer3_slots': order[::-1]})['matches'] is False
-    assert r33_switch.roster_status(None)['matches'] is False
+def test_the_roster_echo_is_not_read_and_a_failed_sanity_in_the_packet_is_refused():
+    """Q7 A: the cutover never reads ml:adaptive_params; B-1 is re-checked at every activation."""
+    import inspect
+    assert 'meta_layer' not in inspect.signature(r33_switch.prepare).parameters
+    assert not hasattr(r33_switch, 'roster_status')
+    packet = r33_switch.prepare(**_inputs())
+    packet['serving_sanity'] = {**packet['serving_sanity'], 'passed': False, 'reasons': ['net_of_cost_lower_bound_not_positive']}
+    packet['packet_checksum'] = digest({k: v for k, v in packet.items() if k != 'packet_checksum'})
+    with pytest.raises(RuntimeError, match='serving_curve_sanity_failed:net_of_cost_lower_bound_not_positive'):
+        r33_switch.validate_packet(packet, now=NOW)
 
 
 def test_check_prior_requires_the_live_grant():
@@ -195,6 +227,12 @@ RESEALED_EDITS = {
                          'active8_paper_runtime_approval_invalid'),
     'evidence': (lambda p: _reapprove(p, lambda a: a['approved_r33_cutover']['candidate_bundle'].update(sha256='0' * 64)),
                  'ensemble_mismatch'),
+    'oof_checks_dropped': (lambda p: p.pop('oof_checks'), 'packet_oof_checks_not_the_sealed_v3_receipt'),
+    'oof_checks_stale': (lambda p: p['oof_checks'].update(schema_version='r33-oof-checks-v2'),
+                         'packet_oof_checks_not_the_sealed_v3_receipt'),
+    'oof_checks_other': (lambda p: p['oof_checks'].update(checksum='0' * 64), 'packet_oof_checks_not_the_sealed_v3_receipt'),
+    'oof_checks_gate': (lambda p: p['oof_checks'].update(gates=['crossfit_above_cost']),
+                        'packet_oof_checks_not_the_sealed_v3_receipt'),
 }
 
 

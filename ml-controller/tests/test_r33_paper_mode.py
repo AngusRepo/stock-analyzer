@@ -25,7 +25,7 @@ def test_r33_mode_requires_the_equal7_bundle_and_is_required_by_it():
         validate_model_mode({**_policy(), 'operating_mode': MLP_MODE})
     other = _policy()
     other['artifact'] = {'model': {'residual_mlp': {'schema_version': 'x'}}}
-    with pytest.raises(ValueError, match='paper_r33_equal7_required'):
+    with pytest.raises(ValueError, match='paper_r33_roster_required'):
         validate_model_mode(other)
 
 

@@ -2,10 +2,11 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { DatabaseSync } from 'node:sqlite'
 import { readCurrentExpectedReturnServingState } from './expectedReturnServingState'
-import { L4_ACCEPTANCE_CHECKS, L4_R33_FEATURE_SCHEMA, R33_MODELS } from './l4ReleaseEvidence'
-import { R33_EQUAL7_ISOTONIC } from './paperStrategyMode'
+import { L4_ACCEPTANCE_CHECKS, L4_R33_FEATURE_SCHEMA } from './l4ReleaseEvidence'
+const R33_MODELS=['LightGBM','ExtraTrees','TabM','GNN'] as const
+import { R33_ROSTER_ISOTONIC } from './paperStrategyMode'
 
-const l3={artifact_id:'r33-equal7:c1:0123456789abcdef',cohort_id:'c1',payload_checksum:'d'.repeat(64),base_artifact_set_checksum:'e'.repeat(64)}
+const l3={artifact_id:'r33-roster:c1:0123456789abcdef',cohort_id:'c1',payload_checksum:'d'.repeat(64),base_artifact_set_checksum:'e'.repeat(64)}
 
 function env(config:any) {
   const sql=new DatabaseSync(':memory:')
@@ -17,12 +18,12 @@ function env(config:any) {
 }
 
 function policy(): any {
-  const model={schema_version:'r33-seven-model-equal-z-isotonic-v1',feature_names:[...R33_MODELS.flatMap(m=>[`${m}_z`,`${m}_available`]),'score']}
+  const model={schema_version:'r33-roster-equal-z-isotonic-v1',model_order:[...R33_MODELS],feature_names:[...R33_MODELS.flatMap(m=>[`${m}_z`,`${m}_available`]),'score']}
   const checksum='b'.repeat(64)
   const receipt={schema_version:'l4-paper-acceptance-v1',feature_schema:L4_R33_FEATURE_SCHEMA,model_checksum:checksum,
     checks:Object.fromEntries(L4_ACCEPTANCE_CHECKS.map(k=>[k,true])),acceptance_mode:'paper_experiment',efficacy_status:'unproven',
     experiment_authorization:{approved:true,scope:'paper',model_checksum:checksum,source_reference:'synthetic-test-only'}}
-  return {scope:'paper',operating_mode:R33_EQUAL7_ISOTONIC,strategy_role:'B',
+  return {scope:'paper',operating_mode:R33_ROSTER_ISOTONIC,strategy_role:'B',
     artifact:{schema_version:'l4-distribution-v1',feature_schema:L4_R33_FEATURE_SCHEMA,model,model_checksum:checksum,l3_identity:l3,
       release:{scope:'paper',decision:'PASS',model_checksum:checksum,acceptance_mode:'paper_experiment',efficacy_status:'unproven',
         validation_receipt:receipt,validation_receipt_checksum:'f'.repeat(64)}}}

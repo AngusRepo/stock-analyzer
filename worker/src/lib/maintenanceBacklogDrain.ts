@@ -108,6 +108,15 @@ function auditFailureKey(): string {
   return 'maintenance:backlog-drain:audit-json-retention:failure'
 }
 
+// A D1 overload is a shared 10-second budget, not a fault in this drain. A 6-hour
+// cooldown turned one overload at 03:47 into a lost night; 20 minutes lets the
+// next 15-minute slot resume the backlog.
+const AUDIT_JSON_OVERLOAD_COOLDOWN_SECONDS = 20 * 60
+
+export function auditJsonFailureCooldownSeconds(error: string): number {
+  return /D1 DB is overloaded/i.test(error) ? AUDIT_JSON_OVERLOAD_COOLDOWN_SECONDS : ACTIVE_TTL_SECONDS
+}
+
 type MaintenanceIdentity = Pick<UpdateQueueMsg, 'schedulerTicketId' | 'schedulerRunId'>
 
 async function settleAuditTicket(env: Bindings, msg: UpdateQueueMsg, status: 'running' | 'success' | 'error' | 'skipped', summary: string, error?: string): Promise<void> {
@@ -182,7 +191,7 @@ async function finishAuditFailure(env: Bindings, msg: UpdateQueueMsg, error: str
   await env.KV.put(`${auditFailureKey()}:${runId}`, JSON.stringify(failure), { expirationTtl: 7 * 86400 })
   const currentFailure = await env.KV.get(auditFailureKey(), 'json') as { failed_at?: string } | null
   if (!currentFailure || String(currentFailure.failed_at) <= String(failure.failed_at)) {
-    await env.KV.put(auditFailureKey(), JSON.stringify(failure), { expirationTtl: ACTIVE_TTL_SECONDS })
+    await env.KV.put(auditFailureKey(), JSON.stringify(failure), { expirationTtl: auditJsonFailureCooldownSeconds(String(failure.error)) })
   }
   await logSchedulerResult(env.KV, 'audit-json-retention', {
     status: 'error', summary: 'durable_drain failed; automatic_continuation_stopped backlog_remaining=true',

@@ -63,7 +63,7 @@ function fixture(target: Target) {
       VALUES(?,'2026-01-01',?,'s','v1','active','trend',1,'matched',?,?,'ctx','artifact')`)
       .run(`d${String(i).padStart(6,'0')}`,String(i),blob,blob)
     else if (target.id==='paper_execution_events') db.prepare(`INSERT INTO paper_execution_events
-      (id,trade_date,symbol,side,event_type,status,detail_json) VALUES(?,'2026-01-01',?,'buy','entry','completed',?)`).run(i,String(i),blob)
+      (id,trade_date,symbol,side,event_type,status,detail_json) VALUES(?,'2026-01-01',?,'buy','pending_buy','completed',?)`).run(i,String(i),blob)
     else db.prepare(`INSERT INTO screener_funnel_items(id,run_id,date,symbol,stage,decision,reason_code,evidence)
       VALUES(?,?,'2026-01-01',?,'L3','pass','ok',?)`).run(i,target.id==='canonical_screener_funnel_items'?'canonical':'obsolete',String(i),blob)
   }

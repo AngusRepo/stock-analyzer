@@ -336,13 +336,35 @@ function archiveableBinds(target: AuditJsonTargetConfig, minBlobBytes: number): 
   return target.blobColumns.map(() => minBlobBytes)
 }
 
+// Paper events whose detail_json is only read for the same trade_date. Ledger
+// events (corporate_opening_basis, corporate_share_conversion, snapshot_audit,
+// paper_order, ...) are read across history and some verify sha256(detail_json);
+// a pointer there failed premarket setup on 2026-11-13. New event types stay
+// unarchived until they are added here.
+export const PAPER_EXECUTION_EVENT_ARCHIVE_TYPES = [
+  'finlab_l5_market_data',
+  'intraday_technical_decision',
+  'intraday_technical_snapshot',
+  'paper_broker_reconciliation',
+  'pending_buy',
+  's12_intraday_structure',
+] as const
+
+const PIT_FLOW_MAP_STAGES = ['pit_residual_momentum_shadow', 'pit_residual_momentum_shadow_base'] as const
+
 function retentionEligibilityWhere(target: AuditJsonTargetConfig): string {
+  if (target.id === 'paper_execution_events') {
+    return `paper_execution_events.event_type IN (${PAPER_EXECUTION_EVENT_ARCHIVE_TYPES.map((type) => `'${type}'`).join(',')})`
+  }
   if (target.id === 'strategy_decision_log') {
     return `strategy_decision_log.context_id IS NOT NULL
          AND strategy_decision_log.evidence_artifact_id IS NOT NULL`
   }
   if (target.id === 'canonical_screener_funnel_items') {
-    return `(EXISTS (
+    // pitFactorFlowMap reads this stage's evidence for the last 60 sessions and
+    // does not resolve pointers; its rows are ~1 KB, so keeping them is cheap.
+    return `screener_funnel_items.stage NOT IN (${PIT_FLOW_MAP_STAGES.map((stage) => `'${stage}'`).join(',')})
+       AND (EXISTS (
              SELECT 1
                FROM canonical_run_heads h
               WHERE h.run_id = screener_funnel_items.run_id

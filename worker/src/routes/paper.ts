@@ -441,6 +441,7 @@ async function resolveManualExecutablePrice(
 
 async function enrichPendingBuyContext(
   coreDb: D1Database,
+  learningDb: D1Database,
   marketDb: D1Database,
   pendingBuys: any[],
   sourceRecoDate: string,
@@ -468,24 +469,12 @@ async function enrichPendingBuyContext(
              dr.market_segment,
              dr.recommendation_lane,
              s.id AS stock_id,
-             p.forecast_data AS prediction_forecast_data,
              ROW_NUMBER() OVER (
                PARTITION BY dr.symbol
                ORDER BY dr.date DESC, dr.rank ASC
              ) AS rn
         FROM daily_recommendations dr
         LEFT JOIN stocks s ON s.symbol = dr.symbol
-        LEFT JOIN predictions p ON p.id = (
-          SELECT p2.id
-           FROM predictions p2
-           WHERE p2.stock_id = s.id
-             AND p2.model_name = 'ensemble'
-             AND p2.prediction_date = dr.date
-           ORDER BY
-             p2.generated_at DESC,
-             p2.id DESC
-           LIMIT 1
-        )
        WHERE dr.date <= ?
          AND dr.symbol IN (${placeholders})
       )
@@ -494,11 +483,36 @@ async function enrichPendingBuyContext(
      WHERE rn = 1
   `).bind(sourceRecoDate, ...symbols).all<any>().catch(() => ({ results: [] as any[] }))
 
+  // predictions lives in learning-db; a same-SQL join with core tables fails after the domain split.
+  const ensembleKeys = (results ?? [])
+    .map((row: any) => ({ stockId: Number(row.stock_id), date: String(row.recommendation_date ?? '') }))
+    .filter((key) => Number.isFinite(key.stockId) && key.date)
+  if (ensembleKeys.length > 0) {
+    const keyPlaceholders = ensembleKeys.map(() => '(?, ?)').join(',')
+    const { results: ensembleRows } = await learningDb.prepare(`
+      WITH keys(prediction_date, stock_id) AS (VALUES ${keyPlaceholders})
+      SELECT keys.stock_id, keys.prediction_date,
+             (SELECT p.forecast_data
+                FROM predictions p
+               WHERE p.prediction_date = keys.prediction_date
+                 AND p.stock_id = keys.stock_id
+                 AND p.model_name = 'ensemble'
+               ORDER BY p.generated_at DESC, p.id DESC
+               LIMIT 1) AS forecast_data
+        FROM keys
+    `).bind(...ensembleKeys.flatMap((key) => [key.date, key.stockId])).all<any>().catch(() => ({ results: [] as any[] }))
+    const forecastByKey = new Map<string, unknown>()
+    for (const row of ensembleRows ?? []) forecastByKey.set(`${Number(row.stock_id)}|${row.prediction_date}`, row.forecast_data)
+    for (const row of results ?? []) {
+      row.prediction_forecast_data = forecastByKey.get(`${Number(row.stock_id)}|${row.recommendation_date}`) ?? null
+    }
+  }
+
   const stockIds = [...new Set((results ?? []).map((row: any) => Number(row.stock_id)).filter((id: number) => Number.isFinite(id)))]
   const perModelByStock = new Map<number, any[]>()
   if (stockIds.length > 0) {
     const stockPlaceholders = stockIds.map(() => '?').join(',')
-    const { results: perModelRows } = await coreDb.prepare(`
+    const { results: perModelRows } = await learningDb.prepare(`
       WITH ranked AS (
         SELECT stock_id, model_name, signal_raw, direction_accuracy, forecast_data,
                ROW_NUMBER() OVER (
@@ -1270,6 +1284,7 @@ paper.get('/pending-buys', async (c) => {
   const executionPolicy = buildPendingBuyExecutionPolicy(displayMeta, sourceRecoDate)
   const pendingBuys = await enrichPendingBuyContext(
     databaseForDataDomain(c.env, 'core'),
+    databaseForDataDomain(c.env, 'learning'),
     databaseForDataDomain(c.env, 'market'),
     snapshot.pendingBuys,
     sourceRecoDate,

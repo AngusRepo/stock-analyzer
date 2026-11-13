@@ -715,6 +715,18 @@ export const STRATEGY_READY_MATRIX_COVERAGE_SQL = `
      WHERE m.signal_date=? AND m.producer_run_id=?
   `
 
+// Earlier routing evidence of persistSelectionEvidenceV4's producer. Deliberately not confined to
+// signal_date: a producer's rows on another date (legacy rows written without a run header) must be
+// found so the writer refuses them (selection_reference_route_evidence_conflict:signal_date).
+// idx_selection_reference_v1_producer_run (learning 0067) makes this a SEARCH; without it every
+// call scanned the table. Bind: producer_run_id.
+export const SELECTION_REFERENCE_PREVIOUS_ROUTING_SQL = `
+    SELECT signal_date, symbol, strategy_router_version, strategy_router_score,
+           strategy_challenger_route_version, strategy_challenger_route_score
+      FROM selection_reference_snapshots_v1
+     WHERE producer_run_id=?
+  `
+
 export async function persistSelectionEvidenceV4(
   db: D1Database,
   input: {
@@ -781,12 +793,7 @@ export async function persistSelectionEvidenceV4(
     )
   }
   const stockIds = await resolveReferenceStockIds(identityDb, input.references)
-  const previousRoutingRows = await db.prepare(`
-    SELECT signal_date, symbol, strategy_router_version, strategy_router_score,
-           strategy_challenger_route_version, strategy_challenger_route_score
-      FROM selection_reference_snapshots_v1
-     WHERE producer_run_id=?
-  `).bind(input.producerRunId).all<Pick<
+  const previousRoutingRows = await db.prepare(SELECTION_REFERENCE_PREVIOUS_ROUTING_SQL).bind(input.producerRunId).all<Pick<
     SelectionReferenceRowV1,
     'signal_date' | 'symbol' | 'strategy_router_version' | 'strategy_router_score'
       | 'strategy_challenger_route_version' | 'strategy_challenger_route_score'

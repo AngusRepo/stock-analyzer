@@ -178,7 +178,7 @@ function resolveScreenerRunDate(runDate?: string | null): string {
 }
 
 type L125StrategySimilarityEvidenceLoad = {
-  status: 'modal_python' | 'pending_maturity' | 'unavailable_blocked' | 'invalid_blocked' | 'empty_blocked'
+  status: 'modal_python' | 'pending_maturity' | 'unavailable_blocked' | 'invalid_blocked' | 'empty_blocked' | 'persist_failed'
   evidence: StrategySimilarityGraphEvidence | null
   error?: string
   payload_strategy_count: number
@@ -268,10 +268,29 @@ async function persistStrategyRedundancyArtifact(
   return artifactId
 }
 
+// Short pauses between the screener's own persist attempts. The REST binding already waits out
+// 429s per request (CLOUDFLARE_API_RATE_LIMIT_POLICY: up to 330 s inside the one-shot 900 s process
+// window), and each attempt is a new request with a fresh budget. A retry therefore starts only
+// within STRATEGY_REDUNDANCY_PERSIST_RETRY_WINDOW_MS of the first attempt: an attempt that already
+// waited out a rate limit is not repeated, so the loop never spends more of the process window
+// than one request did before, which the later funnel and evidence writes still need.
+export const STRATEGY_REDUNDANCY_PERSIST_RETRY_DELAYS_MS = [2_000, 5_000] as const
+export const STRATEGY_REDUNDANCY_PERSIST_RETRY_WINDOW_MS = 60_000
+export const STRATEGY_REDUNDANCY_PERSIST_FAILED_PREFIX = 'strategy_redundancy_artifact_persist_failed'
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300)
+}
+
 export async function loadL125StrategySimilarityGraphEvidence(
   env: Bindings,
   payload: StrategySimilarityEvidencePayload,
   asOfDate: string,
+  options: { sleep?: (ms: number) => Promise<void>; now?: () => number } = {},
 ): Promise<L125StrategySimilarityEvidenceLoad> {
   const payloadStrategyCount = payload.strategies.length
   if (!payloadStrategyCount) {
@@ -290,14 +309,88 @@ export async function loadL125StrategySimilarityGraphEvidence(
       error: 'ML_CONTROLLER_URL not set',
     }
   }
+  let raw: Record<string, unknown>
   try {
-    const raw = await controllerPostJson<Record<string, unknown>>(
+    raw = await controllerPostJson<Record<string, unknown>>(
       env,
       '/l125/strategy_similarity_evidence',
       payload,
       120_000,
     )
-    const artifactId = await persistStrategyRedundancyArtifact(env, asOfDate, raw, payloadStrategyCount)
+    if (!raw || typeof raw !== 'object') {
+      throw new Error('invalid_modal_strategy_similarity_evidence_response')
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300)
+    console.error(JSON.stringify({
+      event: 'strategy_similarity_evidence_unavailable',
+      error_type: 'controller_call_failed',
+      as_of_date: asOfDate,
+      message,
+    }))
+    return {
+      status: 'unavailable_blocked',
+      evidence: null,
+      payload_strategy_count: payloadStrategyCount,
+      error: message,
+    }
+  }
+  // The controller computed the graph; strategy-learning and the evening-chain closure read it only
+  // from strategy_redundancy_artifacts_v1. A lost write (2026-11-10/11: learning-db 7429 overload
+  // through the REST binding) used to be folded into unavailable_blocked, indistinguishable from a
+  // controller outage. The write is retried up to twice (an idempotent upsert of a content-addressed
+  // artifact), only while the first attempt is under STRATEGY_REDUNDANCY_PERSIST_RETRY_WINDOW_MS old;
+  // a final failure keeps the candidates, but the run records persist_failed with its error_type
+  // and the evening-chain closure names it. The Modal call is not repeated.
+  let artifactId: string | null = null
+  let persistError: unknown = null
+  let attempts = 0
+  const now = options.now ?? Date.now
+  const startedAt = now()
+  const maxAttempts = STRATEGY_REDUNDANCY_PERSIST_RETRY_DELAYS_MS.length + 1
+  while (attempts < maxAttempts) {
+    attempts += 1
+    try {
+      artifactId = await persistStrategyRedundancyArtifact(env, asOfDate, raw, payloadStrategyCount)
+      break
+    } catch (error) {
+      persistError = error
+    }
+    const elapsedMs = now() - startedAt
+    if (attempts >= maxAttempts || elapsedMs > STRATEGY_REDUNDANCY_PERSIST_RETRY_WINDOW_MS) break
+    const message = errorMessage(persistError)
+    const delayMs = STRATEGY_REDUNDANCY_PERSIST_RETRY_DELAYS_MS[attempts - 1]
+    console.warn(JSON.stringify({
+      event: 'strategy_redundancy_artifact_persist_retry',
+      error_type: strategyRedundancyArtifactPersistErrorType(message),
+      as_of_date: asOfDate,
+      failed_attempt: attempts,
+      max_attempts: maxAttempts,
+      elapsed_ms: elapsedMs,
+      delay_ms: delayMs,
+      message,
+    }))
+    await (options.sleep ?? sleepMs)(delayMs)
+  }
+  if (!artifactId) {
+    const message = errorMessage(persistError)
+    const errorType = strategyRedundancyArtifactPersistErrorType(message)
+    console.error(JSON.stringify({
+      event: 'strategy_redundancy_artifact_persist_failed',
+      error_type: errorType,
+      as_of_date: asOfDate,
+      attempts,
+      elapsed_ms: now() - startedAt,
+      message,
+    }))
+    return {
+      status: 'persist_failed',
+      evidence: null,
+      payload_strategy_count: payloadStrategyCount,
+      error: `${STRATEGY_REDUNDANCY_PERSIST_FAILED_PREFIX}:${asOfDate}:${errorType}:${message}`.slice(0, 300),
+    }
+  }
+  try {
     const blockedReason = modalStrategySimilarityBlockedReason(raw)
     if (blockedReason) {
       const pendingMaturity = blockedReason === 'insufficient_paired_mature_oof_residual_returns'
@@ -322,9 +415,13 @@ export async function loadL125StrategySimilarityGraphEvidence(
     return { status: 'modal_python', evidence, payload_strategy_count: payloadStrategyCount, artifact_id: artifactId }
   } catch (error) {
     const message = error instanceof Error ? error.message.slice(0, 300) : String(error).slice(0, 300)
-    // Only funnel metadata keeps this reason and a missing artifact blocks strategy-learning, so the
-    // failure (controller call or artifact persist) must also reach the Worker / Cloud Run logs.
-    console.error(`[screener] strategy_similarity_evidence_unavailable as_of=${asOfDate}: ${message}`)
+    console.error(JSON.stringify({
+      event: 'strategy_similarity_evidence_unavailable',
+      error_type: 'evidence_contract_invalid',
+      as_of_date: asOfDate,
+      artifact_id: artifactId,
+      message,
+    }))
     return {
       status: 'unavailable_blocked',
       evidence: null,
@@ -332,6 +429,15 @@ export async function loadL125StrategySimilarityGraphEvidence(
       error: message,
     }
   }
+}
+
+function strategyRedundancyArtifactPersistErrorType(message: string): string {
+  if (/\b7429\b|overloaded/i.test(message)) return 'd1_overloaded'
+  if (/D1 REST HTTP \d+/.test(message)) return 'd1_rest_http_error'
+  if (/D1 REST unsuccessful/.test(message)) return 'd1_rest_unsuccessful'
+  if (/^artifact_|^Evidence artifact writer/.test(message)) return 'evidence_artifact_write_failed'
+  if (/fetch failed|network|ECONN|ETIMEDOUT|aborted|timeout/i.test(message)) return 'network_error'
+  return 'unknown'
 }
 
 interface PreparedStrategyRedundancyBackfill {

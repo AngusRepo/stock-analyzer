@@ -46,8 +46,11 @@ SOURCE_KEYS = ('STOCKVISION_SOURCE_SHA', 'STOCKVISION_SOURCE_TREE_SHA',
                'STOCKVISION_SOURCE_BRANCH', 'STOCKVISION_SCHEDULER_MANIFEST_SHA256')
 SOURCE_LABELS = ('stockvision-source-sha', 'stockvision-provenance-schema')
 JOBS = application_jobs()
+# Cloud Run rewrites lastModifier on every update: services as serving.knative.dev/lastModifier,
+# jobs as run.googleapis.com/lastModifier (CD vs a local deploy changes the principal).
 AUTO_ANNOTATIONS = {'run.googleapis.com/client-name', 'run.googleapis.com/client-version',
-                    'run.googleapis.com/operation-id', 'serving.knative.dev/lastModifier'}
+                    'run.googleapis.com/operation-id', 'serving.knative.dev/lastModifier',
+                    'run.googleapis.com/lastModifier'}
 TW = timezone(timedelta(hours=8))
 # Cloud Run scaler jobs rewrite ml-controller around these TW times (CD_DESIGN.md §5).
 SCALER_WINDOWS = ((0, 0), (8, 40), (13, 40))

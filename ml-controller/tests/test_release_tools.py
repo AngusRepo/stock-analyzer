@@ -738,3 +738,31 @@ def test_job_update_by_another_principal_is_source_only():
     after['metadata']['annotations']['run.googleapis.com/vpc-access-egress'] = 'all-traffic'
     with pytest.raises(RuntimeError, match='non_source_resource_configuration_changed:job'):
         rollout.assert_source_only(before, after, 'job', 'img@sha256:new', {'STOCKVISION_SOURCE_SHA': 'b' * 40})
+
+
+def test_prior_falls_back_to_the_attempt_that_left_modal_live(monkeypatch):
+    # 2026-11-13: 033ab655's rollout deployed Modal, failed on the jobs and could not revert Modal,
+    # so the live Modal tag had no current.json and every later CD rollout stopped at
+    # previous_modal_and_bootstrap_receipts_required_seed_receipt_store.
+    def modal(at, sha=SHA):
+        return {'status': 'verified', 'completed_at': at, 'provenance': {'source_sha': sha}}
+    use_store(monkeypatch, {
+        f'{SHA}/gh-1-1/rollout/modal-release.json': modal('2026-11-13T01:00:00+00:00'),
+        f'{SHA}/gh-1-1/rollout/bootstrap-verification.json': {'status': 'PASS', 'n': 1},
+        f'{SHA}/gh-2-1/rollout/progress/004-modal-release.json': modal('2026-11-13T02:00:00+00:00'),
+        f'{SHA}/gh-2-1/rollout/progress/001-bootstrap-verification.json': {'status': 'PASS', 'n': 2},
+        f'{SHA}/gh-3-1/rollout/modal-release.json': modal('2026-11-13T03:00:00+00:00', 'b' * 40),
+        f'{SHA}/gh-3-1/rollout/bootstrap-verification.json': {'status': 'PASS', 'n': 3},
+        f'{SHA}/gh-4-1/rollout/modal-release.json': {**modal('2026-11-13T04:00:00+00:00'), 'status': 'failed'},
+        f'{SHA}/gh-4-1/rollout/bootstrap-verification.json': {'status': 'PASS', 'n': 4},
+        f'{SHA}/gh-5-1/rollout/modal-release.json': modal('2026-11-13T05:00:00+00:00'),
+    })
+    found = receipts.unreleased_modal(SHA)
+    assert found['attempt'] == 'gh-2-1' and found['bootstrap'] == {'status': 'PASS', 'n': 2} and found['unreleased']
+    assert receipts.unreleased_modal('c' * 40) == {}
+    monkeypatch.setattr(runtime_context, 'load_environment', lambda: None)
+    monkeypatch.setattr(release.subprocess, 'check_output', lambda *a, **k: json.dumps([{'Tag': SHA}]))
+    monkeypatch.setattr(receipts, 'current', lambda sha: None)
+    prior = release.rollout_prior(Namespace(prior_modal_release=None, prior_bootstrap=None, python=sys.executable))
+    assert prior['modal_tag'] == SHA and prior['attempt'] == 'gh-2-1'
+    assert prior['modal_release']['completed_at'] == '2026-11-13T02:00:00+00:00'

@@ -112,14 +112,17 @@ def attempts(sha: str) -> list[str]:
     return sorted(line[len(base):].rstrip('/') for line in listing(base) if line.startswith(base) and line.endswith('/'))
 
 
-def rollout_state(sha: str, attempt: str) -> dict | None:
-    """The newest controller-release.json of an attempt: the stage copy, else its last progress copy."""
-    raw = read(prefix(sha, attempt) + '/rollout/controller-release.json')
+def rollout_receipt(sha: str, attempt: str, name: str) -> dict | None:
+    """The newest copy of rollout/<name> of an attempt: the stage copy, else its last progress copy."""
+    raw = read(prefix(sha, attempt) + '/rollout/' + name)
     if raw is None:
-        names = [line for line in listing(prefix(sha, attempt) + '/rollout/progress/')
-                 if line.endswith('-controller-release.json')]
+        names = [line for line in listing(prefix(sha, attempt) + '/rollout/progress/') if line.endswith('-' + name)]
         raw = read(sorted(names)[-1]) if names else None
     return json.loads(raw) if raw is not None else None
+
+
+def rollout_state(sha: str, attempt: str) -> dict | None:
+    return rollout_receipt(sha, attempt, 'controller-release.json')
 
 
 def unreconciled(state: dict | None) -> bool:
@@ -141,6 +144,28 @@ def current_raw(sha: str) -> bytes | None:
 def current(sha: str) -> dict | None:
     raw = current_raw(sha)
     return json.loads(raw) if raw is not None else None
+
+
+def unreleased_modal(sha: str) -> dict:
+    """Modal receipts of a sha with no current.json whose rollout still deployed Modal: a failed
+    rollout whose rollback could not revert Modal (Modal has no rollback on this plan) leaves it
+    live (2026-11-13, 033ab655). Returns the newest verified modal-release + bootstrap-verification
+    pair, or {} when none. Not digest-pinned (no verified release); rollout's prior_bootstrap binds
+    them to the live Modal deployment (provenance, tag, deploy time within 300 s) and the
+    bootstrap reference to the git anchor, as for current.json receipts."""
+    found = []
+    for attempt in attempts(sha):
+        modal_release = rollout_receipt(sha, attempt, 'modal-release.json')
+        if (not modal_release or modal_release.get('status') != 'verified'
+                or (modal_release.get('provenance') or {}).get('source_sha') != sha):
+            continue
+        bootstrap = rollout_receipt(sha, attempt, 'bootstrap-verification.json')
+        if bootstrap:
+            found.append((str(modal_release.get('completed_at', '')), attempt, modal_release, bootstrap))
+    if not found:
+        return {}
+    _, attempt, modal_release, bootstrap = max(found)
+    return {'attempt': attempt, 'modal_release': modal_release, 'bootstrap': bootstrap, 'unreleased': True}
 
 
 def read_attempt(sha: str, attempt: str, relative: str, expected: dict[str, str]) -> bytes:

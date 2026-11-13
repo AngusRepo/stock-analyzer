@@ -11,6 +11,7 @@ import {
 } from './canonicalSelectionLabels'
 import { PRICE_HORIZON_PROJECTION_VERSION } from './priceHorizonProjection'
 import { STRATEGY_ROUTE_AFFINITY_VERSION } from './strategyRouteCalibration'
+import { matrixRunSummaryCounts, matrixRunSummaryUsable, matrixRunSummaryUsableInline, matrixRunSummaryVersion, MATRIX_RUN_SUMMARY_SELECT } from './strategyLabelMatrixRunSummary'
 import {
   STRATEGY_FORMAL_LABELER_LEGACY_VERSION,
   STRATEGY_FORMAL_LABELER_VERSION,
@@ -110,6 +111,9 @@ export async function auditFormalStrategyEvidenceFrontier(
     STRATEGY_EVIDENCE_V5_LIVE_FRONTIER_START_DATE,
     matureSignalDate,
   ).all<{ session_date: string }>()
+  // Summarised runs answer the matrix counts from the run header; older runs
+  // count their cells (strategyLabelMatrixRunSummary.ts).
+  const SUMMARY_USABLE = matrixRunSummaryUsableInline('mr', STRATEGY_ROUTE_AFFINITY_VERSION)
   const rows: FormalClosureRow[] = []
   const canonicalHeads = heads.results ?? []
   for (let offset = 0; offset < canonicalHeads.length; offset += 16) {
@@ -135,11 +139,12 @@ export async function auditFormalStrategyEvidenceFrontier(
              mr.status matrix_status, mr.labeler_version matrix_labeler_version,
              mr.reference_contract_version, mr.reference_candidate_count,
              mr.expected_cell_count, mr.persisted_cell_count,
+             CASE WHEN ${SUMMARY_USABLE} THEN mr.summary_contract_rows ELSE
              (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
                WHERE m.signal_date=t.signal_date AND m.producer_run_id=t.producer_run_id
                  AND m.labeler_version=mr.labeler_version
                  AND m.strategy_registry_checksum=mr.strategy_registry_checksum
-                 AND m.reference_contract_version=mr.reference_contract_version) matrix_contract_rows,
+                 AND m.reference_contract_version=mr.reference_contract_version) END matrix_contract_rows,
              (SELECT COUNT(*) FROM selection_reference_snapshots_v1 r
                WHERE r.signal_date=t.signal_date AND r.producer_run_id=t.producer_run_id
                  AND r.hard_gate_passed=1
@@ -150,19 +155,23 @@ export async function auditFormalStrategyEvidenceFrontier(
                WHERE r.signal_date=t.signal_date AND r.producer_run_id=t.producer_run_id
                  AND r.hard_gate_passed=1
                  AND r.strategy_challenger_affinity_version=?) reference_projection_rows,
+             CASE WHEN ${SUMMARY_USABLE} THEN mr.summary_challenger_projection_rows ELSE
              (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
                WHERE m.signal_date=t.signal_date AND m.producer_run_id=t.producer_run_id
-                 AND m.challenger_affinity_version=?) challenger_projection_rows,
+                 AND m.challenger_affinity_version=?) END challenger_projection_rows,
+             CASE WHEN ${SUMMARY_USABLE} THEN mr.summary_matched_rows ELSE
              (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
                WHERE m.signal_date=t.signal_date AND m.producer_run_id=t.producer_run_id
-                 AND m.evaluable=1 AND m.strategy_hit=1) matched_rows,
+                 AND m.evaluable=1 AND m.strategy_hit=1) END matched_rows,
+             CASE WHEN ${SUMMARY_USABLE} THEN mr.summary_threshold_evidence_rows ELSE
              (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
                WHERE m.signal_date=t.signal_date AND m.producer_run_id=t.producer_run_id
-                 AND m.evaluable=1 AND m.strategy_hit=1 AND m.affinity_evidence_count>0) threshold_evidence_rows,
+                 AND m.evaluable=1 AND m.strategy_hit=1 AND m.affinity_evidence_count>0) END threshold_evidence_rows,
+             CASE WHEN ${SUMMARY_USABLE} THEN mr.summary_projected_threshold_rows ELSE
              (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
                WHERE m.signal_date=t.signal_date AND m.producer_run_id=t.producer_run_id
                  AND m.evaluable=1 AND m.strategy_hit=1 AND m.affinity_evidence_count>0
-                 AND m.challenger_affinity_version=?) projected_threshold_rows
+                 AND m.challenger_affinity_version=?) END projected_threshold_rows
         FROM target t
         LEFT JOIN strategy_label_matrix_runs_v4 mr
           ON mr.signal_date=t.signal_date AND mr.producer_run_id=t.producer_run_id
@@ -317,7 +326,33 @@ export async function auditEveningChainEvidenceClosure(
   // prefix; matrix cells always carry their run's signal_date. Five COUNTs
   // filtered by producer_run_id alone scanned the whole matrix (7.56M rows per
   // call on 2026-11-12).
-  const matrix = await learningDb.prepare(`
+  // A summarised run (strategyLabelMatrixRunSummary.ts) answers from its
+  // header with one PK lookup; older runs take the cell pass below.
+  const matrixHeader = await learningDb.prepare(`
+    SELECT mr.expected_cell_count, mr.persisted_cell_count,
+           ${matrixRunSummaryUsable('mr')} AS summary_usable,${MATRIX_RUN_SUMMARY_SELECT}
+      FROM strategy_label_matrix_runs_v4 mr
+     WHERE mr.producer_run_id=? AND mr.signal_date=? AND mr.status='ready'
+       AND mr.reference_contract_version=?
+       AND mr.labeler_version IN (?, ?)
+  `).bind(
+    matrixRunSummaryVersion(STRATEGY_ROUTE_AFFINITY_VERSION),
+    producerRunId,
+    businessDate,
+    SELECTION_REFERENCE_CONTRACT_VERSION,
+    STRATEGY_FORMAL_LABELER_VERSION,
+    STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION,
+  ).first<any>()
+  const matrixSummary = matrixRunSummaryCounts(matrixHeader)
+  const matrix = matrixSummary ? {
+    expected_cell_count: matrixHeader.expected_cell_count,
+    persisted_cell_count: matrixHeader.persisted_cell_count,
+    matrix_rows: matrixSummary.matrixRows,
+    matched_rows: matrixSummary.matchedRows,
+    threshold_evidence_rows: matrixSummary.thresholdEvidenceRows,
+    challenger_projection_rows: matrixSummary.challengerProjectionRows,
+    projected_threshold_rows: matrixSummary.projectedThresholdRows,
+  } : await learningDb.prepare(`
     SELECT r.expected_cell_count, r.persisted_cell_count,
            COUNT(m.producer_run_id) matrix_rows,
            SUM(CASE WHEN m.evaluable=1 AND m.strategy_hit=1 THEN 1 ELSE 0 END) matched_rows,
@@ -413,13 +448,17 @@ export async function auditEveningChainEvidenceClosure(
     if (!matureProducerRunId) {
       throw new Error(`evening_chain_mature_canonical_head_missing:${matureSignalDate}`)
     }
+    // Summarised runs: every cell matched the header's labeler and contract,
+    // so the cell count and the labeler check come from the header.
+    const matureSummaryUsable = matrixRunSummaryUsableInline('mr', STRATEGY_ROUTE_AFFINITY_VERSION)
     const matureMatrix = await learningDb.prepare(`
       SELECT reference_candidate_count, expected_cell_count, persisted_cell_count,
              labeler_version, reference_contract_version,
+             CASE WHEN ${matureSummaryUsable} THEN mr.summary_matrix_rows ELSE
              (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
                WHERE m.signal_date=mr.signal_date AND m.producer_run_id=mr.producer_run_id
                  AND m.labeler_version=mr.labeler_version
-                 AND m.reference_contract_version=mr.reference_contract_version) matrix_rows,
+                 AND m.reference_contract_version=mr.reference_contract_version) END matrix_rows,
              (SELECT COUNT(*) FROM selection_reference_snapshots_v1 r
                WHERE r.signal_date=mr.signal_date AND r.producer_run_id=mr.producer_run_id
                  AND r.hard_gate_passed=1
@@ -432,11 +471,11 @@ export async function auditEveningChainEvidenceClosure(
            OR
            (reference_contract_version=? AND labeler_version IN (?, ?))
          )
-         AND NOT EXISTS (
+         AND (${matureSummaryUsable} OR NOT EXISTS (
            SELECT 1 FROM strategy_label_matrix_v4 m
             WHERE m.signal_date=mr.signal_date AND m.producer_run_id=mr.producer_run_id
               AND m.labeler_version<>mr.labeler_version
-         )
+         ))
        LIMIT 1
     `).bind(
       matureSignalDate,

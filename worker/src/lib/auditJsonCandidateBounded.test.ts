@@ -74,7 +74,8 @@ test('tail page starts its index range at the cursor date instead of rescanning 
 })
 
 test('decision-log pages keep a bounded date seek without idx_strategy_decision_log_date',()=>{
- // D1-RR learning 0065 drops that index; another date-leading index must take the range.
+ // D1-RR plans to drop that index; another date-leading index (an idx_* or the UNIQUE(date, symbol, strategy_id,
+ // strategy_version) autoindex once the M2 follow-up 0067 drops _evaluability) must take the range.
  const schema=readFileSync('domain-schemas/learning.sql','utf8')
  const db=new DatabaseSync(':memory:')
  try{db.exec(schema.match(/CREATE TABLE IF NOT EXISTS strategy_decision_log \([\s\S]*?\n\);/)![0])
@@ -83,7 +84,7 @@ test('decision-log pages keep a bounded date seek without idx_strategy_decision_
    const q=buildAuditJsonCandidateQuery(target,'2026-01-21',20,1024,cursor)
    const plan=db.prepare(`EXPLAIN QUERY PLAN ${q.sql}`).all(...q.binds as SQLInputValue[]).map(r=>String(r.detail))
    const range=cursor?/\(date>\? AND date<\?\)/:/\(date<\?\)/
-   assert.ok(plan.some(d=>/^SEARCH strategy_decision_log USING (COVERING )?INDEX idx_strategy_decision_log_\w+ /.test(d)&&range.test(d)),`${target} ${cursor?'tail':'head'}: ${plan.join(' | ')}`)
+   assert.ok(plan.some(d=>/^SEARCH strategy_decision_log USING (COVERING )?INDEX (idx_strategy_decision_log_\w+|sqlite_autoindex_strategy_decision_log_\d+) /.test(d)&&range.test(d)),`${target} ${cursor?'tail':'head'}: ${plan.join(' | ')}`)
    assert.ok(!plan.some(d=>/^SCAN strategy_decision_log\b/.test(d)),`${target}: ${plan.join(' | ')}`)
   }
  }finally{db.close()}

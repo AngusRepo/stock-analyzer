@@ -5037,7 +5037,13 @@ def fastapi_app():
     return fastapi_application
 
 
-@app.function(gpu="L4", cpu=2, memory=8192, timeout=900, max_containers=1, scaledown_window=60)
+# L4 first, A10 (Modal's name for the A10G) only when no L4 can be scheduled. On 10/29 and
+# 11/11 the L4-only request waited over 2 h for capacity, the run failed and Paper lost a day.
+# Both cards run the fp32 weights with TF32 matmuls (matmul_precision 'high'); scores are not
+# bit-identical across the two. 11/13 replay of the sealed 11/10 and 11/12 inputs: A10 vs L4
+# max|d score| 1.8e-4 (median score 0.019), Spearman 0.999996, at most 3 rank shifts, no sign flips.
+# timeout=900 counts execution only; queueing is bounded by the stage journal's queue limit.
+@app.function(gpu=["L4", "A10"], cpu=2, memory=8192, timeout=900, max_containers=1, scaledown_window=60)
 def timexer_universal_predict(payload: dict) -> dict:
     """Immutable official TimeXer inference; no fit or publication side effects."""
     _setup_env()

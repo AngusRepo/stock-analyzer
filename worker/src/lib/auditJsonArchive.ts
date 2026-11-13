@@ -56,6 +56,8 @@ type AuditJsonTargetConfig = {
   hotDays?: number
   /** Excluded from default target lists; runs only when named and the KV gate is open. */
   optIn?: boolean
+  /** Left out of the scheduled (unnamed) run; still runnable when named explicitly. */
+  defaultExcluded?: boolean
 }
 
 export type AuditJsonRefV2GateMode = 'manual' | 'scheduled'
@@ -215,6 +217,10 @@ const AUDIT_JSON_TARGETS: AuditJsonTargetConfig[] = [
       'created_at',
     ],
     blobColumns: ['detail_json'],
+    // Live Paper ledgers (corporate_opening_basis and others) verify
+    // sha256(detail_json) over their whole history; replacing one with a
+    // pointer made premarket setup fail on 2026-11-13.
+    defaultExcluded: true,
   },
   {
     id: AUDIT_JSON_REF_V2_TARGET_ID,
@@ -258,7 +264,7 @@ export const AUDIT_JSON_ARCHIVE_TARGET_IDS: readonly AuditJsonArchiveTargetId[] 
 
 /** Targets used when a caller names none; opt-in targets are never implied. */
 export const AUDIT_JSON_DEFAULT_TARGET_IDS: readonly AuditJsonArchiveTargetId[] =
-  AUDIT_JSON_TARGETS.filter((target) => !target.optIn).map((target) => target.id)
+  AUDIT_JSON_TARGETS.filter((target) => !target.optIn && !target.defaultExcluded).map((target) => target.id)
 
 const TARGET_BY_ID = new Map(AUDIT_JSON_TARGETS.map((target) => [target.id, target]))
 
@@ -294,7 +300,7 @@ function isoDateOffset(date: string, days: number): string {
 }
 
 function selectedTargets(targets?: Array<string | null | undefined> | null): AuditJsonTargetConfig[] {
-  const defaults = AUDIT_JSON_TARGETS.filter((target) => !target.optIn)
+  const defaults = AUDIT_JSON_TARGETS.filter((target) => !target.optIn && !target.defaultExcluded)
   if (!targets?.length) return defaults
   const selected = new Set(
     targets

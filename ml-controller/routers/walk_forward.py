@@ -335,10 +335,7 @@ async def walk_forward_run(req: WalkForwardRequest):
 
     from services.walk_forward_retrain import MODELS_ALL, walk_forward_model_coverage
     from services.backtest_engine import walk_forward_windows
-    from services.payload_builder import load_market_env
     from services import modal_client
-    from dataclasses import asdict
-    from datetime import datetime, timezone, timedelta
 
     from services.training_source_preflight import require_single_adjustment_capture, sealed_batch_counts
     from services.walk_forward_retrain import _get_bucket
@@ -367,11 +364,6 @@ async def walk_forward_run(req: WalkForwardRequest):
             status_code=400,
             detail=f"No windows generated. trading_days={len(trading_days)}, need >= {req.train_window_days + req.test_window_days}",
         )
-
-    # Load market_env once ??orchestrator filters per-window
-    run_date = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
-    me, _, _, _, _ = load_market_env(run_date)
-    market_env = asdict(me)
 
     windows_payload = [
         {
@@ -407,7 +399,12 @@ async def walk_forward_run(req: WalkForwardRequest):
     try:
         fn_call = await modal_client.spawn_walk_forward_orchestrator({
             "windows": windows_payload,
-            "market_env": market_env,
+            # KD-14: the per-window HMM is record-only (no model, gate or manifest
+            # check reads it), so dispatch no longer loads market_env and cannot 500
+            # on ml:adaptive_params / trading:config. The orchestrator still reads the key.
+            # Research optuna_per_regime_robust (walk_forward_retrain.predict_regime_at_date)
+            # then reads an older hmm_detector snapshot, or falls back to sideways without one.
+            "market_env": {},
             "batch_count": batch_count,
             "models": models,
             "model_profile_schema_version":req.model_profile_schema_version,

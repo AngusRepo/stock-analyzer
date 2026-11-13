@@ -208,6 +208,8 @@ import {
 import { getTradingConfig } from '../lib/tradingConfig'
 import { classifyBoard, resolveRecommendationGovernance } from '../lib/boardTradability'
 import { summarizeScreenerFunnelRows, summarizeStrategyPortfolioIntelligenceHealth } from '../lib/screenerFunnelEvidence'
+import { type FunnelArchiveChunkCache, isAuditPointerEvidence, restoreArchivedFunnelEvidence } from '../lib/screenerEvidenceResolver'
+import { loadFunnelStageStrategyRows } from '../lib/funnelStageStrategyRows'
 import { readMarketRegimeState } from '../lib/marketRegimeState'
 import { loadMarketRegimeFactorPacket } from '../lib/marketRegimeFactorPacket'
 import { buildMarketOptimisticOutlook } from '../lib/marketOutlook'
@@ -3234,6 +3236,8 @@ async function buildDailyPipelineSummaries(
   coreDb: Bindings['DB'],
   learningDb: Bindings['DB'],
   date: string,
+  archiveEnv: Pick<Bindings, 'DB' | 'ARTIFACTS'> | null = null,
+  archiveChunks: FunnelArchiveChunkCache = new Map(),
 ): Promise<Record<string, any>> {
   const latestRun = await opsDb.prepare(`
     SELECT run_id, date, status, universe_count, candidate_count, final_count, emerging_count, metadata, created_at
@@ -3332,28 +3336,18 @@ async function buildDailyPipelineSummaries(
     latestRun.run_id,
     ...STRATEGY_FORMAL_LABELER_VERSIONS,
   ).first<any>().catch(() => null)
-  const loadStageStrategyRows = async (stage: string) => opsDb.prepare(`
-    SELECT DISTINCT i.symbol, CAST(strategy.value AS TEXT) AS strategy_id
-      FROM screener_funnel_items i
-      JOIN json_each(
-        CASE
-          WHEN json_valid(i.evidence) THEN COALESCE(
-            json_extract(i.evidence, '$.strategy_pool_ids'),
-            json_extract(i.evidence, '$.strategy_ids'),
-            json('[]')
-          )
-          ELSE json('[]')
-        END
-      ) AS strategy
-     WHERE i.run_id = ?
-       AND i.stage = ?
-       AND i.decision IN ('selected', 'pass', 'observe')
-       AND strategy.value IS NOT NULL
-  `).bind(latestRun.run_id, stage).all<any>().catch(() => ({ results: [] as any[] }))
-  const [{ results: routerRows }, { results: finalRows }] = await Promise.all([
-    loadStageStrategyRows('l1_candidate_seed_after_overlay'),
-    loadStageStrategyRows('final_selection'),
+  // Archived (pointer) evidence of older dates is read back from R2 for display; rows it
+  // cannot read back are reported in strategy_summary.archived_unresolved, not hidden.
+  const [routerStage, finalStage] = await Promise.all([
+    loadFunnelStageStrategyRows(opsDb, archiveEnv, latestRun.run_id, 'l1_candidate_seed_after_overlay', archiveChunks),
+    loadFunnelStageStrategyRows(opsDb, archiveEnv, latestRun.run_id, 'final_selection', archiveChunks),
   ])
+  const routerRows = routerStage.rows
+  const finalRows = finalStage.rows
+  const archivedUnresolved = {
+    l15_router_slate: routerStage.archived_unresolved,
+    final_recommendation: finalStage.archived_unresolved,
+  }
   const setsFromStrategyRows = (rows: any[]): Map<string, Set<string>> => {
     const out = new Map<string, Set<string>>()
     for (const row of rows ?? []) {
@@ -3482,6 +3476,8 @@ async function buildDailyPipelineSummaries(
       candidate_count: candidateCount,
       active_strategy_count: activeStrategyIds.size,
       observed_strategy_count: strategySymbols.size,
+      // >0: those funnel items' strategies are missing (archived evidence not read back).
+      archived_unresolved: archivedUnresolved,
       strategies: strategyCounts,
       pairwise,
       avg_jaccard: avg(pairwise.map((row) => row.jaccard)),
@@ -3566,6 +3562,7 @@ function compactDailyPipelineStrategySummary(summary: Record<string, any> | null
     candidate_count: summary.candidate_count,
     active_strategy_count: summary.active_strategy_count,
     observed_strategy_count: summary.observed_strategy_count,
+    archived_unresolved: summary.archived_unresolved,
     strategies_total_count: rawStrategies.length,
     strategies_truncated: rawStrategies.length > strategies.length,
     strategies,
@@ -3581,9 +3578,10 @@ async function buildDailyPipelineViewPayload(
   coreDb: Bindings['DB'],
   learningDb: Bindings['DB'],
   date: string,
+  archiveEnv: Pick<Bindings, 'DB' | 'ARTIFACTS'> | null = null,
 ): Promise<Record<string, any>> {
   const [pipelineSummaries, sectorResult] = await Promise.all([
-    buildDailyPipelineSummaries(opsDb, coreDb, learningDb, date),
+    buildDailyPipelineSummaries(opsDb, coreDb, learningDb, date, archiveEnv),
     coreDb.prepare(`
       WITH eligible AS (
         SELECT COALESCE(
@@ -3853,6 +3851,7 @@ recommendations.get('/daily', async (c) => {
       databaseForDataDomain(c.env, 'core'),
       databaseForDataDomain(c.env, 'learning'),
       String(date),
+      c.env,
     )
     return c.json({
       requested_date: requestedOrToday,
@@ -3938,6 +3937,10 @@ recommendations.get('/daily', async (c) => {
     }
   }
   const screenerFunnelBySymbol = new Map<string, any>()
+  // Per symbol: funnel rows whose archived evidence could not be read back (still pointers).
+  const screenerFunnelArchivedUnresolved = new Map<string, number>()
+  // Request-scoped: symbol chunks and both pipeline stages share verified R2 chunks.
+  const archiveChunks: FunnelArchiveChunkCache = new Map()
   const resultSymbols = [...new Set((results ?? [])
     .map((r: any) => String(r.symbol ?? '').trim())
     .filter(Boolean))]
@@ -4048,7 +4051,7 @@ recommendations.get('/daily', async (c) => {
            ORDER BY created_at DESC
            LIMIT 1
         )
-        SELECT symbol, stage, decision, reason_code, score_before, score_after, rank, evidence
+        SELECT id, run_id, symbol, stage, decision, reason_code, score_before, score_after, rank, evidence
           FROM screener_funnel_items
          WHERE run_id = (SELECT run_id FROM latest_screener_run)
            AND symbol IN (${placeholders})
@@ -4070,7 +4073,17 @@ recommendations.get('/daily', async (c) => {
            )
          ORDER BY symbol ASC, created_at ASC
       `).bind(date, ...resultSymbolChunk).all<any>()
-      for (const [symbol, summary] of summarizeScreenerFunnelRows(funnelRows ?? [])) {
+      // Dates past audit-json retention keep pointers in D1; show the verified R2 originals.
+      const traceRows = await restoreArchivedFunnelEvidence(c.env, funnelRows ?? [], { chunks: archiveChunks }).catch((e) => {
+        console.warn('[recommendations/daily] archived screener funnel evidence unavailable:', e)
+        for (const row of funnelRows ?? []) {
+          if (!isAuditPointerEvidence(row.evidence)) continue
+          const symbol = String(row.symbol ?? '').trim()
+          screenerFunnelArchivedUnresolved.set(symbol, (screenerFunnelArchivedUnresolved.get(symbol) ?? 0) + 1)
+        }
+        return funnelRows ?? []
+      })
+      for (const [symbol, summary] of summarizeScreenerFunnelRows(traceRows)) {
         screenerFunnelBySymbol.set(symbol, summary)
       }
       } catch (e) {
@@ -4214,6 +4227,7 @@ recommendations.get('/daily', async (c) => {
       screener_funnel_reason: screenerFunnel?.reason_code ?? null,
       screener_funnel_evidence: screenerFunnelEvidence,
       screener_funnel_timeline: screenerFunnel?.timeline ?? [],
+      screener_funnel_archived_unresolved: screenerFunnelArchivedUnresolved.get(String(r.symbol ?? '').trim()) ?? 0,
       chip_display_summary: chipDisplaySummary,
       institutional_raw_today: institutionalRawToday,
       broker_top_flows_today: brokerTopFlowsToday,
@@ -4254,6 +4268,8 @@ recommendations.get('/daily', async (c) => {
       databaseForDataDomain(c.env, 'core'),
       databaseForDataDomain(c.env, 'learning'),
       String(date),
+      c.env,
+      archiveChunks,
     )
     } catch (e) {
       console.warn('[recommendations/daily] daily pipeline summaries unavailable:', e)

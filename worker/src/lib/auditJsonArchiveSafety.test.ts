@@ -10,8 +10,8 @@ for (const mode of ['ok', 'missing', 'corrupt', 'concurrent_change', 'lock_retry
       trade_date TEXT, symbol TEXT, side TEXT, event_type TEXT, status TEXT, reason TEXT,
       detail_json TEXT, order_id TEXT, pending_run_id TEXT, source TEXT, created_at TEXT)`)
     const original = JSON.stringify({ detail: mode === 'oversize' ? 'x'.repeat(1100000) : mode === 'byte_budget' ? 'x'.repeat(600000) : '原始證據'.repeat(400) })
-    db.prepare("INSERT INTO paper_execution_events(id,trade_date,detail_json) VALUES(1,'2020-01-01',?)").run(original)
-    if (mode === 'byte_budget') db.prepare("INSERT INTO paper_execution_events(id,trade_date,detail_json) VALUES(2,'2020-01-02',?)").run(original)
+    db.prepare("INSERT INTO paper_execution_events(id,trade_date,event_type,detail_json) VALUES(1,'2020-01-01','pending_buy',?)").run(original)
+    if (mode === 'byte_budget') db.prepare("INSERT INTO paper_execution_events(id,trade_date,event_type,detail_json) VALUES(2,'2020-01-02','pending_buy',?)").run(original)
     let transportedBytes = 0
     let manifestWrites = 0
     const checkpointErrors: unknown[] = []

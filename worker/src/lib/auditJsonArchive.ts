@@ -56,8 +56,6 @@ type AuditJsonTargetConfig = {
   hotDays?: number
   /** Excluded from default target lists; runs only when named and the KV gate is open. */
   optIn?: boolean
-  /** Left out of the scheduled (unnamed) run; still runnable when named explicitly. */
-  defaultExcluded?: boolean
 }
 
 export type AuditJsonRefV2GateMode = 'manual' | 'scheduled'
@@ -217,10 +215,6 @@ const AUDIT_JSON_TARGETS: AuditJsonTargetConfig[] = [
       'created_at',
     ],
     blobColumns: ['detail_json'],
-    // Live Paper ledgers (corporate_opening_basis and others) verify
-    // sha256(detail_json) over their whole history; replacing one with a
-    // pointer made premarket setup fail on 2026-11-13.
-    defaultExcluded: true,
   },
   {
     id: AUDIT_JSON_REF_V2_TARGET_ID,
@@ -264,7 +258,7 @@ export const AUDIT_JSON_ARCHIVE_TARGET_IDS: readonly AuditJsonArchiveTargetId[] 
 
 /** Targets used when a caller names none; opt-in targets are never implied. */
 export const AUDIT_JSON_DEFAULT_TARGET_IDS: readonly AuditJsonArchiveTargetId[] =
-  AUDIT_JSON_TARGETS.filter((target) => !target.optIn && !target.defaultExcluded).map((target) => target.id)
+  AUDIT_JSON_TARGETS.filter((target) => !target.optIn).map((target) => target.id)
 
 const TARGET_BY_ID = new Map(AUDIT_JSON_TARGETS.map((target) => [target.id, target]))
 
@@ -300,7 +294,7 @@ function isoDateOffset(date: string, days: number): string {
 }
 
 function selectedTargets(targets?: Array<string | null | undefined> | null): AuditJsonTargetConfig[] {
-  const defaults = AUDIT_JSON_TARGETS.filter((target) => !target.optIn && !target.defaultExcluded)
+  const defaults = AUDIT_JSON_TARGETS.filter((target) => !target.optIn)
   if (!targets?.length) return defaults
   const selected = new Set(
     targets
@@ -342,13 +336,35 @@ function archiveableBinds(target: AuditJsonTargetConfig, minBlobBytes: number): 
   return target.blobColumns.map(() => minBlobBytes)
 }
 
+// Paper events whose detail_json is only read for the same trade_date. Ledger
+// events (corporate_opening_basis, corporate_share_conversion, snapshot_audit,
+// paper_order, ...) are read across history and some verify sha256(detail_json);
+// a pointer there failed premarket setup on 2026-11-13. New event types stay
+// unarchived until they are added here.
+export const PAPER_EXECUTION_EVENT_ARCHIVE_TYPES = [
+  'finlab_l5_market_data',
+  'intraday_technical_decision',
+  'intraday_technical_snapshot',
+  'paper_broker_reconciliation',
+  'pending_buy',
+  's12_intraday_structure',
+] as const
+
+const PIT_FLOW_MAP_STAGES = ['pit_residual_momentum_shadow', 'pit_residual_momentum_shadow_base'] as const
+
 function retentionEligibilityWhere(target: AuditJsonTargetConfig): string {
+  if (target.id === 'paper_execution_events') {
+    return `paper_execution_events.event_type IN (${PAPER_EXECUTION_EVENT_ARCHIVE_TYPES.map((type) => `'${type}'`).join(',')})`
+  }
   if (target.id === 'strategy_decision_log') {
     return `strategy_decision_log.context_id IS NOT NULL
          AND strategy_decision_log.evidence_artifact_id IS NOT NULL`
   }
   if (target.id === 'canonical_screener_funnel_items') {
-    return `(EXISTS (
+    // pitFactorFlowMap reads this stage's evidence for the last 60 sessions and
+    // does not resolve pointers; its rows are ~1 KB, so keeping them is cheap.
+    return `screener_funnel_items.stage NOT IN (${PIT_FLOW_MAP_STAGES.map((stage) => `'${stage}'`).join(',')})
+       AND (EXISTS (
              SELECT 1
                FROM canonical_run_heads h
               WHERE h.run_id = screener_funnel_items.run_id

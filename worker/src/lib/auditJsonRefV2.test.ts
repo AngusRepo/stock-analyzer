@@ -489,7 +489,7 @@ function drainFixture(gate: 'manual' | 'scheduled' | null) {
   }
   const addPaperBacklog = () => {
     const raw = JSON.stringify({ source: 'unchanged original', padding: 'x'.repeat(1500) })
-    for (let i = 1; i <= 3; i++) sql.prepare("INSERT INTO paper_execution_events(id,trade_date,symbol,side,event_type,status,detail_json) VALUES(?,'2020-01-01','2330','buy','entry','completed',?)").run(i, raw)
+    for (let i = 1; i <= 3; i++) sql.prepare("INSERT INTO paper_execution_events(id,trade_date,symbol,side,event_type,status,detail_json) VALUES(?,'2020-01-01','2330','buy','pending_buy','completed',?)").run(i, raw)
   }
   async function enqueue(runId: string, targets: string[]) {
     const { ticket } = await admitSchedulerExecutionTicket(db, {

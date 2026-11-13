@@ -385,7 +385,7 @@ function archiveFixture(paperRows: number) {
     return prepare(query)
   }
   const raw = JSON.stringify({ source: 'unchanged original', padding: 'x'.repeat(1500) })
-  for (let i = 1; i <= paperRows; i++) f.sql.prepare("INSERT INTO paper_execution_events(id,trade_date,symbol,side,event_type,status,detail_json) VALUES(?,'2020-01-01','2330','buy','entry','completed',?)").run(i, raw)
+  for (let i = 1; i <= paperRows; i++) f.sql.prepare("INSERT INTO paper_execution_events(id,trade_date,symbol,side,event_type,status,detail_json) VALUES(?,'2020-01-01','2330','buy','pending_buy','completed',?)").run(i, raw)
   const addStrategy = () => f.sql.prepare(`INSERT INTO strategy_decision_log(decision_id,date,symbol,strategy_id,strategy_version,strategy_status,alpha_bucket,matched,reason_code,context_json,evidence_json,context_id,evidence_artifact_id)
     VALUES('late','2020-01-01','2330','s','v1','active','trend',1,'matched',?,?,'ctx','artifact')`).run(raw, raw)
   const archiveOptions = { targets: ['strategy_decision_log', 'paper_execution_events'], retentionDays: 90, limitPerTable: 1, minBlobBytes: 1024 }

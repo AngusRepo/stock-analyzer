@@ -28,7 +28,7 @@ function fixture(target:AuditJsonArchiveTargetId,count=260,uniform=false) {
   if(!uniform) {if(i%17===0)blob='{}';else if(i%19===0)blob=JSON.stringify({archived_to_r2:true,padding:'x'.repeat(1500)});else if(i%23===0)blob=null}
   if(target==='strategy_decision_log') db.prepare(`INSERT INTO strategy_decision_log(decision_id,date,symbol,name,strategy_id,strategy_version,strategy_status,alpha_bucket,matched,match_score,reason_code,context_json,evidence_json,context_id,evidence_artifact_id)
    VALUES(?,?,?,NULL,'s','v1','active','trend',?,?,'matched',?,?,?,?)`).run(`d${String(i).padStart(6,'0')}`,date,String(i),i%2,i%2?0.75:null,blob??'{}',blob??'{}',!uniform&&i%11===0?null:'ctx','artifact')
-  else if(target==='paper_execution_events')db.prepare(`INSERT INTO paper_execution_events(id,trade_date,symbol,side,event_type,status,detail_json) VALUES(?,?,?,'buy','entry','completed',?)`).run(i,date,String(i),blob)
+  else if(target==='paper_execution_events')db.prepare(`INSERT INTO paper_execution_events(id,trade_date,symbol,side,event_type,status,detail_json) VALUES(?,?,?,'buy','pending_buy','completed',?)`).run(i,date,String(i),blob)
   else db.prepare(`INSERT INTO screener_funnel_items(id,run_id,date,symbol,stage,decision,reason_code,score_before,score_after,evidence) VALUES(?,?,?,?,'L3','pass','ok',NULL,0.5,?)`).run(i,`${date}-${['old','latest','failed','frozen'][i%4]}`,date,String(i),blob)
  }
  const adapter={prepare(sql:string){let args:SQLInputValue[]=[];return{bind(...values:SQLInputValue[]){args=values;return this},async all(){return{results:db.prepare(sql).all(...args)}},async first(){return db.prepare(sql).get(...args)??null}}}}

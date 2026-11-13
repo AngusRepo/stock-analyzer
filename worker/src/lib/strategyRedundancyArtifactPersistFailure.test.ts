@@ -4,6 +4,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { afterEach, beforeEach, test } from 'node:test'
 import { auditEveningChainEvidenceClosure } from './eveningChainEvidenceClosure'
 import {
+  classifyStrategyRedundancyPersistError,
   loadL125StrategySimilarityGraphEvidence,
   STRATEGY_REDUNDANCY_PERSIST_RETRY_DELAYS_MS,
   STRATEGY_REDUNDANCY_PERSIST_RETRY_WINDOW_MS,
@@ -27,7 +28,9 @@ function learningDb(): DatabaseSync {
   return db
 }
 
-type InsertFaults = { failures: number; attempts: number }
+// error: the INSERT failure message (default: the 11/10 overload); persistMs: how far the test
+// clock moves during each failing INSERT.
+type InsertFaults = { failures: number; attempts: number; error?: string; clock?: { ms: number }; persistMs?: number }
 
 function d1(db: DatabaseSync, faults: InsertFaults): any {
   const statement = (sql: string, params: unknown[] = []): any => ({
@@ -35,7 +38,8 @@ function d1(db: DatabaseSync, faults: InsertFaults): any {
     async run() {
       if (/INSERT INTO strategy_redundancy_artifacts_v1/.test(sql)) {
         faults.attempts += 1
-        if (faults.attempts <= faults.failures) throw new Error(OVERLOADED)
+        if (faults.clock) faults.clock.ms += faults.persistMs ?? 0
+        if (faults.attempts <= faults.failures) throw new Error(faults.error ?? OVERLOADED)
       }
       db.prepare(sql).run(...(params as any[]))
       return { success: true, meta: {} }
@@ -133,22 +137,74 @@ test('a write that keeps failing is retried twice, then marked persist_failed wi
   assert.equal(rows.n, 0)
 })
 
-test('an attempt that already waited out the rate limit is not retried', async () => {
-  // The REST binding waited (up to 330 s) inside the first attempt; another attempt would open a
-  // fresh per-request budget and eat the process window the funnel writes still need.
-  const db = learningDb()
-  const faults = { failures: 99, attempts: 0 }
+test('the retry schedule is pinned', () => {
+  assert.equal(STRATEGY_REDUNDANCY_PERSIST_RETRY_WINDOW_MS, 60_000)
+  assert.deepEqual([...STRATEGY_REDUNDANCY_PERSIST_RETRY_DELAYS_MS], [5_000, 12_000])
+})
+
+// The test clock moves only when an INSERT runs (persistMs) or the loop sleeps (the delay).
+function clocked(faults: InsertFaults, slept: number[]) {
+  const clock = faults.clock!
+  return {
+    now: () => clock.ms,
+    sleep: async (ms: number) => { slept.push(ms); clock.ms += ms },
+  }
+}
+
+test('a retry is only scheduled when it starts inside the window measured from the first attempt', async () => {
+  // 25 s per failing write: attempt 1 ends at 25 s, attempt 2 starts at 30 s and ends at 55 s;
+  // attempt 3 would start at 67 s > 60 s, so it is not scheduled.
+  const faults: InsertFaults = { failures: 99, attempts: 0, clock: { ms: 0 }, persistMs: 25_000 }
   const slept: number[] = []
-  let clock = 0
-  const result = await loadL125StrategySimilarityGraphEvidence(env(db, faults), payload, '2026-11-10', {
-    sleep: async (ms: number) => { slept.push(ms) },
-    now: () => { const value = clock; clock += STRATEGY_REDUNDANCY_PERSIST_RETRY_WINDOW_MS + 1; return value },
-  })
+  const result = await loadL125StrategySimilarityGraphEvidence(env(learningDb(), faults), payload, '2026-11-10', clocked(faults, slept))
+  assert.equal(result.status, 'persist_failed')
+  assert.equal(faults.attempts, 2)
+  assert.deepEqual(slept, [5_000])
+  assert.equal(events('strategy_redundancy_artifact_persist_failed')[0]?.attempts, 2)
+})
+
+test('a first attempt that failed at 59 s is not retried', async () => {
+  const faults: InsertFaults = { failures: 99, attempts: 0, clock: { ms: 0 }, persistMs: 59_000 }
+  const slept: number[] = []
+  const result = await loadL125StrategySimilarityGraphEvidence(env(learningDb(), faults), payload, '2026-11-10', clocked(faults, slept))
   assert.equal(result.status, 'persist_failed')
   assert.equal(faults.attempts, 1)
   assert.deepEqual(slept, [])
   assert.equal(events('strategy_redundancy_artifact_persist_retry').length, 0)
-  assert.equal(events('strategy_redundancy_artifact_persist_failed')[0]?.attempts, 1)
+})
+
+test('deterministic persist errors are not retried', async () => {
+  for (const [error, errorType] of [
+    ['D1 REST HTTP 400: {"errors":[{"message":"SQLITE_CONSTRAINT: CHECK constraint failed"}]}', 'd1_constraint'],
+    ['D1 REST unsuccessful: [{"message":"no such table: strategy_redundancy_artifacts_v1"}]', 'd1_schema_missing'],
+    ['Evidence artifact writer HTTP 400: {"error":"invalid strategy redundancy OOF artifact payload"}', 'evidence_artifact_contract_invalid'],
+    ['Evidence artifact writer HTTP 400: {"error":"artifact domain is not allowed"}', 'evidence_artifact_contract_invalid'],
+    ['artifact_r2_binding_missing', 'evidence_artifact_unavailable'],
+    ['D1 REST HTTP 403: {"errors":[{"code":10000,"message":"Authentication error"}]}', 'http_client_error'],
+  ]) {
+    logged = []
+    const faults: InsertFaults = { failures: 99, attempts: 0, error }
+    const slept: number[] = []
+    const result = await loadL125StrategySimilarityGraphEvidence(env(learningDb(), faults), payload, '2026-11-10', recordSleep(slept))
+    assert.equal(result.status, 'persist_failed', error)
+    assert.equal(faults.attempts, 1, error)
+    assert.deepEqual(slept, [], error)
+    const [failed] = events('strategy_redundancy_artifact_persist_failed')
+    assert.equal(failed?.error_type, errorType, error)
+    assert.equal(failed?.retryable, false, error)
+    assert.match(String(result.error), new RegExp(`^strategy_redundancy_artifact_persist_failed:2026-11-10:${errorType}:`))
+  }
+})
+
+test('transient persist errors stay retryable', () => {
+  for (const [message, errorType] of [
+    [OVERLOADED, 'd1_overloaded'],
+    ['D1 REST HTTP 503: upstream unavailable', 'd1_rest_http_error'],
+    ['Evidence artifact writer HTTP 502: bad gateway', 'evidence_artifact_write_failed'],
+    ['fetch failed', 'network_error'],
+  ]) {
+    assert.deepEqual(classifyStrategyRedundancyPersistError(message), { errorType, retryable: true }, message)
+  }
 })
 
 test('a write that succeeds on the second attempt yields the normal artifact', async () => {

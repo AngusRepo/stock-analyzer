@@ -268,13 +268,15 @@ async function persistStrategyRedundancyArtifact(
   return artifactId
 }
 
-// Short pauses between the screener's own persist attempts. The REST binding already waits out
-// 429s per request (CLOUDFLARE_API_RATE_LIMIT_POLICY: up to 330 s inside the one-shot 900 s process
-// window), and each attempt is a new request with a fresh budget. A retry therefore starts only
-// within STRATEGY_REDUNDANCY_PERSIST_RETRY_WINDOW_MS of the first attempt: an attempt that already
-// waited out a rate limit is not repeated, so the loop never spends more of the process window
-// than one request did before, which the later funnel and evidence writes still need.
-export const STRATEGY_REDUNDANCY_PERSIST_RETRY_DELAYS_MS = [2_000, 5_000] as const
+// The screener's own persist retries. The funnel-recorded 11/10-11 failures were HTTP 429 / D1 7429,
+// which the REST binding (bda7a75f) already waits out per request (CLOUDFLARE_API_RATE_LIMIT_POLICY:
+// up to 330 s, inside the one-shot 900 s process window); these retries mainly cover fast failures
+// (5xx, network, a 429 after that window closed). The delays add up to more than D1's 10 s overload
+// window. A retry is only scheduled when it would start within STRATEGY_REDUNDANCY_PERSIST_RETRY_WINDOW_MS
+// of the first attempt, and deterministic errors are not retried. Each attempt is a new request with a
+// fresh 429 budget, so the bound is: attempts start within 60 s, and the last one may still take one
+// request's 429 budget (plus short retries), i.e. at most ~60 s + one request (~340 s) in total.
+export const STRATEGY_REDUNDANCY_PERSIST_RETRY_DELAYS_MS = [5_000, 12_000] as const
 export const STRATEGY_REDUNDANCY_PERSIST_RETRY_WINDOW_MS = 60_000
 export const STRATEGY_REDUNDANCY_PERSIST_FAILED_PREFIX = 'strategy_redundancy_artifact_persist_failed'
 
@@ -338,14 +340,14 @@ export async function loadL125StrategySimilarityGraphEvidence(
   // The controller computed the graph; strategy-learning and the evening-chain closure read it only
   // from strategy_redundancy_artifacts_v1. A lost write (2026-11-10/11: learning-db 7429 overload
   // through the REST binding) used to be folded into unavailable_blocked, indistinguishable from a
-  // controller outage. The write is retried up to twice (an idempotent upsert of a content-addressed
-  // artifact), only while the first attempt is under STRATEGY_REDUNDANCY_PERSIST_RETRY_WINDOW_MS old;
-  // a final failure keeps the candidates, but the run records persist_failed with its error_type
-  // and the evening-chain closure names it. The Modal call is not repeated.
+  // controller outage. A retryable failure is retried up to twice (an idempotent upsert of a
+  // content-addressed artifact) within the retry window above; a final failure keeps the candidates,
+  // but the run records persist_failed with its error_type and the evening-chain closure names it.
+  // The Modal call is not repeated.
   let artifactId: string | null = null
   let persistError: unknown = null
   let attempts = 0
-  const now = options.now ?? Date.now
+  const now = options.now ?? (() => performance.now())
   const startedAt = now()
   const maxAttempts = STRATEGY_REDUNDANCY_PERSIST_RETRY_DELAYS_MS.length + 1
   while (attempts < maxAttempts) {
@@ -356,17 +358,20 @@ export async function loadL125StrategySimilarityGraphEvidence(
     } catch (error) {
       persistError = error
     }
-    const elapsedMs = now() - startedAt
-    if (attempts >= maxAttempts || elapsedMs > STRATEGY_REDUNDANCY_PERSIST_RETRY_WINDOW_MS) break
     const message = errorMessage(persistError)
+    const failure = classifyStrategyRedundancyPersistError(message)
+    if (attempts >= maxAttempts || !failure.retryable) break
     const delayMs = STRATEGY_REDUNDANCY_PERSIST_RETRY_DELAYS_MS[attempts - 1]
+    const elapsedMs = now() - startedAt
+    // The next attempt must start inside the window, measured from the first attempt.
+    if (elapsedMs + delayMs > STRATEGY_REDUNDANCY_PERSIST_RETRY_WINDOW_MS) break
     console.warn(JSON.stringify({
       event: 'strategy_redundancy_artifact_persist_retry',
-      error_type: strategyRedundancyArtifactPersistErrorType(message),
+      error_type: failure.errorType,
       as_of_date: asOfDate,
       failed_attempt: attempts,
       max_attempts: maxAttempts,
-      elapsed_ms: elapsedMs,
+      elapsed_ms: Math.round(elapsedMs),
       delay_ms: delayMs,
       message,
     }))
@@ -374,13 +379,14 @@ export async function loadL125StrategySimilarityGraphEvidence(
   }
   if (!artifactId) {
     const message = errorMessage(persistError)
-    const errorType = strategyRedundancyArtifactPersistErrorType(message)
+    const { errorType, retryable } = classifyStrategyRedundancyPersistError(message)
     console.error(JSON.stringify({
       event: 'strategy_redundancy_artifact_persist_failed',
       error_type: errorType,
+      retryable,
       as_of_date: asOfDate,
       attempts,
-      elapsed_ms: now() - startedAt,
+      elapsed_ms: Math.round(now() - startedAt),
       message,
     }))
     return {
@@ -431,13 +437,29 @@ export async function loadL125StrategySimilarityGraphEvidence(
   }
 }
 
-function strategyRedundancyArtifactPersistErrorType(message: string): string {
-  if (/\b7429\b|overloaded/i.test(message)) return 'd1_overloaded'
-  if (/D1 REST HTTP \d+/.test(message)) return 'd1_rest_http_error'
-  if (/D1 REST unsuccessful/.test(message)) return 'd1_rest_unsuccessful'
-  if (/^artifact_|^Evidence artifact writer/.test(message)) return 'evidence_artifact_write_failed'
-  if (/fetch failed|network|ECONN|ETIMEDOUT|aborted|timeout/i.test(message)) return 'network_error'
-  return 'unknown'
+// Deterministic failures (contract, schema, client errors) fail the same way on every attempt.
+const DETERMINISTIC_PERSIST_ERRORS: Array<[RegExp, string]> = [
+  [/SQLITE_CONSTRAINT|constraint failed/i, 'd1_constraint'],
+  [/no such (table|column)/i, 'd1_schema_missing'],
+  [/artifact domain is not allowed|invalid artifact retentionClass|invalid [^:]*payload|returned invalid manifest/i,
+    'evidence_artifact_contract_invalid'],
+  [/artifact_r2_binding_missing|artifact_delete_in_progress_or_done/, 'evidence_artifact_unavailable'],
+]
+
+export function classifyStrategyRedundancyPersistError(message: string): { errorType: string; retryable: boolean } {
+  if (/HTTP 429\b|\b7429\b|overloaded/i.test(message)) return { errorType: 'd1_overloaded', retryable: true }
+  for (const [pattern, errorType] of DETERMINISTIC_PERSIST_ERRORS) {
+    if (pattern.test(message)) return { errorType, retryable: false }
+  }
+  const status = /(?:D1 REST|Evidence artifact writer) HTTP (\d{3})\b/.exec(message)
+  if (status && Number(status[1]) >= 400 && Number(status[1]) < 500) {
+    return { errorType: 'http_client_error', retryable: false }
+  }
+  if (/D1 REST HTTP \d+/.test(message)) return { errorType: 'd1_rest_http_error', retryable: true }
+  if (/D1 REST unsuccessful/.test(message)) return { errorType: 'd1_rest_unsuccessful', retryable: true }
+  if (/^artifact_|^Evidence artifact writer/.test(message)) return { errorType: 'evidence_artifact_write_failed', retryable: true }
+  if (/fetch failed|network|ECONN|ETIMEDOUT|aborted|timeout/i.test(message)) return { errorType: 'network_error', retryable: true }
+  return { errorType: 'unknown', retryable: true }
 }
 
 interface PreparedStrategyRedundancyBackfill {

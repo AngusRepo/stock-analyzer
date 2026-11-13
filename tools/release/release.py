@@ -18,8 +18,9 @@ default in CD) each stage's directory is copied to gs://stockvision-models/relea
 <sha>/<attempt>/ when the stage ends, pass or fail; the Docker context is not copied. The rollout
 also copies its rollback anchor and every controller-release.json state the moment it saves them.
 PRIOR comes from that store: the live Modal tag's verified rollout receipts (previous Modal
-release + bootstrap), re-hashed against the digests in that release's current.json, and, for a
-new-grant admission, the live native bundle.
+release + bootstrap), re-hashed against the digests in that release's current.json (a tag with no
+current.json whose failed rollout left Modal live: that attempt's receipts, bound to the live
+Modal by rollout), and, for a new-grant admission, the live native bundle.
 Controller CD runs plan, classify, admission (reuse), build --submit --wait, window, rollout and
 verify. A new-grant release (native identity inputs, policy chain or allocator/L3 sources change)
 fails closed in CD and goes through the manual path with operator credentials and Wei's go.
@@ -287,7 +288,7 @@ def rollout_prior(args) -> dict:
     tag = history['Tag']
     pointer = receipts.current(tag)
     if pointer is None:
-        return {'modal_tag': tag}
+        return {'modal_tag': tag, **receipts.unreleased_modal(tag)}
     return {'modal_tag': tag, 'attempt': pointer['attempt'],
             'modal_release': json.loads(receipts.read_current(tag, 'rollout/modal-release.json')),
             'bootstrap': json.loads(receipts.read_current(tag, 'rollout/bootstrap-verification.json'))}

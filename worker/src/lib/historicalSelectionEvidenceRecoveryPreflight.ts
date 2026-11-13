@@ -1,4 +1,8 @@
 import type { HistoricalScreenerArtifactEvidence } from './historicalScreenerArtifactEvidence'
+import { MATRIX_RUN_SUMMARY_CHALLENGER_VERSION, matrixRunSummaryUsableInline } from './strategyLabelMatrixRunSummary'
+
+// A summarised matrix run answers its cell count from the run header.
+const PREFLIGHT_SUMMARY_USABLE = matrixRunSummaryUsableInline('mr', MATRIX_RUN_SUMMARY_CHALLENGER_VERSION)
 
 type PreflightCountsRow = {
   decision_rows: number | string
@@ -80,8 +84,11 @@ export async function auditHistoricalSelectionEvidenceRecoveryPreflight(
         WHERE q.signal_date=? AND q.producer_run_id=?) rejected_label_rows,
       (SELECT COUNT(*) FROM selection_reference_snapshots_v1 r
         WHERE r.signal_date=? AND r.producer_run_id=? AND r.hard_gate_passed=1) reference_rows,
-      (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
-        WHERE m.signal_date=? AND m.producer_run_id=?) matrix_rows,
+      COALESCE(
+        (SELECT mr.summary_matrix_rows FROM strategy_label_matrix_runs_v4 mr
+          WHERE mr.signal_date=? AND mr.producer_run_id=? AND ${PREFLIGHT_SUMMARY_USABLE}),
+        (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
+          WHERE m.signal_date=? AND m.producer_run_id=?)) matrix_rows,
       (SELECT status FROM strategy_label_matrix_runs_v4 mr
         WHERE mr.signal_date=? AND mr.producer_run_id=?) matrix_run_status,
       (SELECT expected_cell_count FROM strategy_label_matrix_runs_v4 mr
@@ -93,6 +100,7 @@ export async function auditHistoricalSelectionEvidenceRecoveryPreflight(
     input.signalDate,
     input.signalDate, input.signalDate,
     input.signalDate, input.producerRunId, input.asOfDate,
+    input.signalDate, input.producerRunId,
     input.signalDate, input.producerRunId,
     input.signalDate, input.producerRunId,
     input.signalDate, input.producerRunId,

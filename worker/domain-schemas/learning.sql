@@ -946,6 +946,10 @@ CREATE INDEX IF NOT EXISTS idx_selection_reference_v1_date_stock_identity
 CREATE INDEX IF NOT EXISTS idx_selection_reference_route_challenger_v1
   ON selection_reference_snapshots_v1(signal_date, strategy_challenger_route_version, strategy_challenger_route_score);
 
+-- Producer-wide lookups that must not be confined to one signal_date (learning migration 0067).
+CREATE INDEX IF NOT EXISTS idx_selection_reference_v1_producer_run
+  ON selection_reference_snapshots_v1(producer_run_id);
+
 CREATE TABLE IF NOT EXISTS selection_reference_repair_runs_v1 (
   signal_date TEXT NOT NULL,
   producer_run_id TEXT NOT NULL,

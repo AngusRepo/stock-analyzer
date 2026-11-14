@@ -320,7 +320,9 @@ test('changed-only selector plan seeks the big tables instead of scanning them',
   assert.doesNotMatch(plan.join('\n'), /SCAN (m|sr|strategy_label_matrix_v4|selection_reference_snapshots_v1)\b/, plan.join('\n'))
   assert.match(plan.join('\n'), /CORRELATED SCALAR SUBQUERY/)
   assert.match(plan.join('\n'), /SEARCH m USING (COVERING )?INDEX \S+ \([^)]*signal_date=\?/)
-  assert.match(plan.join('\n'), /SEARCH sr USING (COVERING )?INDEX \S+ \([^)]*signal_date=\?/)
+  // Or by idx_selection_reference_v1_producer_run (learning 0067). Writers stamp one signal_date
+  // per producer; legacy cross-date rows only widen the bound to that producer's rows.
+  assert.match(plan.join('\n'), /SEARCH sr USING (COVERING )?INDEX \S+ \([^)]*(signal_date|producer_run_id)=\?/)
   assert.match(plan.join('\n'), /SEARCH mr USING (?:COVERING )?INDEX \S+ \(producer_run_id=\?\)/)
 })
 

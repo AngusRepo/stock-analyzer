@@ -2,12 +2,17 @@ import assert from 'node:assert/strict'
 import { readdirSync, readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { test } from 'node:test'
-import { SELECTION_REFERENCE_PREVIOUS_ROUTING_SQL } from './selectionReferenceEvidence'
 
 // persistSelectionEvidenceV4 reads a producer's earlier routing rows by producer_run_id alone, so a
 // legacy row of the same producer on another signal_date is still found and refused
 // (selectionEvidenceWriterCas.test.ts, foreign-date). Without an index led by producer_run_id that
 // read scanned the whole table on every call (prod plan: SCAN selection_reference_snapshots_v1).
+// The SQL is read from the writer's source rather than exported: selectionReferenceEvidence.ts is a
+// native-paper identity input, and exporting it would force a re-pin for a test-only change.
+const WRITER_SOURCE = readFileSync(new URL('./selectionReferenceEvidence.ts', import.meta.url), 'utf8')
+const PREVIOUS_ROUTING_MATCH = WRITER_SOURCE.match(/const previousRoutingRows = await db\.prepare\(`([\s\S]*?)`\)/)
+assert.ok(PREVIOUS_ROUTING_MATCH)
+const SELECTION_REFERENCE_PREVIOUS_ROUTING_SQL = PREVIOUS_ROUTING_MATCH[1]
 const MIGRATIONS = 'domain-migrations/learning'
 const INDEX_MIGRATION = '0067_selection_reference_producer_run_index.sql'
 const SEARCH_PLAN = [

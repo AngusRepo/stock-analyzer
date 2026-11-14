@@ -190,6 +190,25 @@ def _retry_d1_response(resp, attempt: int, error_text: str) -> bool:
     return True
 
 
+# Exact messages _post/_post_raw raise after their retry budget for the same
+# transient classes as _is_retryable_d1_response (auth flakes excluded).
+_TRANSIENT_D1_ERROR = re.compile(
+    r'D1 (?:raw )?request (?:failed: (?:network error: |HTTP (?:429|500|502|503|504): )'
+    r'|unsuccessful: .*(?:d1 db is overloaded|requests queued for too long))',
+    re.IGNORECASE | re.DOTALL)
+
+
+def is_transient_d1_error(error: BaseException | None) -> bool:
+    """True only for this client's exhausted transient errors, directly or as an explicit cause."""
+    seen = set()
+    while error is not None and id(error) not in seen:
+        if isinstance(error, RuntimeError) and _TRANSIENT_D1_ERROR.match(str(error)):
+            return True
+        seen.add(id(error))
+        error = error.__cause__
+    return False
+
+
 def _post(body: dict, timeout: float = 60.0, database_id: str | None = None) -> dict:
     """Internal: POST to D1 /query endpoint, return parsed JSON."""
     resolved_database_id = (database_id or CF_D1_DB_ID).strip()

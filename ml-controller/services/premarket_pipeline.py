@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+from contextvars import ContextVar
 from datetime import date, datetime, timezone, timedelta
 from google.cloud import storage
 from google.api_core.exceptions import NotFound, PreconditionFailed
@@ -18,6 +19,18 @@ SERVING_PHASES=('node_compute_personas','node_recommend','node_llm_reasons','nod
 # Serving before the open publishes a receipt; research resumes after 13:30 on the sealed state.
 CURRENT_SERVING_PHASES=('node_compute_personas','node_recommend','node_write_d1')
 POSTCLOSE_PHASES=('node_compute_sector_flow','node_compute_pit_residual_shadow')
+# node_recommend reports how far it got. Unknown progress keeps the claim ambiguous.
+_recommend_progress=ContextVar('premarket_recommend_progress',default=None)
+def recommend_progress(stage):
+    """'pre_seal' until the first allocation-context write may start, then 'seal'."""
+    progress=_recommend_progress.get()
+    if progress is not None:progress['stage']=stage
+def failed_phase_status(name,progress,exc):
+    # Before the seal, node_recommend only reads (plus content-addressed slate
+    # objects), so a transient D1 read failure may be redispatched before cutoff.
+    if name!='node_recommend':return 'failed'
+    from services.d1_client import is_transient_d1_error
+    return 'failed' if progress.get('stage')=='pre_seal' and is_transient_d1_error(exc) else 'ambiguous'
 def enabled():
     return os.environ.get('PIPELINE_DAILY_PLAN_OWNER') == OWNER
 def digest(value):
@@ -459,12 +472,16 @@ async def resume(input_uri, *, nodes, merge, client=None, postwrite_only=False, 
             if old.get('status')!='failed':raise ValueError('premarket_phase_outcome_requires_reconciliation:'+node.__name__)
             claim.reload()
             claim.upload_from_string(json_bytes({**identity,'status':'running'}),if_generation_match=claim.generation)
+        progress={'stage':None}
+        token=_recommend_progress.set(progress)
         try:
             from services.pipeline_progress import phase
             from services.runtime_phase_metrics import measured_phase
             async with phase(node.__name__):
                 with measured_phase(node.__name__):
-                    merge(state,await node(state))
+                    update=await node(state)
+                    progress['stage']='completed'
+                    merge(state,update)
                 # Completion is durable only after its checkpoint is sealed.
                 # Measure serialization independently from the node's work.
                 with measured_phase(node.__name__+'.checkpoint'):
@@ -477,9 +494,11 @@ async def resume(input_uri, *, nodes, merge, client=None, postwrite_only=False, 
                 if node.__name__ == 'node_write_d1':
                     from services.premarket_publication import record
                     record(state,client=client)
-        except Exception:
+        except Exception as exc:
             claim.reload()
-            claim.upload_from_string(json_bytes({**identity,'status':'ambiguous' if node.__name__=='node_recommend' else 'failed'}),
+            claim.upload_from_string(json_bytes({**identity,'status':failed_phase_status(node.__name__,progress,exc)}),
                 if_generation_match=claim.generation)
             raise
+        finally:
+            _recommend_progress.reset(token)
     return state

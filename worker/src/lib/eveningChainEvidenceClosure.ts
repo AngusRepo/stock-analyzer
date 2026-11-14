@@ -113,71 +113,13 @@ export async function auditFormalStrategyEvidenceFrontier(
   ).all<{ session_date: string }>()
   // Summarised runs answer the matrix counts from the run header; older runs
   // count their cells (strategyLabelMatrixRunSummary.ts).
-  const SUMMARY_USABLE = matrixRunSummaryUsableInline('mr', STRATEGY_ROUTE_AFFINITY_VERSION)
   const rows: FormalClosureRow[] = []
   const canonicalHeads = heads.results ?? []
   for (let offset = 0; offset < canonicalHeads.length; offset += 16) {
     const page = canonicalHeads.slice(offset, offset + 16)
     const values = page.map(() => '(?, ?)').join(', ')
     const binds = page.flatMap((head) => [head.signal_date, head.producer_run_id])
-    const result = await learningDb.prepare(`
-      WITH target(signal_date, producer_run_id) AS (VALUES ${values})
-      SELECT t.signal_date, t.producer_run_id,
-             e.status ledger_status, e.labeler_version ledger_labeler_version,
-             e.evaluation_contract_version,
-             e.producer_run_id ledger_producer_run_id,
-             e.source_reference_contract_version,
-             e.production_policy_id,
-             e.production_policy_knowledge_cutoff_date,
-             e.production_policy_checksum,
-             e.production_policy_source_contract,
-             (SELECT COUNT(*) FROM strategy_production_policy_history_v1 p
-               WHERE p.policy_id=e.production_policy_id
-                 AND p.knowledge_cutoff_date=e.production_policy_knowledge_cutoff_date
-                 AND p.checksum=e.production_policy_checksum
-                 AND p.status='active') production_policy_rows,
-             mr.status matrix_status, mr.labeler_version matrix_labeler_version,
-             mr.reference_contract_version, mr.reference_candidate_count,
-             mr.expected_cell_count, mr.persisted_cell_count,
-             CASE WHEN ${SUMMARY_USABLE} THEN mr.summary_contract_rows ELSE
-             (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
-               WHERE m.signal_date=t.signal_date AND m.producer_run_id=t.producer_run_id
-                 AND m.labeler_version=mr.labeler_version
-                 AND m.strategy_registry_checksum=mr.strategy_registry_checksum
-                 AND m.reference_contract_version=mr.reference_contract_version) END matrix_contract_rows,
-             (SELECT COUNT(*) FROM selection_reference_snapshots_v1 r
-               WHERE r.signal_date=t.signal_date AND r.producer_run_id=t.producer_run_id
-                 AND r.hard_gate_passed=1
-                 AND r.strategy_labeler_version=mr.labeler_version
-                 AND r.strategy_registry_checksum=mr.strategy_registry_checksum
-                 AND r.feature_contract_version=mr.reference_contract_version) reference_contract_rows,
-             (SELECT COUNT(*) FROM selection_reference_snapshots_v1 r
-               WHERE r.signal_date=t.signal_date AND r.producer_run_id=t.producer_run_id
-                 AND r.hard_gate_passed=1
-                 AND r.strategy_challenger_affinity_version=?) reference_projection_rows,
-             CASE WHEN ${SUMMARY_USABLE} THEN mr.summary_challenger_projection_rows ELSE
-             (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
-               WHERE m.signal_date=t.signal_date AND m.producer_run_id=t.producer_run_id
-                 AND m.challenger_affinity_version=?) END challenger_projection_rows,
-             CASE WHEN ${SUMMARY_USABLE} THEN mr.summary_matched_rows ELSE
-             (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
-               WHERE m.signal_date=t.signal_date AND m.producer_run_id=t.producer_run_id
-                 AND m.evaluable=1 AND m.strategy_hit=1) END matched_rows,
-             CASE WHEN ${SUMMARY_USABLE} THEN mr.summary_threshold_evidence_rows ELSE
-             (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
-               WHERE m.signal_date=t.signal_date AND m.producer_run_id=t.producer_run_id
-                 AND m.evaluable=1 AND m.strategy_hit=1 AND m.affinity_evidence_count>0) END threshold_evidence_rows,
-             CASE WHEN ${SUMMARY_USABLE} THEN mr.summary_projected_threshold_rows ELSE
-             (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
-               WHERE m.signal_date=t.signal_date AND m.producer_run_id=t.producer_run_id
-                 AND m.evaluable=1 AND m.strategy_hit=1 AND m.affinity_evidence_count>0
-                 AND m.challenger_affinity_version=?) END projected_threshold_rows
-        FROM target t
-        LEFT JOIN strategy_label_matrix_runs_v4 mr
-          ON mr.signal_date=t.signal_date AND mr.producer_run_id=t.producer_run_id
-        LEFT JOIN strategy_evidence_rebuild_runs_v5 e ON e.signal_date=t.signal_date
-       ORDER BY t.signal_date
-    `).bind(
+    const result = await learningDb.prepare(buildFormalFrontierClosureSql(values)).bind(
       ...binds,
       STRATEGY_ROUTE_AFFINITY_VERSION,
       STRATEGY_ROUTE_AFFINITY_VERSION,
@@ -254,6 +196,107 @@ export async function auditFormalStrategyEvidenceFrontier(
   readyDates.sort()
   backlog.sort((left, right) => left.date.localeCompare(right.date))
   return { readyDates, backlog, exclusions }
+}
+
+
+// Each head date's matrix cells are read once (matrix_counts). Five correlated
+// COUNTs re-read the date's cells once each: the matrix key prefix is
+// signal_date alone, so every COUNT walked all producers' cells of the date
+// (~22k cells per producer, 60+ frontier dates per closure). A canonical head
+// has at most one matrix run (producer_run_id is its key) and one ledger row
+// (signal_date is its key), so every count keeps its former value; a head
+// without matrix cells keeps 0. Bind order: the head pairs, the affinity
+// version twice for matrix_counts, then once for reference_projection_rows.
+// A head whose run header carries a usable summary (learning 0065) is read from
+// the header and skips matrix_counts entirely.
+export function buildFormalFrontierClosureSql(values: string): string {
+  const SUMMARY_USABLE = matrixRunSummaryUsableInline('mr', STRATEGY_ROUTE_AFFINITY_VERSION)
+  return `
+      WITH target(signal_date, producer_run_id) AS (VALUES ${values}),
+      matrix_counts AS MATERIALIZED (
+        SELECT t.signal_date, t.producer_run_id,
+               SUM(CASE WHEN m.labeler_version=mr.labeler_version
+                         AND m.strategy_registry_checksum=mr.strategy_registry_checksum
+                         AND m.reference_contract_version=mr.reference_contract_version
+                        THEN 1 ELSE 0 END) matrix_contract_rows,
+               SUM(CASE WHEN m.challenger_affinity_version=? THEN 1 ELSE 0 END) challenger_projection_rows,
+               SUM(CASE WHEN m.evaluable=1 AND m.strategy_hit=1 THEN 1 ELSE 0 END) matched_rows,
+               SUM(CASE WHEN m.evaluable=1 AND m.strategy_hit=1 AND m.affinity_evidence_count>0
+                        THEN 1 ELSE 0 END) threshold_evidence_rows,
+               SUM(CASE WHEN m.evaluable=1 AND m.strategy_hit=1 AND m.affinity_evidence_count>0
+                         AND m.challenger_affinity_version=?
+                        THEN 1 ELSE 0 END) projected_threshold_rows
+          FROM (SELECT DISTINCT signal_date, producer_run_id FROM target) t
+          JOIN strategy_label_matrix_v4 m
+            ON m.signal_date=t.signal_date AND m.producer_run_id=t.producer_run_id
+          LEFT JOIN strategy_label_matrix_runs_v4 mr
+            ON mr.signal_date=t.signal_date AND mr.producer_run_id=t.producer_run_id
+         WHERE NOT COALESCE(${SUMMARY_USABLE}, 0)
+         GROUP BY t.signal_date, t.producer_run_id
+      )
+      SELECT t.signal_date, t.producer_run_id,
+             e.status ledger_status, e.labeler_version ledger_labeler_version,
+             e.evaluation_contract_version,
+             e.producer_run_id ledger_producer_run_id,
+             e.source_reference_contract_version,
+             e.production_policy_id,
+             e.production_policy_knowledge_cutoff_date,
+             e.production_policy_checksum,
+             e.production_policy_source_contract,
+             (SELECT COUNT(*) FROM strategy_production_policy_history_v1 p
+               WHERE p.policy_id=e.production_policy_id
+                 AND p.knowledge_cutoff_date=e.production_policy_knowledge_cutoff_date
+                 AND p.checksum=e.production_policy_checksum
+                 AND p.status='active') production_policy_rows,
+             mr.status matrix_status, mr.labeler_version matrix_labeler_version,
+             mr.reference_contract_version, mr.reference_candidate_count,
+             mr.expected_cell_count, mr.persisted_cell_count,
+             CASE WHEN ${SUMMARY_USABLE} THEN mr.summary_contract_rows ELSE COALESCE(c.matrix_contract_rows, 0) END matrix_contract_rows,
+             (SELECT COUNT(*) FROM selection_reference_snapshots_v1 r
+               WHERE r.signal_date=t.signal_date AND r.producer_run_id=t.producer_run_id
+                 AND r.hard_gate_passed=1
+                 AND r.strategy_labeler_version=mr.labeler_version
+                 AND r.strategy_registry_checksum=mr.strategy_registry_checksum
+                 AND r.feature_contract_version=mr.reference_contract_version) reference_contract_rows,
+             (SELECT COUNT(*) FROM selection_reference_snapshots_v1 r
+               WHERE r.signal_date=t.signal_date AND r.producer_run_id=t.producer_run_id
+                 AND r.hard_gate_passed=1
+                 AND r.strategy_challenger_affinity_version=?) reference_projection_rows,
+             CASE WHEN ${SUMMARY_USABLE} THEN mr.summary_challenger_projection_rows ELSE COALESCE(c.challenger_projection_rows, 0) END challenger_projection_rows,
+             CASE WHEN ${SUMMARY_USABLE} THEN mr.summary_matched_rows ELSE COALESCE(c.matched_rows, 0) END matched_rows,
+             CASE WHEN ${SUMMARY_USABLE} THEN mr.summary_threshold_evidence_rows ELSE COALESCE(c.threshold_evidence_rows, 0) END threshold_evidence_rows,
+             CASE WHEN ${SUMMARY_USABLE} THEN mr.summary_projected_threshold_rows ELSE COALESCE(c.projected_threshold_rows, 0) END projected_threshold_rows
+        FROM target t
+        LEFT JOIN strategy_label_matrix_runs_v4 mr
+          ON mr.signal_date=t.signal_date AND mr.producer_run_id=t.producer_run_id
+        LEFT JOIN strategy_evidence_rebuild_runs_v5 e ON e.signal_date=t.signal_date
+        LEFT JOIN matrix_counts c
+          ON c.signal_date=t.signal_date AND c.producer_run_id=t.producer_run_id
+       ORDER BY t.signal_date
+  `
+}
+
+// Diagnostic only (the closure fails either way): one screener_funnel_runs row by its key. Returns
+// the error_type the screener recorded when the run's similarity artifact write failed, else null.
+async function loadSimilarityPersistFailure(opsDb: D1Database, producerRunId: string): Promise<string | null> {
+  try {
+    return await readSimilarityPersistFailure(opsDb, producerRunId)
+  } catch {
+    return null
+  }
+}
+
+async function readSimilarityPersistFailure(opsDb: D1Database, producerRunId: string): Promise<string | null> {
+  const row = await opsDb.prepare(`
+    SELECT json_extract(metadata, '$.strategyCandidatePool.strategy_similarity_evidence_status') status,
+           json_extract(metadata, '$.strategyCandidatePool.strategy_similarity_blocked_reason') reason
+      FROM screener_funnel_runs
+     WHERE run_id=?
+     LIMIT 1
+  `).bind(producerRunId).first<{ status: string | null; reason: string | null }>()
+  if (row?.status !== 'persist_failed') return null
+  const match = /^strategy_redundancy_artifact_persist_failed:\d{4}-\d{2}-\d{2}:([a-z0-9_]+):/.exec(String(row.reason ?? ''))
+  return match?.[1] ?? 'unknown'
 }
 
 function dateOnly(value: unknown): string {
@@ -407,7 +450,14 @@ export async function auditEveningChainEvidenceClosure(
      LIMIT 1
   `).bind(businessDate).first<{ status: string; evidence_artifact_id: string | null }>()
   if (!similarity?.evidence_artifact_id || !['pass', 'pending_maturity', 'fail'].includes(String(similarity.status))) {
-    throw new Error(`evening_chain_similarity_artifact_incomplete:${businessDate}`)
+    // The screener keeps its candidates when the artifact write fails after its retries and marks
+    // the run persist_failed; name that here. The reason keeps the _incomplete token, which the
+    // strategy-learning watchdog matches to hold redispatch until the artifact exists.
+    const persistFailure = await loadSimilarityPersistFailure(opsDb, producerRunId)
+    throw new Error(
+      `evening_chain_similarity_artifact_incomplete:${businessDate}`
+      + (persistFailure ? `:persist_failed:${persistFailure}` : ''),
+    )
   }
 
   const sector = await marketDb.prepare(`

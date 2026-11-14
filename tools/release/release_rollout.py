@@ -39,7 +39,8 @@ import sys
 import time
 from urllib.parse import quote
 
-from application_job_inventory import application_jobs, read_live_inventory, verify_inventory, verify_ownership
+from application_job_inventory import (application_jobs, read_live_inventory, verify_inventory, verify_ownership,
+                                       verify_runtime)
 
 OUT: Path | None = None
 SOURCE_KEYS = ('STOCKVISION_SOURCE_SHA', 'STOCKVISION_SOURCE_TREE_SHA',
@@ -549,6 +550,8 @@ def rollout(*, source: Path, out: Path, build_dir: Path, admission_dir: Path, pr
     before = resumed_before if resume_staged else service()
     referenced, listed_jobs = read_live_inventory(gc, region='asia-east1', service='ml-controller')
     verify_ownership(controller_env=referenced, live_jobs=listed_jobs, expected_image=image)
+    # Reviewed Job runtime drift stops the release before any Job is updated, not only at acceptance.
+    verify_runtime(listed_jobs)
     jobs_before = {name: job(name) for name in JOBS}
     if container(before, 'service')['image'] != packet['base_image']:
         raise RuntimeError('controller_base_image_drift')

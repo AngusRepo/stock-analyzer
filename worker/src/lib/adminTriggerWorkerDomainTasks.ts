@@ -721,6 +721,7 @@ export function buildAdminWorkerDomainTaskMap(
       const { repairHistoricalSelectionReferences } = await import('./selectionReferenceRepair')
       const result = await repairHistoricalSelectionReferences(c.env.DB, runDate, {
         dryRun: c.req.query('dry_run') === '1',
+        archiveEnv: c.env,
       })
       return [
         'selection_reference_repair date=' + result.signal_date,

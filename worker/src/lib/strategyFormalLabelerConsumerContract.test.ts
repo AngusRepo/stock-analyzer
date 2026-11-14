@@ -49,7 +49,7 @@ for (const [name, source] of Object.entries(sources)) {
 }
 
 const pipelineTrackingMatrixQueries = sources.publicRoute.match(
-  /const \{ results: rawMatrixRows \}[\s\S]*?const loadStageStrategyRows/,
+  /const \{ results: rawMatrixRows \}[\s\S]*?loadFunnelStageStrategyRows\(opsDb/,
 )?.[0]
 assert.ok(pipelineTrackingMatrixQueries, 'public pipeline tracking route must load canonical matrix evidence')
 assert.equal(

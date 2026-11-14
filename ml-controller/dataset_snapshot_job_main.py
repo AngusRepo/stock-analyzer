@@ -46,10 +46,13 @@ def _truthy_env(name: str, default: str = "1") -> bool:
 
 
 def _chunk_days() -> int:
+    # One trading day per D1 query: CHUNK=3 already exceeded D1's 50 MB response
+    # limit (error 7500) on the 1280-day export, so the default must not rely on
+    # the job's env override.
     try:
-        raw = int(os.environ.get("DATASET_SNAPSHOT_CHUNK_DAYS", "10") or "10")
+        raw = int(os.environ.get("DATASET_SNAPSHOT_CHUNK_DAYS", "1") or "1")
     except ValueError:
-        raw = 10
+        raw = 1
     return max(1, min(raw, 30))
 
 

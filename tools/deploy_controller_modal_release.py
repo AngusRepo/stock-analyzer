@@ -26,7 +26,8 @@ ROOT = None
 SOURCE_KEYS = ('STOCKVISION_SOURCE_SHA', 'STOCKVISION_SOURCE_TREE_SHA',
                'STOCKVISION_SOURCE_BRANCH', 'STOCKVISION_SCHEDULER_MANIFEST_SHA256')
 SOURCE_LABELS = ('stockvision-source-sha', 'stockvision-provenance-schema')
-from application_job_inventory import application_jobs, read_live_inventory, verify_inventory, verify_ownership
+from application_job_inventory import (application_jobs, read_live_inventory, verify_inventory, verify_ownership,
+                                       verify_runtime)
 JOBS = application_jobs()
 AUTO_ANNOTATIONS = {'run.googleapis.com/client-name', 'run.googleapis.com/client-version',
                     'run.googleapis.com/operation-id'}
@@ -373,6 +374,8 @@ def main():
     before = resumed_before if args.resume_staged else service()
     referenced, listed_jobs = read_live_inventory(gc, region='asia-east1', service='ml-controller')
     verify_ownership(controller_env=referenced, live_jobs=listed_jobs, expected_image=image)
+    # Reviewed Job runtime drift stops the release before any Job is updated, not only at acceptance.
+    verify_runtime(listed_jobs)
     jobs_before = {name: job(name) for name in JOBS}
     if container(before, 'service')['image'] != packet['base_image']:
         raise RuntimeError('controller_base_image_drift')

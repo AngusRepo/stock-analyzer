@@ -68,15 +68,24 @@ test('pipeline payload uses aggregate-only SQL and excludes heavy recommendation
   assert(compactStrategy.includes('strategies_total_count: rawStrategies.length'))
   assert(compactStrategy.includes('pairwise_total_count: rawPairwise.length'))
   assert(compactStrategy.includes('pairwise_truncated: rawPairwise.length > pairwise.length'))
+  assert(compactStrategy.includes('archived_unresolved: summary.archived_unresolved'))
 })
 
 test('pipeline strategy summary projects strategy ids in SQL without full evidence blobs', () => {
   const summaryBuilder = section(routeSource, 'async function buildDailyPipelineSummaries(', 'type DailyPipelineSectorAggregateRow')
-  assert(summaryBuilder.includes('JOIN json_each('))
-  assert(summaryBuilder.includes("json_extract(i.evidence, '$.strategy_pool_ids')"))
-  assert(summaryBuilder.includes('CAST(strategy.value AS TEXT) AS strategy_id'))
-  assert(!/SELECT\s+symbol\s*,\s*evidence/i.test(summaryBuilder))
-  assert(!summaryBuilder.includes('parseJsonObject(row.evidence)'))
+  const stageRows = fs.readFileSync(path.join(workerRoot, 'src/lib/funnelStageStrategyRows.ts'), 'utf8')
+  assert(summaryBuilder.includes("loadFunnelStageStrategyRows(opsDb, archiveEnv, latestRun.run_id, 'final_selection', archiveChunks)"))
+  // Archived evidence that cannot be read back is surfaced, not silently dropped.
+  assert(summaryBuilder.includes('archived_unresolved: archivedUnresolved'))
+  assert(stageRows.includes('JOIN json_each('))
+  assert(stageRows.includes("json_extract(i.evidence, '$.strategy_pool_ids')"))
+  assert(stageRows.includes('CAST(strategy.value AS TEXT) AS strategy_id'))
+  // Only archive pointers (not full evidence blobs) leave D1; their ids come from R2.
+  assert(stageRows.includes('CASE WHEN strategy.type IS NULL THEN i.evidence END AS archived_evidence'))
+  for (const source of [summaryBuilder, stageRows]) {
+    assert(!/SELECT\s+symbol\s*,\s*evidence/i.test(source))
+    assert(!source.includes('parseJsonObject(row.evidence)'))
+  }
 })
 test('complete counters and same-run signals feed semantic UI metrics', () => {
   const helper = section(routeSource, 'async function buildDailyPipelineSummaries(', 'type DailyPipelineSectorAggregateRow')

@@ -260,3 +260,27 @@ def test_input_snapshot_failure_is_terminal_without_false_callback(monkeypatch):
     monkeypatch.setattr(dataset_snapshot_job_main, "export_backtest_dataset_snapshot", failed_export)
     monkeypatch.setattr(dataset_snapshot_job_main, "_callback_worker", forbidden_callback)
     assert asyncio.run(dataset_snapshot_job_main._run()) == 1
+
+
+def test_snapshot_chunk_default_is_one_day_without_env_override(monkeypatch):
+    # SNAP-7500: multi-day chunks exceed D1's 50 MB response limit; the job must
+    # not depend on the GCP env override to stay at one day per query.
+    monkeypatch.delenv("DATASET_SNAPSHOT_CHUNK_DAYS", raising=False)
+    assert dataset_snapshot_job_main._chunk_days() == 1
+    for raw in ("", "not-a-number", "0"):
+        monkeypatch.setenv("DATASET_SNAPSHOT_CHUNK_DAYS", raw)
+        assert dataset_snapshot_job_main._chunk_days() == 1
+    monkeypatch.setenv("DATASET_SNAPSHOT_CHUNK_DAYS", "45")
+    assert dataset_snapshot_job_main._chunk_days() == 30
+
+
+def test_all_snapshot_chunk_defaults_match_the_job():
+    # Same one-day default as the job path; callers may still ask for up to 30.
+    from routers.dataset_snapshots import ExportColdArchiveRequest, ExportSnapshotRequest
+    from services.dataset_snapshot_exporter import D1ColdArchiveExportRequest, DatasetSnapshotExportRequest
+
+    dates = dict(business_date="2026-11-13", start_date="2026-01-01", end_date="2026-11-13")
+    assert ExportSnapshotRequest(**dates).chunk_days == 1
+    assert ExportColdArchiveRequest(**dates).chunk_days == 1
+    assert D1ColdArchiveExportRequest(**dates).chunk_days == 1
+    assert DatasetSnapshotExportRequest(**dates).chunk_days == 1  # in-process pipeline callers

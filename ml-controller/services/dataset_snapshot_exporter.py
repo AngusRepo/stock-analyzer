@@ -148,7 +148,7 @@ class D1ColdArchiveExportRequest:
     )
     gcs_prefix: str | None = None
     producer_run_id: str | None = None
-    chunk_days: int = 10
+    chunk_days: int = 1
     hot_window_days: int = 504
 
 
@@ -196,7 +196,7 @@ def _query_cold_archive_table(table: str, start_date: str, end_date: str, chunk_
 def export_d1_cold_archive_snapshot(req: D1ColdArchiveExportRequest) -> dict[str, Any]:
     """Export exact D1 cold rows to a GCS archive snapshot before any D1 deletion."""
     started = time.perf_counter()
-    chunk_days = max(1, min(int(req.chunk_days or 10), 30))
+    chunk_days = max(1, min(int(req.chunk_days or 1), 30))
     allowed_tables = tuple(dict.fromkeys(req.tables))
 
     bucket, bucket_name = _gcs_client_bucket()
@@ -534,7 +534,7 @@ class DatasetSnapshotExportRequest:
     kind: str = "backtest_dataset"
     gcs_prefix: str | None = None
     producer_run_id: str | None = None
-    chunk_days: int = 10
+    chunk_days: int = 1
     include_signals: bool = True
     corporate_history_path: str | None = None
     corporate_history_checksum: str | None = None
@@ -565,7 +565,7 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
         history_frame = load_history_artifact(req.corporate_history_path, req.corporate_history_checksum)
         req = replace(req, kind="ga_research_dataset")
     started = time.perf_counter()
-    chunk_days = max(1, min(int(req.chunk_days or 10), 30))
+    chunk_days = max(1, min(int(req.chunk_days or 1), 30))
 
     stocks = _query_active_stocks(req.start_date, req.end_date)
     prices, price_queries = _query_prices(req.start_date, req.end_date, chunk_days)

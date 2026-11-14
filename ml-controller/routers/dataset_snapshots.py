@@ -21,7 +21,7 @@ class ExportSnapshotRequest(BaseModel):
     kind: str = Field(default="backtest_dataset")
     gcs_prefix: str | None = None
     producer_run_id: str | None = None
-    chunk_days: int = Field(default=10, ge=1, le=30)
+    chunk_days: int = Field(default=1, ge=1, le=30)
     include_signals: bool = True
 
 
@@ -39,7 +39,7 @@ class ExportColdArchiveRequest(BaseModel):
     ])
     gcs_prefix: str | None = None
     producer_run_id: str | None = None
-    chunk_days: int = Field(default=10, ge=1, le=30)
+    chunk_days: int = Field(default=1, ge=1, le=30)
     hot_window_days: int = Field(default=504, ge=30, le=1600)
 
 

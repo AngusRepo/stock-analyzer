@@ -279,6 +279,10 @@ function closureEnv(funnelMetadata: Record<string, unknown> | null): any {
     if (normalized.includes('SUM(CASE WHEN r.stock_id IS NOT NULL')) {
       return { reference_rows: 5, identity_rows: 5, artifact_rows: 5, reconciled_rows: 5, reference_projection_rows: 5 }
     }
+    // Run header (learning 0065): no usable summary, so the closure takes the cell pass below.
+    if (normalized.includes('FROM strategy_label_matrix_runs_v4 mr')) {
+      return { expected_cell_count: 10, persisted_cell_count: 10, summary_usable: 0 }
+    }
     if (normalized.includes('FROM strategy_label_matrix_runs_v4 r')) {
       return {
         expected_cell_count: 10, persisted_cell_count: 10, matrix_rows: 10, matched_rows: 4,

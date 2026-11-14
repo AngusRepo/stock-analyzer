@@ -1,9 +1,22 @@
+import { isR33AlphaModelOrder } from './alphaModelRoster'
 export const L4_FEATURE_SCHEMA = 'full-l3-30-all-available-signals-v3'
 export const L4_TIMEXER_FEATURE_SCHEMA = 'full-l3-30-timexer-signals-v4'
+/** R33: each roster model's equal-weight z and availability, then the mean score (l3_equal_weight_bundle).
+ *  The roster is the bundle's own model.model_order, never a Worker constant. */
+export const L4_R33_FEATURE_SCHEMA = 'r33-roster-ranks-and-availability-v1'
+export function r33FeatureNames(modelOrder: unknown): string[] | null {
+  if (!isR33AlphaModelOrder(modelOrder)) return null
+  return [...modelOrder.flatMap(model => [`${model}_z`, `${model}_available`]), 'score']
+}
 
 /** v4 replaces the DLinear coordinate in place; sorting again changes model inputs. */
 export function validL4FeatureSchema(artifact: any): boolean {
   if (artifact?.feature_schema === L4_FEATURE_SCHEMA) return true
+  if (artifact?.feature_schema === L4_R33_FEATURE_SCHEMA)
+  {
+    const names = r33FeatureNames(artifact?.model?.model_order)
+    return names != null && JSON.stringify(artifact?.model?.feature_names) === JSON.stringify(names)
+  }
   if (artifact?.feature_schema !== L4_TIMEXER_FEATURE_SCHEMA) return false
   const names = ['LightGBM','XGBoost','ExtraTrees','TabM','GNN','DLinear','PatchTST','iTransformer']
     .flatMap(model => ['raw','rank','available'].map(suffix => `${model}_${suffix}`))

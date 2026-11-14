@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { test } from 'node:test'
+import { matrixRunSummaryUsableInline } from './strategyLabelMatrixRunSummary'
+import { STRATEGY_ROUTE_AFFINITY_VERSION } from './strategyRouteCalibration'
 
 // The dashboard's 7-day threshold history joined the matrix on producer_run_id and
 // labeler_version only. No matrix index leads with producer_run_id, so every
@@ -19,10 +21,11 @@ test('threshold history seeks the matrix by signal_date instead of scanning it',
       for (const index of schema.matchAll(new RegExp(`CREATE INDEX IF NOT EXISTS \\w+\\s+ON ${table}\\([^;]*\\);`, 'g'))) db.exec(index[0])
     }
     const bound = sql.replaceAll('${formalLabelerPlaceholders}', '?')
+      .replaceAll('${MATURITY_SUMMARY_USABLE}', matrixRunSummaryUsableInline('r', STRATEGY_ROUTE_AFFINITY_VERSION))
     const plan = db.prepare(`EXPLAIN QUERY PLAN ${bound}`)
       .all('2026-11-12', 'labeler-a', 'labeler-a', 'affinity-v2').map((row) => String(row.detail))
-    assert.ok(plan.some((detail) => /^SEARCH matrix /.test(detail) && /signal_date=\?/.test(detail)), plan.join(' | '))
-    assert.ok(!plan.some((detail) => /^SCAN matrix\b/.test(detail)), plan.join(' | '))
+    assert.ok(plan.some((detail) => /^SEARCH m /.test(detail) && /signal_date=\?/.test(detail)), plan.join(' | '))
+    assert.ok(!plan.some((detail) => /^SCAN (m|matrix)\b/.test(detail)), plan.join(' | '))
   } finally {
     db.close()
   }

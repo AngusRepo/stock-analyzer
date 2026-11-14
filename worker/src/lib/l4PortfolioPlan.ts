@@ -2,6 +2,7 @@ import { paperExecutionNow } from './paperExecutionScope'
 import { premarketPublicationCutoff } from './premarketPublicationWindow'
 import { reviewedTarget, type DailyPlanReview } from './paperDailyPlan'
 import { l4ReleaseEvidenceError } from './l4ReleaseEvidence'
+import { l4OperatingModeError } from './paperStrategyMode'
 import { privateL4ResearchAllowed } from './paperExecutionScope'
 import type { Bindings } from '../types'
 import type { FiveSlotDecision, FiveSlotHolding } from './fiveSlotCapitalAllocator'
@@ -283,12 +284,13 @@ export function l4TargetExitShares(input: {
 }
 
 /** A model/config cutover invalidates old targets without disabling hard exits. */
-export async function assertL4PlanCurrentPolicy(env: Bindings, plan: L4PortfolioPlan, config: { l4Distribution?: { artifact: Record<string,unknown>; opb?: Record<string,unknown> } }) {
+export async function assertL4PlanCurrentPolicy(env: Bindings, plan: L4PortfolioPlan, config: { l4Distribution?: { artifact: Record<string,unknown>; opb?: Record<string,unknown>; operating_mode?: unknown } }) {
   if (plan.execution_scope==='private_research' && !privateL4ResearchAllowed(env.KV)) throw new Error('l4_private_plan_cannot_execute')
   const artifact=config.l4Distribution?.artifact as any
   if (!artifact || artifact.model_checksum!==plan.model_checksum) throw new Error('l4_plan_config_model_changed')
   if (plan.execution_scope!=='private_research') {
-    const error=l4ReleaseEvidenceError(artifact); if (error) throw new Error(error)
+    const error=l4ReleaseEvidenceError(artifact) ?? l4OperatingModeError(config.l4Distribution)
+    if (error) throw new Error(error)
   }
   if (config.l4Distribution?.opb?.enabled===true && config.l4Distribution.opb.approved_policy_identity!==plan.policy_identity) throw new Error('l4_plan_policy_changed')
   const pointer=await databaseForDataDomain(env,'learning').prepare(

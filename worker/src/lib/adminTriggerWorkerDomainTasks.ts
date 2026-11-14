@@ -825,6 +825,9 @@ export function buildAdminWorkerDomainTaskMap(
     },
     'postclose-research-dispatch': async () => {
       const { runPostcloseResearch } = await import('./postcloseResearch')
+      // NEW-47: report pointer changes after the close; the alert never blocks the dispatch.
+      await import('./pointerChangeAlert').then((m) => m.alertPointerChangesGuarded(c.env))
+        .catch((error) => console.warn('[PointerChange] check failed: ' + String(error)))
       return runPostcloseResearch(c.env, requestedRunDate() || twToday())
     },
     'daily-snapshot': () => deps.runDailySnapshot(requestedRunDate()),

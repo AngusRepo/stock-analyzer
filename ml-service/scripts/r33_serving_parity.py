@@ -384,6 +384,8 @@ def main() -> int:
               "entrypoints": list(INFERENCE_ENTRYPOINTS)}
     dynamic = run_dynamic(args.base, args.manifest or None)
     covered = {"model_order", "validate_order", "PROFILES131", "R33_PROFILE", "R33_MODELS",
+               # K20 Slice A: validate_order runs these on every frozen roster above.
+               "validate_r33_roster", "is_r33_roster",
                "assess_fold_forward_sources", "UniversalPrepRequest",
                # C28-02, executed by the probe without pit_contract_version / market_since.
                "build_feature_matrix", "PredictRequest", "_build_feature_batch_context",

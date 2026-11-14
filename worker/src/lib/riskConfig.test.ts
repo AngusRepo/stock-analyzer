@@ -77,7 +77,29 @@ async function run(): Promise<void> {
     assert(!('maxSingleNamePct' in stored.position), 'seed path must never invent the KV-owned single-name cap')
     const afterSeed = await buildRiskConfigRepairPlan(kv)
     assert(afterSeed.complete === false, 'risk config without the single-name cap stays incomplete')
-    assert(afterSeed.repairReasons.join() === 'missing_position.maxSingleNamePct', 'only the KV-owned cap is left to repair')
+    assert(afterSeed.repairReasons.join() === 'missing_position.maxSingleNamePct,missing_position.minCorrelationOverlap',
+      'only the KV-owned position fields are left to repair')
+    assert(!('minCorrelationOverlap' in stored.position), 'seed path must never invent the KV-owned correlation overlap')
+  }
+
+  {
+    // C28-01: the correlation overlap has no program default; missing or invalid fails closed to 0.
+    assert(!('minCorrelationOverlap' in DEFAULT_RISK_CONFIG.position), 'correlation overlap must have no program default')
+    const { minCorrelationOverlap: _, ...positionWithoutOverlap } = RISK_CONFIG_FIXTURE.position
+    const missingKv = { get: async () => ({ ...RISK_CONFIG_FIXTURE, position: positionWithoutOverlap }) } as any
+    assert((await getRiskConfig(missingKv)).position.minCorrelationOverlap === 0, 'missing overlap must fail closed to 0')
+    const missingPlan = await buildRiskConfigRepairPlan(missingKv)
+    assert(missingPlan.repairReasons.includes('missing_position.minCorrelationOverlap'), 'repair plan must name the missing overlap')
+    assert(missingPlan.effective.position.minCorrelationOverlap === 0, 'repair plan effective view must fail the overlap closed')
+    for (const bad of [2, 20.5, 61, '20', null]) {
+      const badKv = { get: async () => ({ ...RISK_CONFIG_FIXTURE, position: { ...RISK_CONFIG_FIXTURE.position, minCorrelationOverlap: bad } }) } as any
+      assert((await getRiskConfig(badKv)).position.minCorrelationOverlap === 0, `invalid overlap ${bad} must fail closed to 0`)
+      assert((await buildRiskConfigRepairPlan(badKv)).repairReasons.includes('invalid_position.minCorrelationOverlap'), `invalid overlap ${bad} must be reported`)
+    }
+    const owned = await getRiskConfig({ get: async () => ({ ...RISK_CONFIG_FIXTURE, position: { ...RISK_CONFIG_FIXTURE.position, minCorrelationOverlap: 30 } }) } as any)
+    assert(owned.position.minCorrelationOverlap === 30, 'KV overlap is used as-is')
+    assert(owned.position.maxSingleNamePct === RISK_CONFIG_FIXTURE.position.maxSingleNamePct, 'a valid overlap leaves the cap alone')
+    assert((await getRiskConfig(undefined)).position.minCorrelationOverlap === 0, 'fail-closed config carries a zero overlap')
   }
 
   {

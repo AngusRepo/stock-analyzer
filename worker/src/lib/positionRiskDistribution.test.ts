@@ -42,4 +42,21 @@ const sparse = assessPositionCorrelation({
 })
 assert.equal(sparse.status, 'fallback_insufficient_data')
 
+
+// C28-01: the minimum overlap comes from trading:risk_config; an invalid value (the fail-closed 0) blocks.
+for (const bad of [0, 2, 20.5, Number.NaN]) {
+  const invalid = assessPositionCorrelation({
+    candidateSymbol: '2330', holdingSymbols: [], priceRows: [], threshold: 0.7, minimumOverlappingReturns: bad,
+  })
+  assert.equal(invalid.status, 'blocked', `overlap ${bad} must block`)
+}
+{
+  const strict = assessPositionCorrelation({
+    candidateSymbol: 'AAA', holdingSymbols: ['BBB'], threshold: 0.7, minimumOverlappingReturns: 30,
+    priceRows: [...series('AAA', base), ...series('BBB', base.map((value) => value * 0.95))],
+  })
+  assert.equal(strict.status, 'fallback_insufficient_data', 'the configured overlap, not a constant, gates the verdict')
+  assert.equal(strict.minimum_overlapping_returns, 30)
+}
+
 console.log('position risk distribution tests passed')

@@ -69,4 +69,5 @@ def test_pipeline_modal_prediction_bundle_contract_exists_on_modal() -> None:
     assert "if model_name == \"GNN\":" in modal_app
     assert "_sequence_input(model_name)," in modal_app
     assert "_assert_exact_rows(model_name, rows, expected=model_symbols)" in modal_app
-    assert "model_expected = expected_symbols if expected is None else expected" in modal_app
+    assert "expected=expected_symbols if expected is None else expected" in modal_app
+    assert "def _assert_pipeline_bundle_rows(" in modal_app

@@ -47,7 +47,12 @@ def _canonical_json(value: Any) -> str:
 
 
 def ensemble_artifact_id(payload: dict) -> str:
-    """Registry ID is derived, not inserted into the checksummed model payload."""
+    """Registry ID is derived, not inserted into the checksummed model payload.
+
+    An R33 object's id is derived from its own cohort and checksum (r33-roster:...)."""
+    from services.r33_ensemble import is_r33, r33_artifact_id
+    if is_r33(payload):
+        return r33_artifact_id(payload)
     return f"active8-ensemble:{payload.get('cohort_id')}:{str(payload.get('payload_checksum'))[:16]}"
 
 
@@ -75,6 +80,12 @@ def build_formal_model_input_contract(pred: dict | None, *, selected_models: lis
     prediction = pred if isinstance(pred, dict) else {}
     declared = order if order is not None else (prediction.get("ensemble_v2") or {}).get("model_order") or (prediction.get("model_score_lineage") or {}).get("model_order")
     order = validate_order(declared) if declared is not None else model_order(prediction.get("rank_scores") or {})
+    from services.r33_ensemble import COVERAGE_POLICY, RUNTIME_SCHEMA, formal_contract
+    lineage_policy = (prediction.get("model_score_lineage") or {}).get("coverage_policy") if isinstance(prediction.get("model_score_lineage"), dict) else None
+    if lineage_policy == COVERAGE_POLICY or (prediction.get("ensemble_v2") or {}).get("schema_version") == RUNTIME_SCHEMA:
+        # R33 is recognised by its own lineage/runtime schema, never by comparing the
+        # roster with this checkout's constant (a published object may carry another roster).
+        return formal_contract(prediction, order)
     scores = _formal_model_scores(prediction, order=order)
     lineage = prediction.get("model_score_lineage") if isinstance(prediction.get("model_score_lineage"), dict) else {}
     if selected_models is None and lineage.get('coverage_policy') == 'validated-bundle-selected-core-sequence-missingness-v1' and lineage.get('ensemble_payload_checksum'):
@@ -228,7 +239,16 @@ def validate_active8_ensemble_payload(payload: dict[str, Any]) -> None:
 
 
 def validate_active8_ensemble_artifact(payload: dict[str, Any], pool_models: dict[str, dict[str, Any]], *, nav_authority=None) -> None:
-    if nav_authority is None:
+    from services.r33_ensemble import is_r33, validate_ensemble
+    if is_r33(payload):
+        # R33: the whole object is validated by its own owner (no stacker fit/signal policy);
+        # a paper/NAV inference grant must also name exactly this object and its base artifacts.
+        validate_ensemble(payload)
+        if nav_authority is not None:
+            from services.active8_nav_inference import permits_inference
+            if not permits_inference(nav_authority, artifact=payload, pool_models=pool_models):
+                raise RuntimeError('active8_nav_inference_authority_invalid')
+    elif nav_authority is None:
         validate_active8_ensemble_payload(payload)
     else:
         from services.active8_nav_inference import permits_inference
@@ -260,11 +280,21 @@ def attach_ensemble_v2(
     pred: dict,
     artifact: dict[str, Any],
     pool_models: dict[str, dict[str, Any]],
-    *, nav_authority=None,
+    *, nav_authority=None, round_trip_cost: float | None = None,
 ) -> None:
     pred.pop('ensemble_v2', None)
     pred.pop('ensemble_v2_error', None)
     validate_active8_ensemble_artifact(artifact, pool_models, nav_authority=nav_authority)
+    from services.r33_ensemble import is_r33, serving_view
+    if is_r33(artifact):
+        if round_trip_cost is None:
+            raise ValueError('r33_round_trip_cost_invalid')
+        pred['ensemble_v2'] = serving_view(pred, artifact, cost=round_trip_cost)
+        pred['formal_layer3_contract'] = pred['ensemble_v2']['formal_model_input_contract']
+        if nav_authority is not None:
+            pred['ensemble_v2'].update(adoption_basis='committed_paired_nav',
+                nav_inference_context_checksum=nav_authority.context_checksum)
+        return
     formal = build_formal_model_input_contract(pred, selected_models=artifact['selected_models'], order=artifact['model_order'])
     pred["formal_layer3_contract"] = formal
     if not formal["complete"]:

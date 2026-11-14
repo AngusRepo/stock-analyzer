@@ -35,6 +35,12 @@ class _FeatureBatchContext:
     serve_artifact_versions: bool = False
     # version -> (x_latest, feature_names) or the error string from building that view.
     pit_views: dict = field(default_factory=dict)
+    # C28-16 S1 reports: unclipped production scores (HL3-4e) and the features an
+    # artifact needed that serving filled from training medians (NEW-76).
+    raw_scores: dict[str, float] = field(default_factory=dict)
+    median_filled: dict[str, list[str]] = field(default_factory=dict)
+    # R33-NEW-11: every view comes from the sealed prep; a missing one is never rebuilt per stock.
+    prep_only: bool = False
 
 
 def _runtime():
@@ -294,6 +300,17 @@ def _latest_feature_row(req: Any, pit_version: str | None) -> tuple[np.ndarray, 
 
 def _build_feature_batch_context(req: Any) -> _FeatureBatchContext:
     pit_version = getattr(req, "pit_contract_version", None)
+    from .r33_prep_rows import PREP_VIEWS, context_views
+    views = PREP_VIEWS.get()
+    if views is not None:
+        # R33-NEW-11: the serving row is the prep row the training rows came from.
+        per_version = context_views(views, str(req.symbol))
+        own = per_version.pop(pit_version, f"r33_prep_source_missing:{pit_version}")
+        if isinstance(own, str):
+            raise ValueError(own)
+        return _FeatureBatchContext(
+            req=req, x_latest=own[0], feature_names=own[1], pit_contract_version=pit_version,
+            serve_artifact_versions=pit_version is None, pit_views=per_version, prep_only=True)
     x_latest, feature_names = _latest_feature_row(req, pit_version)
     return _FeatureBatchContext(
         req=req,
@@ -313,6 +330,43 @@ def _record_pit_views(contexts: list[_FeatureBatchContext]) -> None:
     sink = _PIT_SERVING_TELEMETRY.get()
     if sink is not None:
         sink.extend(ctx for ctx in contexts if ctx.pit_views)
+    reports = _SERVING_REPORT_TELEMETRY.get()
+    if reports is not None:
+        reports.extend(contexts)
+
+
+_SERVING_REPORT_TELEMETRY: ContextVar[list | None] = ContextVar("serving_report_telemetry", default=None)
+SERVING_REPORT_SCHEMA = "l3-serving-robustness-report-v1"
+
+
+def _serving_report(contexts: list[_FeatureBatchContext], results: list[dict]) -> dict:
+    """Report only (C28-16 S1): nothing here changes a score or a row."""
+    raw: dict[str, list[float]] = {}
+    filled: dict[str, dict] = {}
+    for ctx in contexts:
+        for model, value in ctx.raw_scores.items():
+            raw.setdefault(model, []).append(value)
+        for model, names in ctx.median_filled.items():
+            row = filled.setdefault(model, {"rows": 0, "features": set()})
+            row["rows"] += 1
+            row["features"].update(names)
+    dispersion = {}
+    for model, values in sorted(raw.items()):
+        arr = np.asarray(values, dtype=float)
+        finite = arr[np.isfinite(arr)]
+        dispersion[model] = {
+            "n": int(arr.size), "non_finite": int(arr.size - finite.size),
+            "std": float(finite.std()) if finite.size else None,
+            "unique": int(np.unique(finite).size),
+            "below_0": int((finite < 0).sum()), "above_1": int((finite > 1).sum()),
+        }
+    return {
+        "schema_version": SERVING_REPORT_SCHEMA,
+        "feature_context_errors": sum(1 for row in results if "feature_context_failed" in str(row.get("error") or "")),
+        "raw_score_dispersion": dispersion,
+        "median_filled_features": {model: {"rows": v["rows"], "features": sorted(v["features"])}
+                                   for model, v in sorted(filled.items())},
+    }
 
 
 def _pit_serving_metrics(contexts: list[_FeatureBatchContext]) -> dict:
@@ -352,6 +406,8 @@ def _feature_view(ctx: _FeatureBatchContext, version: str | None) -> tuple[np.nd
         return ctx.x_latest, ctx.feature_names
     if not ctx.serve_artifact_versions:
         raise ValueError("pit_contract_version_serving_mismatch")
+    if version not in ctx.pit_views and ctx.prep_only:
+        raise ValueError(f"r33_prep_source_missing:{version}")
     if version not in ctx.pit_views:
         try:
             ctx.pit_views[version] = _latest_feature_row(ctx.req, version)
@@ -378,7 +434,7 @@ def _artifact_pit_version(meta: dict | None) -> str | None:
     return version
 
 
-def _align_latest_features(ctx: _FeatureBatchContext, meta: dict | None) -> np.ndarray:
+def _align_latest_features(ctx: _FeatureBatchContext, meta: dict | None, model_name: str | None = None) -> np.ndarray:
     from .artifact_contract import ArtifactValidationError, validate_serving_feature_compatibility
     from .features import safe_float
 
@@ -405,8 +461,29 @@ def _align_latest_features(ctx: _FeatureBatchContext, meta: dict | None) -> np.n
         for idx, fname in enumerate(training_features):
             if fname in pred_name_to_idx:
                 aligned[0, idx] = float(x_latest[0, pred_name_to_idx[fname]])
+        missing = [name for name in training_features if name not in pred_name_to_idx]
+        if model_name and missing:
+            ctx.median_filled[model_name] = missing
         return aligned
     return x_latest
+
+
+def _require_finite_r33_input(ctx: _FeatureBatchContext, row: np.ndarray, meta: dict | None) -> np.ndarray:
+    """NEW-1030-06: under R33 (prep rows) a non-finite input is this model's gap for this symbol,
+    named by field and count. The prep rows are finite by construction, so this is a guard:
+    the model never scores a value its training rows could not contain (LightGBM and sklearn
+    1.9 ExtraTrees route NaN down a learned branch; an inf fails ExtraTrees' whole batch; TabM
+    standardization zero-fills both)."""
+    if not getattr(ctx, "prep_only", False):
+        return row
+    bad = ~np.isfinite(np.asarray(row, dtype=float).reshape(-1))
+    if not bad.any():
+        return row
+    names = list((meta or {}).get("feature_names") or [])
+    if len(names) != bad.size:
+        names = list(ctx.feature_names) if len(ctx.feature_names) == bad.size else [f"#{i}" for i in range(bad.size)]
+    fields = [names[i] for i in np.flatnonzero(bad)]
+    raise ValueError(f"r33_feature_input_non_finite:count={len(fields)}:fields={','.join(fields[:8])}")
 
 
 def _clip_rank(value: Any) -> float:
@@ -553,6 +630,8 @@ def _record_feature_score(
     challenger: bool = False,
 ) -> None:
     target = ctx.challenger_rank_scores if challenger else ctx.rank_scores
+    if not challenger:
+        ctx.raw_scores[model_name] = float(score)
     target[model_name] = _clip_rank(score)
 
 
@@ -577,7 +656,8 @@ def _apply_artifact_batch_predictions(
     rows: list[tuple[_FeatureBatchContext, np.ndarray]] = []
     for ctx in contexts:
         try:
-            rows.append((ctx, _align_latest_features(ctx, meta)))
+            row = _align_latest_features(ctx, meta, None if challenger else model_name)
+            rows.append((ctx, row if challenger else _require_finite_r33_input(ctx, row, meta)))
         except Exception as exc:  # noqa: BLE001 - keep one bad symbol/model local.
             prefix = "challenger " if challenger else ""
             _record_feature_error(ctx, f"{model_name}: {prefix}{exc}", challenger=challenger)
@@ -623,7 +703,7 @@ def _apply_gnn_batch_context_predictions(
         rows: list[tuple[_FeatureBatchContext, np.ndarray]] = []
         for ctx in contexts:
             try:
-                rows.append((ctx, _align_latest_features(ctx, artifact.metadata)))
+                rows.append((ctx, _align_latest_features(ctx, artifact.metadata, "GNN")))
             except Exception as exc:  # noqa: BLE001
                 _record_feature_error(ctx, f"GNN: {exc}")
         if not rows:
@@ -672,7 +752,8 @@ def _apply_tabm_torch_batch_predictions(
         rows: list[tuple[_FeatureBatchContext, np.ndarray]] = []
         for ctx in contexts:
             try:
-                rows.append((ctx, _align_latest_features(ctx, artifact.metadata)))
+                row = _align_latest_features(ctx, artifact.metadata, "TabM")
+                rows.append((ctx, _require_finite_r33_input(ctx, row, artifact.metadata)))
             except Exception as exc:  # noqa: BLE001
                 _record_feature_error(ctx, f"TabM: {exc}")
         if not rows:
@@ -865,12 +946,25 @@ def _active_feature_core_models(pool: dict) -> tuple[str, ...]:
     )
 
 
+BATCH_CONTEXT_ERROR_KEY = "_batch_feature_context_error"
+
+
 def _feature_core_coverage_error(override: dict) -> str | None:
     from .prediction_runtime import _BATCH_FEATURE_RANK_SCORES_KEY, _BATCH_MODEL_POOL_KEY
+
+    if BATCH_CONTEXT_ERROR_KEY in override:
+        return override[BATCH_CONTEXT_ERROR_KEY]
 
     pool = override.get(_BATCH_MODEL_POOL_KEY)
     scores = override.get(_BATCH_FEATURE_RANK_SCORES_KEY)
     scores = scores if isinstance(scores, dict) else {}
+    ensemble = (pool or {}).get("active8_ensemble") if isinstance(pool, dict) else None
+    from .active8_ensemble_runtime import R33_KIND
+    if isinstance(ensemble, dict) and ensemble.get("kind") == R33_KIND:
+        # R33: a model missing for this symbol is z=0 downstream (denominator seven), so the
+        # row keeps its other scores; the controller's rank pool unscores a name none of the
+        # seven scored (NEW-1030-06).
+        return None
     missing_or_invalid = [
         name
         for name in _active_feature_core_models(pool)
@@ -900,7 +994,17 @@ def _build_feature_model_batch_runtime_overrides(
         _FEATURE_MODEL_NAMES_V2,
     )
 
-    contexts = [_build_feature_batch_context(req) for req in requests]
+    from .r33_prep_rows import require_bound
+    require_bound(pool_snapshot)
+    # HL2-1b: one symbol whose feature row cannot be built is that symbol's error,
+    # not the chunk's (the GNN path already isolates it the same way).
+    contexts: list[_FeatureBatchContext] = []
+    context_errors: dict[int, str] = {}
+    for position, req in enumerate(requests):
+        try:
+            contexts.append(_build_feature_batch_context(req))
+        except Exception as exc:  # noqa: BLE001
+            context_errors[position] = f"feature_context_failed:{type(exc).__name__}:{exc}"
     pool = pool_snapshot if pool_snapshot is not None else _load_model_pool()
     model_status = _model_pool_status(pool)
     for model_name in _FEATURE_MODEL_NAMES_V2:
@@ -983,7 +1087,7 @@ def _build_feature_model_batch_runtime_overrides(
     _apply_active8_shadow_feature_predictions(contexts, pool)
     _record_pit_views(contexts)
 
-    return [
+    built = iter([
         {
             _BATCH_FEATURE_CONTEXT_KEY: {
                 "x_latest": ctx.x_latest,
@@ -996,6 +1100,10 @@ def _build_feature_model_batch_runtime_overrides(
             _BATCH_MODEL_POOL_KEY: pool,
         }
         for ctx in contexts
+    ])
+    return [
+        {BATCH_CONTEXT_ERROR_KEY: context_errors[position]} if position in context_errors else next(built)
+        for position in range(len(requests))
     ]
 
 
@@ -1009,6 +1117,8 @@ def predict_gnn_graphsage_batch(
     This endpoint intentionally lives outside predict_batch_v2 chunking because
     GraphSAGE needs cross-stock batch context to build graph edges.
     """
+    from .r33_prep_rows import require_bound
+    require_bound(pool_snapshot)
     request_cls, _predict_fn = _runtime()
     contexts: list[_FeatureBatchContext] = []
     results: list[dict | None] = [None] * len(payloads or [])
@@ -1318,7 +1428,9 @@ def predict_stock_v2_batch_with_metrics(
     after_preload = _get_model_cache_stats()
     predict_t0 = time.time()
     pit_contexts: list = []
+    report_contexts: list = []
     token = _PIT_SERVING_TELEMETRY.set(pit_contexts)
+    report_token = _SERVING_REPORT_TELEMETRY.set(report_contexts)
     try:
         if pool_snapshot is None:
             results = predict_stock_v2_batch(payloads)
@@ -1328,6 +1440,7 @@ def predict_stock_v2_batch_with_metrics(
                 pool_snapshot=pool_snapshot,
             )
     finally:
+        _SERVING_REPORT_TELEMETRY.reset(report_token)
         _PIT_SERVING_TELEMETRY.reset(token)
     pit_serving = _pit_serving_metrics(pit_contexts)
     predict_elapsed_s = round(time.time() - predict_t0, 3)
@@ -1371,6 +1484,7 @@ def predict_stock_v2_batch_with_metrics(
                 "after": ft_after,
             },
             **({"pit_serving": pit_serving} if pit_serving else {}),
+            "serving_report": _serving_report(report_contexts, results),
         },
     }
 
@@ -1395,6 +1509,8 @@ def predict_stock_v2_chunked_with_metrics(
         if pool_snapshot is not None
         else _load_model_pool()
     ) if payloads else pool_snapshot
+    from .r33_prep_rows import require_bound
+    require_bound(resolved_pool)  # a stage-level failure, not one error row per chunk
 
     def chunk_error_rows(chunk: list[dict], reason: str) -> list[dict]:
         return [

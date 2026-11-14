@@ -49,14 +49,14 @@ def risk_groups(symbols,history,rows,holdings,constraints, *, dated_covariance_p
     return knobs,groups,pressure,horizon,evidence
 
 
-def full_l3_attribution(rows,predictions,outputs,feature_rows,*,model_feature_names,unavailable=None):
+def full_l3_attribution(rows,predictions,outputs,feature_rows,*,model_feature_names,unavailable=None,utility_semantic='five_session_gross_decimal'):
     """Preserve full upstream packets; modeling and audit roles stay explicit."""
     ordered=sorted(rows)
     feature_by_symbol={row['symbol']:row['features'] for row in feature_rows}
     packet={'schema_version':'l4-full-l3-input-attribution-v1',
         'model_feature_names':list(model_feature_names),'model_feature_count':len(model_feature_names),
         'unmodeled_fields_role':'retained_for_audit_no_implicit_extra_alpha',
-        'candidates':{s:{'native_prediction':deepcopy(predictions[s]),
+        'candidates':{s:{'native_prediction':deepcopy(predictions.get(s)),
             'model_features':deepcopy(feature_by_symbol.get(s)),
             'prediction_blockers':(unavailable or {}).get(s,[]),
             'l4_distribution':deepcopy(outputs.get(s)),
@@ -66,12 +66,12 @@ def full_l3_attribution(rows,predictions,outputs,feature_rows,*,model_feature_na
     from services.online_portfolio_bandit import _candidate_feature_summary
     candidates=[{**rows[s],'expected_return':outputs[s]['expected_return_gross']} for s in ordered if s in outputs]
     packet['opb_candidate_summary']=_candidate_feature_summary(candidates,utility_field='expected_return',
-        utility_semantic='five_session_gross_decimal')
+        utility_semantic=utility_semantic)
     # Full packets are already sealed in the chunked allocation snapshot.
     # Keep a verifiable index in the Paper plan instead of duplicating megabytes.
     packet['upstream_snapshot_path']='content.inputs.alpha_policy.l4Distribution.runtime.predictions'
     packet['candidate_input_checksums']={symbol:digest(value) for symbol,value in packet.pop('candidates').items()}
-    packet['native_predictions_checksum']=digest({s:predictions[s] for s in ordered})
+    packet['native_predictions_checksum']=digest({s:predictions.get(s) for s in ordered})
     packet['checksum']=digest(packet)
     return packet
 

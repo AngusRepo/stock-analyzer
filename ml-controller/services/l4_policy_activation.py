@@ -3,7 +3,9 @@
 `l4-policy-activation-v2` moves owners v1 -> v2. Every economic value keeps its
 v1 value except the S3 arm rule and the cost objective the activation names.
 `l4-policy-constraints-change-v1` then changes named allocator constraints of a
-v2 policy, e.g. the cost objective. One release stages a chain of them as P1..Pn
+v2 policy, e.g. the cost objective. `l4-policy-risk-change-v1` adds named absent
+`trading:risk_config` fields (add-only, policy unchanged), e.g. C-1
+position.minCorrelationOverlap, which the Worker reads from KV only. One release stages a chain of them as P1..Pn
 grants; grant k names the chain prefix 1..k and the validator recomputes every
 step from the source grant's configuration. Nothing accepts an arbitrary config.
 """
@@ -13,7 +15,8 @@ from services.paired_nav_journal import digest
 
 SCHEMA = 'l4-policy-activation-v2'
 CHANGE_SCHEMA = 'l4-policy-constraints-change-v1'
-SCHEMAS = (SCHEMA, CHANGE_SCHEMA)
+RISK_SCHEMA = 'l4-policy-risk-change-v1'
+SCHEMAS = (SCHEMA, CHANGE_SCHEMA, RISK_SCHEMA)
 # The allocator's history window stays with the v2 activation (it must match the capture).
 FIXED_CONSTRAINTS = frozenset({'return_history_lookback_sessions'})
 # Worker legacy constants the circuit layers use until circuit.positionScales
@@ -119,6 +122,53 @@ def next_constraints_policy(l4, changes):
     return policy
 
 
+FORMAL_POSITION_FIELDS = frozenset({'maxPerSector', 'maxSingleNamePct', 'correlationThreshold',
+                                    'correlationWindow', 'minCorrelationOverlap'})
+
+
+def validate_added_risk_ranges(risk, fields):
+    """A risk-only link that adds a formal position field must leave a position the replay and
+    the Worker accept (FormalPositionRiskParams: e.g. 3 <= minCorrelationOverlap <= correlationWindow)."""
+    if not any(path.partition('.')[0] == 'position' and path.partition('.')[2] in FORMAL_POSITION_FIELDS
+               for path in fields):
+        return
+    from services.backtest_engine import FormalPositionRiskParams
+    try:
+        FormalPositionRiskParams.from_config(risk.get('position'))
+    except (TypeError, ValueError) as exc:
+        raise _fail('risk_position_range:' + str(exc)) from exc
+
+
+def risk_change_document(trading_config, risk_config, *, risk_fields, engineering_receipt_checksum,
+                         source_reference):
+    """Risk-only activation: add absent risk_config fields; trading_config and its policy stay."""
+    if not isinstance(risk_fields, dict) or not risk_fields:
+        raise _fail('risk_fields')
+    l4 = trading_config.get('l4Distribution')
+    if not isinstance(l4, dict) or l4.get('scope') != 'paper':
+        raise _fail('risk_change_source_policy')
+    risk = apply_risk_fields(risk_config, risk_fields)
+    validate_added_risk_ranges(risk, risk_fields)
+    if not engineering_receipt_checksum or not source_reference:
+        raise _fail('review_reference')
+    activation = {'schema_version': RISK_SCHEMA, 'scope': 'paper', 'maturity_transfer': False,
+        'account_reset': False, 'risk_config_added_fields': deepcopy(risk_fields),
+        'previous_policy_checksum': digest(l4), 'next_policy_checksum': digest(l4),
+        'next_policy_identity': (l4.get('opb') or {}).get('approved_policy_identity'),
+        'previous_risk_config_checksum': digest(risk_config), 'next_risk_config_checksum': digest(risk),
+        'engineering_receipt_checksum': engineering_receipt_checksum, 'source_reference': source_reference}
+    return activation, risk
+
+
+def declared_risk_fields(activation):
+    """{'section.key': value} an activation sets in risk_config (the Worker effective view may change only there)."""
+    if activation.get('schema_version') == RISK_SCHEMA:
+        return dict(activation.get('risk_config_added_fields') or {})
+    if activation.get('schema_version') == SCHEMA:
+        return dict(activation.get('risk_config_filled_fields') or {})
+    return {}
+
+
 def _reviewed(activation):
     return (activation.get('scope') == 'paper' and activation.get('maturity_transfer') is False
             and activation.get('account_reset') is False
@@ -173,6 +223,18 @@ def expected_configuration(state, activation):
     elif activation.get('schema_version') == CHANGE_SCHEMA:
         l4 = next_constraints_policy(trading.get('l4Distribution'), activation.get('changes'))
         config, next_risk = {**deepcopy(trading), 'l4Distribution': l4}, deepcopy(risk)
+    elif activation.get('schema_version') == RISK_SCHEMA:
+        l4 = trading.get('l4Distribution')
+        if not isinstance(l4, dict) or l4.get('scope') != 'paper':
+            raise _fail('risk_change_source_policy')
+        next_risk = apply_risk_fields(risk, activation.get('risk_config_added_fields') or {})
+        validate_added_risk_ranges(next_risk, activation.get('risk_config_added_fields') or {})
+        if (not activation.get('risk_config_added_fields')
+                or activation.get('previous_risk_config_checksum') != digest(risk)
+                or activation.get('next_risk_config_checksum') != digest(next_risk)
+                or activation.get('next_policy_checksum') != activation.get('previous_policy_checksum')):
+            raise _fail('risk_change')
+        config = deepcopy(trading)
     else:
         raise _fail('schema')
     if (activation.get('next_policy_checksum') != digest(l4)

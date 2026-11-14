@@ -62,8 +62,12 @@ def prepare_packet(*,current_config,candidate,acceptance,source_evidence,l3_iden
     config['l4Distribution']={**shape,'scope':'paper','artifact':release,'constraints':deepcopy(constraints),'opb':opb}
     from services.l4_mlp_median import SCHEMA as MEDIAN_SCHEMA
     from services.l4_tabpack_median import SCHEMA as TABPACK_MEDIAN_SCHEMA
-    from services.paper_strategy_mode import MLP_MODE, MODE, TABPACK_MEDIAN_MODE, validate_model_mode
-    if release['model'].get('residual_tabpack',{}).get('schema_version')==TABPACK_MEDIAN_SCHEMA:
+    from services.paper_strategy_mode import MLP_MODE, MODE, R33_MODE, TABPACK_MEDIAN_MODE, validate_model_mode
+    from services.l3_equal_weight_bundle import is_r33_bundle
+    if is_r33_bundle(release):
+        config['l4Distribution'].update(operating_mode=R33_MODE,strategy_role='B')
+        validate_model_mode(config['l4Distribution'])
+    elif release['model'].get('residual_tabpack',{}).get('schema_version')==TABPACK_MEDIAN_SCHEMA:
         config['l4Distribution'].update(operating_mode=TABPACK_MEDIAN_MODE,strategy_role='B')
         validate_model_mode(config['l4Distribution'])
     elif release['model'].get('residual_mlp',{}).get('schema_version')==MEDIAN_SCHEMA:
@@ -124,6 +128,28 @@ def prepare_policy_v2_packet(*,raw_config,merged_config,risk_config,risk_default
         'remote_mutations_executed':False,'deployment_requires_separate_authorization':True}
 
 
+def prepare_policy_risk_packet(*,raw_config,merged_config,risk_config,risk_fields,engineering_receipt,source_reference):
+    """A risk-only link (G0b): add absent trading:risk_config fields; trading:config is not written.
+
+    The first link reads the live raw/merged trading:config and raw trading:risk_config; a later
+    link passes the previous packet's next_config / next_merged_config / next_risk_config."""
+    from services.l4_policy_activation import risk_change_document
+    from services.paired_nav_journal import digest as approval_digest
+    activation,next_risk=risk_change_document(merged_config,risk_config,risk_fields=risk_fields,
+        engineering_receipt_checksum=approval_digest(engineering_receipt),source_reference=source_reference)
+    if raw_config.get('l4Distribution')!=merged_config.get('l4Distribution'):
+        raise ValueError('l4_policy_risk_raw_policy_not_merged_policy')
+    return {'schema_version':'l4-policy-risk-packet-v1','activation':activation,
+        'next_config':deepcopy(raw_config),'next_merged_config':deepcopy(merged_config),'next_risk_config':next_risk,
+        'rollback_config':deepcopy(raw_config),'rollback_risk_config':deepcopy(risk_config),
+        'previous_config_checksum':approval_digest(raw_config),'next_config_checksum':approval_digest(raw_config),
+        'previous_risk_config_checksum':approval_digest(risk_config),'next_risk_config_checksum':approval_digest(next_risk),
+        'approved_policy_identity':activation['next_policy_identity'],
+        'write_order':['trading:risk_config'],'rollback_order':['trading:risk_config'],
+        'engineering_receipt':deepcopy(engineering_receipt),
+        'remote_mutations_executed':False,'deployment_requires_separate_authorization':True}
+
+
 def prepare_policy_change_packet(previous,*,changes,engineering_receipt,source_reference):
     """Next link of the release chain: a v2 constraints change after `previous`.
 
@@ -132,7 +158,7 @@ def prepare_policy_change_packet(previous,*,changes,engineering_receipt,source_r
     """
     from services.l4_policy_activation import change_document
     from services.paired_nav_journal import digest as approval_digest
-    if previous.get('schema_version') not in ('l4-policy-v2-packet-v1','l4-policy-change-packet-v1'):
+    if previous.get('schema_version') not in ('l4-policy-v2-packet-v1','l4-policy-change-packet-v1','l4-policy-risk-packet-v1'):
         raise ValueError('l4_policy_change_previous_packet_invalid')
     activation,next_merged=change_document(previous['next_merged_config'],changes=changes,
         engineering_receipt_checksum=approval_digest(engineering_receipt),source_reference=source_reference)

@@ -2596,13 +2596,20 @@ def position_risk_contract(params: Optional[dict]) -> Optional[dict]:
     return params.get('positionRiskDistribution') or params.get('position_risk_distribution')
 
 
+def _whole_number(value) -> int:
+    """A KV count is a whole number; anything else (20.5, '20', True) is 0 and fails validation, as in the Worker."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    return int(value) if float(value).is_integer() else 0
+
+
 @dataclass(frozen=True)
 class FormalPositionRiskParams:
     max_per_sector: int
     max_single_name_pct: float
     correlation_threshold: float
     correlation_window: int
-    min_correlation_overlap: int = 20
+    min_correlation_overlap: int
 
     @classmethod
     def from_config(cls, raw: Optional[dict]) -> Optional[FormalPositionRiskParams]:
@@ -2613,7 +2620,7 @@ class FormalPositionRiskParams:
             max_single_name_pct=float(raw.get('maxSingleNamePct') or raw.get('max_single_name_pct') or 0),
             correlation_threshold=float(raw.get('correlationThreshold') or raw.get('correlation_threshold') or 0),
             correlation_window=int(raw.get('correlationWindow') or raw.get('correlation_window') or 0),
-            min_correlation_overlap=int(raw.get('minCorrelationOverlap') or raw.get('min_correlation_overlap') or 20),
+            min_correlation_overlap=_whole_number(raw.get('minCorrelationOverlap', raw.get('min_correlation_overlap'))),
         )
         result.validate()
         return result
@@ -3248,10 +3255,9 @@ def simulate_entries_for_date(
         return attempts
     filled_entry_symbols: set[str] = set()
     formal_position_risk = FormalPositionRiskParams.from_config(position_risk_distribution_cfg)
-    if formal_position_risk is not None:
-        pos = replace(pos, max_pct_of_portfolio=formal_position_risk.max_single_name_pct)
-    if pos.max_pct_of_portfolio is None:
+    if formal_position_risk is None:
         raise PositionRiskContractMissing('backtest_position_risk_contract_missing')
+    pos = replace(pos, max_pct_of_portfolio=formal_position_risk.max_single_name_pct)
 
     # ─── 2026-04-20 #28 P2: L2 circuit breakers (Layer 1 + 2) ────────────────
     # Only apply when Mode B is active (ml_predictions cache present) AND
@@ -3394,7 +3400,7 @@ def simulate_entries_for_date(
             ))
             continue
 
-        sector_limit = formal_position_risk.max_per_sector if formal_position_risk else 2
+        sector_limit = formal_position_risk.max_per_sector
         if industry_count.get(cand.industry, 0) >= sector_limit:
             attempts.append(EntryAttempt(
                 symbol=cand.symbol, decision_date=decision_date, entry_date=entry_date,
@@ -3403,23 +3409,13 @@ def simulate_entries_for_date(
             ))
             continue
 
-        correlation_skip = _correlation_dedup_skip(
+        correlation_skip = _formal_position_correlation_skip(
             dataset=dataset,
-            cand=cand,
-            account=account,
-            filled_entry_symbols=filled_entry_symbols,
+            candidate_symbol=cand.symbol,
+            existing_symbols=[*account.positions.keys(), *filled_entry_symbols],
             decision_date=decision_date,
-            pos=pos,
-            correlation_dedup_cfg=correlation_dedup_cfg,
+            risk=formal_position_risk,
         )
-        if formal_position_risk is not None:
-            correlation_skip = _formal_position_correlation_skip(
-                dataset=dataset,
-                candidate_symbol=cand.symbol,
-                existing_symbols=[*account.positions.keys(), *filled_entry_symbols],
-                decision_date=decision_date,
-                risk=formal_position_risk,
-            )
         if correlation_skip is not None:
             status, reason = correlation_skip
             attempts.append(EntryAttempt(

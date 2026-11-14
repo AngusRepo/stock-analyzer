@@ -87,8 +87,15 @@ def restore_frozen_nav_inference(context, *, artifact, pool_models):
             or digest({k: v for k, v in context.items() if k != 'context_checksum'}) != context.get('context_checksum')
             or context.get('artifact_checksum') != artifact.get('payload_checksum')):
         raise ValueError('active8_nav_frozen_context_invalid')
-    validate_active8_ensemble_candidate(artifact)
+    from services.r33_ensemble import is_r33, validate_ensemble
     receipt = context['publication_receipt']
+    if is_r33(artifact):
+        # R33 is served under a paper admission only; there is no R33 NAV-validated adoption.
+        validate_ensemble(artifact)
+        if 'paper_admission' not in receipt:
+            raise ValueError('r33_nav_inference_requires_paper_admission')
+    else:
+        validate_active8_ensemble_candidate(artifact)
     if 'paper_admission' in receipt:
         from services.active8_paper_admission import validate_publication_receipt
         validate_publication_receipt(receipt, artifact, now=_timestamp(context['captured_at']))

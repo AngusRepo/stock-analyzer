@@ -685,6 +685,9 @@ class PipelineStateV2(TypedDict, total=False):
     pipeline_modal_serving_context: dict      # Frozen model_pool/trading context for async Modal split path
     snapshot_recovery_lineage: dict           # Explicit non-native PIT recovery evidence
     predictions: dict                       # symbol ??ml result
+    r33_rank_pool: dict                     # R33 attested rank pool (z/score/E-hat owner) for this run
+    r33_holdings: list[str]                 # L4 account holdings read for the R33 inference scope
+    l2_input_staleness_report: dict         # C28-16 S3 stale-bar report (applied only under R33)
     nav_inference_receipt: dict             # Actual L3 outputs; not a publication or maturity grant
     l3_payloads: list[dict]                  # optional override; default is the full L1.5 slate
     l3_predictions: dict                     # symbol -> formal L3 merged result
@@ -786,7 +789,20 @@ async def node_load_market_env(state: PipelineStateV2) -> dict:
         adaptive.get("computed_at") if isinstance(adaptive, dict) else None,
         adaptive_provenance.get("computed_at") if isinstance(adaptive_provenance, dict) else None,
     )
+    r33_scope = {}
+    from services.l3_equal_weight_bundle import is_r33_bundle
+    if is_r33_bundle(((trading_cfg or {}).get('l4Distribution') or {}).get('artifact')):
+        # R33-NEW-03: inference scope = L2 pool + holdings (a held name outside the
+        # pool needs E-hat for the decay exit); holdings join for inference only.
+        from services.l4_distribution_context import worker_request
+        from services.r33_serving_inputs import holding_stocks
+        added, held = await asyncio.to_thread(holding_stocks, signal_date=run_date,
+            active_stocks=state['active_stocks'], core_query=CORE_D1_CLIENT.query,
+            account_reader=lambda day: worker_request('/api/internal/l4-distribution/account', {'signal_date': day}))
+        r33_scope = {'r33_holdings': held, 'active_stocks': [*state['active_stocks'], *added]}
+        logger.info("[Pipeline V2] R33 inference scope: holdings=%s added_outside_pool=%s", len(held), len(added))
     return {
+        **r33_scope,
         "premarket_baseline": __import__('services.premarket_pipeline',fromlist=['capture_baseline']).capture_baseline(run_date,kv_client.get_json)
             if __import__('services.premarket_pipeline',fromlist=['enabled']).enabled() else {},
         "market_env": _to_dict(market_env),
@@ -1151,8 +1167,21 @@ async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False
         logger.debug("[Pipeline V2] Modal wait telemetry write skipped: %s", exc)
 
 
+    # R33 (Wei 10/30, m-d): a model with no usable score all day is left to the coverage
+    # check, which writes the error ops line first and then aborts with
+    # r33_model_missing_for_day; batch failures and invalid payloads still raise here.
+    from services.r33_ensemble import is_r33
+    r33_served_ensemble = ((serving_context.get("serving_manifest") or {}) if isinstance(serving_context.get("serving_manifest"), dict)
+                           else {}).get("active8_ensemble")
+    r33_day_outage_to_coverage = is_r33(r33_served_ensemble)
+
     def _active_required_model(model_name: str, series: list[dict]) -> bool:
-        if model_name not in model_order(model_status):
+        # Under R33 the served roster (sealed ensemble model_order) says which models are
+        # required; a model outside it (DLinear/XGBoost/sequence after G16) is not looked up.
+        if r33_day_outage_to_coverage:
+            if model_name not in tuple(r33_served_ensemble.get("model_order") or ()):
+                return False
+        elif model_name not in model_order(model_status):
             return False
         return _is_loaded_serving_model(model_status, model_name, "ml_predict_result_required") and bool(series)
 
@@ -1169,7 +1198,7 @@ async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False
         if gnn_map:
             logger.info("[Pipeline V2] GNN GraphSAGE full-universe: %s/%s succeeded", len(gnn_map), len(payloads))
         else:
-            if _active_required_model("GNN", payloads):
+            if _active_required_model("GNN", payloads) and not r33_day_outage_to_coverage:
                 raise RuntimeError(f"GNN active model returned zero usable predictions; summary={gnn_result_summary}")
             logger.warning("[Pipeline V2] GNN GraphSAGE full-universe: 0 succeeded summary=%s", gnn_result_summary)
     elif isinstance(gnn_raw, dict) and gnn_raw.get("results") == []:
@@ -1197,6 +1226,7 @@ async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False
                 f"[Pipeline V2] DLinear universal: {len(dlinear_map)}/{len(sequence_series_by_model.get('DLinear') or [])} succeeded"
             )
         else:
+            # Not an R33 model (model_order rejects DLinear beside TimeXer); never yields to the coverage abort.
             if _active_required_model("DLinear", sequence_series_by_model.get("DLinear") or []):
                 raise RuntimeError("DLinear active model returned zero usable predictions")
             logger.info("[Pipeline V2] DLinear universal: 0 succeeded (likely no trained weights in GCS yet)")
@@ -1225,7 +1255,8 @@ async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False
                 f"[Pipeline V2] PatchTST universal: {len(patchtst_map)}/{len(sequence_series_by_model.get('PatchTST') or [])} succeeded"
             )
         else:
-            if _active_required_model("PatchTST", sequence_series_by_model.get("PatchTST") or []):
+            if (_active_required_model("PatchTST", sequence_series_by_model.get("PatchTST") or [])
+                    and not r33_day_outage_to_coverage):
                 raise RuntimeError("PatchTST active model returned zero usable predictions")
             logger.info("[Pipeline V2] PatchTST universal: 0 succeeded (likely no trained weights in GCS yet)")
     elif isinstance(patchtst_raw, dict) and patchtst_raw.get("results") == []:
@@ -1252,7 +1283,7 @@ async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False
                     out[sym] = row
             summary = _modal_batch_result_summary(raw)
             error_summary = summary.get("error_summary")
-            if len(out) == 0 and series and required:
+            if len(out) == 0 and series and required and not r33_day_outage_to_coverage:
                 raise RuntimeError(
                     f"{name} active model returned zero usable predictions; "
                     f"contract_error_summary={error_summary or 'none'}"
@@ -1319,6 +1350,13 @@ async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False
 
     pred_map: dict[str, dict] = {}
     feature_missing_count = 0
+    # R33 (NEW-1030-06): a failed or absent feature row loses only the three feature models;
+    # the name keeps a skeleton row so its GNN and sequence scores still count.
+    # The served object's roster, not this checkout's training constant.
+    r33_feature_models = tuple(m for m in ((r33_served_ensemble or {}).get("model_order") or ()) if r33_day_outage_to_coverage
+                               and m != "GNN" and m not in SUPPORTED_SEQUENCE_MODELS)
+    feature_schemas = {str(r.get("feature_version") or "").split(":", 1)[0] for r in feature_by_symbol.values()} - {""}
+    r33_feature_schema = next(iter(feature_schemas)) if len(feature_schemas) == 1 else None
     for payload in payloads:
         sym = payload.get("symbol") if isinstance(payload, dict) else None
         if not sym:
@@ -1326,7 +1364,11 @@ async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False
         row = feature_by_symbol.get(sym)
         if row is None:
             feature_missing_count += 1
-            continue
+            if not r33_day_outage_to_coverage:
+                continue
+            from services.r33_serving_inputs import feature_gap_row
+            row = feature_gap_row(payload, feature_errors_by_symbol.get(sym), r33_feature_models,
+                                  feature_schema=r33_feature_schema)
         if isinstance(payload, dict):
             row["stock_meta"] = payload.get("stock_meta") or {}
         sequence_model_eligibility = {}
@@ -1478,6 +1520,13 @@ async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False
         f"challenger_shadow={sum(1 for v in pred_map.values() if v.get('challenger_rank_scores'))}"
     )
 
+    from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
+    r33, staleness, r33_rank_pool, r33_cost = await asyncio.to_thread(
+        _r33_serving_inputs, state, payloads=payloads, predictions=pred_map, ensemble=active8_ensemble,
+        serving_manifest=serving_manifest, run_date=rank_run_date, evidence_only=evidence_only,
+        ops_query=client_proxy_for_domain(D1DataDomain.OPS).query, row_errors=feature_errors_by_symbol,
+        ops_execute=None if research_only else client_proxy_for_domain(D1DataDomain.OPS).execute)
+
     if evidence_only:
         if active8_ensemble is not None:
             raise RuntimeError("formal_layer3_evidence_only_ensemble_must_be_absent")
@@ -1493,10 +1542,8 @@ async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False
             raise RuntimeError("formal_layer3_active8_ensemble_unavailable")
         for sym, row in pred_map.items():
             try:
-                if nav_authority is None:
-                    _attach_ensemble_v2(row, active8_ensemble, pool_models)
-                else:
-                    _attach_ensemble_v2(row, active8_ensemble, pool_models, nav_authority=nav_authority)
+                _attach_formal_ensemble(row, active8_ensemble, pool_models, r33=r33, r33_cost=r33_cost,
+                                        nav_authority=nav_authority)
             except Exception as exc:
                 row["ensemble_v2_error"] = f"{type(exc).__name__}: {exc}"
                 raise RuntimeError(f"formal_layer3_active8_ensemble_failed:{sym}:{exc}") from exc
@@ -1523,7 +1570,52 @@ async def node_ml_predict(state: PipelineStateV2, *, research_only: bool = False
         "nav_inference_receipt": nav_execution,
         "prediction_dispersion": dispersion,
         "modal_wait_telemetry": wait_telemetry,
+        "r33_rank_pool": r33_rank_pool,
+        "l2_input_staleness_report": staleness,
     }
+
+
+def _r33_serving_inputs(state, *, payloads, predictions, ensemble, serving_manifest, run_date, evidence_only, ops_query,
+                        row_errors=None, ops_execute=None):
+    """(r33, staleness report, rank pool, round-trip cost) for node_ml_predict.
+
+    Stale bars are reported in every mode and unscored only under R33 (HL2-1#a,
+    C28-16 S3). Under R33 the attested rank pool is built from the OPS screener
+    pool, the holdings read in load_market_env and the stale set, and the cost
+    comes from trading:config.fees (LV5#2). The day's per-model coverage goes to ops
+    system_logs (warn on any gap; a name with a Modal row error is prediction_missing); a model
+    with no score on any pool row is an error line and aborts the day."""
+    from services.r33_ensemble import is_r33, round_trip_cost
+    from services.r33_serving_inputs import stale_inputs, staleness_report
+    r33 = is_r33(ensemble)
+    stale = stale_inputs(payloads, run_date)
+    staleness = staleness_report(stale, payload_count=len(payloads), run_date=run_date, applied=r33)
+    logger.info("[Pipeline V2] L2 input staleness: stale=%s/%s effect=%s stale_symbols=%s",
+                staleness['stale_count'], len(payloads), staleness['effect'], staleness['stale'])
+    if not r33 or evidence_only:
+        return r33, staleness, None, None
+    from services.paired_nav_collection import baseline_model_identity
+    from services.r33_rank_pool import build_rank_pool, load_serving_pool
+    pool = load_serving_pool(ops_query, signal_date=run_date, screener_run_id=str(state.get('screener_run_id') or ''))
+    rank_pool = build_rank_pool(signal_date=run_date, pool=pool, predictions=predictions,
+        holdings=state.get('r33_holdings') or [], ensemble=ensemble,
+        l3_identity=baseline_model_identity(serving_manifest), stale=stale)
+    cost = round_trip_cost((state.get('trading_config') or {})['fees'])
+    logger.info("[Pipeline V2] R33 rank pool: %s", rank_pool['coverage'] | {'unscored': len(rank_pool['coverage']['unscored'])})
+    from services.r33_serving_inputs import require_full_day_coverage, write_coverage_log
+    model_errors = {s: p['model_errors'] for s, p in predictions.items() if isinstance(p, dict) and p.get('model_errors')}
+    require_full_day_coverage(write_coverage_log(ops_execute, rank_pool, row_errors=dict(row_errors or {}), logger=logger,
+                                                 model_errors=model_errors))
+    return r33, staleness, rank_pool, cost
+
+
+def _attach_formal_ensemble(row, ensemble, pool_models, *, r33, r33_cost, nav_authority):
+    if r33:
+        attach_ensemble_v2(row, ensemble, pool_models, round_trip_cost=r33_cost, nav_authority=nav_authority)
+    elif nav_authority is None:
+        _attach_ensemble_v2(row, ensemble, pool_models)
+    else:
+        _attach_ensemble_v2(row, ensemble, pool_models, nav_authority=nav_authority)
 
 
 def _timesfm_l175_registry_release_policy() -> dict[str, Any]:
@@ -1754,6 +1846,8 @@ async def _node_l3_formal_predict(state: PipelineStateV2) -> dict:
         "prediction_dispersion": dispersion,
         "modal_wait_telemetry": l3_result.get("modal_wait_telemetry"),
         "l3_modal_wait_telemetry": l3_result.get("modal_wait_telemetry"),
+        "r33_rank_pool": l3_result.get("r33_rank_pool"),
+        "l2_input_staleness_report": l3_result.get("l2_input_staleness_report"),
     }
 
 
@@ -2595,7 +2689,8 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         alpha_policy = dict(alpha_policy or {})
         alpha_policy['l4Distribution'] = await asyncio.to_thread(prepare_runtime_policy,
             policy=distribution_policy, signal_date=state['run_date'],
-            predictions=state['predictions'], manifest=_pipeline_frozen_serving_manifest(state))
+            predictions=state['predictions'], manifest=_pipeline_frozen_serving_manifest(state),
+            r33_rank_pool=state.get('r33_rank_pool'))
         if state.get('premarket_information'):
             alpha_policy['l4Distribution']['runtime']['premarket_information']=state['premarket_information']
             alpha_policy['l4Distribution']['runtime']['premarket_context_hash']=state['premarket_context']['checksum']
@@ -2890,10 +2985,22 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
         str(symbol) for symbol, prediction in (state.get('predictions') or {}).items()
         if isinstance(prediction, dict) and not prediction.get('error')
     }
-    missing_prediction_symbols = sorted(prediction_seed_symbols - successful_prediction_symbols)
-    unexpected_prediction_symbols = sorted(set(state.get('predictions') or {}) - prediction_seed_symbols)
+    # R33 (spec §3.2, R33-NEW-03): a seed name the attested rank pool records as unscored
+    # is a per-name gap (non-buy downstream, prediction_missing in the pool and the L3
+    # audit), and a holding added for inference is expected outside the seed. Anything
+    # else still fails the closure.
+    r33_unscored, r33_held_outside_seed = set(), set()
+    if state.get('r33_rank_pool') is not None:
+        from services.r33_rank_pool import validate_rank_pool
+        r33_pool = validate_rank_pool(state['r33_rank_pool'], state.get('predictions') or {})
+        r33_unscored = set(r33_pool['coverage']['unscored'])
+        r33_held_outside_seed = {r['symbol'] for r in r33_pool['rows'] if r['held']} - prediction_seed_symbols
+    r33_tolerated_missing = sorted((prediction_seed_symbols - successful_prediction_symbols) & r33_unscored)
+    missing_prediction_symbols = sorted(prediction_seed_symbols - successful_prediction_symbols - r33_unscored)
+    unexpected_prediction_symbols = sorted(set(state.get('predictions') or {}) - prediction_seed_symbols
+                                           - r33_held_outside_seed)
     unmapped_seed_symbols = sorted(prediction_seed_symbols - set(stock_id_map))
-    foreign_stock_symbols = sorted(set(stock_id_map) - prediction_seed_symbols)
+    foreign_stock_symbols = sorted(set(stock_id_map) - prediction_seed_symbols - r33_held_outside_seed)
     prediction_symbol_closure_passed = bool(prediction_seed_symbols) and not any((
         missing_prediction_symbols, unexpected_prediction_symbols, unmapped_seed_symbols, foreign_stock_symbols))
     if not prediction_symbol_closure_passed:
@@ -3012,7 +3119,7 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
         if str(symbol).strip()
     }
     if not formal_evidence_symbols:
-        formal_evidence_symbols = set(successful_prediction_symbols)
+        formal_evidence_symbols = successful_prediction_symbols & prediction_seed_symbols
     formal_evidence_prediction_symbols = successful_prediction_symbols & formal_evidence_symbols
     l3_ineligible_symbols = {
         symbol
@@ -3046,10 +3153,15 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
         "active8_action_authority": action_authority,
         "active8_observation_only": observation_only,
         "layer3_formal_gate_audit_rows": layer3_audit_rows,
-        "prediction_symbols": len(successful_prediction_symbols),
+        # Seed names with a prediction; under R33 the held names outside the seed and the
+        # unscored seed names are counted separately so the terminal check still closes the seed.
+        "prediction_symbols": len(successful_prediction_symbols & prediction_seed_symbols),
         "prediction_seed_symbols": len(prediction_seed_symbols),
+        "r33_unscored_missing_prediction_count": len(r33_tolerated_missing),
+        "r33_held_outside_seed_prediction_symbols": len(successful_prediction_symbols & r33_held_outside_seed),
         "prediction_symbol_closure_passed": prediction_symbol_closure_passed,
         "missing_prediction_symbols": missing_prediction_symbols[:20],
+        "r33_unscored_missing_prediction_symbols": r33_tolerated_missing[:20],
         "unexpected_prediction_symbols": unexpected_prediction_symbols[:20],
         "full_active_model_symbols": full_active_model_symbols,
         "formal_evidence_prediction_symbols": len(formal_evidence_prediction_symbols),
@@ -4332,6 +4444,20 @@ def _pit_feature_source_sets(state, semantics, *, research_only: bool) -> dict:
                                             for version, source in sorted(sources.items())}}
 
 
+def _r33_feature_prep_sources(state, serving_manifest) -> dict:
+    """R33-NEW-11: under R33 the feature models and GNN read their rows from the sealed prep
+    (the legacy daily capture and its PIT variants); absent in every other mode."""
+    from services.r33_ensemble import is_r33
+    if not is_r33(serving_manifest.get("active8_ensemble")):
+        return {}
+    base = state.get("timexer_feature_source")
+    if not isinstance(base, dict) or base.get("schema_version") != "timexer-feature-source-v1":
+        raise ValueError("r33_prep_source_missing")
+    pit = (state.get("timexer_pit_feature_sources") or {}).get("sources") or {}
+    return {"r33_feature_prep_sources": {"schema_version": "r33-feature-prep-sources-v1",
+                                         "base": base, "pit": dict(sorted(pit.items()))}}
+
+
 @artifact_reads
 async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, state_gcs_uri: str,
                                                   research_only: bool = False) -> dict:
@@ -4510,6 +4636,7 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
         "sequence_series": sequence_series,
         "timexer_feature_source": timexer_feature_source,
         **_pit_feature_source_sets(state, semantics if needs_timexer else None, research_only=research_only),
+        **_r33_feature_prep_sources(state, serving_manifest),
         "sequence_model_series_by_model": sequence_series_by_model,
         "sequence_model_contracts": _json_safe(sequence_contracts),
         "active8_shadow_sequence_series_by_model": active8_shadow_sequence_series_by_model,
@@ -4873,14 +5000,20 @@ def _validate_pipeline_modal_feature_bundle_before_writes(
         "missing_active_feature_ranks": dict(list(missing_active_feature_ranks.items())[:20]),
         "required_feature_models": required_feature_models,
     }
+    # R33: a symbol's row error or missing model rank is that symbol's coverage
+    # (prediction_missing / z=0, spec §3.2), not the day's failure; the structural
+    # closure (cardinality, duplicates, membership) stays fail-closed.
+    from services.r33_ensemble import is_r33
+    r33 = is_r33(expected_manifest.get("active8_ensemble"))
+    blockers["r33_unscored_not_blocking"] = r33
     if any((
         cardinality_mismatch,
         invalid_row_indexes,
         duplicate_symbols,
         missing_symbols,
         unexpected_symbols,
-        row_errors,
-        missing_active_feature_ranks,
+        row_errors and not r33,
+        missing_active_feature_ranks and not r33,
     )):
         raise RuntimeError(
             "pipeline_modal_active_feature_closure_failed:"
@@ -4965,7 +5098,7 @@ def _validate_pipeline_modal_feature_bundle_before_writes(
             duplicates,
             model_blockers["missing_symbols"],
             model_blockers["unexpected_symbols"],
-            errors,
+            errors and not r33,
         )):
             raise RuntimeError(
                 f"pipeline_modal_{model_name.lower()}_closure_failed:"
@@ -5015,16 +5148,18 @@ def classify_pipeline_terminal_invariants(metrics: Any) -> list[str]:
 
     prediction_seed_symbols = _int("prediction_seed_symbols")
     prediction_symbols = _int("prediction_symbols")
+    # R33: a seed name the attested rank pool left unscored closes the seed as a per-name gap.
+    closed_seed_symbols = prediction_symbols + _int("r33_unscored_missing_prediction_count")
     if prediction_seed_symbols <= 0:
         blockers.append("pipeline_terminal_invariant:prediction_seed_symbols_missing")
     if _int("predictions_written") <= 0:
         blockers.append("pipeline_terminal_invariant:prediction_rows_missing")
     if prediction_symbols <= 0:
         blockers.append("pipeline_terminal_invariant:prediction_symbols_missing")
-    if prediction_seed_symbols > 0 and prediction_symbols != prediction_seed_symbols:
+    if prediction_seed_symbols > 0 and closed_seed_symbols != prediction_seed_symbols:
         blockers.append(
             "pipeline_terminal_invariant:prediction_symbol_count_mismatch:"
-            f"actual={prediction_symbols}:expected={prediction_seed_symbols}"
+            f"actual={closed_seed_symbols}:expected={prediction_seed_symbols}"
         )
     if values.get("prediction_symbol_closure_passed") is not True:
         blockers.append("pipeline_terminal_invariant:prediction_symbol_closure_failed")

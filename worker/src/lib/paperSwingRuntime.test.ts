@@ -33,12 +33,12 @@ test('real daily adapter persists ORL intent; rebound and missing data do not ca
     .run('2340','stock',1000,100,lifecycle)
   const pos={...position}
   await withPaperExecutionScope(f.ports,async()=>{
-    const run=swingExitEvaluator(f.env,[pos],'2026-10-05')
+    const run=swingExitEvaluator(f.env,[pos],'2026-10-05',f.cfg)
     assert.equal((await run(pos,105))?.action,'hold')
     assert.equal(readSwingState(pos.trade_lifecycle_json)?.pendingExit?.reason,'swing_daily_orl')
     f.sqls.market.exec('DELETE FROM stock_prices')
     advancePaperExecutionClock(Date.parse('2026-10-05T09:05:00+08:00'))
-    const restart=swingExitEvaluator(f.env,[pos],'2026-10-05')
+    const restart=swingExitEvaluator(f.env,[pos],'2026-10-05',f.cfg)
     assert.equal((await restart(pos,105))?.reason,'swing_daily_orl')
     assert.equal((await restart(pos,90))?.reason,'swing_hard_stop_8')
   })
@@ -50,7 +50,7 @@ test('missing calendar holds without legacy fallback; catastrophic stop still wo
  f.sqls.paper.prepare('INSERT INTO paper_positions(account_id,symbol,name,shares,avg_cost,trade_lifecycle_json) VALUES(1,?,?,?,?,?)').run('2340','stock',1000,100,lifecycle)
  await withPaperExecutionScope(f.ports,async()=>{
    const pos={...position}
-   const run=swingExitEvaluator(f.env,[pos],'2026-10-05')
+   const run=swingExitEvaluator(f.env,[pos],'2026-10-05',f.cfg)
    assert.match((await run(pos,150))!.reason,/evidence_wait/)
    assert.equal((await run(pos,90))?.action,'full_sell')
    assert.equal((await run(pos,110))?.reason,'swing_hard_stop_8','unfilled disaster exit survives rebound')
@@ -63,7 +63,7 @@ test('missing benchmark weekday cannot shorten twenty-session holding age',async
   f.sqls.core.exec("INSERT INTO stocks(id,symbol,name) VALUES(1,'0050','ETF'),(2,'2340','stock')")
   f.sqls.market.exec("INSERT INTO stock_prices(stock_id,date,close) VALUES(1,'2026-10-02',100),(2,'2026-10-02',100)")
   await withPaperExecutionScope(f.ports,async()=>{
-    const result=await swingExitEvaluator(f.env,[position],'2026-10-06')(position,105)
+    const result=await swingExitEvaluator(f.env,[position],'2026-10-06',f.cfg)(position,105)
     assert.match(result!.reason,/calendar_session_missing:2026-10-05/)
   })
  }finally{f.close()}
@@ -81,10 +81,10 @@ test('historical closes use corporate-adjusted ORL coordinates; day20 intent sur
   f.sqls.paper.prepare('INSERT INTO paper_positions(account_id,symbol,name,shares,avg_cost,trade_lifecycle_json) VALUES(1,?,?,?,?,?)').run('2340','stock',1000,50,raw)
   const pos={...position,trade_lifecycle_json:raw}
   await withPaperExecutionScope(f.ports,async()=>{
-    assert.equal((await swingExitEvaluator(f.env,[pos],last)(pos,50))?.reason,'swing_20_sessions')
+    assert.equal((await swingExitEvaluator(f.env,[pos],last,f.cfg)(pos,50))?.reason,'swing_20_sessions')
     assert.equal(readSwingState(pos.trade_lifecycle_json)?.pendingExit?.reason,'swing_20_sessions')
     f.sqls.market.exec('DELETE FROM stock_prices')
-    assert.equal((await swingExitEvaluator(f.env,[pos],last)(pos,55))?.reason,'swing_20_sessions')
+    assert.equal((await swingExitEvaluator(f.env,[pos],last,f.cfg)(pos,55))?.reason,'swing_20_sessions')
   })
  }finally{f.close()}
 })

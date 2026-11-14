@@ -27,7 +27,11 @@ def recommendation_source_identity() -> dict[str, str]:
         'screener_seed_domain_merge.py', 'screener_seed_domain_shadow.py',
         'recommendation_source_context.py', 'paired_nav_atomic_recommendation.py',
         'paired_nav_atomic_policy.py', 'paired_nav_atomic_allocation.py', 'paired_nav_atomic_candidate.py',
-        'fundamental_quality.py', 'pit_sector_alpha.py', 'sector_flow_pit_history.py')}
+        'fundamental_quality.py', 'pit_sector_alpha.py', 'sector_flow_pit_history.py',
+        'active8_score_semantics.py', 'r33_ensemble.py', 'r33_rank_pool.py', 'r33_isotonic_calibration.py',
+        'r33_crossfit_serving.py', 'r33_calibration_job.py', 'r33_serving_inputs.py', 'r33_cutover.py',
+        # The R33 training roster owner (G-I): a roster change is a new-grant release, never a reuse.
+        'alpha_model_roster.py')}
 
 
 def verify_screener_recommendation_source(inputs: dict) -> None:

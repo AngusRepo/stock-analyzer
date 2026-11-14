@@ -328,7 +328,8 @@ def old_chain():
     raw = {'l4Distribution': deepcopy(V1_POLICY), 'position': {'maxPctOfPortfolio': .25, 'maxPositions': 5},
            'circuit': {'maxPositionPct': .08, 'highVolReducedPosPct': .04}, 'fees': {'commission': .001425}}
     risk = {'system': {'killSwitch': False}, 'portfolio': {'dailyPnlLossLimitPct': -.03},
-            'position': {'maxSingleNamePct': .25}, 'order': {}}
+            'position': {'maxSingleNamePct': .25, 'maxPerSector': 2, 'correlationThreshold': .65,
+                         'correlationWindow': 60}, 'order': {}}
     first = prepare_policy_v2_packet(raw_config=raw, merged_config=deepcopy(raw), risk_config=risk,
         risk_defaults=RISK_DEFAULTS, lookback=gnn_return_history_lookback(), cost_objective='single_side_v1',
         engineering_receipt={'receipt': 'p1'}, source_reference='test-only r31 P1')
@@ -405,6 +406,39 @@ def test_continue_from_refuses_a_chain_whose_links_do_not_connect(tmp_path, monk
 
 
 def test_continue_from_is_refused_outside_prepare_change(tmp_path, monkeypatch):
-    with pytest.raises(SystemExit, match='with prepare-change only'):
+    with pytest.raises(SystemExit, match='with prepare-change / prepare-risk only'):
         activate(monkeypatch, tmp_path, 'grant', '--out', str(tmp_path / 'w-rel'), '--continue-from',
                  str(tmp_path / 'chain.json'), '--step', '1')
+
+
+# --- K20 G0b: prepare-risk (risk-only P1) ---------------------------------------------------------
+
+def test_prepare_risk_continues_a_new_chain_from_the_live_step_and_admission_binds_it(tmp_path, monkeypatch):
+    from services.l4_policy_activation import RISK_SCHEMA, chain_states
+    chain = old_chain()
+    (tmp_path / 'r31-chain.json').write_text(json.dumps(chain), encoding='utf-8')
+    out = tmp_path / 'slice-a'
+    activate(monkeypatch, tmp_path, 'prepare-risk', '--out', str(out), '--continue-from',
+             str(tmp_path / 'r31-chain.json'), '--step', '2', '--risk-set', 'position.minCorrelationOverlap=20')
+    new = json.loads((out / 'policy-chain.json').read_text(encoding='utf-8'))
+    p2 = chain[1]
+    assert len(new) == 1 and new[0]['activation']['schema_version'] == RISK_SCHEMA
+    assert new[0]['write_order'] == new[0]['rollback_order'] == ['trading:risk_config']
+    assert new[0]['next_config'] == new[0]['rollback_config'] == p2['next_config']
+    assert new[0]['next_risk_config']['position'] == {**p2['next_risk_config']['position'], 'minCorrelationOverlap': 20}
+    assert new[0]['activation']['previous_policy_checksum'] == digest(p2['next_merged_config']['l4Distribution'])
+    assert chain_states(new)[0] == chain_states(chain)[2]
+    assert new[0]['continued_from']['step'] == 2
+    with pytest.raises(ValueError, match='risk_field_present'):
+        activate(monkeypatch, tmp_path, 'prepare-risk', '--out', str(out), '--risk-set', 'position.maxSingleNamePct=0.3')
+
+
+def test_admission_binds_a_risk_only_first_packet_to_the_live_step(tmp_path, monkeypatch):
+    from services.l4_policy_activation import RISK_SCHEMA
+    release = Release(tmp_path, monkeypatch).at('P2')
+    packet = {'activation': {'schema_version': RISK_SCHEMA, 'previous_policy_checksum': digest({'policy': 'P2'})},
+              'rollback_risk_config': deepcopy(release.current['risk_config']),
+              'continued_from': {'step': 2, 'activation_checksum': digest(LIVE_ACTIVATIONS[1])}}
+    (tmp_path / 'policy-chain.json').write_text(json.dumps([packet]), encoding='utf-8')
+    receipt = release.run(policy_chain=tmp_path / 'policy-chain.json')
+    assert receipt['live_step'] == 2 and release.manifests()[1]['policy_activations'] == [packet['activation']]

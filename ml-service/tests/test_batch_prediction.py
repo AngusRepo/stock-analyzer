@@ -294,7 +294,7 @@ def test_artifact_batch_incompatibility_does_not_fall_back_per_symbol(monkeypatc
     monkeypatch.setattr(
         batch_prediction,
         "_align_latest_features",
-        lambda ctx, _meta: ctx.x_latest,
+        lambda ctx, _meta, _model_name=None: ctx.x_latest,
     )
 
     batch_prediction._apply_artifact_batch_predictions(contexts, "XGBoost", model, {})

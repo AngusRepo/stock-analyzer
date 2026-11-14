@@ -2,7 +2,8 @@
 
 The L4 policy-v2 activation deletes `trading:config.position.maxPctOfPortfolio`;
 `trading:risk_config.position` is then the only owner of the single-name cap,
-the sector limit and the correlation rule (services/l4_policy_activation.py).
+the sector limit and the correlation rule, including its minimum overlap
+(services/l4_policy_activation.py; C28-01).
 Every replay entry injects that contract through this module, and
 replay_period refuses to run without it instead of falling back to a cap.
 """
@@ -40,7 +41,7 @@ def formal_position_risk(risk_config: Any) -> dict[str, Any]:
         'maxSingleNamePct': position.get('maxSingleNamePct'),
         'correlationThreshold': position.get('correlationThreshold'),
         'correlationWindow': position.get('correlationWindow'),
-        'minCorrelationOverlap': 20,
+        'minCorrelationOverlap': position.get('minCorrelationOverlap'),
         'sourceRiskConfigChecksum': _checksum(risk_config),
     }
     try:

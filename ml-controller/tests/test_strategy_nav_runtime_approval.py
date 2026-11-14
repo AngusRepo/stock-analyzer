@@ -377,3 +377,84 @@ def test_source_release_after_activated_step_pins_that_policy_grant_as_prior(sou
                                          'next_risk_config': configuration['risk_config']}])
     assert validate_runtime_approval(s_prime, admission, now=CLOCK) == s_prime
     assert validate_runtime_approval(p_next, admission, now=CLOCK) == p_next
+
+
+# K20 G0b (Wei 2026-11-12 Q9): a risk-only P1 adds risk_config fields; the policy stays S's.
+RISK_FIELDS = {'position.minCorrelationOverlap': 20}
+# The four position fields live trading:risk_config carries (runbook §2.1a read-back, 11/5).
+LIVE_POSITION = {'maxSingleNamePct': .25, 'maxPerSector': 2, 'correlationThreshold': .65, 'correlationWindow': 60}
+
+
+def risk_chain(source_grant, risk_fields=RISK_FIELDS):
+    """S plus a risk-only P1 over the V1 policy of policy_chain's S."""
+    from services.l4_policy_activation import policy_grants, risk_change_document
+    admission, approval, manifest = source_grant
+    prior = approval['prior_runtime_approval']
+    config = prior['configuration']
+    config['trading_config'].update(l4Distribution=deepcopy(V1_POLICY))
+    config['risk_config'] = {'system': {'killSwitch': False}, 'position': deepcopy(LIVE_POSITION)}
+    config['native_execution_policy']['variables']['LIVE_EXECUTION_SUBMIT_GUARD_ENABLED'] = '0'
+    seal(prior)
+    manifest['prior_approval_checksum'] = prior['approval_checksum']
+    manifest['prior_configuration_checksum'] = digest(config)
+    for name in ('trading_config', 'risk_config'):
+        approval['configuration'][name] = deepcopy(config[name])
+    approval['configuration']['native_execution_policy']['variables']['LIVE_EXECUTION_SUBMIT_GUARD_ENABLED'] = '0'
+    activation, next_risk = risk_change_document(config['trading_config'], config['risk_config'],
+        risk_fields=risk_fields, engineering_receipt_checksum='e' * 64, source_reference='test-only risk fixture')
+    packets = [{'activation': activation, 'next_merged_config': deepcopy(config['trading_config']),
+                'next_risk_config': next_risk}]
+    manifest['policy_activations'] = [activation]
+    approval['approved_strategy_nav_source_change']['release_manifest_checksum'] = digest(manifest)
+    source = seal(approval)
+    return admission, source, policy_grants(source, packets)[0]
+
+
+def test_risk_only_grant_accepts_exactly_the_declared_added_fields(source_grant):
+    admission, source, candidate = risk_chain(source_grant)
+    assert validate_runtime_approval(source, admission, now=CLOCK) == source
+    assert validate_runtime_approval(candidate, admission, now=CLOCK) == candidate
+    assert candidate['configuration']['risk_config']['position'] == {**LIVE_POSITION, 'minCorrelationOverlap': 20}
+    assert (candidate['configuration']['trading_config']['l4Distribution']
+            == source['configuration']['trading_config']['l4Distribution'])
+    wrong = deepcopy(candidate)
+    wrong['configuration']['risk_config']['position']['minCorrelationOverlap'] = 21
+    with pytest.raises(RuntimeError):
+        validate_runtime_approval(seal(wrong), admission, now=CLOCK)
+    moved = deepcopy(candidate)
+    moved['configuration']['trading_config']['l4Distribution']['constraints']['name_cap'] = .2
+    with pytest.raises(RuntimeError):
+        validate_runtime_approval(seal(moved), admission, now=CLOCK)
+
+
+def test_risk_only_document_never_moves_a_present_field_or_the_policy():
+    from services.l4_policy_activation import expected_configuration, risk_change_document
+    trading, risk = {'l4Distribution': deepcopy(V1_POLICY)}, {'position': deepcopy(LIVE_POSITION)}
+    with pytest.raises(ValueError, match='risk_field_present'):
+        risk_change_document(trading, risk, risk_fields={'position.maxSingleNamePct': .3},
+                             engineering_receipt_checksum='e' * 64, source_reference='x')
+    with pytest.raises(ValueError):
+        risk_change_document(trading, risk, risk_fields={}, engineering_receipt_checksum='e' * 64, source_reference='x')
+    activation, next_risk = risk_change_document(trading, risk, risk_fields=RISK_FIELDS,
+                                                 engineering_receipt_checksum='e' * 64, source_reference='x')
+    assert expected_configuration({'trading_config': trading, 'risk_config': risk}, activation) == (trading, next_risk)
+    forged = {**activation, 'next_policy_checksum': '0' * 64}
+    with pytest.raises(ValueError):
+        expected_configuration({'trading_config': trading, 'risk_config': risk}, forged)
+
+
+@pytest.mark.parametrize('kv_state', ['before_risk_write', 'after_risk_write'])
+def test_risk_only_grant_is_not_active_until_the_risk_write_lands(source_grant, monkeypatch, kv_state):
+    """The policy is unchanged, so only trading:risk_config tells P1 from S."""
+    from services import active8_paper_admission as paper, kv_client
+    admission, source, candidate = risk_chain(source_grant)
+    read = Path.read_text
+    monkeypatch.setattr(Path, 'read_text', lambda path, *a, **kw: json.dumps({
+        'runtime_admission': 'source-test', 'policy_runtime_admission': 'policy-test'})
+        if path.name == 'native_execution_behavior_release.json' else read(path, *a, **kw))
+    granted = candidate if kv_state == 'after_risk_write' else source
+    values = {paper.KEY: admission, 'source-test': source, 'policy-test': candidate,
+              'trading:config': source['configuration']['trading_config'],
+              'trading:risk_config': granted['configuration']['risk_config']}
+    monkeypatch.setattr(kv_client, 'get_json', lambda key, **kwargs: deepcopy(values.get(key)))
+    assert paper.verify_active_approval(admission) == granted

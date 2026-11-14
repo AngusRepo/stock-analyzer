@@ -1,5 +1,6 @@
 import {
   buildEventsFromAdaptiveMeta,
+  buildEventsFromAdaptiveRosterEcho,
   buildEventsFromDataQuality,
   buildEventsFromGaOptimizer,
   buildEventsFromScheduler,
@@ -225,4 +226,19 @@ const generatedAt = '2026-04-30T01:00:00.000Z'
   assert(filters.severity === undefined, 'audit filter should drop unknown severity')
   assert(filters.domain === undefined, 'audit filter should drop unknown domain')
   assert(filters.limit === 200, 'audit filter should clamp oversized limit')
+}
+
+{
+  // Q7 A: the meta_layer roster echo is descriptive; a mismatch is one non-blocking warn.
+  const published = ['LightGBM', 'ExtraTrees', 'TabM', 'GNN']
+  const eight = ['LightGBM', 'XGBoost', 'ExtraTrees', 'TabM', 'GNN', 'TimeXer', 'PatchTST', 'iTransformer']
+  const stale = buildEventsFromAdaptiveRosterEcho({ generatedAt: '2026-11-17T00:00:00Z',
+    params: { meta_layer: { alpha_vote_models: eight, formal_layer3_slots: published } }, publishedModelOrder: published })
+  assert(stale.length === 1 && stale[0].severity === 'warn' && stale[0].status === 'roster_echo_mismatch', 'echo mismatch warns once')
+  assert(JSON.stringify(stale[0].evidence?.mismatched_fields) === '["alpha_vote_models"]', 'only the differing field is named')
+  const same = buildEventsFromAdaptiveRosterEcho({ generatedAt: '2026-11-17T00:00:00Z',
+    params: { meta_layer: { alpha_vote_models: published, formal_layer3_slots: published } }, publishedModelOrder: published })
+  assert(same.length === 0, 'matching echo emits nothing')
+  assert(buildEventsFromAdaptiveRosterEcho({ generatedAt: 'x', params: { meta_layer: {} } }).length === 0,
+    'no published order (read failed) emits nothing')
 }

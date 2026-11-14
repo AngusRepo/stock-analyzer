@@ -1,5 +1,6 @@
 import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
+import { logSchedulerResult, type SchedulerRunLogEntry } from './schedulerRunLogger'
 import {
   buildPitResidualCounterfactuals,
   loadPitResidualShadowSnapshot,
@@ -14,6 +15,11 @@ const RESIDUAL_STAGE = 'pit_residual_momentum_shadow'
 const BASE_STAGE = 'pit_residual_momentum_shadow_base'
 const LEGACY_BASE_STAGE = 'l15_ml_slate_queue'
 const INSERT_ROWS_PER_STATEMENT = 7
+const ENRICHMENT_TASK = 'pit-residual-funnel-enrichment'
+const SNAPSHOT_MISSING_PREFIX = 'pit_residual_same_day_snapshot_missing:'
+// The post-close snapshot job lands the same-day shadow about six minutes after
+// the 14:20 dispatch queues this chain; past this window a missing shadow is a failure.
+const SNAPSHOT_PENDING_WINDOW_MS = 90 * 60_000
 
 type CanonicalScreenerRun = {
   run_id: string
@@ -137,16 +143,20 @@ async function persistReceipt(
   ).run()
 }
 
-export async function enrichCanonicalPitResidualFunnel(
-  env: Bindings,
-  input: { businessDate: string; pipelineCanonicalRunId: string },
-): Promise<PitResidualFunnelEnrichmentResult> {
+function assertEnrichmentInput(input: { businessDate: string; pipelineCanonicalRunId: string }): void {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(input.businessDate)) {
     throw new Error(`pit_residual_invalid_enrichment_date:${input.businessDate}`)
   }
   if (!input.pipelineCanonicalRunId.trim()) {
     throw new Error('pit_residual_pipeline_canonical_run_missing')
   }
+}
+
+export async function enrichCanonicalPitResidualFunnel(
+  env: Bindings,
+  input: { businessDate: string; pipelineCanonicalRunId: string },
+): Promise<PitResidualFunnelEnrichmentResult> {
+  assertEnrichmentInput(input)
   const opsDb = databaseForDataDomain(env, 'ops')
   const learningDb = databaseForDataDomain(env, 'learning')
   let screenerRunId = 'unresolved'
@@ -335,6 +345,143 @@ export async function enrichCanonicalPitResidualFunnel(
 }
 
 /**
+ * Enriches a date once per canonical screener run. A success receipt for that run
+ * settles it, so the snapshot callback, the 14:20 chain and a duplicate callback
+ * never rewrite the same rows.
+ */
+export async function enrichPitResidualFunnelOnce(
+  env: Bindings,
+  input: { businessDate: string; pipelineCanonicalRunId: string },
+): Promise<string> {
+  assertEnrichmentInput(input)
+  const opsDb = databaseForDataDomain(env, 'ops')
+  const canonical = await loadCanonicalScreenerRun(opsDb, input.businessDate)
+  const receipt = await opsDb.prepare(`
+    SELECT status
+      FROM pit_residual_funnel_enrichment_runs_v1
+     WHERE business_date=? AND screener_run_id=?
+     LIMIT 1
+  `).bind(input.businessDate, canonical.run_id).first<{ status: string }>()
+  if (receipt?.status === 'success') {
+    return `pit_residual_funnel_already_enriched date=${input.businessDate} screener_run=${canonical.run_id} decision_effect=none`
+  }
+  return (await enrichCanonicalPitResidualFunnel(env, input)).summary
+}
+
+/**
+ * Returns a waiting summary only while the same-day snapshot is still in flight:
+ * the shadow is missing, this run's dataset-snapshot-export has not reported a
+ * terminal callback, and the chain was queued within the snapshot window.
+ * Anything else stays an error.
+ */
+export async function pitResidualSnapshotPendingSummary(
+  env: Bindings,
+  input: { businessDate: string; pipelineCanonicalRunId: string; error: unknown; nowMs?: number },
+): Promise<string | null> {
+  const message = input.error instanceof Error ? input.error.message : String(input.error)
+  const runId = input.pipelineCanonicalRunId.trim()
+  if (!message.startsWith(SNAPSHOT_MISSING_PREFIX) || !runId) return null
+  try {
+    const [snapshot, enrichment] = await Promise.all([
+      env.KV.get(`scheduler:run:dataset-snapshot-export:${input.businessDate}`, 'json'),
+      env.KV.get(`scheduler:run:${ENRICHMENT_TASK}:${input.businessDate}`, 'json'),
+    ]) as [SchedulerRunLogEntry | null, SchedulerRunLogEntry | null]
+    if (
+      snapshot
+      && String(snapshot.run_id ?? '').startsWith(`${runId}:`)
+      && !['triggered', 'running', 'waiting'].includes(snapshot.status)
+    ) return null
+    // A callback already settled this run; waiting would mask its result.
+    if (enrichment?.run_id === runId && ['success', 'error'].includes(enrichment.status)) return null
+    const stage = await databaseForDataDomain(env, 'ops').prepare(`
+      SELECT queued_at
+        FROM pipeline_stage_runs
+       WHERE business_date=? AND stage='post_pipeline_chain' AND canonical_run_id=?
+       LIMIT 1
+    `).bind(input.businessDate, runId).first<{ queued_at: string | null }>()
+    const queuedAt = Date.parse(`${String(stage?.queued_at ?? '').replace(' ', 'T')}Z`)
+    const elapsedMs = (input.nowMs ?? Date.now()) - queuedAt
+    if (!Number.isFinite(elapsedMs) || elapsedMs < 0 || elapsedMs > SNAPSHOT_PENDING_WINDOW_MS) return null
+  } catch {
+    return null
+  }
+  return [
+    'status=waiting pit_residual_same_day_snapshot_pending',
+    `date=${input.businessDate}`,
+    `pipeline_run=${runId}`,
+    'completion=dataset-snapshot-export_callback',
+    `detail=${message}`,
+  ].join(' ')
+}
+
+/** 14:20 post-pipeline step: the dataset-snapshot callback reruns it once the job finishes. */
+export async function enrichPitResidualFunnelForChain(
+  env: Bindings,
+  input: { businessDate: string; pipelineCanonicalRunId: string },
+): Promise<string> {
+  try {
+    return await enrichPitResidualFunnelOnce(env, input)
+  } catch (error) {
+    const pending = await pitResidualSnapshotPendingSummary(env, { ...input, error })
+    if (pending) return pending
+    throw error
+  }
+}
+
+/**
+ * Dataset-snapshot callback hand-off. The post-close job writes the same-day
+ * shadow before it calls back, so the enrichment the chain parked runs here.
+ * Best effort: the outcome is logged on the enrichment's own task and receipt,
+ * and this never throws into the callback.
+ */
+export async function runPitResidualFunnelEnrichmentAfterSnapshot(
+  env: Bindings,
+  input: { businessDate: string },
+): Promise<string> {
+  const startedAt = Date.now()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.businessDate)) {
+    return `skipped: invalid snapshot business date ${input.businessDate}`
+  }
+  let runId = ''
+  try {
+    // Same eligibility as recovery: only a successful pipeline_execution owns the date.
+    const authority = await databaseForDataDomain(env, 'ops').prepare(`
+      SELECT canonical_run_id
+        FROM pipeline_stage_runs
+       WHERE business_date=? AND stage='pipeline_execution' AND status='success'
+       LIMIT 1
+    `).bind(input.businessDate).first<{ canonical_run_id: string | null }>()
+    runId = String(authority?.canonical_run_id ?? '').trim()
+    if (!runId) return `skipped: no successful pipeline_execution date=${input.businessDate}`
+    const summary = await enrichPitResidualFunnelOnce(env, {
+      businessDate: input.businessDate,
+      pipelineCanonicalRunId: runId,
+    })
+    await logSchedulerResult(env.KV, ENRICHMENT_TASK, {
+      status: 'success',
+      summary: `${summary} trigger=dataset_snapshot_callback`,
+      duration_ms: Date.now() - startedAt,
+      run_id: runId,
+      run_date: input.businessDate,
+    }, env)
+    return summary
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (runId) {
+      await logSchedulerResult(env.KV, ENRICHMENT_TASK, {
+        status: 'error',
+        summary: `${message} trigger=dataset_snapshot_callback`,
+        duration_ms: Date.now() - startedAt,
+        error: message,
+        run_id: runId,
+        run_date: input.businessDate,
+      }, env).catch(() => {})
+    }
+    return `error: ${message}`
+  }
+}
+
+/**
  * Repairs a bounded number of historical canonical funnel dates that already
  * have both an authoritative pipeline run and same-day Learning shadow data.
  * This never changes screener decisions, candidate_count, or final_count.
@@ -454,4 +601,97 @@ export async function recoverMissingPitResidualFunnels(
       `dates=${attemptedDates.join(',') || 'none'}`,
     ].join(' '),
   }
+}
+
+// Scheduler run logs live seven days, so this window covers every entry that can still be waiting.
+const STALE_WAIT_LOOKBACK_DAYS = 7
+
+/**
+ * Settles enrichment log entries the 14:20 step left waiting past the snapshot
+ * window: success when a success receipt exists, otherwise the recovery error or
+ * pit_residual_snapshot_never_completed. Reads are one KV get per calendar date
+ * in the log TTL window plus primary-key lookups for stale dates only.
+ */
+export async function settleStalePitResidualWaits(
+  env: Bindings,
+  input: {
+    throughDate: string
+    excludeBusinessDate?: string | null
+    recovery?: PitResidualFunnelRecoveryResult | null
+    nowMs?: number
+  },
+): Promise<string> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(input.throughDate)) return 'stale_waiting=skipped_invalid_date'
+  const nowMs = input.nowMs ?? Date.now()
+  const dates: string[] = []
+  for (let offset = 0; offset <= STALE_WAIT_LOOKBACK_DAYS; offset += 1) {
+    const day = new Date(Date.parse(`${input.throughDate}T00:00:00Z`) - offset * 86400_000)
+      .toISOString().slice(0, 10)
+    if (day !== input.excludeBusinessDate) dates.push(day)
+  }
+  const entries = await Promise.all(dates.map(async (day) => ({
+    day,
+    entry: await env.KV.get(`scheduler:run:${ENRICHMENT_TASK}:${day}`, 'json')
+      .catch(() => null) as SchedulerRunLogEntry | null,
+  })))
+  const recovered = new Map((input.recovery?.recovered ?? []).map((row) => [row.businessDate, row]))
+  const failures = new Map((input.recovery?.failures ?? []).map((row) => [row.businessDate, row.error]))
+  const opsDb = databaseForDataDomain(env, 'ops')
+  const learningDb = databaseForDataDomain(env, 'learning')
+  const settled: string[] = []
+  for (const { day, entry } of entries) {
+    const runId = String(entry?.run_id ?? '').trim()
+    if (!entry || !runId) continue
+    const recoveredRow = recovered.get(day)
+    const stale = entry.status === 'waiting'
+      && nowMs - Date.parse(entry.timestamp) > SNAPSHOT_PENDING_WINDOW_MS
+    // A date recovered here also replaces an older error from the same run.
+    if (!stale && !(recoveredRow && entry.status !== 'success')) continue
+    try {
+      let status: 'success' | 'error'
+      let summary: string
+      if (recoveredRow) {
+        status = 'success'
+        summary = recoveredRow.summary
+      } else if (failures.has(day)) {
+        status = 'error'
+        summary = failures.get(day)!
+      } else {
+        const receipt = await opsDb.prepare(`
+          SELECT receipt.status
+            FROM canonical_run_heads h
+            JOIN pit_residual_funnel_enrichment_runs_v1 receipt
+              ON receipt.business_date=? AND receipt.screener_run_id=h.run_id
+           WHERE h.logical_run_key='screener:' || ? || ':TW:production:market_screener'
+           LIMIT 1
+        `).bind(day, day).first<{ status: string }>()
+        if (receipt?.status === 'success') {
+          status = 'success'
+          summary = `pit_residual_funnel_already_enriched date=${day} decision_effect=none`
+        } else {
+          const shadow = await learningDb.prepare(`
+            SELECT 1 AS present FROM pit_factor_shadow_daily_v1 WHERE signal_date=? LIMIT 1
+          `).bind(day).first<{ present: number }>()
+          status = 'error'
+          summary = shadow
+            ? `pit_residual_funnel_not_recovered:${day}`
+            : `pit_residual_snapshot_never_completed:${day}`
+        }
+      }
+      // No supersede: a concurrent callback success for the same run still wins.
+      // No env: the per-date Discord alert must not stretch the recovery step past its timeout.
+      await logSchedulerResult(env.KV, ENRICHMENT_TASK, {
+        status,
+        summary: `${summary} trigger=stale_wait_settlement`,
+        duration_ms: 0,
+        error: status === 'error' ? summary : undefined,
+        run_id: runId,
+        run_date: day,
+      })
+      settled.push(`${day}:${status}`)
+    } catch (error) {
+      console.warn(`[pitResidualFunnel] stale wait settlement failed date=${day}:`, error)
+    }
+  }
+  return `stale_waiting_settled=${settled.join(',') || 'none'}`
 }

@@ -3,6 +3,7 @@ import { DATA_DOMAINS, databaseForDataDomain, databaseForTable, shadowDatabaseFo
 import type { DataDomain } from './dataDomainRegistry'
 import { runVerifyV2 } from './controllerWorkflows'
 import { twToday } from './dateUtils'
+import { eodExitSchedule, eodExitWindowLabel } from './schedulerManifestGovernance'
 import { runPremarketProducerTask } from './premarketProducerStatus'
 import { runMorningWarmup } from './localMaintenance'
 import { runCadenceReadiness } from './cadenceReadiness'
@@ -15,6 +16,7 @@ import {
 } from './eveningChainRunAuthority'
 import { classifySchedulerSummary, logSchedulerResult } from './schedulerRunLogger'
 import { activeDataDomainShadowBackfillRunId } from './dataDomainShadowSession'
+import { runEodExitUnderIntradayLease } from './eodExitLease'
 
 const RESCORE_SLOT_TASK_BY_CRON: Record<string, string> = {
   '0 2 * * 1-5': 'rescore-10',
@@ -348,7 +350,9 @@ export function buildAdminWorkerDomainTaskMap(
     },
     'strategy-learning-watchdog': async () => {
       const { runStrategyLearningRecoveryWatchdog } = await import('./strategyLearningRecoveryWatchdog')
-      return runStrategyLearningRecoveryWatchdog(c.env, requestedRunDate())
+      return runStrategyLearningRecoveryWatchdog(c.env, requestedRunDate(), {
+        overrideBackoff: c.req.query('override_backoff') === '1',
+      })
     },
     'screener-v2-watchdog': async () => {
       if (!deps.runScreenerV2) throw new Error('screener-v2 trigger dependency not configured')
@@ -669,7 +673,7 @@ export function buildAdminWorkerDomainTaskMap(
         if (terminalPolicyClosureFailure || !materializationValidated) {
           await propagateStrategyLearningTerminalFailure(runStateDb, {
             businessDate: runDate, canonicalRunId: runState.canonical_run_id,
-          })
+          }, c.env.KV)
         }
         await Promise.allSettled([
           logSchedulerResult(c.env.KV, 'strategy-learning', {
@@ -717,6 +721,7 @@ export function buildAdminWorkerDomainTaskMap(
       const { repairHistoricalSelectionReferences } = await import('./selectionReferenceRepair')
       const result = await repairHistoricalSelectionReferences(c.env.DB, runDate, {
         dryRun: c.req.query('dry_run') === '1',
+        archiveEnv: c.env,
       })
       return [
         'selection_reference_repair date=' + result.signal_date,
@@ -806,12 +811,12 @@ export function buildAdminWorkerDomainTaskMap(
       return deps.runIntradayCheck()
     },
     'eod-exit': () => {
-      const h = (new Date().getUTCHours() + 8) % 24
-      const m = new Date().getUTCMinutes()
-      const twTime = h * 100 + m
-      const validEod = twTime >= 1325 && twTime <= 1335
-      if (!validEod && !c.req.query('force')) return Promise.resolve('SKIPPED: 僅限 EOD 13:25-13:35 TW，請加 force=1')
-      return deps.runEODExit()
+      // AUD-4: the window starts at the manifest's scheduled minute (single owner) and spans 10 minutes.
+      const schedule = eodExitSchedule()
+      const twMinute = ((new Date().getUTCHours() + 8) % 24) * 60 + new Date().getUTCMinutes()
+      const validEod = twMinute >= schedule.twMinute && twMinute < schedule.windowEndTwMinute
+      if (!validEod && !c.req.query('force')) return Promise.resolve(`SKIPPED: 僅限 EOD ${eodExitWindowLabel(schedule)} TW，請加 force=1`)
+      return runEodExitUnderIntradayLease(c.env, () => deps.runEODExit())
     },
     'post-close-price-refresh': async () => {
       const { refreshOpenPositionPostClosePriceCache } = await import('./paperIntradayPriceCache')
@@ -1436,15 +1441,24 @@ export function buildAdminWorkerDomainTaskMap(
     },
     'storage-health-check': async () => {
       const { runStorageHealthCheck } = await import('./artifactLifecycle')
+      const { reportStorageHealthSeverity } = await import('./storageHealthSeverity')
       const result = await runStorageHealthCheck(c.env)
-      if (!result.healthy) throw new Error(`storage health check failed ${JSON.stringify(result)}`)
-      return `storage_health_check ${JSON.stringify(result)}`
+      // D7a A-2: a drain-band (75-90%) domain is a warning; everything else that fails `healthy` fails the run.
+      const warning = await reportStorageHealthSeverity(c.env, 'storage-health-check', result)
+      if (warning == null) throw new Error(`storage health check failed ${JSON.stringify(result)}`)
+      return `storage_health_check ${warning}${JSON.stringify(result)}`
     },
     'storage-health-gate': async () => {
       const { runStorageHealthCheck } = await import('./artifactLifecycle')
+      const { reportStorageHealthSeverity } = await import('./storageHealthSeverity')
       const result = await runStorageHealthCheck(c.env)
-      if (!result.healthy) throw new Error(`legacy storage health alias failed ${JSON.stringify(result)}`)
-      return `storage_health_gate_legacy_alias ${JSON.stringify(result)}`
+      const warning = await reportStorageHealthSeverity(c.env, 'storage-health-gate', result)
+      if (warning == null) throw new Error(`legacy storage health alias failed ${JSON.stringify(result)}`)
+      return `storage_health_gate_legacy_alias ${warning}${JSON.stringify(result)}`
+    },
+    'kv-config-drift': async () => {
+      const { runKvConfigDriftCheck } = await import('./kvConfigDigest')
+      return runKvConfigDriftCheck(c.env.KV)
     },
     'storage-integrity-audit': async () => {
       const { runArtifactIntegrityAudit } = await import('./artifactLifecycle')
@@ -1559,6 +1573,7 @@ export function buildAdminWorkerDomainTaskMap(
     'retention-hot-window-drain': async () => {
       const {
         RETENTION_HOT_WINDOW_DRAIN_POLICY_IDS,
+        retentionHotDrainSettings,
         runRetentionHotWindowDrain,
         summarizeRetentionHotWindowDrain,
       } = await import('./retentionHotWindowDrain')
@@ -1569,13 +1584,15 @@ export function buildAdminWorkerDomainTaskMap(
       const allowed = new Set<string>(RETENTION_HOT_WINDOW_DRAIN_POLICY_IDS)
       const unknown = requestedPolicies.filter((policy: string) => !allowed.has(policy))
       if (unknown.length) throw new Error(`retention_hot_drain_unknown_policy:${unknown.join(',')}`)
+      const settings = retentionHotDrainSettings(c.env)
       const result = await runRetentionHotWindowDrain(c.env, {
         businessDate: requestedRunDate() || twToday(),
         policyIds: requestedPolicies.length ? requestedPolicies as any : undefined,
-        limitPerDataset: parseBoundedPositiveInt(c.req.query('limit_per_dataset'), 100, 250),
+        limitPerDataset: parseBoundedPositiveInt(c.req.query('limit_per_dataset'),
+          settings.limitPerDataset.default, settings.limitPerDataset.max),
         confirmPhrase: c.req.query('confirm_drain'),
-        maxRounds: parseBoundedPositiveInt(c.req.query('max_rounds'), 1, 10),
-        budgetMs: parseBoundedPositiveInt(c.req.query('budget_ms'), 60_000, 120_000),
+        maxRounds: parseBoundedPositiveInt(c.req.query('max_rounds'), settings.maxRounds.default, settings.maxRounds.max),
+        budgetMs: parseBoundedPositiveInt(c.req.query('budget_ms'), settings.budgetMs.default, settings.budgetMs.max),
       })
       if (result.status === 'error') throw new Error(`retention hot window drain failed ${JSON.stringify(result)}`)
       return summarizeRetentionHotWindowDrain(result)

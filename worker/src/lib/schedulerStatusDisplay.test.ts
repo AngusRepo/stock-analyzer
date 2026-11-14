@@ -9,12 +9,15 @@ import {
   resolveSchedulerDisplayStatus,
   resolveSchedulerRunDisplayTime,
   resolveSchedulerLogStatus,
+  SCHEDULER_STATUS_JOB_DEFS,
   selectSchedulerChainDates,
   selectSchedulerChainDisplayDate,
   selectSchedulerDisplayLogs,
   selectSchedulerExecutionTicketForDisplay,
   type SchedulerDisplayLogCandidate,
+  watchdogWindowOpenTwMinute,
 } from './schedulerStatus'
+import schedulerManifest from '../../../infra/gcp-scheduler-jobs.json'
 import { classifySchedulerSummary } from './schedulerRunLogger'
 import type { SchedulerExecutionTicketRow } from './schedulerExecutionTickets'
 import * as fs from 'node:fs'
@@ -91,7 +94,7 @@ function assert(condition: unknown, message: string): void {
       }],
     },
   })
-  assert(displayDate === today, 'today close refresh must start a current-day display chain before the 21:00 root begins')
+  assert(displayDate === today, 'today close refresh must start a current-day display chain before the 21:45 root begins')
 }
 
 {
@@ -151,7 +154,8 @@ const logs: SchedulerDisplayLogCandidate[] = [
     const dates = getSchedulerScanDates()
     assert(dates.length === 7, 'scheduler status scan window must stay bounded for Cloudflare Worker KV subrequest budget')
     assert(dates.includes('2026-05-03'), 'scheduler scan window must include weekends so weekly/monthly jobs can show lastRun')
-    assert(estimateSchedulerStatusKvReads() < 50, 'scheduler status must stay below Cloudflare Worker subrequest limits')
+    // EC-B-2 gap fill adds at most SCHEDULER_STATUS_DIRECT_READ_LIMIT (30) per-task reads for today and yesterday.
+    assert(estimateSchedulerStatusKvReads() < 80, 'scheduler status must stay below Cloudflare Worker subrequest limits')
     const anchoredDates = getSchedulerScanDates('2026-08-02')
     assert(anchoredDates[0] === '2026-08-02', 'scheduler scan must honor an explicit readiness run date after timezone rollover')
     assert(anchoredDates[6] === '2026-07-27', 'anchored scheduler scan must preserve the bounded seven-day window')
@@ -164,7 +168,7 @@ const logs: SchedulerDisplayLogCandidate[] = [
   const statusSource = fs.readFileSync('src/lib/schedulerStatus.ts', 'utf8')
   const loggerSource = fs.readFileSync('src/lib/schedulerRunLogger.ts', 'utf8')
   const policySource = fs.readFileSync('src/lib/schedulerPolicy.ts', 'utf8')
-  assert(statusSource.includes('directFallback: false'), 'scheduler status must not per-task scan KV logs')
+  assert(statusSource.includes('directFallback: false') && statusSource.includes('dates.slice(0, SCHEDULER_STATUS_DIRECT_READ_DAYS)') && statusSource.includes('const SCHEDULER_STATUS_DIRECT_READ_LIMIT = 30'), 'scheduler status must not per-task scan KV logs; only a bounded gap fill reads today and yesterday')
   assert(statusSource.includes('scheduler:run:market-close-refresh:${date}'), 'today close refresh must be read directly so aggregate lost updates cannot hide the current trading date')
   assert(statusSource.includes('const cadenceDirectReads = JOB_DEFS.flatMap') && statusSource.includes('isCurrentCadenceCycle(date, today, def.group)'), 'weekly/monthly current-cycle status must directly recover task logs lost from concurrent daily aggregate writes')
   assert(statusSource.includes('skipKvPolicy: true'), 'scheduler status nextRun must not probe KV policy per card')
@@ -908,4 +912,119 @@ for (const status of ['triggered','skipped'] as const) {
     {id:'active8-oof-daily',group:'daily'},Date.parse('2026-10-04T12:00:00Z'))
   assert(waiting.status === 'waiting', 'known premarket boundary is waiting')
   assert(waiting.staleRunning === false, 'holiday wait does not expire as running compute')
+  const pipeline = resolveSchedulerLogStatus({ task:'active8-oof-daily',status,
+    summary:'active8_oof_lifecycle status=pending reason=awaiting_pipeline job_dispatched=false signal_date=2026-10-29 pipeline_status=error',
+    timestamp:'2026-10-29T17:55:00Z',duration_ms:0 },
+    {id:'active8-oof-daily',group:'daily'},Date.parse('2026-10-30T12:00:00Z'))
+  assert(pipeline.status === 'waiting', 'unfinished pipeline is waiting, not failed')
+}
+
+{
+  // 2026-11-02 is a Monday: an idle chain step waits, an idle watchdog has nothing pending.
+  const idle = (def: { id: string; group: 'pipeline_chain'; chainIndex: number }) => resolveSchedulerDisplayStatus({
+    def, nextRun: 'N/A', today: '2026-11-02', nowMs: Date.parse('2026-11-02T00:20:00.000Z'),
+  })
+  assert(idle({ id: 'finlab-backfill-watchdog', group: 'pipeline_chain', chainIndex: 3 }).status === 'sleep',
+    'an idle FinLab watchdog must not show as the waiting step of the chain')
+  assert(idle({ id: 'screener-v2-watchdog', group: 'pipeline_chain', chainIndex: 7 }).status === 'sleep',
+    'an idle screener watchdog must not show as waiting')
+  assert(idle({ id: 'update', group: 'pipeline_chain', chainIndex: 4 }).status === 'waiting',
+    'an idle weekday chain step still waits for its upstream')
+}
+
+{
+  // After the 14:20 dispatch the root is not rewritten until post-verify; its steps' logs keep it alive.
+  const root = {
+    task: 'evening-chain', status: 'running' as const, summary: 'parked', duration_ms: 0,
+    run_date: '2026-10-30', run_id: 'root', timestamp: '2026-11-01T23:34:37.000Z', wait_until: '2026-11-02T14:20:00+08:00',
+  }
+  const at = (heartbeatAt?: string) => resolveBusinessDateScopedChainDisplay({
+    def: { id: 'evening-chain', group: 'pipeline_chain', chainIndex: 2 },
+    chainStatusDate: '2026-10-30', today: '2026-11-02', exactLog: root, heartbeatAt,
+    nowMs: Date.parse('2026-11-02T09:00:00.000Z'),
+  })?.resolvedDisplay.status
+  assert(at('2026-11-02T08:30:00.000Z') === 'running', 'a step log 30m ago keeps the parked root running')
+  assert(at() === 'failed', 'with no step activity the root still turns stale 90m after the dispatch')
+  assert(at('2026-11-02T06:00:00.000Z') === 'failed', 'an old heartbeat cannot hide a stall after the dispatch')
+  const step = resolveBusinessDateScopedChainDisplay({
+    def: { id: 'verify-v2', group: 'pipeline_chain', chainIndex: 15 },
+    chainStatusDate: '2026-10-30', today: '2026-11-02', heartbeatAt: '2026-11-02T08:59:00.000Z',
+    exactLog: { ...root, task: 'verify-v2', wait_until: undefined, timestamp: '2026-11-02T06:30:00.000Z' },
+    nowMs: Date.parse('2026-11-02T09:00:00.000Z'),
+  })?.resolvedDisplay.status
+  assert(step === 'failed', 'the heartbeat applies only to the root, not to a stalled step')
+}
+
+{
+  // Flow-gap: an idle watchdog is "Not in window" only before its window opens or on a non-trading day.
+  // 2026-11-02 is a Monday; FinLab watchdog window opens 21:00 TW (13:00Z), premarket evidence 07:00 TW.
+  const finlab = { id: 'finlab-backfill-watchdog', group: 'pipeline_chain' as const, chainIndex: 3, cron: '*/10 13-15 * * 1-5' }
+  const premarket = { id: 'premarket-evidence-watchdog', group: 'daily' as const, cron: '*/10 7-8 * * 1-5', timeZone: 'Asia/Taipei' }
+  const show = (def: typeof finlab | typeof premarket, iso: string, extra: { today?: string; holiday?: boolean; todayLog?: any } = {}) =>
+    resolveSchedulerDisplayStatus({ def, nextRun: 'N/A', today: extra.today ?? '2026-11-02', nowMs: Date.parse(iso),
+      holiday: extra.holiday, todayLog: extra.todayLog })
+
+  assert(show(finlab, '2026-11-02T12:00:00.000Z').status === 'sleep', 'before the 21:00 window opens the watchdog is not in window')
+  assert(show(finlab, '2026-11-02T13:10:00.000Z').status === 'waiting', 'right after the window opens the first receipt is still due')
+  const missed = show(finlab, '2026-11-02T14:30:00.000Z')
+  assert(missed.status === 'failed', `a watchdog with no receipt 90m into its window is missed, not Not in window (got ${missed.status})`)
+  assert(missed.statusRunDate === '2026-11-02' && /no 2026-11-02 receipt since its window opened at 21:00/.test(missed.staleReason ?? ''),
+    `the miss names the date and window: ${missed.staleReason}`)
+  assert(show(finlab, '2026-11-02T14:30:00.000Z', { holiday: true }).status === 'sleep', 'a holiday is not in window')
+  assert(show(finlab, '2026-11-07T14:30:00.000Z', { today: '2026-11-07' }).status === 'sleep', 'a Saturday is not in window')
+  const ran = { task: finlab.id, status: 'success', summary: 'nothing pending', duration_ms: 900, timestamp: '2026-11-02T14:20:00.000Z', run_date: '2026-11-02' }
+  assert(show(finlab, '2026-11-02T14:30:00.000Z', { todayLog: ran }).status === 'success', 'a watchdog that ran shows its real status')
+  assert(show(finlab, '2026-11-02T14:30:00.000Z', { todayLog: { ...ran, status: 'error' } }).status === 'failed', 'a failed tick stays failed')
+
+  assert(show(premarket, '2026-11-01T22:30:00.000Z').status === 'sleep', '06:30 TW is before the premarket window')
+  // 09:44 TW is when the PR's dispatch-wait root is parked; the morning watchdog never ran.
+  const premarketMissed = show(premarket, '2026-11-02T01:44:00.000Z')
+  assert(premarketMissed.status === 'failed' && /window opened at 07:00/.test(premarketMissed.staleReason ?? ''),
+    `the premarket watchdog window is read in Taipei time: ${premarketMissed.status} ${premarketMissed.staleReason}`)
+  assert(resolveSchedulerDisplayStatus({ def: { id: 'strategy-learning-watchdog', group: 'pipeline_chain', chainIndex: 24, cron: '' },
+    nextRun: 'N/A', today: '2026-11-02', nowMs: Date.parse('2026-11-02T14:30:00.000Z') }).status === 'sleep',
+    'a watchdog with no schedule of its own runs inside its owner and cannot be judged missed')
+}
+
+{
+  // Review M-1: after midnight an evening watchdog's ticks land on the next day's key. On Tue 11/03 the 01:50 tick
+  // of Monday night's window is a "today" receipt, but it says nothing about Tuesday's 21:00 window.
+  const allocator = { id: 'allocator-ev-lifecycle-watchdog', group: 'daily' as const, cron: '*/10 13-17 * * 1-5' }
+  const lateTick = { task: allocator.id, status: 'skipped' as const, summary: 'no incomplete lifecycle', duration_ms: 500,
+    timestamp: '2026-11-02T17:50:00.000Z', run_date: '2026-11-03' }
+  const at = (iso: string, todayLog?: any, lastAttempt?: any, def: any = allocator) => resolveSchedulerDisplayStatus({
+    def, nextRun: 'N/A', today: '2026-11-03', nowMs: Date.parse(iso), todayLog, lastAttempt: lastAttempt ?? todayLog })
+  assert(at('2026-11-03T02:00:00.000Z', lateTick).status === 'skip', 'before the window the 01:50 tick is the latest real status')
+  assert(at('2026-11-03T13:10:00.000Z', lateTick).status === 'waiting', 'tonight\'s first receipt is still due during the grace')
+  const missed = at('2026-11-03T14:30:00.000Z', lateTick)
+  assert(missed.status === 'failed' && /window opened at 21:00/.test(missed.staleReason ?? ''),
+    `a pre-window tick cannot hide tonight's miss: ${missed.status} ${missed.staleReason}`)
+  assert(missed.windowOpenedAt === '2026-11-03T13:00:00.000Z', 'only a ticket from inside the window may replace the miss')
+  const tonight = { ...lateTick, status: 'success' as const, timestamp: '2026-11-03T14:20:00.000Z' }
+  assert(at('2026-11-03T14:30:00.000Z', tonight).status === 'success', 'a tick inside tonight\'s window is its real status')
+  // indicator/screener ticks after midnight are keyed to the previous business date and read as a historical replay.
+  const indicator = { id: 'indicator-queue-watchdog', group: 'pipeline_chain' as const, chainIndex: 5, cron: '*/5 13-17 * * 1-5' }
+  const replayTick = { task: indicator.id, status: 'skipped' as const, summary: 'no stale shards', duration_ms: 400,
+    timestamp: '2026-11-02T17:55:00.000Z', run_date: '2026-11-02' }
+  assert(at('2026-11-03T02:00:00.000Z', undefined, replayTick, indicator).statusScope === 'historical_replay',
+    'in the morning the overnight tick still shows as last night\'s replay')
+  assert(at('2026-11-03T14:30:00.000Z', undefined, replayTick, indicator).status === 'failed',
+    'last night\'s replay tick cannot hide tonight\'s miss either')
+}
+
+{
+  // Parity: every scheduled watchdog's window parses, and opens when the scheduler manifest fires it,
+  // so a cron written another way cannot silently fall back to "Not in window".
+  const manifest = schedulerManifest as { timeZone?: string; jobs: Array<{ id: string; task?: string; schedule?: string; timeZone?: string }> }
+  const watchdogs = SCHEDULER_STATUS_JOB_DEFS.filter((def) => def.id.endsWith('-watchdog') && def.cron)
+  assert(watchdogs.length >= 5, `scheduled watchdogs found: ${watchdogs.map((def) => def.id)}`)
+  for (const def of watchdogs) {
+    const job = manifest.jobs.find((row) => row.id === def.id) ?? manifest.jobs.find((row) => row.task === def.id)
+    const match = /^(\*\/\d+|\d+(?:,\d+)*) (\d{1,2})(?:-\d{1,2})? \* \* 1-5$/.exec(job?.schedule ?? '')
+    assert(match, `${def.id}: manifest schedule is a weekday window: ${job?.schedule}`)
+    const offset = (job!.timeZone ?? manifest.timeZone) === 'Asia/Taipei' ? 0 : 8
+    const expected = (Number(match![2]) + offset) * 60 + (match![1].startsWith('*/') ? 0 : Number(match![1].split(',')[0]))
+    const parsed = watchdogWindowOpenTwMinute(def)
+    assert(parsed === expected, `${def.id}: status window opens at minute ${parsed}, manifest fires at ${expected}`)
+  }
 }

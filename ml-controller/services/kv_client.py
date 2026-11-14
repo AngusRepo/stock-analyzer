@@ -57,7 +57,15 @@ def _get_remote(key: str, timeout: float = 30.0, *, strict: bool = False) -> Opt
     )
     headers = {"Authorization": f"Bearer {CF_API_TOKEN}"}
     try:
-        resp = httpx.get(url, headers=headers, timeout=timeout)
+        from services.d1_client import pooled_http_client
+        pooled = pooled_http_client(httpx)
+        try:
+            resp = (pooled or httpx).get(url, headers=headers, timeout=timeout)
+        except httpx.RemoteProtocolError:
+            if pooled is None:
+                raise
+            # A reused keep-alive socket closed by the server; a fresh connection matches the old behaviour.
+            resp = httpx.get(url, headers=headers, timeout=timeout)
     except httpx.RequestError as e:
         if strict:
             raise RuntimeError('kv_read_transport_failed') from None

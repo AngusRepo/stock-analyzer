@@ -25,13 +25,28 @@ function fromDataQuality(check: DataQualityCheck): GateCheck {
   }
 }
 
+/** The deploy gate reads failed24h only; display-only counts such as missed24h never reach it. */
+export function schedulerFailedGateCheck(scheduler: { stats?: { failed24h?: number; successRate7d?: number } }): GateCheck {
+  return {
+    id: 'scheduler_failed_24h',
+    status: Number(scheduler.stats?.failed24h ?? 0) > 0 ? 'fail' : 'ok',
+    summary: `failed24h=${Number(scheduler.stats?.failed24h ?? 0)}`,
+    metrics: { successRate7d: scheduler.stats?.successRate7d ?? null },
+  }
+}
+
+/** An unreadable scheduler status fails the gate as one failure; it never passes it. */
+export function schedulerStatusForGate(env: Bindings): Promise<{ stats?: { failed24h?: number; successRate7d?: number }; error?: string }> {
+  return getSchedulerStatus(env).catch((error) => ({
+    stats: { failed24h: 1, successRate7d: 0 },
+    error: error?.message || String(error),
+  }))
+}
+
 export async function buildDeployGateReport(env: Bindings, options: { date?: string; includeLiveController?: boolean } = {}) {
   const [dataQuality, scheduler] = await Promise.all([
     buildDataQualityReport(env, { date: options.date }),
-    getSchedulerStatus(env).catch((error) => ({
-      stats: { failed24h: 1, successRate7d: 0 },
-      error: error?.message || String(error),
-    })),
+    schedulerStatusForGate(env),
   ])
 
   const checks: GateCheck[] = [
@@ -40,12 +55,7 @@ export async function buildDeployGateReport(env: Bindings, options: { date?: str
       status: buildWorkerHealthPayload().status === 'ok' ? 'ok' : 'fail',
       summary: `worker=${buildWorkerHealthPayload().runtimeVersion}`,
     },
-    {
-      id: 'scheduler_failed_24h',
-      status: Number((scheduler as any).stats?.failed24h ?? 0) > 0 ? 'fail' : 'ok',
-      summary: `failed24h=${Number((scheduler as any).stats?.failed24h ?? 0)}`,
-      metrics: { successRate7d: (scheduler as any).stats?.successRate7d ?? null },
-    },
+    schedulerFailedGateCheck(scheduler),
     {
       id: 'control_plane_env',
       status: env.ML_CONTROLLER_URL && env.ML_CONTROLLER_SECRET ? 'ok' : 'fail',

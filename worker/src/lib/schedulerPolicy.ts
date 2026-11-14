@@ -90,6 +90,7 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
   'storage-health-check': { kind: 'maintenance', holidayGated: false, description: 'fail-close integrity and producer admission health assertion; trading paths remain exempt' },
   'storage-health-gate': { kind: 'maintenance', holidayGated: false, description: 'deprecated compatibility alias for storage-health-check' },
   'storage-integrity-audit': { kind: 'maintenance', holidayGated: false, description: 'manifest to R2 checksum and lineage audit' },
+  'kv-config-drift': { kind: 'maintenance', holidayGated: false, description: 'read-only digest of config KV keys against config/kv/manifest.json' },
   'storage-capacity-report': { kind: 'maintenance', holidayGated: false, description: 'daily D1 and R2 retention capacity report' },
   'learning-retention-readiness': { kind: 'maintenance', holidayGated: false, description: 'daily read-only 120-day hot, 3650-day cold and NAV cold-at-write Learning retention audit' },
   'legacy-learning-deletion-readiness': { kind: 'maintenance', holidayGated: false, description: 'daily read-only legacy Learning rollback and deletion prerequisite audit; never deletes' },

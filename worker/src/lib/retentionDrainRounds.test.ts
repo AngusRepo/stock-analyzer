@@ -55,3 +55,46 @@ test('round upper bound and default prevent unbounded paid work', async () => {
     assert.equal(result.stopReason, 'round_limit')
   }
 })
+
+test('M1-d: a policy with blocked archive-only sources keeps draining its deletable rows across rounds', async () => {
+  // learning_lineage_v1 always carries blocked-source backlog; predictions deletes 250 per round until empty.
+  const deletes = [250, 250, 120, 0]
+  const calls: string[] = []
+  const result = await runRetentionDrainRounds({ policyIds: ['learning_lineage_v1', 'price_horizon_rejections_v1'],
+    dryRun: false, maxRounds: 10,
+    run: async id => {
+      calls.push(id)
+      if (id !== 'learning_lineage_v1') return pass(id, { deleted_rows: 0 })
+      return pass(id, { backlog_remaining: true, deleted_rows: deletes.shift() ?? 0 })
+    },
+  })
+  assert.deepEqual(calls, ['learning_lineage_v1', 'price_horizon_rejections_v1',
+    'learning_lineage_v1', 'learning_lineage_v1', 'learning_lineage_v1'])
+  assert.equal(result.attempts.reduce((n, r) => n + r.deleted_rows, 0), 620)
+  assert.equal(result.stopReason, 'blocked_or_no_progress')
+  assert.deepEqual(result.pendingPolicyIds, ['learning_lineage_v1'])
+})
+
+test('NEW-D08: configured caps lift the round and budget ceilings; unset caps keep 10 rounds and 60/120 s', async () => {
+  const run = async (id: string) => pass(id, { backlog_remaining: true })
+  const lifted = await runRetentionDrainRounds({ policyIds: ['learning_lineage_v1'], dryRun: false,
+    maxRounds: 34, roundsCap: 40, run })
+  assert.equal(lifted.attempts.length, 34)
+  const clamped = await runRetentionDrainRounds({ policyIds: ['learning_lineage_v1'], dryRun: false,
+    maxRounds: 34, run })
+  assert.equal(clamped.attempts.length, 10)
+  const dryRun = await runRetentionDrainRounds({ policyIds: ['learning_lineage_v1'], dryRun: true,
+    maxRounds: 34, roundsCap: 40, run })
+  assert.equal(dryRun.attempts.length, 1)
+  for (const [budgetMs, budgetCapMs, expected] of [
+    [undefined, undefined, 60_000], [500_000, undefined, 120_000],
+    [500_000, 600_000, 500_000], [undefined, 30_000, 30_000],
+  ] as const) {
+    let clock = 0
+    const result = await runRetentionDrainRounds({ policyIds: ['learning_lineage_v1'], dryRun: false,
+      maxRounds: 100, roundsCap: 100, budgetMs, budgetCapMs, now: () => clock,
+      run: async id => { clock += 1_000; return pass(id, { backlog_remaining: true }) } })
+    // one pass per elapsed second until the budget is reached (or 100 rounds)
+    assert.equal(result.attempts.length, Math.min(100, expected / 1_000), String([budgetMs, budgetCapMs]))
+  }
+})

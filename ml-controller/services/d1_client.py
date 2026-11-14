@@ -13,7 +13,9 @@ import json
 import os
 import logging
 import random
+import re
 import time
+import types
 from typing import Any, Optional
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -42,6 +44,31 @@ def read_connection_scope():
 
 
 logger = logging.getLogger(__name__)
+_POOLED_HTTP: dict[int, Any] = {}
+_READ_ONLY_SQL_MUTATION = re.compile(
+    r"\b(alter|attach|create|delete|detach|drop|insert|replace|truncate|update|vacuum)\b", re.IGNORECASE)
+
+
+def pooled_http_client(module: Any = None) -> Any:
+    """PERF-D4: one keep-alive httpx.Client per process for idempotent reads.
+
+    None when the given httpx module is absent or replaced (test stubs keep their
+    own transport). Writes never reuse it: a stale keep-alive connection must not
+    turn into a retried, possibly double-applied mutation."""
+    module = httpx if module is None else module
+    if not isinstance(module, types.ModuleType):
+        return None
+    pid = os.getpid()  # a forked child must not share the parent's sockets
+    client = _POOLED_HTTP.get(pid)
+    if client is None:
+        client = _POOLED_HTTP.setdefault(pid, module.Client())
+    return client
+
+
+def _read_only_body(body: dict) -> bool:
+    sql = body.get("sql")
+    return (isinstance(sql, str) and _first_sql_token(sql) in {"select", "with", "explain"}
+            and not _READ_ONLY_SQL_MUTATION.search(sql))
 
 
 class WorkerD1BatchValidationError(RuntimeError):
@@ -163,6 +190,25 @@ def _retry_d1_response(resp, attempt: int, error_text: str) -> bool:
     return True
 
 
+# Exact messages _post/_post_raw raise after their retry budget for the same
+# transient classes as _is_retryable_d1_response (auth flakes excluded).
+_TRANSIENT_D1_ERROR = re.compile(
+    r'D1 (?:raw )?request (?:failed: (?:network error: |HTTP (?:429|500|502|503|504): )'
+    r'|unsuccessful: .*(?:d1 db is overloaded|requests queued for too long))',
+    re.IGNORECASE | re.DOTALL)
+
+
+def is_transient_d1_error(error: BaseException | None) -> bool:
+    """True only for this client's exhausted transient errors, directly or as an explicit cause."""
+    seen = set()
+    while error is not None and id(error) not in seen:
+        if isinstance(error, RuntimeError) and _TRANSIENT_D1_ERROR.match(str(error)):
+            return True
+        seen.add(id(error))
+        error = error.__cause__
+    return False
+
+
 def _post(body: dict, timeout: float = 60.0, database_id: str | None = None) -> dict:
     """Internal: POST to D1 /query endpoint, return parsed JSON."""
     resolved_database_id = (database_id or CF_D1_DB_ID).strip()
@@ -183,7 +229,8 @@ def _post(body: dict, timeout: float = 60.0, database_id: str | None = None) -> 
     for attempt in range(max_attempts):
         started = time.monotonic()
         try:
-            resp = (_READ_HTTP.get() or httpx).post(url, headers=headers, json=body, timeout=timeout)
+            transport = _READ_HTTP.get() or (_read_only_body(body) and pooled_http_client()) or httpx
+            resp = transport.post(url, headers=headers, json=body, timeout=timeout)
         except httpx.RequestError as e:
             if _READ_HTTP.get() is not None:
                 logger.warning("[d1_client] scoped_read_transport_retry attempt=%d elapsed_s=%.3f error_type=%s",

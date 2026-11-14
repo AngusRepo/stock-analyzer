@@ -6,7 +6,8 @@
 # already-deployed Modal functions, but it must not contain a deployment control
 # plane or the source bundle needed to publish a new Modal application.
 
-FROM python:3.11-slim
+# Pinned by digest (Python 3.11.17, as the live image); move it in a PR, with constraints.txt.
+FROM python:3.11-slim@sha256:b7a9e5f6a93d6d4a31f129bbd4bdee69efccb6ded0fb230d78aafaf37af98377
 
 WORKDIR /app
 
@@ -18,8 +19,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Python deps (ml-controller only; ml-service deps live on Modal cloud).
-COPY ml-controller/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY ml-controller/requirements.txt ml-controller/constraints.txt ./
+RUN pip install --no-cache-dir -r requirements.txt -c constraints.txt
 RUN python -c "import numpy; import pyarrow; from finlab import data; import pandas as pd; import polars as pl; assert pl.from_pandas(pd.DataFrame({'probe': [1]})).to_dicts() == [{'probe': 1}]"
 
 # Worker screener job runtime. The Cloud Run Job compiles and runs the same
@@ -52,7 +53,11 @@ COPY ml-controller/ /app/
 RUN node /app/scripts/training_indicators.cjs --check
 RUN test -f /app/scripts/repair_active8_source_and_evaluation.py
 RUN python -c "from scripts.repair_native_prestart import run"
-RUN python -c "import json; from pathlib import Path; from services.native_paper_sandbox import native_execution_identity; declared=json.loads(Path('/app/services/native_execution_behavior_release.json').read_text()); actual=native_execution_identity(); assert actual == declared['execution_owner_version'], 'native_release_owner_mismatch:' + actual"
+# image.yml builds with NATIVE_IDENTITY_ASSERT=0 so a commit that awaits its re-pin still runs every
+# later step; the ci gate and the native-identity check report the mismatch instead. Cloud Build
+# passes no build args (tools/release/release_build.py), so every production image asserts.
+ARG NATIVE_IDENTITY_ASSERT=1
+RUN if [ "$NATIVE_IDENTITY_ASSERT" = 0 ]; then echo 'native identity assertion skipped (CI build)'; else python -c "import json; from pathlib import Path; from services.native_paper_sandbox import native_execution_identity; declared=json.loads(Path('/app/services/native_execution_behavior_release.json').read_text()); actual=native_execution_identity(); assert actual == declared['execution_owner_version'], 'native_release_owner_mismatch:' + actual"; fi
 RUN python -c "from scripts.l4_distribution_refresh_job import execute, training_recipe_signature; training_recipe_signature()"
 RUN mkdir -p /app/data/finlab_research
 COPY data/finlab_research/dagster_asset_graph.json /app/data/finlab_research/dagster_asset_graph.json

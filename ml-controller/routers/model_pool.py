@@ -5,7 +5,7 @@ import logging
 import json
 import os
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException
 from starlette.concurrency import run_in_threadpool
@@ -22,7 +22,7 @@ async def _read_in_threadpool(reader, *, verify_sources=False):
             return reader()
     return await run_in_threadpool(bounded_read)
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from services.active8_release_training_contract import ACTIVE8_MODEL_NAMES
 from services.d1_domain_client import D1DataDomain, client_for_domain
@@ -87,10 +87,94 @@ class FeatureReleasePromotionControllerRequest(BaseModel):
     approved_by: str | None = None
     reason: str = "feature_release_bundle_controller"
 
+# Rolling IC reads only the forecast_data fields model_ic_tracker uses, one
+# prediction day per query: whole forecast_data rows over the lookback exceeded
+# D1's 50 MB result limit (2026-11-12 post-verify). `+model_name` keeps the
+# planner on idx_pred_date_model_stock; the model_name index alone reads every
+# model's full history. The date() predicates stay as the exact filter.
+# json_valid() rejects NaN/Infinity that json.loads would accept; writers
+# sanitize non-finite payloads, so such rows only lose their score.
+_WEEKLY_IC_FORECAST_PATHS = (
+    ("fd_rank_score", "$.rank_score"),
+    ("fd_artifact_version", "$.model_signal.artifact_version"),
+    ("fd_target_semantic_version", "$.model_signal.target_semantic_version"),
+    ("fd_artifact_id", "$.model_signal.artifact_id"),
+    ("fd_artifact_checksum", "$.model_signal.artifact_checksum"),
+    ("fd_market_segment", "$.stock_meta.market_segment"),
+)
+
+
+def _weekly_ic_forecast(row: dict) -> dict:
+    fields = {alias: row.pop(alias, None) for alias, _ in _WEEKLY_IC_FORECAST_PATHS}
+    return {
+        "rank_score": fields["fd_rank_score"],
+        "model_signal": {
+            "artifact_version": fields["fd_artifact_version"],
+            "target_semantic_version": fields["fd_target_semantic_version"],
+            "artifact_id": fields["fd_artifact_id"],
+            "artifact_checksum": fields["fd_artifact_checksum"],
+        },
+        "stock_meta": {"market_segment": fields["fd_market_segment"]},
+    }
+
+
+def _load_weekly_ic_rows(all_tracked, run_date: str | None, lookback_days: int) -> list[dict]:
+    if run_date:
+        try:
+            if len(str(run_date)) != 10:
+                raise ValueError(run_date)
+            anchor = date.fromisoformat(str(run_date))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"invalid run_date: {run_date}") from exc
+    else:
+        anchor = datetime.now(timezone.utc).date()
+    forecast_columns = ",\n                   ".join(
+        f"CASE WHEN json_valid(forecast_data) THEN json_extract(forecast_data, '{path}') END AS {alias}"
+        for alias, path in _WEEKLY_IC_FORECAST_PATHS
+    )
+    placeholders = ",".join(["?"] * len(all_tracked))
+    upper_filter = "AND date(prediction_date) <= date(?)" if run_date else ""
+    # Without run_date the original query had no prediction_date upper bound,
+    # so one open-ended range after the anchor day keeps that.
+    ranges: list[tuple[str, str | None]] = []
+    day = anchor - timedelta(days=lookback_days)
+    while day <= anchor:
+        ranges.append((day.isoformat(), (day + timedelta(days=1)).isoformat()))
+        day += timedelta(days=1)
+    if not run_date:
+        ranges.append(((anchor + timedelta(days=1)).isoformat(), None))
+    rows: list[dict] = []
+    for lower, upper in ranges:
+        sql = f"""
+            SELECT id, stock_id, model_name, direction_accuracy,
+                   {forecast_columns},
+                   actual_return_pct, verified_at, prediction_date, generated_at,
+                   verification_label_schema_version,
+                   verification_label_entry_price,
+                   verification_label_end_date,
+                   verification_label_known_date
+            FROM predictions
+            WHERE +model_name IN ({placeholders})
+              AND prediction_date >= ?{" AND prediction_date < ?" if upper else ""}
+              {upper_filter}
+              AND date(verification_label_known_date) <= date(?)
+              AND date(prediction_date) >= date(?, ?)
+        """
+        params = [*all_tracked, lower, *([upper] if upper else []),
+                  *[anchor.isoformat()] * (3 if run_date else 2), f"-{lookback_days} days"]
+        chunk = LEARNING_D1_CLIENT.query(sql, params)
+        for row in chunk:
+            row["forecast_data"] = _weekly_ic_forecast(row)
+        rows.extend(chunk)
+    logger.info("weekly IC rows=%d queries=%d anchor=%s lookback_days=%d",
+                len(rows), len(ranges), anchor.isoformat(), lookback_days)
+    return rows
+
+
 # Canonical rolling IC writer. D1 registry and exact champion pointers are the
 # only lifecycle authority; this endpoint never mutates serving identity outside D1.
 class ComputeWeeklyICRequest(BaseModel):
-    lookback_days: int = 35
+    lookback_days: int = Field(35, ge=1, le=120)
     min_samples: int = 50
     min_dates: int = 10
     append_history: bool = True
@@ -140,39 +224,8 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
                 "checksum": checksum,
             }
 
-    placeholders = ",".join(["?"] * len(all_tracked))
-    if req.run_date:
-        sql = f"""
-            SELECT id, stock_id, model_name, direction_accuracy, forecast_data,
-                   actual_return_pct, verified_at, prediction_date, generated_at,
-                   verification_label_schema_version,
-                   verification_label_entry_price,
-                   verification_label_end_date,
-                   verification_label_known_date
-            FROM predictions
-            WHERE model_name IN ({placeholders})
-              AND date(prediction_date) <= date(?)
-              AND date(verification_label_known_date) <= date(?)
-              AND date(prediction_date) >= date(?, ?)
-        """
-        rows = LEARNING_D1_CLIENT.query(
-            sql,
-            [*all_tracked, req.run_date, req.run_date, req.run_date, f"-{req.lookback_days} days"],
-        )
-    else:
-        sql = f"""
-            SELECT id, stock_id, model_name, direction_accuracy, forecast_data,
-                   actual_return_pct, verified_at, prediction_date, generated_at,
-                   verification_label_schema_version,
-                   verification_label_entry_price,
-                   verification_label_end_date,
-                   verification_label_known_date
-            FROM predictions
-            WHERE model_name IN ({placeholders})
-              AND date(verification_label_known_date) <= date('now')
-              AND date(prediction_date) >= date('now', ?)
-        """
-        rows = LEARNING_D1_CLIENT.query(sql, [*all_tracked, f"-{req.lookback_days} days"])
+    rows = await _read_in_threadpool(
+        lambda: _load_weekly_ic_rows(all_tracked, req.run_date, req.lookback_days))
 
     per_model_ic = compute_weekly_ic_from_rows(
         rows,

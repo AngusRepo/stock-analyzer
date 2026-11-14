@@ -164,10 +164,11 @@ assert.ok(
 )
 
 assert.match(finalizedTelemetry, /strict: true/)
-assert.match(finalizedTelemetry, /if \(input\.runScope === 'historical_replay'\) return/)
+// A historical replay closes its root (annotated run_scope=historical_replay) like the recovery watchdog.
+assert.doesNotMatch(finalizedTelemetry, /if \(input\.runScope === 'historical_replay'\) return/)
+assert.match(finalizedTelemetry, /runScope: input\.runScope,/)
 assert.match(finalizedTelemetry, /if \(!\(await closeStrategyLearningPostVerifyStage\(db, identity\)\)\) return false/)
-assert.ok(finalizedTelemetry.indexOf("'post-verify-chain'") < finalizedTelemetry.indexOf("if (input.runScope === 'historical_replay') return"))
-assert.ok(finalizedTelemetry.indexOf("if (input.runScope === 'historical_replay') return") < finalizedTelemetry.indexOf("await import('./eveningChainRootClosure')"))
+assert.ok(finalizedTelemetry.indexOf("'post-verify-chain'") < finalizedTelemetry.indexOf("await import('./eveningChainRootClosure')"))
 assert.doesNotMatch(
   finalizedTelemetry, /export async function reconcileStrategyLearningFinalizedTelemetry/,
 )
@@ -182,6 +183,34 @@ const telemetryWrites = guardedReconcile.indexOf('reconcileStrategyLearningFinal
 const fencedRelease = guardedReconcile.indexOf('releaseStrategyLearningFinalizedLease')
 assert.ok(authorityCheck >= 0 && authorityCheck < leaseRenewal && leaseRenewal < expiredReclaim
   && expiredReclaim < telemetryWrites && telemetryWrites < fencedRelease)
-for (const task of ['strategy-learning', 'post-verify-chain', 'evening-chain']) {
+for (const task of ['strategy-learning', 'post-verify-chain']) {
   assert.match(finalizedTelemetry, new RegExp(`logSchedulerResult\\(kv, '${task}'`))
 }
+// The root closure helper writes the evening-chain receipt for both terminal outcomes.
+assert.match(finalizedTelemetry, /closeEveningChainRootAndLog\(kv, db,/)
+
+// FG-10 U4: a duplicate queue message that loses the lease must not overwrite the
+// lease holder's scheduler KV entry (it has no attempt_id, so it would win the merge).
+const leaseBusyBranch = queueBlock.slice(queueBlock.indexOf('if (!claimed) {'), queueBlock.indexOf('let materializationValidated'))
+assert.match(leaseBusyBranch, /lease busy; durable retry scheduled/)
+assert.doesNotMatch(leaseBusyBranch, /logSchedulerResult\(/, 'lease-busy duplicates must not write the scheduler run log')
+
+// A durably recorded defer/terminal failure is acknowledged: queue redeliveries reran the
+// learning-db finalizer up to 9 times per message (11/10–11/11). Fence and lease losses
+// still throw so the queue redelivers work nobody owns.
+const queueCatch = queueBlock.slice(
+  queueBlock.indexOf('} catch (error) {', queueBlock.indexOf('durableFinalized = true')),
+  queueBlock.lastIndexOf('} finally {'),
+)
+assert.match(queueCatch, /if \(durableFinalized\) throw error/)
+assert.match(queueCatch, /if \(isStrategyLearningLeaseLost\(error\)\) \{[\s\S]*?throw error\s*\}/)
+assert.match(queueCatch, /if \(!transitioned\) \{[\s\S]*?queue retry required[\s\S]*?throw error\s*\}/)
+const afterTransition = queueCatch.slice(queueCatch.indexOf('if (!transitioned) {'))
+const afterFenceCheck = afterTransition.slice(afterTransition.indexOf('throw error') + 'throw error'.length)
+// Only a date outside the watchdog lookback keeps the queue retry (manual replays).
+assert.deepEqual(
+  afterFenceCheck.match(/^.*throw error.*$/gm)?.map((line) => line.trim()),
+  ['if (!isStrategyLearningRecoveryWindowDate(triggerTime)) throw error'],
+  'a recorded finalizer failure inside the watchdog lookback must not be redelivered by the queue',
+)
+assert.match(afterFenceCheck, /propagateStrategyLearningTerminalFailure[\s\S]*Promise\.allSettled[\s\S]*isStrategyLearningRecoveryWindowDate[\s\S]*deferred to watchdog[\s\S]*\n\s*return\s*$/)

@@ -80,8 +80,8 @@ export async function runPortfolioChecks(
     checkP1Mdd(databases.paper, cfg, deps),
     checkP2Accuracy(databases.learning, kv, cfg, deps),
     checkCanonicalMarketRestriction(marketRisk, cfg, deps),
-    checkP5Losses(databases.paper, deps,cfg.circuit.lossGuard ? {policy:cfg.circuit.lossGuard,sessions} : undefined),
-    checkP6Momentum(databases.market, deps),
+    checkP5Losses(databases.paper, deps,cfg.circuit.lossGuard ? {policy:cfg.circuit.lossGuard,sessions} : undefined,cfg.circuit),
+    checkP6Momentum(databases.market, deps, cfg.circuit),
     checkP7Streak(databases.learning, cfg, deps),
     checkP8DailyPnl(databases.paper, riskCfg, deps),
   ])

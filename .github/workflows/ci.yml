@@ -1,7 +1,8 @@
 name: ci
 
-# PR gate: run every suite on the PR head and on its base, then fail only on
-# failures the base does not have. No secrets are used by this workflow.
+# PR gate: run every suite on the PR head and on its base, then fail on failures the base
+# does not have and on any head failure inside the P9 scope (what scripts/p9_gate.ps1 runs
+# on Windows after a merge). No secrets are used by this workflow.
 on:
   pull_request:
   push:
@@ -47,15 +48,18 @@ jobs:
           fi
           [ "${{ matrix.side }}" = head ] && echo "sha=$head" >> "$GITHUB_OUTPUT" || echo "sha=$base" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v4
+      # Controller tests read older committed sources (git show <sha>:path), so controller
+      # suites fetch full history without blobs; other suites keep the one-commit checkout.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.ref.outputs.sha }}
-          fetch-depth: 1
+          fetch-depth: ${{ startsWith(matrix.suite, 'controller') && '0' || '1' }}
+          filter: ${{ startsWith(matrix.suite, 'controller') && 'blob:none' || '' }}
 
       # The comparison tooling comes from github.sha: on pull_request that is the
       # base+head merge commit, so a branch older than ci/ still gets the tools and a
       # PR that edits ci/ is tested with its own version. On push it is the commit itself.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           path: .ci-tools
@@ -69,7 +73,7 @@ jobs:
         if: matrix.side == 'base'
         shell: bash
         run: echo "key=$(bash .ci-tools/ci/base_cache_key.sh .ci-tools '${{ steps.ref.outputs.sha }}')" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache/restore@v4
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         if: matrix.side == 'base'
         with:
           path: ${{ runner.temp }}/base-cache
@@ -83,26 +87,40 @@ jobs:
           # hit only when this suite's list is in the restored set
           list="$RUNNER_TEMP/base-cache/failures-${{ matrix.suite }}.txt"
           if [ -f "$list" ]; then cp "$list" "$RUNNER_TEMP/failures.txt"; echo "hit=true" >> "$GITHUB_OUTPUT"; fi
+      # Tells the confirm job this base list was restored, not produced by this workflow run.
+      - name: Mark cached base list
+        if: steps.cached.outputs.hit == 'true'
+        shell: bash
+        run: echo "${{ steps.key.outputs.key }}" > "$RUNNER_TEMP/cached.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: steps.cached.outputs.hit == 'true'
+        with:
+          name: cached-${{ matrix.suite }}-base
+          path: ${{ runner.temp }}/cached.txt
+          if-no-files-found: error
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: matrix.suite != 'hygiene' && steps.cached.outputs.hit != 'true'
         with:
           node-version: '22'
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         if: steps.cached.outputs.hit != 'true'
         with:
-          python-version: '3.12'
+          # Same minor as the controller image (Dockerfile: Python 3.11.17).
+          python-version: '3.11'
           # Only the controller suite installs pip packages; caching elsewhere fails the post step.
           cache: ${{ startsWith(matrix.suite, 'controller') && 'pip' || '' }}
-          cache-dependency-path: ml-controller/requirements.txt
+          cache-dependency-path: |
+            ml-controller/requirements.txt
+            ml-controller/constraints.txt
 
       - name: Run suite
         if: steps.cached.outputs.hit != 'true'
         shell: bash
         run: bash .ci-tools/ci/run_suite.sh "${{ matrix.suite }}" "$RUNNER_TEMP/failures.txt"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
           name: failures-${{ matrix.suite }}-${{ matrix.side }}
@@ -110,7 +128,7 @@ jobs:
           if-no-files-found: error
 
       # Per-file seconds for ci/controller_durations.py (refreshes the shard weights).
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always() && startsWith(matrix.suite, 'controller')
         with:
           name: junit-${{ matrix.suite }}-${{ matrix.side }}
@@ -119,6 +137,11 @@ jobs:
 
   # Controller tests that fail on head but not on base are rerun twice, serially, on head.
   # Ids that pass at least once are reported as flaky by the gate instead of blocking it.
+  # When every controller base list was restored from the cache (saved by an earlier run of
+  # that commit), ids that still fail are run on the base twice: a date- or clock-dependent
+  # test can fail there now although the cached list predates it. Ids that fail both base
+  # runs are reported as pre-existing (stale base list) instead of blocking. A base list
+  # produced in this run is current, so nothing is checked against it.
   confirm:
     name: confirm new controller failures
     needs: suite
@@ -127,37 +150,74 @@ jobs:
     timeout-minutes: 30
     steps:
       # Code under rerun is the head; the rerun tooling comes from github.sha like the suites.
-      - uses: actions/checkout@v4
+      # Same history as the controller suites: reruns may read older committed sources.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
-          fetch-depth: 1
-      - uses: actions/checkout@v4
+          fetch-depth: 0
+          filter: blob:none
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
           path: .ci-tools
           sparse-checkout: ci
           fetch-depth: 1
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: failures-controller-*
           path: failures
+      # Markers only exist for base shards restored from the cache; none is a normal outcome.
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        continue-on-error: true
+        with:
+          pattern: cached-controller-*-base
+          path: cached
       - name: Merge controller shards
         run: python .ci-tools/ci/merge_shards.py failures "$CONTROLLER_SHARDS"
       - name: List head-only failures
         run: python .ci-tools/ci/rerun_new_failures.py list failures "$RUNNER_TEMP/new.txt"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '22'
       # No pip cache here: most runs install nothing, and an unused cache fails the post step.
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: '3.12'
+          python-version: '3.11'
       - name: Rerun them
         run: bash .ci-tools/ci/rerun_controller.sh "$RUNNER_TEMP/new.txt" "$RUNNER_TEMP/flaky.txt"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: flaky-controller
           path: ${{ runner.temp }}/flaky.txt
+          if-no-files-found: error
+      # Checked only on pull_request and push (same base commit as the suites' base side), when
+      # every controller base shard was a cache hit and some ids still fail after the head reruns.
+      - name: Resolve base
+        id: base
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        run: |
+          set -e
+          hits="$(find cached -name cached.txt 2>/dev/null | wc -l | tr -d ' ')"
+          [ "$hits" = "$CONTROLLER_SHARDS" ] || { echo "base lists from this run ($hits/$CONTROLLER_SHARDS cached); not checked on base"; exit 0; }
+          left="$(comm -23 <(sort -u "$RUNNER_TEMP/new.txt") <(sort -u "$RUNNER_TEMP/flaky.txt"))"
+          [ -n "$left" ] && echo "check=true" >> "$GITHUB_OUTPUT" || true
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: steps.base.outputs.check == 'true' && (github.event_name == 'pull_request' || github.event_name == 'push')
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.event.before }}
+          path: .base-tree
+          fetch-depth: 0
+          filter: blob:none
+      - name: Check them on base
+        if: steps.base.outputs.check == 'true' && (github.event_name == 'pull_request' || github.event_name == 'push')
+        working-directory: .base-tree
+        run: bash ../.ci-tools/ci/rerun_controller.sh --base "$RUNNER_TEMP/stale.txt" "$RUNNER_TEMP/new.txt" "$RUNNER_TEMP/flaky.txt"
+      - name: Default stale list
+        run: touch "$RUNNER_TEMP/stale.txt"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: stale-controller
+          path: ${{ runner.temp }}/stale.txt
           if-no-files-found: error
 
   gate:
@@ -174,17 +234,51 @@ jobs:
           if [ "${{ needs.suite.result }}" != success ] || [ "${{ needs.confirm.result }}" != success ]; then
             echo "suite result: ${{ needs.suite.result }}, confirm result: ${{ needs.confirm.result }}"; exit 1
           fi
-      - uses: actions/checkout@v4
+      # scripts/ carries p9_gate.ps1, the owner of the P9 controller test list.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
-          sparse-checkout: ci
-      - uses: actions/download-artifact@v4
+          sparse-checkout: |
+            ci
+            scripts
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: failures
       - name: Merge controller shards
         run: python ci/merge_shards.py failures "$CONTROLLER_SHARDS"
+      # A PR stacked on another PR's branch is gated against that branch, which hides what it
+      # inherits from it. main's cached lists (saved by this job on push) add a non-blocking
+      # "vs main" section; the key prefix accepts lists from other CI tooling or weeks.
+      - name: Main tip (stacked PR)
+        id: main
+        if: github.event_name == 'pull_request' && github.base_ref != 'main'
+        run: |
+          set -e
+          sha="$(git ls-remote origin refs/heads/main | cut -f1)"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "key=$(bash ci/base_cache_key.sh . "$sha")" >> "$GITHUB_OUTPUT"
+          echo "prefix=ci-base-v2-$CONTROLLER_SHARDS-$sha-" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        id: main-cache
+        if: steps.main.outputs.sha != ''
+        with:
+          path: ${{ runner.temp }}/base-cache
+          key: ${{ steps.main.outputs.key }}
+          restore-keys: ${{ steps.main.outputs.prefix }}
       - name: Compare head against base
-        run: python ci/compare_failures.py failures
+        env:
+          MAIN_SHA: ${{ steps.main.outputs.sha }}
+          MAIN_EXACT: ${{ steps.main-cache.outputs.cache-hit }}
+          MAIN_MATCHED: ${{ steps.main-cache.outputs.cache-matched-key }}
+        run: |
+          set -e
+          main=()
+          if [ -n "$MAIN_SHA" ]; then
+            label="${MAIN_SHA:0:8}"
+            [ "$MAIN_EXACT" = true ] || [ -z "$MAIN_MATCHED" ] || label="$label (lists from other CI tooling or week)"
+            main=("$RUNNER_TEMP/base-cache" "$label")
+          fi
+          python ci/compare_failures.py failures scripts/p9_gate.ps1 "${main[@]}"
       # main only, after a passing gate: keep the head lists as the base for later runs of
       # this commit. Lists with an infrastructure failure are not kept (ci/base_cache.py).
       - name: Pack base lists
@@ -194,7 +288,7 @@ jobs:
           set -e
           python ci/base_cache.py failures "$RUNNER_TEMP/base-cache" worker             $(seq -f 'controller-%g' 1 "$CONTROLLER_SHARDS") frontend hygiene
           [ -d "$RUNNER_TEMP/base-cache" ] && echo "key=$(bash ci/base_cache_key.sh . '${{ github.sha }}')" >> "$GITHUB_OUTPUT" || true
-      - uses: actions/cache/save@v4
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         if: steps.pack.outputs.key != ''
         with:
           path: ${{ runner.temp }}/base-cache

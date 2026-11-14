@@ -339,6 +339,7 @@ def purged_explicit_walk_forward_indices(
         label_known_valid = ~np.isin(label_known_str, ["", "None", "nan", "NaT"])
         train_mask = requested_train_mask & label_known_valid & (label_known_str < first_test_date)
         purge_method = "actual_label_known_date"
+        train_label_known_max = max(label_known_str[train_mask].tolist()) if train_mask.any() else None
     else:
         safe_train_dates = {
             str(date)
@@ -347,6 +348,7 @@ def purged_explicit_walk_forward_indices(
         }
         train_mask = requested_train_mask & np.isin(dates_str, list(safe_train_dates))
         purge_method = "observed_date_horizon_approximation"
+        train_label_known_max = None
     effective_train_dates = np.sort(np.unique(dates_str[train_mask]))
     if not len(effective_train_dates):
         raise ValueError("walk_forward_train_empty_after_label_purge")
@@ -364,6 +366,9 @@ def purged_explicit_walk_forward_indices(
         "purged_date_count": int(len(requested_train_dates) - len(effective_train_dates)),
         "purged_row_count": int(purged_mask.sum()),
     }
+    if train_label_known_max is not None:
+        # Fold receipt evidence: the latest label the fitted model actually saw.
+        metadata["train_label_known_max"] = train_label_known_max
 
     return np.flatnonzero(train_mask), np.flatnonzero(test_mask), metadata
 

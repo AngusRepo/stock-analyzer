@@ -54,6 +54,8 @@ def validate_ga_top_candidate(
         loaded = load_merged_trading_config_with_contract()
         baseline_config = loaded.config
         config_contract = loaded.contract.to_dict()
+    from services.position_risk_owner import with_formal_position_risk
+    baseline_config = with_formal_position_risk(baseline_config, keep_existing=True)
 
     def _load_exact_snapshot(*, start_date: str, end_date: str, symbols=None):
         if search_context is not None:

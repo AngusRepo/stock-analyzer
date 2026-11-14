@@ -191,6 +191,18 @@ test('resuming after the feature wait runs in the feature card and leaves input 
   assert.match(cards[1].summary,/L2 前輸入重新驗證/)
 })
 
+test('sequence input preparation runs in the L2 card instead of leaving it unstarted',()=>{
+  const p=parent(),progress=p.pipelineProgress!
+  progress.executions={a:[row('node_load_inputs'),row('node_load_market_env'),row('node_attach_serving_context'),
+    row('node_prepare_l2_inputs'),row('node_build_payloads')]} as any
+  progress.phase='node_prepare_sequence_inputs';progress.status='running'
+  progress.phase_started_at='2026-10-16T15:30:00Z';progress.observed_at='2026-10-16T15:30:05Z'
+  const cards=pipelineStageCards(p,Date.parse('2026-10-16T15:31:00Z'))
+  assert.equal(cards[2].stageVisualStatus,'running')
+  assert.match(cards[2].summary,/序列與 L2 輸入準備/)
+  assert.doesNotMatch(cards[2].summary,/本輪尚未開始/)
+})
+
 test('a finished run stops every clock at its last evidence',()=>{
   const p=parent(),progress=p.pipelineProgress!
   p.lastStatus='success'
@@ -214,4 +226,22 @@ test('a failed parent stops the current card even if its last receipt says runni
     assert.deepEqual(cards.map(c=>c.stageVisualStatus),['completed','blocked','blocked','blocked'])
     assert.doesNotMatch(cards[1].lastDuration,/進行中/)
   }
+})
+test('FU8-A: a ticket runId that differs from the canonical run still shows the canonical progress',()=>{
+  const now=Date.parse('2026-10-16T14:06:00Z')
+  const ticket={...parent(),runId:'ticket-1',canonicalRunId:'run-a'} as SchedulerJob
+  assert.deepEqual(pipelineStageCards(ticket,now).map(c=>c.stageVisualStatus),['completed','waiting','waiting','waiting'])
+  assert.match(pipelineRunSummary(ticket,now),/^Pipeline · /)
+  // Without the canonical id the ticket id alone cannot claim the progress.
+  const legacy={...parent(),runId:'ticket-1'} as SchedulerJob
+  assert(pipelineStageCards(legacy,now).every(c=>c.stageVisualStatus==='not_started'))
+  // A stale canonical id is still rejected, and the run date check stays.
+  const stale={...parent(),runId:'run-a',canonicalRunId:'run-old'} as SchedulerJob
+  assert(pipelineStageCards(stale,now).every(c=>c.stageVisualStatus==='not_started'))
+  assert.equal(pipelineRunSummary(stale,now),'本輪階段紀錄尚未取得')
+  const otherDay={...parent(),runId:'ticket-1',canonicalRunId:'run-a',statusRunDate:'2026-10-15'} as SchedulerJob
+  assert(pipelineStageCards(otherDay,now).every(c=>c.stageVisualStatus==='not_started'))
+  // A null canonical id falls back to the ticket runId.
+  const fallback={...parent(),canonicalRunId:null} as SchedulerJob
+  assert.equal(pipelineStageCards(fallback,now)[0].stageVisualStatus,'completed')
 })

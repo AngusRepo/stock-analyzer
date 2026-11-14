@@ -9,7 +9,10 @@ import { nextTwTradingDate } from './schedulerPolicy'
 import { twToday } from './dateUtils'
 import { strategyMiningDispatchKey } from './strategyMiningGateway'
 import { databaseForDataDomain } from './dataDomainRegistry'
+import { FINLAB_DISPATCH_ATTEMPT_MAX } from './finLabDispatchFence'
 import type { SchedulerExecutionTicketRow } from './schedulerExecutionTickets'
+
+export const R33_MONTHLY_MODEL_PROFILE = 'active8-release-model-profiles-v7-r33-exo131'
 
 function requireController(env: Bindings): void {
   if (!env.ML_CONTROLLER_URL) {
@@ -450,10 +453,16 @@ export async function runActive8OofLifecycle(
       SELECT status, last_error FROM pipeline_stage_runs
        WHERE business_date=? AND stage='pipeline_execution'
     `).bind(runDate).first<{status: string; last_error: string | null}>()
-    if (stage?.status === 'waiting' && stage.last_error === 'awaiting_premarket') {
+    if (stage?.status !== 'success') {
       // The nightly producer sealed L3; only morning publication can create this plan.
       // Do not turn a known phase boundary into repeated Cloud Run dispatches.
-      const { PREMARKET_WAIT, parkActive8PremarketTicket } = await import('./active8PremarketWait')
+      // An unfinished or failed pipeline has no plan either: the job would exit 1
+      // and the GCS dispatch guard would lock the whole day (2026-10-29: dispatched
+      // 3 minutes after a pipeline error). The pipeline success callback resumes a
+      // parked child; a skipped root leaves the day to the snapshot-ready child.
+      const premarket = stage?.status === 'waiting' && stage.last_error === 'awaiting_premarket'
+      const { PREMARKET_WAIT, PIPELINE_WAIT, parkActive8PremarketTicket } = await import('./active8PremarketWait')
+      const wait = premarket ? PREMARKET_WAIT : PIPELINE_WAIT
       const waitingOwner = options.schedulerTicketId && options.schedulerRunId
         ? await databaseForDataDomain(env, 'ops').prepare(`SELECT ticket_kind FROM scheduler_execution_tickets_v1
             WHERE ticket_id=? AND run_id=?`).bind(options.schedulerTicketId, options.schedulerRunId)
@@ -465,9 +474,10 @@ export async function runActive8OofLifecycle(
           runId: options.schedulerRunId, schedulerRunId: options.schedulerRunId,
           schedulerTicketId: options.schedulerTicketId, oofCadence: 'daily',
           oofContinuationAttempt: 1, oofExpectedCohortId: options.expectedCohortId,
-        })
+        }, wait)
       }
-      return `${park ? PREMARKET_WAIT : PREMARKET_WAIT.replace('status=pending', 'status=skipped')} signal_date=${runDate}`
+      return `${park ? wait : wait.replace('status=pending', 'status=skipped')} signal_date=${runDate}`
+        + (premarket ? '' : ` pipeline_status=${stage?.status ?? 'missing'}`)
     }
   }
 
@@ -488,9 +498,12 @@ export async function runActive8OofLifecycle(
     throw new Error('active8_feature_semantic_unknown')
   }
   const feature131 = featureSemantic === 'formal131-without-unverified-daily-owners-v1'
-  const modelProfile = isSingleBMode(trading?.l4Distribution?.operating_mode)
-    ? (feature131 ? 'active8-release-model-profiles-v6-timexer-exo131' : 'active8-release-model-profiles-v4-timexer-exo137')
-    : (feature131 ? 'active8-release-model-profiles-v6-timexer-price131' : 'active8-release-model-profiles-v4-timexer-price')
+  // R33 monthly: seven-model candidates for Wei; never promotes or moves serving pointers.
+  const modelProfile = cadence === 'monthly' && env.R33_MONTHLY_PROFILE === '1'
+    ? R33_MONTHLY_MODEL_PROFILE
+    : isSingleBMode(trading?.l4Distribution?.operating_mode)
+      ? (feature131 ? 'active8-release-model-profiles-v6-timexer-exo131' : 'active8-release-model-profiles-v4-timexer-exo137')
+      : (feature131 ? 'active8-release-model-profiles-v6-timexer-price131' : 'active8-release-model-profiles-v4-timexer-price')
   const resp = await controllerFetch(env, '/walk_forward/oof/lifecycle', {
     method: 'POST',
     jsonBody: {
@@ -720,7 +733,7 @@ export async function runAllocatorEvFeatureSnapshotBackfill(
 ) {
   requireController(env)
   const nextSessionDate = params.startDate === params.endDate
-    ? await nextTwTradingDate(env.KV, params.endDate, env.DB)
+    ? await nextTwTradingDate(env.KV, params.endDate, databaseForDataDomain(env, 'market'))
     : undefined
 
   const resp = await controllerFetch(env, '/allocator_ev_fusion/feature_snapshots/backfill', {
@@ -766,6 +779,7 @@ export async function runAllocatorEvFeatureSnapshotBackfill(
       learningDb: databaseForDataDomain(env, 'learning'),
       opsDb: databaseForDataDomain(env, 'ops'),
       coreDb: databaseForDataDomain(env, 'core'),
+      marketDb: databaseForDataDomain(env, 'market'),
       kv: env.KV,
     })
     if (!closure.ready) {
@@ -1107,19 +1121,28 @@ export function buildFinLabDailyRunId(runDate: string): string {
 
 const FINLAB_DISPATCH_PLATFORM_RETRY_DELAYS_MS = [5_000, 10_000]
 
-// A Cloud Run front-end 5xx never reached /finlab/backfill/run, so resending the
-// same run_id cannot start a second Modal writer. App 5xx did reach the
-// non-idempotent spawn and is never retried.
+// Only Cloud Run's "no available instance" proves the request never reached
+// /finlab/backfill/run, so only that is resent inline with the same run_id.
+// A front-end HTML 5xx (for example a GFE 502) may arrive after the handler
+// already spawned the Modal writer: it is reported as dispatch_unconfirmed and
+// left to the FinLab watchdog, which resends with supersede. App 5xx reached
+// the non-idempotent spawn and is never retried.
 export function isCloudRunPlatformError(status: number, body: string): boolean {
-  return status >= 500 && status <= 504
-    && (/no available instance/i.test(body) || /^\s*<(?:!doctype html|html)/i.test(body))
+  return status >= 500 && status <= 504 && /no available instance/i.test(body)
+}
+
+export function isFinLabDispatchOutcomeUnknown(status: number, body: string): boolean {
+  return status >= 500 && status <= 504 && /^\s*<(?:!doctype html|html)/i.test(body)
 }
 
 // Transport failures leave the spawn outcome unknown; config/policy errors do not.
+// R33-NEW-32: the Workers runtime also rejects fetch with a plain Error ("Network connection lost.",
+// "internal error; reference = ..."), so the class is matched by message, not only on TypeError.
+const FINLAB_TRANSPORT_ERROR_MESSAGE = /network|connection|fetch failed|socket hang up|ECONNRESET|ETIMEDOUT|EPIPE|internal error; reference/i
 export function isFinLabDispatchTransportError(error: unknown): boolean {
   const name = (error as { name?: unknown } | null)?.name
   return name === 'TimeoutError' || name === 'AbortError'
-    || (error instanceof TypeError && /network|connection|fetch failed/i.test(error.message))
+    || (error instanceof Error && !(error instanceof SyntaxError) && FINLAB_TRANSPORT_ERROR_MESSAGE.test(error.message))
 }
 
 function optionalString(value: unknown): string | undefined {
@@ -1222,7 +1245,7 @@ function buildFinLabBackfillRequestBody(
       ? (optionalString(options.keyScopeJson) ?? optionalString((env as any).FINLAB_DAILY_SOURCE_KEY_SCOPE_JSON) ?? optionalString((env as any).FINLAB_DAILY_PRICE_KEY_SCOPE_JSON) ?? dailyKeyScopeJsonForLanes(dailyLanes))
       : optionalString(options.keyScopeJson),
     reuse_successful_artifacts: Boolean(options.reuseSuccessfulArtifacts),
-    dispatch_attempt: Math.max(1, Math.min(5, Math.floor(options.dispatchAttempt ?? 1))),
+    dispatch_attempt: Math.max(1, Math.min(FINLAB_DISPATCH_ATTEMPT_MAX, Math.floor(options.dispatchAttempt ?? 1))),
     supersede_function_call_id: optionalString(options.supersedeFunctionCallId),
     skip_diff_counts: dailySourceMode
       ? !truthyFlag((env as any).FINLAB_DAILY_PRICE_KEEP_DIFF_COUNTS)
@@ -1252,6 +1275,11 @@ export async function runFinLabV4Backfill(
     const delayMs = retryDelaysMs[attempt]
     if (resp.ok || delayMs === undefined || !isCloudRunPlatformError(resp.status, text)) break
     await new Promise((resolve) => setTimeout(resolve, delayMs))
+  }
+  // An exhausted "no available instance" proves no spawn, even inside an HTML page: it stays a plain failure.
+  if (!resp.ok && !isCloudRunPlatformError(resp.status, text) && isFinLabDispatchOutcomeUnknown(resp.status, text)) {
+    return `triggered finlab-v4-backfill dispatch_unconfirmed run_id=${jsonBody.run_id} function_call_id=unknown `
+      + `dispatch_attempt=${jsonBody.dispatch_attempt} error=html_${resp.status}`
   }
   if (!resp.ok) {
     return `failed (${resp.status}): ${text.slice(0, 200)}`

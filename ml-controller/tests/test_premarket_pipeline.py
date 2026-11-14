@@ -237,6 +237,71 @@ def test_ambiguous_l4_completion_cannot_recompute(f):
     with pytest.raises(ValueError,match='requires_reconciliation'):run()
     assert len(calls)==1
 
+TRANSIENT_D1='D1 request failed: HTTP 429: {"errors":[{"message":"D1 DB is overloaded"}]}'
+def _recommend_after_personas(f,node_recommend,merge=None):
+    s,state,c=f;r=m.seal_l3(state,client=s);j=Jobs();m.dispatch(r,c,jobs_client=j,client=s)
+    uri=j.calls[0]['env_overrides']['PIPELINE_PREMARKET_INPUT_GCS_URI']
+    async def node_compute_personas(value):return {'persona_opinions':{}}
+    def run():return asyncio.run(m.resume(uri,nodes=[node_compute_personas,node_recommend],
+        merge=merge or (lambda st,up:st.update(up)),client=s))
+    claim=s.blob(m.prefix(r['run_date'],r['run_id'])+'/phases/node_recommend.claim.json')
+    return s,r,c,j,run,claim
+
+@pytest.mark.parametrize('wrapped',[False,True])
+def test_pre_seal_transient_d1_read_failure_is_redispatched_before_cutoff(f,wrapped):
+    calls=[];fail=[True]
+    async def node_recommend(value):
+        m.recommend_progress('pre_seal');calls.append(1)
+        if fail[0]:
+            fail[0]=False
+            if not wrapped:raise RuntimeError(TRANSIENT_D1)
+            try:raise RuntimeError(TRANSIENT_D1)
+            except RuntimeError as exc:raise RuntimeError('recommend_source_read_failed') from exc
+        m.recommend_progress('seal');return {'final_recommendations':[]}
+    s,r,c,j,run,claim=_recommend_after_personas(f,node_recommend)
+    with pytest.raises(RuntimeError):run()
+    assert json.loads(claim.raw)['status']=='failed'
+    j.state='failed'
+    assert m.dispatch(r,c,jobs_client=j,client=s)['status']=='dispatched' and len(j.calls)==2
+    assert run()['final_recommendations']==[] and len(calls)==2
+
+@pytest.mark.parametrize('stage',['unreported','seal','returned'])
+def test_transient_d1_failure_without_pre_seal_report_stays_ambiguous(f,stage):
+    async def node_recommend(value):
+        if stage!='unreported':m.recommend_progress('pre_seal')
+        if stage=='seal':m.recommend_progress('seal')
+        if stage!='returned':raise RuntimeError(TRANSIENT_D1)
+        return {'final_recommendations':[]}
+    def merge(st,up):
+        if 'final_recommendations' in up:raise RuntimeError(TRANSIENT_D1)
+        st.update(up)
+    s,r,c,j,run,claim=_recommend_after_personas(f,node_recommend,merge)
+    with pytest.raises(RuntimeError):run()
+    assert json.loads(claim.raw)['status']=='ambiguous'
+    j.state='failed'
+    result=m.dispatch(r,c,jobs_client=j,client=s)
+    assert result['status']=='reconciliation_required' and len(j.calls)==1
+
+@pytest.mark.parametrize('error',[RuntimeError('D1 request failed: HTTP 400: near "SELEC": syntax error'),
+    RuntimeError('D1 request unsuccessful: [{"code":7500,"message":"SQLITE_CONSTRAINT"}]'),
+    RuntimeError('Worker D1 batch failed: HTTP 429: busy'), ValueError(TRANSIENT_D1),
+    RuntimeError('paired_nav_formal_baseline_identity_missing_or_mismatched')])
+def test_pre_seal_non_transient_failure_stays_ambiguous(f,error):
+    async def node_recommend(value):m.recommend_progress('pre_seal');raise error
+    s,r,c,j,run,claim=_recommend_after_personas(f,node_recommend)
+    with pytest.raises(type(error)):run()
+    assert json.loads(claim.raw)['status']=='ambiguous'
+
+def test_transient_d1_classifier_matches_only_exhausted_client_errors():
+    from services.d1_client import is_transient_d1_error
+    for message in (TRANSIENT_D1,'D1 request failed: HTTP 503: unavailable','D1 raw request failed: network error: reset',
+                    'D1 request unsuccessful: [{"message":"Requests queued for too long"}]'):
+        assert is_transient_d1_error(RuntimeError(message)),message
+    implicit=RuntimeError('paired_nav_source_or_capture_failed');implicit.__context__=RuntimeError(TRANSIENT_D1)
+    for error in (None,implicit,RuntimeError('D1 request failed: HTTP 401: denied'),
+                  RuntimeError('prefix D1 request failed: HTTP 429: x'),ValueError(TRANSIENT_D1)):
+        assert not is_transient_d1_error(error),error
+
 def test_postwrite_requires_serving_receipts_and_can_finish_after_allocation_cutoff(f,monkeypatch):
     s,state,c=f;r=m.seal_l3(state,client=s);j=Jobs();m.dispatch(r,c,jobs_client=j,client=s)
     uri=j.calls[0]['env_overrides']['PIPELINE_PREMARKET_INPUT_GCS_URI']
@@ -472,6 +537,42 @@ def test_actual_oct12_night_source_passes_original_96h_and_future_still_fails():
     with pytest.raises(ValueError,match='future_information:taifex-night'):
         build_information_delta(baseline=baseline,current_records=m.source_records(None,news,captured_at=cutoff),
             cutoff=cutoff,trade_date='2026-10-12',required_sources=('taifex-night',),max_age_seconds={'taifex-night':96*3600})
+
+
+def test_long_closure_session_floor_lifts_only_the_night_age_limit(monkeypatch):
+    # 10/27 07:45: Oct 23 typhoon, weekend, Oct 26 holiday. The Worker report recorded the
+    # last trading day (newsAnalyst taifex_session_floor); the Oct 22 session is ~99h old.
+    monkeypatch.setenv('GCS_BUCKET_NAME','local-fixture')
+    class Clock(datetime):
+        @classmethod
+        def now(cls,tz=None):return datetime(2026,10,26,23,45,tzinfo=timezone.utc)
+    monkeypatch.setattr(m,'datetime',Clock)
+    night={'date':'20261022','time':'045959','lastPrice':45654,'changePct':-1.25,'changePoints':-580}
+    def run(floor,opened='20261022'):
+        s=Storage()
+        state={'run_date':'2026-10-22','producer_run_id':'root','payloads':[{'symbol':'2330'}],
+            'predictions':{'2330':{'score':.5}},'metrics':{},'premarket_baseline':{
+              'signal_date':'2026-10-22','available_at':'2026-10-22T14:00:00+00:00','sources':[]}}
+        macro={'taifex_night':{**night,'date':opened}}
+        if floor is not None:macro['taifex_session_floor']=floor
+        c={'trade_date':'2026-10-27','cutoff':'2026-10-26T23:40:00+00:00',
+          'us':{'date':'2026-10-27','fetched_at':'2026-10-26T23:00:00+00:00','source_times':{'sox':'2026-10-26T20:00:00+00:00'},'sox_close':100},
+          'news':{'date':'2026-10-27','cutoff':'2026-10-26T23:00:00+00:00','evidence_receipt':{'sha256':'f'*64},
+            'evidence':[],'macro_evidence':macro}}
+        c['checksum']=m.digest(c)
+        r=m.seal_l3(state,client=s);j=Jobs();m.dispatch(r,c,jobs_client=j,client=s)
+        uri=j.calls[0]['env_overrides']['PIPELINE_PREMARKET_INPUT_GCS_URI'];seen=[]
+        async def l4(value):
+            seen.append(value['premarket_information']['source_age_seconds']['taifex-night']);return {}
+        asyncio.run(m.resume(uri,nodes=[l4],merge=lambda st,up:st.update(up),client=s))
+        return seen[0]
+    assert run('2026-10-22')>96*3600
+    for floor,opened in [(None,'20261022'),('2026-10-12','20261022'),('2026-10-27','20261022'),
+                         ('2026-10-23','20261022'),('20261022','20261022')]:
+        with pytest.raises(ValueError,match='premarket_source_stale:taifex-night'):run(floor,opened)
+    for opened in ('2026/10/22','2026-10-22X'):
+        assert m.taifex_night_max_age({'macro_evidence':{'taifex_session_floor':'2026-10-22',
+            'taifex_night':{**night,'date':opened}}},'2026-10-27')==96*3600
 
 
 def test_authorized_after_close_recovery_retains_actual_capture(monkeypatch):

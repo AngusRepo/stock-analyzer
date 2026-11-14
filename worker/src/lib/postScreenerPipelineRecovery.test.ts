@@ -282,6 +282,61 @@ test('Paper runtime reapproval requeues the failed pipeline stage once', async (
 })
 
 
+test('Provenance timeout requeues once per release without a newer release', async () => {
+  const error = 'pipeline_modal_provenance_timeout_before_compute'
+  const workerVersion = {id:'current-release',tag:'a'.repeat(40),timestamp:'2026-10-31T00:58:00Z'}
+  const failure = {canonical_run_id:'failed-run',status:'error',last_error:error,updated_at:'2026-10-31 03:08:41'}
+  assert.equal(pipelineProvenanceRecoveryDecision({failure,workerVersion}).reason,'provenance_timeout_retry_once_per_release')
+  assert.equal(pipelineProvenanceRecoveryDecision({failure:{...failure,status:'running'},workerVersion}).retry,false)
+  assert.equal(pipelineProvenanceRecoveryDecision({failure,workerVersion:{...workerVersion,id:''}}).retry,false)
+  const mf = new Miniflare({modules:true,
+    script:'export default { fetch() { return new Response("ok") } }',d1Databases:['OPS']})
+  try {
+    const db = await mf.getD1Database('OPS')
+    await db.prepare(`CREATE TABLE pipeline_stage_runs (
+      business_date TEXT NOT NULL, stage TEXT NOT NULL, canonical_run_id TEXT NOT NULL,
+      status TEXT NOT NULL, cursor_key TEXT, processed_count INTEGER NOT NULL DEFAULT 0,
+      expected_count INTEGER, persisted_count INTEGER NOT NULL DEFAULT 0,
+      attempt_count INTEGER NOT NULL DEFAULT 0, lease_owner TEXT, lease_expires_at TEXT,
+      queued_at TEXT, started_at TEXT, completed_at TEXT, last_error TEXT,
+      updated_at TEXT NOT NULL, PRIMARY KEY (business_date, stage))`).run()
+    await db.batch([
+      db.prepare(`INSERT INTO pipeline_stage_runs
+        (business_date,stage,canonical_run_id,status,last_error,updated_at)
+        VALUES ('2026-10-30','pipeline_execution','failed-run','error',?,?)`)
+        .bind(error,failure.updated_at),
+      db.prepare(`INSERT INTO pipeline_stage_runs
+        (business_date,stage,canonical_run_id,status,updated_at)
+        VALUES ('2026-10-30','post_screener_continuation','original-root','success',?)`)
+        .bind('2026-10-31 03:07:56'),
+    ])
+    const sent: unknown[] = []
+    const kv = new Map<string,string>()
+    const env = {DB:db,OPS_DB:db,KV:{get:async (key:string) => kv.get(key) ?? null,
+      put:async (key:string,value:string) => { kv.set(key,value) }},
+      UPDATE_QUEUE:{send:async (message:unknown) => { sent.push(message) }}} as unknown as Bindings
+    const options = {businessDate:'2026-10-30',source:'test',workerVersion}
+    const first = await enqueuePostScreenerPipelineRecovery(env,options)
+    assert.equal(first.queued,true)
+    assert.equal(first.canonicalRunId,'pipeline-provenance-recovery:2026-10-30:current-release')
+    // The retry times out again after its continuation was adopted back to the root id,
+    // which the CAS would accept: the same release must still not requeue it.
+    await db.prepare(`UPDATE pipeline_stage_runs SET canonical_run_id='original-root',status='success'
+      WHERE stage='post_screener_continuation'`).run()
+    await db.prepare(`UPDATE pipeline_stage_runs SET canonical_run_id=?,status='error',last_error=?,updated_at=?
+      WHERE stage='pipeline_execution'`).bind('pipeline-dispatch:2026-10-30:retry',error,'2026-10-31 03:30:00').run()
+    const second = await enqueuePostScreenerPipelineRecovery(env,options)
+    assert.equal(second.queued,false)
+    assert.equal(second.reason,'provenance_timeout_retry_already_used')
+    assert.equal(sent.length,1)
+    const nextRelease = await enqueuePostScreenerPipelineRecovery(env,{...options,
+      workerVersion:{...workerVersion,id:'next-release'}})
+    assert.equal(nextRelease.queued,true)
+  } finally {
+    await mf.dispose()
+  }
+})
+
 test('September 29 snapshot failure recovers once only with both immutable zero-NAV certificates', async () => {
   const mf = new Miniflare({ modules: true,
     script: 'export default { fetch() { return new Response("ok") } }', d1Databases: ['OPS'] })

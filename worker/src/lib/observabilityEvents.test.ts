@@ -19,6 +19,7 @@ const generatedAt = '2026-04-30T01:00:00.000Z'
   const events = buildEventsFromAdaptiveMeta({
     generatedAt,
     params: {
+      computed_at: '2026-04-29T16:02:00+08:00',
       confidence_delta: 0.07,
       bandit_max_mult: 1.5,
       provenance: {

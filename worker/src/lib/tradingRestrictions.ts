@@ -59,7 +59,6 @@ interface CurrentKvRestrictions {
   attention: string[]
   tpexPunished: string[]
   tpexAttention: string[]
-  delisting: string[]
   checkedAt: string | null
 }
 
@@ -180,15 +179,14 @@ async function loadGovernanceRestrictions(
 }
 
 async function loadCurrentKvRestrictions(kv: KVNamespace): Promise<CurrentKvRestrictions> {
-  const [punished, attention, tpexPunished, tpexAttention, delisting, checkedAt] = await Promise.all([
+  const [punished, attention, tpexPunished, tpexAttention, checkedAt] = await Promise.all([
     readSymbolList(kv, 'market:punished_stocks'),
     readSymbolList(kv, 'market:attention_stocks'),
     readSymbolList(kv, 'market:tpex_punished_stocks'),
     readSymbolList(kv, 'market:tpex_attention_stocks'),
-    readSymbolList(kv, 'market:delisting_risk'),
     kv.get('market:trading_restrictions:checked_at').catch(() => null),
   ])
-  return { punished, attention, tpexPunished, tpexAttention, delisting, checkedAt }
+  return { punished, attention, tpexPunished, tpexAttention, checkedAt }
 }
 
 function restrictionEvidenceStatus(
@@ -377,7 +375,6 @@ export async function loadTradingRestrictionSet(
       ...currentKv.attention,
       ...currentKv.tpexPunished,
       ...currentKv.tpexAttention,
-      ...currentKv.delisting,
     ]
     for (const symbol of kvRows) target.add(symbol)
     if (kvRows.length) addSourceCount(sourceCounts, 'kv_fallback', kvRows.length)
@@ -392,7 +389,7 @@ export async function loadTradingRestrictionSet(
       currentKv = await loadCurrentKvRestrictions(env.KV)
       for (const symbol of [
         ...currentKv.punished, ...currentKv.attention, ...currentKv.tpexPunished,
-        ...currentKv.tpexAttention, ...currentKv.delisting,
+        ...currentKv.tpexAttention,
       ]) target.add(symbol)
     }
   }
@@ -476,7 +473,6 @@ export async function loadTradingRestrictionBuckets(
     for (const [key, symbols] of [
       ['market:punished_stocks', currentKv.punished],
       ['market:tpex_punished_stocks', currentKv.tpexPunished],
-      ['market:delisting_risk', currentKv.delisting],
     ] as const) {
       for (const symbol of symbols) hardBlockedSymbols.add(symbol)
       if (symbols.length) addSourceCount(hardSourceCounts, key, symbols.length)

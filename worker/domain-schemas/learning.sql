@@ -41,8 +41,6 @@ CREATE TABLE IF NOT EXISTS predictions (
 
 CREATE INDEX IF NOT EXISTS idx_pred_stock    ON predictions(stock_id, model_name);
 
-CREATE INDEX IF NOT EXISTS idx_predictions_business_date ON predictions(prediction_date, stock_id, model_name);
-
 CREATE INDEX IF NOT EXISTS idx_pred_verify   ON predictions(stock_id, verified_at);
 
 CREATE INDEX IF NOT EXISTS idx_pred_unverify ON predictions(stock_id, direction_correct) WHERE direction_correct IS NULL;
@@ -948,6 +946,10 @@ CREATE INDEX IF NOT EXISTS idx_selection_reference_v1_date_stock_identity
 CREATE INDEX IF NOT EXISTS idx_selection_reference_route_challenger_v1
   ON selection_reference_snapshots_v1(signal_date, strategy_challenger_route_version, strategy_challenger_route_score);
 
+-- Producer-wide lookups that must not be confined to one signal_date (learning migration 0067).
+CREATE INDEX IF NOT EXISTS idx_selection_reference_v1_producer_run
+  ON selection_reference_snapshots_v1(producer_run_id);
+
 CREATE TABLE IF NOT EXISTS selection_reference_repair_runs_v1 (
   signal_date TEXT NOT NULL,
   producer_run_id TEXT NOT NULL,
@@ -1022,9 +1024,6 @@ CREATE TABLE IF NOT EXISTS strategy_label_matrix_v4 (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY(signal_date, symbol, producer_run_id, strategy_id, strategy_version)
 );
-
-CREATE INDEX IF NOT EXISTS idx_strategy_label_matrix_v4_date
-  ON strategy_label_matrix_v4(signal_date, strategy_id, strategy_hit);
 
 CREATE INDEX IF NOT EXISTS idx_strategy_label_matrix_v4_evaluable
   ON strategy_label_matrix_v4(signal_date, strategy_id, evaluable, strategy_hit);

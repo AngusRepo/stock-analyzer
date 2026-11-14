@@ -9,6 +9,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# The fake vault is "C:/wiki-vault" as configured; the service resolves it, so its
+# native form is C:\wiki-vault on Windows and <cwd>/C:/wiki-vault on POSIX.
+VAULT_NATIVE = Path("C:/wiki-vault").resolve()
+
 from fastapi import HTTPException  # noqa: E402
 from routers.obsidian import (
     WikiBootstrapRequest,
@@ -154,7 +158,7 @@ def test_wiki_note_write_endpoint_writes_to_configured_local_vault(monkeypatch):
     )
 
     assert body["status"] == "written"
-    assert body["files"][0]["absolute_path"].startswith("C:\\wiki-vault\\")
+    assert body["files"][0]["absolute_path"].startswith(str(VAULT_NATIVE) + os.sep)
     content, encoding = written[body["files"][0]["absolute_path"]]
     assert encoding == "utf-8"
     assert "Router local vault write" in content

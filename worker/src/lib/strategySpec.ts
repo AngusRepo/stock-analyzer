@@ -53,8 +53,10 @@ export function resolveLegacyMonthlyRevenueEvidence(options: {
   evidenceMode?: StrategyEvidenceMode
 }): LegacyMonthlyRevenueEvidenceResolution {
   const evidenceMode = options.evidenceMode ?? 'historical_replay'
+  // live_current is only granted to the current date or a pre-open rerun of the
+  // previous session; the query bounds revenue_month by signalDate, so a
+  // cross-midnight rerun keeps the same revenue rows instead of dropping them.
   const queryAllowed = evidenceMode === 'live_current'
-    && options.signalDate === options.observedTaipeiDate
   return {
     evidenceMode,
     queryAllowed,
@@ -466,10 +468,7 @@ function usableMonthlyRevenueEvidence(
 ): MonthlyRevenueEvidence | null {
   if (options.evidenceMode !== 'live_current') return null
   const evidence = parseMonthlyRevenueEvidence(raw.monthlyRevenueEvidence)
-  if (
-    evidence?.status !== 'LIVE_CURRENT_ONLY'
-    || evidence.signalDate !== evidence.observedTaipeiDate
-  ) return null
+  if (evidence?.status !== 'LIVE_CURRENT_ONLY') return null
   return evidence
 }
 

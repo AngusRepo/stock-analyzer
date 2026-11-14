@@ -12,7 +12,11 @@ try:
     import google.cloud as google_cloud
 except ImportError:
     google_cloud = sys.modules.setdefault('google.cloud', types.ModuleType('google.cloud'))
-if not hasattr(google_cloud, 'run_v2'):
+# Stub only when the SDK is absent: an installed run_v2 must not be shadowed for
+# modules collected later in the same xdist worker (test_pipeline_execution_status).
+try:
+    from google.cloud import run_v2  # noqa: F401
+except ImportError:
     stub = types.SimpleNamespace(JobsClient=object, ExecutionsClient=object)
     google_cloud.run_v2 = stub
     sys.modules.setdefault('google.cloud.run_v2', stub)
@@ -123,7 +127,9 @@ async def test_controller_valid_component_preserves_job_dispatch(monkeypatch):
     monkeypatch.setattr(service, 'latest_dataset_snapshot', lambda **_: manifest())
     captured = []
     class Client:
-        def __init__(self, *, job_name):
+        def __init__(self, *, job_name, require_source_alignment=False):
+            # 8d43888b5: research job dispatch must verify the image source first.
+            assert require_source_alignment is True
             captured.append(job_name)
         def run_job(self, **kwargs):
             captured.append(kwargs)

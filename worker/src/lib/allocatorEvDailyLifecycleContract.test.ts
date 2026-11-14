@@ -64,7 +64,7 @@ assert(lifecycle.includes('inspectAllocatorEvRecoveryUpstreamGate(env.KV, busine
 assert(lifecycle.includes('pipeline_ml_run_id_mismatch'), 'watchdog must fence stale ML evidence from a different pipeline run')
 assert(lifecycle.includes('root_pipeline_run_id_mismatch'), 'watchdog must fence matching stale pipeline/ML evidence under a newer root run')
 assert(lifecycle.includes('active_model_closure=true'), 'watchdog must require explicit active-model symbol closure')
-assert(lifecycle.includes("historicalLearningLineageDecision(env.DB, env.KV, 'evening-chain', businessDate)"), 'watchdog repair window must use the canonical next-session-open boundary')
+assert(lifecycle.includes("historicalLearningLineageDecision(databaseForDataDomain(env, 'market'), env.KV, 'evening-chain', businessDate)"), 'watchdog repair window must use the canonical next-session-open boundary')
 assert(!lifecycle.includes('businessDate < twTodayDate()'), 'midnight rollover alone must not close the allocator repair window')
 assert(lifecycle.includes('runId: recoveryRunId') && lifecycle.includes('expectedCanonicalRunId: recoveryRunId') && !lifecycle.slice(lifecycle.indexOf('const recoveryRunId')).includes('adoptRunIdOnResume: true'), 'recovery must resume only the already-canonical verified pipeline run')
 assert(

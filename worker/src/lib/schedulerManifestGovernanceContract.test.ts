@@ -60,13 +60,17 @@ assert(summary.physicalRoots === 57, 'summary physical root count mismatch')
 assert(summary.uniqueLogicalTasks === 53 && summary.accountedLogicalTasks === 53, 'logical task accounting must be 53/53')
 assert(summary.reviewedDependencies === 35, 'reviewed dependencies include the post-close dispatcher and exclude retired jobs')
 assert(summary.unmappedDependencies === 18 && summary.unmappedTasks.length === 18, 'unreviewed non-daily dependency debt must remain fail-visible')
-assert(summary.pausedPhysicalRoots === 1, 'only paper shadow backfill remains paused')
+assert(summary.pausedPhysicalRoots === 5, 'paper shadow backfill, the weekly/monthly Active-8 OOF cohorts and the weekly/monthly Optuna sweeps stay paused')
 assert(summary.internalLogicalSteps === 23, 'internal logical step accounting must preserve caller total')
 
 const paused = manifest.jobs.filter((job) => 'desiredState' in job && job.desiredState === 'PAUSED')
 assert(
   JSON.stringify(paused.map((job) => job.id).sort()) === JSON.stringify([
+    'active8-oof-monthly',
+    'active8-oof-weekly',
     'data-domain-shadow-backfill-paper',
+    'monthly-optuna',
+    'weekly-optuna',
   ]),
   'production PAUSED truth must be represented in manifest',
 )
@@ -106,6 +110,10 @@ assert(rotation.includes("@('retryCount', 'maxRetryDuration', 'minBackoffDuratio
 const dryRunSync = fs.readFileSync('../scripts/sync_gcp_scheduler.ps1', 'utf8')
 assert(dryRunSync.includes('$governanceDefaults.attemptDeadline'), 'dry-run sync must use manifest attempt deadline')
 assert(dryRunSync.includes('$retryDefaults.retryCount'), 'dry-run sync must use manifest retry defaults')
+for (const field of ['retryCount', 'minBackoffDuration', 'maxBackoffDuration', 'maxRetryDuration', 'maxDoublings']) {
+  assert(dryRunSync.includes(`$jobRetry.${field}`), `dry-run sync must read per-job retryConfig.${field}`)
+}
+assert(!/\$job\.(maxRetryAttempts|minBackoff|maxBackoff|maxRetryDuration|maxDoublings)\b/.test(dryRunSync), 'dry-run sync must not read retry fields the manifest does not have')
 assert(dryRunSync.includes('state=$desiredState'), 'dry-run output must expose desired state')
 
 console.log('schedulerManifestGovernanceContract.test.ts: all assertions passed')

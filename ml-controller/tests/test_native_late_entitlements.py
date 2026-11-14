@@ -6,7 +6,7 @@ import sqlite3
 import pytest
 import polars as pl
 
-from services.native_paper_sandbox import run_native_paper_frames
+from services.native_paper_sandbox import native_runtime_manifest, run_native_paper_frames
 from services.paired_native_session import native_fills, session_schedule, validate_native_account
 from services.paired_nav_journal import replay_session
 from test_native_paper_sandbox import native_runner, checksum, frame
@@ -113,7 +113,8 @@ def test_sold_parent_keeps_cash_and_stock_rights_until_late_announced_delivery(n
         assert sum(f['shares'] for f in fills if f['side'] == 'sell') == (100 if index == 0 else 0)
         assert not any(f['side'] == 'buy' for f in fills)
         ledger = replay_session(previous=previous, fills=fills, marks={'2330': 85},
-            corporate_actions=source['actions'], session_date=day, fees=config['trading']['fees'])
+            corporate_actions=source['actions'], session_date=day, fees=config['trading']['fees'],
+            commission_contract=native_runtime_manifest(native_runner)['commission_contract'])
         valuation = result['frames'][-1]['result']['valuation']
         validate_native_account(valuation, ledger)
         assert valuation['positions'] == ({} if index < 3 else {'2330': 10})

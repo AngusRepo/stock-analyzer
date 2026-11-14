@@ -4,6 +4,8 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
+import sys
 from datetime import date
 from pathlib import Path
 
@@ -17,6 +19,12 @@ from services.training_auxiliary_capture import DAILY_FIELDS, FIELDS
 HEAD_PREFIX = 'daily_inference_compositions/dates/'
 FINANCIAL_FIELDS = {'eps', 'roe', 'revenue_growth_yoy'}
 MONTHLY_FIELDS = {'revenue', 'revenue_yoy', 'revenue_mom'}
+# FinLab publishes these around 21:30 TW, after the evening chain may first capture (HL3-4#a).
+LATE_PUBLICATION_FIELDS = ('margin_balance', 'short_balance')
+LATE_FIELD_COVERAGE_ENV = 'DAILY_COMPOSITION_LATE_FIELD_MIN_COVERAGE'
+DEFAULT_LATE_FIELD_MIN_COVERAGE = 0.95
+LATE_FIELD_BASELINE_ENV = 'DAILY_COMPOSITION_LATE_FIELD_BASELINE_SESSIONS'
+DEFAULT_LATE_FIELD_BASELINE_SESSIONS = 5
 
 
 def _json(value):
@@ -67,6 +75,45 @@ class _LocalArtifacts:
             def download_as_bytes(self):
                 return local.read_bytes()
         return Blob()
+
+
+def _env_number(name, default, valid):
+    try:
+        value = type(default)(os.environ.get(name, ''))
+    except ValueError:
+        return default
+    return value if valid(value) else default
+
+
+def late_field_min_coverage():
+    return _env_number(LATE_FIELD_COVERAGE_ENV, DEFAULT_LATE_FIELD_MIN_COVERAGE, lambda v: 0 <= v <= 1)
+
+
+def late_field_baseline_sessions():
+    return _env_number(LATE_FIELD_BASELINE_ENV, DEFAULT_LATE_FIELD_BASELINE_SESSIONS, lambda v: 1 <= v <= 20)
+
+
+def run_date_coverage(frame, *, run_date, min_ratio, baseline_sessions=DEFAULT_LATE_FIELD_BASELINE_SESSIONS):
+    """Report-only: non-null symbols on run_date against the fullest recent session row.
+
+    A late field whose date row exists but is mostly null would otherwise be
+    filled downstream without notice. The baseline is the max over the previous
+    ``baseline_sessions`` rows, so one early partial capture does not lower it.
+    This never blocks the composition.
+    """
+    symbols = [c for c in frame.columns if c != 'date']
+    rows = frame.filter(pl.col('date') <= run_date).sort('date').tail(baseline_sessions + 1)
+    observed = rows.select(pl.sum_horizontal(pl.exclude('date').is_not_null())).to_series().to_list()
+    counts = dict(zip(rows['date'].to_list(), observed))
+    current = counts.pop(run_date, None)
+    baseline_date = max(counts, key=lambda d: (counts[d], d), default=None)
+    baseline = counts.get(baseline_date)
+    ratio = (current / baseline) if current is not None and baseline else None
+    status = 'unknown' if ratio is None else ('warn' if ratio < min_ratio else 'ok')
+    return {'run_date': run_date, 'non_null_symbols': current, 'baseline_date': baseline_date,
+            'baseline_non_null_symbols': baseline, 'baseline_sessions': baseline_sessions,
+            'roster_symbols': len(symbols), 'ratio': None if ratio is None else round(ratio, 4),
+            'min_ratio': min_ratio, 'status': status, 'blocking': False}
 
 
 def append_holding_observations(prior, observed, *, run_date):
@@ -198,6 +245,10 @@ def produce_daily_inference_composition(*, run_dir, bucket, capture_prefix,
     disclosure, disclosure_ref, _ = native('disclosure')
     deadline, deadline_ref, _ = native('deadline')
     owners = [quarterly_index(f).to_pandas().set_index('date') for f in (disclosure, deadline)]
+    # Every daily field missing market dates is reported together: the Worker treats the
+    # failure as the late lane only when all listed fields are late-publication fields.
+    # Any other error in a later field still raises first and is terminal.
+    missing_market_dates = []
     for field in FIELDS:
         prior = read_frame(bucket, old['auxiliary'][field], run_date=old_day)
         inputs = [{'path': old['auxiliary'][field]['path'], 'sha256': old['auxiliary'][field]['sha256']}]
@@ -238,12 +289,22 @@ def produce_daily_inference_composition(*, run_dir, bucket, capture_prefix,
         inputs.append(reference)
         frame = append_wide_delta(prior, delta, baseline_end=old_day, run_date=run_date)
         if field in DAILY_FIELDS and set(calendar['date'].cast(pl.String)) - set(frame['date']):
-            raise ValueError('daily_composition_market_dates_missing:' + field)
+            missing_market_dates.append(field)
+            continue
+        if field in LATE_PUBLICATION_FIELDS:
+            coverage = run_date_coverage(frame, run_date=run_date, min_ratio=late_field_min_coverage(),
+                                         baseline_sessions=late_field_baseline_sessions())
+            extra['run_date_coverage'] = coverage
+            if coverage['status'] == 'warn':
+                print('[daily-composition] late_field_coverage_warn ' + field + ' '
+                      + json.dumps(coverage, sort_keys=True), file=sys.stderr, flush=True)
         # Appending must preserve every existing cell, including nulls and zero.
         historical = frame.filter(pl.col('date') <= old_day).select(prior.columns)
         if not historical.equals(prior.sort('date')):
             raise ValueError('daily_composition_history_changed:' + field)
         result['auxiliary'][field] = frame_item('auxiliary/' + field + '.parquet', frame, inputs, availability, **extra)
+    if missing_market_dates:
+        raise ValueError('daily_composition_market_dates_missing:' + ','.join(missing_market_dates))
 
     broker_raw = (run_dir / 'raw/training_long_full_vintage/broker.json').read_bytes()
     broker_meta = json.loads(broker_raw)

@@ -54,7 +54,8 @@ def allocator_runtime_source_identity() -> dict[str, str]:
              'paired_nav_collection.py', 'paired_nav_opb_prior.py', 'opb_nav_control.py',
              'opb_nav_serving_source.json', 'l4_distribution.py', 'l4_model_cutover.py','l4_mlp_weights.py','l4_mlp_median.py','l4_residual_mlp.py','l4_residual_tabpack.py', 'l4_tabpack_weights.py', 'l4_tabpack_budget_protocol.py', 'l4_tabpack_median.py', 'paper_strategy_mode.py', 'l4_portfolio.py',
              'l4_distribution_runtime.py', 'l4_distribution_context.py', 'l4_risk_history.py', 'l4_dated_risk.py', 'l4_allocation_contract.py', 'similarity_evidence.py',
-             'l4_position_constraints.py','l4_sealed_execution.py','l4_execution_evidence.py')
+             'l4_position_constraints.py','l4_sealed_execution.py','l4_execution_evidence.py',
+             'l4_opb_selection.py','l4_numeric_contract.py','l4_opb_arm_replay.py','forward_net_return.py')
     return {name: hashlib.sha256((base / name).read_bytes()).hexdigest() for name in names}
 
 
@@ -89,13 +90,13 @@ def allocation_projection(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
                    for row in rows], key=lambda row: row['symbol'])
 
 
-def capture_allocator_return_history(*, payloads, signal_date, saved=None, held_payloads=None, canonical_risk_payloads=None):
+def capture_allocator_return_history(*, payloads, signal_date, saved=None, held_payloads=None, canonical_risk_payloads=None, lookback=None):
     """Freeze the original risk-window owner once; never infer it from length."""
     from services.recommendation_service import build_return_history_from_payloads, gnn_return_history_lookback
     if saved is not None:
         replay_allocator_return_history(saved, payloads=payloads, signal_date=signal_date)
         return json.loads(encode(saved))
-    lookback = gnn_return_history_lookback()
+    lookback = gnn_return_history_lookback() if lookback is None else lookback
     body = {'schema_version': 'allocator-return-history-context-v1', 'signal_date': signal_date,
         'lookback': lookback, 'payload_checksum': digest(payloads),
         'source_identity': allocator_source_identity(),
@@ -307,9 +308,11 @@ def run_and_capture_allocation(*, recommendations: list[dict[str, Any]], ranking
                     if previous is not None:
                         extra['atomic_distribution_history'] = previous['atomic_distribution_history']
                     else:
+                        from services.l4_opb_selection import allocator_return_history_lookback
                         extra['atomic_distribution_history'] = capture_history(atomic_recommendation_inputs,
                             formal_payloads=recommendation_context['inputs']['payloads'],
-                            signal_date=signal_date, capture_source=risk_capture_source)
+                            signal_date=signal_date, capture_source=risk_capture_source,
+                            lookback=allocator_return_history_lookback(trading_config['l4Distribution']))
         if allocator_history_context is not None:
             extra['allocator_history_context'] = json.loads(encode(allocator_history_context))
         if execution_environment_reader is not None:
@@ -332,9 +335,11 @@ def run_and_capture_allocation(*, recommendations: list[dict[str, Any]], ranking
                     raise ValueError('paired_nav_strategy_original_account_missing')
                 extra.update({key:previous[key] for key in keys})
             else:
+                from services.l4_opb_selection import allocator_return_history_lookback
                 extra.update(capture_strategy_context(selection=selection,recommendation_context=recommendation_context,
                     signal_date=signal_date,query=query,writer=writer,
-                    formal_risk_context=allocator_history_context, capture_source=risk_capture_source))
+                    formal_risk_context=allocator_history_context, capture_source=risk_capture_source,
+                    lookback=allocator_return_history_lookback(trading_config.get('l4Distribution'))))
         receipt = freeze_snapshot(signal_date=signal_date, source_run_id=source_run_id,
             snapshot_kind='allocation_context', query=query, writer=writer, content={
                 **extra,

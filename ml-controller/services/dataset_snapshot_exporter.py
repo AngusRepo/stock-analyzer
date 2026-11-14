@@ -6,6 +6,7 @@ import os
 import re
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -45,6 +46,10 @@ def _empty_frame(columns: list[str]) -> pl.DataFrame:
     return pl.DataFrame(schema={column: pl.Utf8 for column in columns})
 
 
+def _snapshot_query_workers() -> int:
+    return int(os.environ.get("DATASET_SNAPSHOT_QUERY_WORKERS", "4"))
+
+
 def _query_date_range(
     sql: str,
     start_date: str,
@@ -53,13 +58,23 @@ def _query_date_range(
     *,
     query_client: Any,
 ) -> tuple[pl.DataFrame, int]:
-    frames: list[pl.DataFrame] = []
-    query_count = 0
-    for chunk_start, chunk_end in _date_chunks(start_date, end_date, chunk_days):
-        rows = query_client.query(sql, [chunk_start, chunk_end], timeout=120.0)
-        query_count += 1
-        if rows:
-            frames.append(_frame(rows))
+    from services.verified_read_observation import observation_active
+    chunks = _date_chunks(start_date, end_date, chunk_days)
+
+    def read(chunk: tuple[str, str]) -> pl.DataFrame | None:
+        rows = query_client.query(sql, list(chunk), timeout=120.0)
+        return _frame(rows) if rows else None
+
+    # Chunks are independent reads; map keeps date order so the concat is unchanged.
+    # d1_client already backs off on 429/overload. UI observation scopes (a ContextVar
+    # pool threads do not inherit) stay sequential.
+    workers = 1 if observation_active() else max(1, min(_snapshot_query_workers(), len(chunks)))
+    if workers > 1:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            frames = [frame for frame in pool.map(read, chunks) if frame is not None]
+    else:
+        frames = [frame for frame in map(read, chunks) if frame is not None]
+    query_count = len(chunks)
     from services.retention_market_history import TABLES, archived_market_projection
     match = re.search(r'\bFROM\s+([a-z_]+)\b', sql, re.I)
     if match and match.group(1) in TABLES:
@@ -133,7 +148,7 @@ class D1ColdArchiveExportRequest:
     )
     gcs_prefix: str | None = None
     producer_run_id: str | None = None
-    chunk_days: int = 10
+    chunk_days: int = 1
     hot_window_days: int = 504
 
 
@@ -181,7 +196,7 @@ def _query_cold_archive_table(table: str, start_date: str, end_date: str, chunk_
 def export_d1_cold_archive_snapshot(req: D1ColdArchiveExportRequest) -> dict[str, Any]:
     """Export exact D1 cold rows to a GCS archive snapshot before any D1 deletion."""
     started = time.perf_counter()
-    chunk_days = max(1, min(int(req.chunk_days or 10), 30))
+    chunk_days = max(1, min(int(req.chunk_days or 1), 30))
     allowed_tables = tuple(dict.fromkeys(req.tables))
 
     bucket, bucket_name = _gcs_client_bucket()
@@ -519,10 +534,25 @@ class DatasetSnapshotExportRequest:
     kind: str = "backtest_dataset"
     gcs_prefix: str | None = None
     producer_run_id: str | None = None
-    chunk_days: int = 10
+    chunk_days: int = 1
     include_signals: bool = True
     corporate_history_path: str | None = None
     corporate_history_checksum: str | None = None
+
+
+# One read per date chunk. Unpinned, the planner took idx_pred_model_verified_date
+# (model_name=?) and walked every ensemble row (~30k) on each chunk; the date index
+# reads only the chunk's rows, so a whole export reads the table about once.
+ENSEMBLE_SIGNALS_SQL = """
+            SELECT id, stock_id, generated_at, prediction_date, trade_signal,
+                   direction_accuracy, entry_price, stop_loss, target1, target2,
+                   forecast_data
+            FROM predictions INDEXED BY idx_pred_date_model_stock
+            WHERE model_name = 'ensemble'
+              AND prediction_date >= ?
+              AND prediction_date <= ?
+            ORDER BY stock_id, generated_at
+            """
 
 
 def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[str, Any]:
@@ -535,7 +565,7 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
         history_frame = load_history_artifact(req.corporate_history_path, req.corporate_history_checksum)
         req = replace(req, kind="ga_research_dataset")
     started = time.perf_counter()
-    chunk_days = max(1, min(int(req.chunk_days or 10), 30))
+    chunk_days = max(1, min(int(req.chunk_days or 1), 30))
 
     stocks = _query_active_stocks(req.start_date, req.end_date)
     prices, price_queries = _query_prices(req.start_date, req.end_date, chunk_days)
@@ -664,16 +694,7 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
     signal_queries = 0
     if req.include_signals:
         signals, signal_queries = _query_date_range(
-            """
-            SELECT id, stock_id, generated_at, prediction_date, trade_signal,
-                   direction_accuracy, entry_price, stop_loss, target1, target2,
-                   forecast_data
-            FROM predictions
-            WHERE model_name = 'ensemble'
-              AND prediction_date >= ?
-              AND prediction_date <= ?
-            ORDER BY stock_id, generated_at
-            """,
+            ENSEMBLE_SIGNALS_SQL,
             req.start_date,
             req.end_date,
             chunk_days,

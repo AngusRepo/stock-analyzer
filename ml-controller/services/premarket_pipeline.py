@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from datetime import datetime, timezone, timedelta
+import re
+from contextvars import ContextVar
+from datetime import date, datetime, timezone, timedelta
 from google.cloud import storage
 from google.api_core.exceptions import NotFound, PreconditionFailed
 from services.pipeline_async_state_transport import (STATE_SCHEMA_V2, build_pipeline_payload_identity,
@@ -17,6 +19,18 @@ SERVING_PHASES=('node_compute_personas','node_recommend','node_llm_reasons','nod
 # Serving before the open publishes a receipt; research resumes after 13:30 on the sealed state.
 CURRENT_SERVING_PHASES=('node_compute_personas','node_recommend','node_write_d1')
 POSTCLOSE_PHASES=('node_compute_sector_flow','node_compute_pit_residual_shadow')
+# node_recommend reports how far it got. Unknown progress keeps the claim ambiguous.
+_recommend_progress=ContextVar('premarket_recommend_progress',default=None)
+def recommend_progress(stage):
+    """'pre_seal' until the first allocation-context write may start, then 'seal'."""
+    progress=_recommend_progress.get()
+    if progress is not None:progress['stage']=stage
+def failed_phase_status(name,progress,exc):
+    # Before the seal, node_recommend only reads (plus content-addressed slate
+    # objects), so a transient D1 read failure may be redispatched before cutoff.
+    if name!='node_recommend':return 'failed'
+    from services.d1_client import is_transient_d1_error
+    return 'failed' if progress.get('stage')=='pre_seal' and is_transient_d1_error(exc) else 'ambiguous'
 def enabled():
     return os.environ.get('PIPELINE_DAILY_PLAN_OWNER') == OWNER
 def digest(value):
@@ -66,6 +80,23 @@ def source_records(us, news, *, captured_at):
                 observed_at=observed.isoformat(),available_at=captured_at,
                 payload={k:night[k] for k in ('lastPrice','changePct','changePoints')}))
     return records
+
+def taifex_night_max_age(news,trade_date):
+    """96h, or no age limit when the news report recorded a session floor (Worker newsAnalyst
+    validSessionFloor: 1-14 days before trade_date) and the night session opened on or after it.
+    After a long closure the last trading day's session is older than 96h."""
+    macro=(news or {}).get('macro_evidence') or {}
+    floor=macro.get('taifex_session_floor')
+    opened=str((macro.get('taifex_night') or {}).get('date',''))
+    if re.fullmatch(r'\d{8}',opened):opened=opened[:4]+'-'+opened[4:6]+'-'+opened[6:]
+    iso=re.compile(r'\d{4}-\d{2}-\d{2}')
+    if not (isinstance(floor,str) and iso.fullmatch(floor) and iso.fullmatch(opened)):
+        return 96*3600
+    try:
+        days=(date.fromisoformat(trade_date)-date.fromisoformat(floor)).days
+    except (TypeError,ValueError):
+        return 96*3600
+    return None if 1<=days<=14 and opened>=floor else 96*3600
 
 def capture_baseline(day,read_json):
     now=datetime.now(timezone.utc).isoformat()
@@ -400,7 +431,8 @@ async def resume(input_uri, *, nodes, merge, client=None, postwrite_only=False, 
         baseline={**state['premarket_baseline'],'l3_snapshot_id':receipt['checksum']}
         delta=build_information_delta(baseline=baseline,current_records=source_records(context['us'],context['news'],captured_at=context['cutoff']),cutoff=context['cutoff'],
             trade_date=context['trade_date'],required_sources=('us-leading','news','taifex-night'),
-            max_age_seconds={'us-leading':96*3600,'news':24*3600,'taifex-night':96*3600})
+            max_age_seconds={'us-leading':96*3600,'news':24*3600,
+                'taifex-night':taifex_night_max_age(context['news'],context['trade_date'])})
         state['premarket_information']=delta
         state['premarket_context']=context
         state.setdefault('metrics',{})['premarket_information']={k:v for k,v in delta.items() if k!='changes'}
@@ -440,12 +472,16 @@ async def resume(input_uri, *, nodes, merge, client=None, postwrite_only=False, 
             if old.get('status')!='failed':raise ValueError('premarket_phase_outcome_requires_reconciliation:'+node.__name__)
             claim.reload()
             claim.upload_from_string(json_bytes({**identity,'status':'running'}),if_generation_match=claim.generation)
+        progress={'stage':None}
+        token=_recommend_progress.set(progress)
         try:
             from services.pipeline_progress import phase
             from services.runtime_phase_metrics import measured_phase
             async with phase(node.__name__):
                 with measured_phase(node.__name__):
-                    merge(state,await node(state))
+                    update=await node(state)
+                    progress['stage']='completed'
+                    merge(state,update)
                 # Completion is durable only after its checkpoint is sealed.
                 # Measure serialization independently from the node's work.
                 with measured_phase(node.__name__+'.checkpoint'):
@@ -458,9 +494,11 @@ async def resume(input_uri, *, nodes, merge, client=None, postwrite_only=False, 
                 if node.__name__ == 'node_write_d1':
                     from services.premarket_publication import record
                     record(state,client=client)
-        except Exception:
+        except Exception as exc:
             claim.reload()
-            claim.upload_from_string(json_bytes({**identity,'status':'ambiguous' if node.__name__=='node_recommend' else 'failed'}),
+            claim.upload_from_string(json_bytes({**identity,'status':failed_phase_status(node.__name__,progress,exc)}),
                 if_generation_match=claim.generation)
             raise
+        finally:
+            _recommend_progress.reset(token)
     return state

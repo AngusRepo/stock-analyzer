@@ -1,0 +1,8 @@
+{
+ "schema_version": "pit-feature-windows-v1",
+ "contract_version": "pit-availability-contract-v1",
+ "semantics": "Fixed lookback windows, in the stock's own price rows, for features whose pre-contract form depends on where the payload history starts. Applied in ml-service build_feature_matrix only when the payload carries pit_contract_version equal to contract_version; artifacts record that version and serving builds with it, so artifacts without a version keep the pre-contract form. tech_obv (NEW-75): the sum of signed volume (+volume on an up close, -volume on a down close, 0 otherwise; a null or NaN volume counts 0) over the last windows.tech_obv rows, added in a fixed order, null until the oldest of them has a previous close (windows.tech_obv + 1 rows); it equals OBV[t] - OBV[t-N] and replaces the cumulative sum from the first payload row. The window takes the 21-session horizon of the tech_obv registry definition, but not its division by |OBV[t-21]|, which itself depends on the history start: the value is in raw signed volume. A version's windows are frozen in ml-service pit_contract._FEATURE_WINDOWS_SHA256; changing them needs a new contract version.",
+ "windows": {
+  "tech_obv": 21
+ }
+}

@@ -5,6 +5,7 @@ address; results and lineage are read back from trusted immutable objects.
 """
 from __future__ import annotations
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timezone
@@ -14,6 +15,7 @@ import json
 import logging
 import os
 import re
+import time
 from google.api_core.exceptions import NotFound, PreconditionFailed
 from google.cloud import storage
 
@@ -197,11 +199,13 @@ async def defer_snapshot(*, business_date, required_history):
     raise InputDeferred(path, 'snapshot')
 
 
-def defer_prep(*, payloads, receipt_template, lock_key, lock_run_id):
+def defer_prep(*, payloads, receipt_template, lock_key, lock_run_id, pit_variants=None):
     """Persist CPU work before spawning; never invoke a model training method."""
     store = bucket()
-    refs = []
-    for payload in payloads:
+    log = logging.getLogger(__name__)
+    started = time.monotonic()
+
+    def persist(payload):
         raw = gzip.compress(encoded(payload), mtime=0)
         path = PREFIX + 'batches/' + digest(raw) + '.json.gz'
         blob = store.blob(path)
@@ -210,13 +214,25 @@ def defer_prep(*, payloads, receipt_template, lock_key, lock_run_id):
         except PreconditionFailed:
             if digest(blob.download_as_bytes()) != digest(raw):
                 raise ValueError('pipeline_input_batch_conflict')
-        refs.append({'path': path, 'sha256': digest(raw)})
-    store, path, stage = register('prep', {'batches': refs, 'receipt_template': receipt_template,
-                                         'lock_key': lock_key, 'lock_run_id': lock_run_id})
+        return {'path': path, 'sha256': digest(raw)}, len(raw)
+
+    # Compression and uploads release the GIL; map keeps refs in batch order.
+    with ThreadPoolExecutor(max_workers=max(1, min(8, len(payloads)))) as pool:
+        persisted = list(pool.map(persist, payloads))
+    refs = [ref for ref, _ in persisted]
+    log.info('[InputEvents] prep batches persisted count=%d bytes=%d seconds=%.1f',
+             len(refs), sum(size for _, size in persisted), time.monotonic() - started)
+    spec = {'batches': refs, 'receipt_template': receipt_template, 'lock_key': lock_key, 'lock_run_id': lock_run_id}
+    if pit_variants:
+        spec['pit_variants'] = pit_variants  # absent otherwise, so legacy stage digests are unchanged
+    store, path, stage = register('prep', spec)
+    launched = time.monotonic()
     try:
         _launch_missing_prep(store, path, stage)
     except Exception:
-        logging.getLogger(__name__).exception('Prep dispatch uncertain; retained for reconciliation')
+        log.exception('Prep dispatch uncertain; retained for reconciliation')
+    log.info('[InputEvents] prep dispatch seconds=%.1f total_seconds=%.1f',
+             time.monotonic() - launched, time.monotonic() - started)
     raise InputDeferred(path, 'prep')
 
 
@@ -341,6 +357,9 @@ def _complete_prep(store, stage, path):
     rows = [int(result.get('rows') or 0) for result in results]
     if any(row <= 0 for row in rows) or sum(rows) < 10000:
         raise ValueError('pipeline_input_prep_rows_insufficient')
+    from services.pit_certification import prep_batches_not_under_contract
+    if prep_batches_not_under_contract(results, template):
+        raise ValueError('pipeline_input_prep_pit_contract_not_applied')
     paths = [f'{prefix}/prep/batch_{idx}.npz' for idx in range(len(results))]
     paths.append(f'{prefix}/prep/feature_names.json')
     checksums = {key: digest(store.blob(key).download_as_bytes()) for key in paths}
@@ -362,6 +381,12 @@ def _complete_prep(store, stage, path):
                                          expected_feature_semantic=template.get('feature_semantic_version', ''))
     if not sealed or sealed['output_checksums'] != checksums:
         raise ValueError('pipeline_input_prep_seal_mismatch')
+    if spec.get('pit_variants'):
+        from services.pit_daily_sources import seal_variants
+        try:
+            seal_variants(store, legacy_receipt=sealed, results=results, specs=spec['pit_variants'])
+        except Exception:  # an unsealed variant only fails that version's TimeXer closed
+            logging.getLogger(__name__).exception('PIT variant seal failed; legacy prep unaffected')
     retrain_lock.release(spec['lock_key'], expected_metadata={'run_id': spec['lock_run_id']})
     _upsert_retrain_status(spec['lock_run_id'], status='completed', summary=sealed,
                           downstream_notes='prep_only_event_complete_no_training_dispatched')

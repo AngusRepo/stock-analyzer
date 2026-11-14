@@ -286,7 +286,14 @@ export const cronApi = {
 }
 
 // 2026-04-21 Scheduler Dashboard API
+/** One run_date of the 7d strip (Worker resolveSchedulerHistoryCell). */
+export type SchedulerHistoryCell =
+  | 'success' | 'failed' | 'running' | 'triggered' | 'waiting' | 'blocked' | 'attention' | 'missing' | 'skip' | 'none'
 export type SchedulerJob = {
+  /** FU8-A: canonical run id of the durable stage (the pipeline progress owner); null when none. */
+  canonicalRunId?: string|null
+  /** FU8-A: FinLab run id the Worker used to select finlabProgress. */
+  finlabRunId?: string|null
   pipelineWork?: {run_id:string;run_date:string;phase:string;stage_id:string;
     status:'running'|'waiting'|'failed'|'unknown';active:number;completed:number;total:number;
     observed_at:string;execution_id?:string;started_at?:string|null}
@@ -316,6 +323,10 @@ export type SchedulerJob = {
   lastEffectiveRunAt?: string | null
   lastEffectiveStatus?: 'success' | 'error' | 'skipped' | 'triggered' | 'running' | 'none'
   lastStatus: 'success' | 'failed' | 'blocked' | 'running' | 'skip' | 'waiting' | 'sleep'
+  /** Set on a skip that stands in for work which should have run for real. */
+  attentionReason?: string | null
+  /** A watchdog with no receipt from inside today's open window. */
+  missedWindow?: boolean
   statusScope?: 'today' | 'historical_replay' | 'schedule' | 'cadence_cycle' | 'durable_event'
   statusRunDate?: string | null
   lastDuration: string
@@ -329,7 +340,7 @@ export type SchedulerJob = {
   statusAuthority?: 'scheduler_kv' | 'durable_pipeline_stage' | 'scheduler_execution_ticket'
   displayNote?: string | null
   nextRun: string
-  history7d: Array<'success' | 'failed' | 'skip'>
+  history7d: SchedulerHistoryCell[]
   rate7d: string
   summary: string
   details?: string[]
@@ -376,6 +387,8 @@ export type SchedulerStatus = {
     total: number
     active: number
     failed24h: number
+    /** Watchdogs that missed today's window; shown with 24h Failed, not read by the deploy gate. */
+    missed24h?: number
     successRate7d: number
     nextJob: string
     nextIn: string

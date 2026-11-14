@@ -21,6 +21,48 @@ const leaseModifier = (seconds: number) => `+${Math.max(30, Math.floor(seconds))
 
 export const PIPELINE_STAGE_LEASE_SECONDS = 900
 
+/**
+ * Margin after a live foreign lease before the delivery retries: the update queue's own retry_delay
+ * (wrangler.toml, 30 s), which also covers D1 CURRENT_TIMESTAMP's one-second resolution and clock skew.
+ */
+export const PIPELINE_STAGE_BUSY_RETRY_MARGIN_SECONDS = 30
+const PIPELINE_STAGE_LEASE_BUSY_PREFIX = 'pipeline_stage_lease_busy:'
+
+/** Delivery blocked by another owner's live lease: retry it after the lease (never ack it away). */
+export class PipelineStageLeaseBusyError extends Error {
+  constructor(readonly delaySeconds: number, detail: string) {
+    super(`${PIPELINE_STAGE_LEASE_BUSY_PREFIX}${detail}:retry_in=${delaySeconds}s`)
+  }
+}
+
+export function isPipelineStageLeaseBusy(error: unknown): error is PipelineStageLeaseBusyError {
+  return error instanceof PipelineStageLeaseBusyError
+}
+
+/**
+ * Lease remaining + margin. A lease is set to now + PIPELINE_STAGE_LEASE_SECONDS by claim or heartbeat, so the
+ * delay is at most 900 + 30 s, far under the Queues delivery-delay limit (12 h). Every retry spends one of the
+ * consumer's max_retries (8) deliveries.
+ */
+export function pipelineStageBusyRetryDelaySeconds(remainingSeconds: number): number {
+  const margin = PIPELINE_STAGE_BUSY_RETRY_MARGIN_SECONDS
+  return Math.min(PIPELINE_STAGE_LEASE_SECONDS + margin, Math.max(margin, Math.ceil(remainingSeconds) + margin))
+}
+
+/** The running stage row's lease, if any: owner and whole seconds left (D1 clock; negative once expired). */
+export async function readPipelineStageRunningLease(
+  db: D1Database,
+  input: { businessDate: string; stage: string },
+): Promise<{ canonical_run_id: string; lease_owner: string; remaining_seconds: number } | null> {
+  const row = await db.prepare(`
+    SELECT canonical_run_id, lease_owner,
+           CAST(ROUND((julianday(lease_expires_at) - julianday('now')) * 86400) AS INTEGER) AS remaining_seconds
+      FROM pipeline_stage_runs
+     WHERE business_date=? AND stage=? AND status='running' AND lease_owner IS NOT NULL AND lease_expires_at IS NOT NULL
+  `).bind(input.businessDate, input.stage).first<{ canonical_run_id: string; lease_owner: string; remaining_seconds: number }>()
+  return row ?? null
+}
+
 export type PipelineStageLeaseIdentity = {
   businessDate: string
   stage: string
@@ -115,11 +157,39 @@ export async function commitPipelineExecutionDispatch(
   ).first<PipelineStageRow>()
 }
 
+/**
+ * Observability rows (pipeline_progress, pipeline_batches:*) are written as 'running' and have no terminal
+ * writer of their own. Run in the same batch right after the pipeline_execution UPDATE: the EXISTS guard
+ * reads the post-update parent, so a stale callback that did not move the parent leaves them alone.
+ */
+function closePipelineExecutionChildRows(
+  db: D1Database,
+  input: { businessDate: string; canonicalRunId: string; status: Extract<PipelineStageStatus, 'success' | 'error'> },
+): D1PreparedStatement {
+  return db.prepare(`
+    UPDATE pipeline_stage_runs
+       SET status=?, completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+     WHERE business_date=? AND canonical_run_id=?
+       AND stage IN ('pipeline_progress', 'pipeline_batches:input_prep', 'pipeline_batches:prepare_prediction_request')
+       AND EXISTS (SELECT 1 FROM pipeline_stage_runs e
+                    WHERE e.business_date=? AND e.stage='pipeline_execution'
+                      AND e.canonical_run_id=? AND e.status=?)
+  `).bind(
+    input.status,
+    input.businessDate,
+    input.canonicalRunId,
+    input.businessDate,
+    input.canonicalRunId,
+    input.status,
+  )
+}
+
 export async function failPipelineExecutionDispatch(
   db: D1Database,
   input: { businessDate: string; attemptId: string; error: string },
 ): Promise<boolean> {
-  const row = await db.prepare(`
+  const [closed] = await db.batch<{ status: PipelineStageStatus }>([
+    db.prepare(`
     UPDATE pipeline_stage_runs
        SET status='error', last_error=?, lease_owner=NULL, lease_expires_at=NULL,
            completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
@@ -127,12 +197,14 @@ export async function failPipelineExecutionDispatch(
        AND canonical_run_id=? AND status='running' AND lease_owner=?
     RETURNING status
   `).bind(
-    input.error.slice(0, 1000),
-    input.businessDate,
-    input.attemptId,
-    input.attemptId,
-  ).first<{ status: PipelineStageStatus }>()
-  return Boolean(row)
+      input.error.slice(0, 1000),
+      input.businessDate,
+      input.attemptId,
+      input.attemptId,
+    ),
+    closePipelineExecutionChildRows(db, { businessDate: input.businessDate, canonicalRunId: input.attemptId, status: 'error' }),
+  ])
+  return Boolean(closed?.results?.[0])
 }
 
 export async function acceptPipelineExecutionCallback(
@@ -144,7 +216,8 @@ export async function acceptPipelineExecutionCallback(
     error?: string | null
   },
 ): Promise<PipelineStageRow | null> {
-  return db.prepare(`
+  const [accepted] = await db.batch<PipelineStageRow>([
+    db.prepare(`
     UPDATE pipeline_stage_runs
        SET status=?, last_error=?, lease_owner=NULL, lease_expires_at=NULL,
            completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
@@ -155,12 +228,15 @@ export async function acceptPipelineExecutionCallback(
               processed_count, expected_count, persisted_count, attempt_count,
               lease_owner, lease_expires_at
   `).bind(
-    input.status,
-    input.error?.slice(0, 1000) ?? null,
-    input.businessDate,
-    input.runId,
-    input.status,
-  ).first<PipelineStageRow>()
+      input.status,
+      input.error?.slice(0, 1000) ?? null,
+      input.businessDate,
+      input.runId,
+      input.status,
+    ),
+    closePipelineExecutionChildRows(db, { businessDate: input.businessDate, canonicalRunId: input.runId, status: input.status }),
+  ])
+  return accepted?.results?.[0] ?? null
 }
 
 export async function isPipelineStageCanonicalState(
@@ -613,6 +689,37 @@ export async function claimPipelineStage(
   ).first<PipelineStageRow>()
 }
 
+
+/** Hands a live lease back to the queue for a continuation delivery. The hop is not a new attempt, so the claim's
+ * increment is undone: lifecycle recovery reads attempt_count as the number of real dispatches. */
+export async function requeuePipelineStageFenced(
+  db: D1Database,
+  input: {
+    businessDate: string
+    stage: string
+    canonicalRunId: string
+    leaseOwner: string
+  },
+): Promise<boolean> {
+  const updated = await db.prepare(`
+    UPDATE pipeline_stage_runs
+       SET status='queued', lease_owner=NULL, lease_expires_at=NULL,
+           attempt_count=MAX(0, attempt_count-1),
+           queued_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+     WHERE business_date=? AND stage=?
+       AND canonical_run_id=?
+       AND status='running'
+       AND lease_owner=?
+       AND lease_expires_at >= CURRENT_TIMESTAMP
+    RETURNING status
+  `).bind(
+    input.businessDate,
+    input.stage,
+    input.canonicalRunId,
+    input.leaseOwner,
+  ).first<{ status: PipelineStageStatus }>()
+  return Boolean(updated)
+}
 
 export async function setPipelineStageCursorFenced(
   db: D1Database,

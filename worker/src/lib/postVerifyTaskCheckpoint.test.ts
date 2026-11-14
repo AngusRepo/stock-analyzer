@@ -2,13 +2,15 @@ import assert from 'node:assert/strict'
 import { DatabaseSync } from 'node:sqlite'
 import { readFileSync } from 'node:fs'
 import test from 'node:test'
-import { createPostVerifyTaskCheckpoints, postVerifyOwnerAckEvidence, postVerifyAckDescriptor, type PostVerifyTaskResult } from './postVerifyTaskCheckpoint'
-import { runPostVerifyCallbackChain } from './postMarketChain'
+import { createPostVerifyTaskCheckpoints, POST_VERIFY_RETRY_SAFE_TASKS, postVerifyOwnerAckEvidence, postVerifyAckDescriptor, type PostVerifyTaskResult } from './postVerifyTaskCheckpoint'
+import { POST_VERIFY_HEAVY_TASKS, POST_VERIFY_MAX_HOPS, runPostVerifyCallbackChain } from './postMarketChain'
 import { controllerFetch } from './controllerClient'
-import { claimPipelineStage, markPipelineStageFenced } from './pipelineStageLease'
+import { claimPipelineStage, markPipelineStageFenced, requeuePipelineStageFenced } from './pipelineStageLease'
 import { sendReportToChannels } from './notify'
 import { capturePostVerifyOwnerEvidence, verifyPostVerifyOwnerEvidence } from './postVerifyOwnerEvidence'
 import { recordPaperActivePostmarketReport } from './paperActiveChallenger'
+import { verifyPostVerifyLabelEvidence } from './postVerifyLabelEvidence'
+import { reconcileStatements } from '../../scripts/postVerifyReceiptReconcile'
 
 const date = '2026-10-16', run = 'canonical-A', source = 'a'.repeat(40)
 const tasks = ['price-horizon-projection','strategy-multi-horizon-outcomes','strategy-evidence-current',
@@ -81,7 +83,65 @@ for(const failedTask of tasks) test(`actual owner injects settled failure at ${f
   const receipt=f.sqlite.prepare(`SELECT state,receipt_json FROM post_verify_task_receipts_v1 WHERE json_extract(receipt_json,'$.task')=? LIMIT 1`).get(failedTask) as any
   assert.equal(receipt.state,'post_verify_task_v1:error')
   assert.equal(JSON.parse(receipt.receipt_json).result.status,'error')
-  if(![...tasks.slice(0,2),'linucb-reward-ledger'].includes(failedTask)) assert.equal(calls.get(failedTask),1,'non-idempotent failed phase must not blindly run again')
+  if(!POST_VERIFY_RETRY_SAFE_TASKS.includes(failedTask)) assert.equal(calls.get(failedTask),1,'non-idempotent failed phase must not blindly run again')
+  f.sqlite.close()
+})
+
+test('EC-F: the chain yields after each heavy task it ran and the continuations resume from receipts',async()=>{
+  const f=fixture(), calls:string[]=[]
+  const taskRunner=async(task:string)=>{calls.push(task);return success(task)}
+  const statuses:string[]=[]
+  let ctx=f.ctx
+  for(let hop=0;hop<6;hop++){
+    const status=await runPostVerifyCallbackChain(f.env,ctx,{productionAuthority:f.authority,taskRunner,yieldAfterHeavyTask:true,hop})
+    statuses.push(status)
+    if(status!=='continue')break
+    // As the queue consumer does: hand the lease back; the continuation delivery claims it under a new owner.
+    assert.equal(await requeuePipelineStageFenced(f.env.OPS_DB,{businessDate:date,stage:'post_verify_chain',canonicalRunId:run,leaseOwner:ctx.stageLeaseOwner}),true)
+    const owner=`lease-hop-${hop+1}`
+    assert.ok(await claimPipelineStage(f.env.OPS_DB,{businessDate:date,stage:'post_verify_chain',canonicalRunId:run,ownerId:owner}))
+    ctx={...ctx,stageLeaseOwner:owner}
+  }
+  assert.deepEqual(statuses,[...POST_VERIFY_HEAVY_TASKS.map(()=>'continue'),'success'])
+  assert.deepEqual(calls,tasks)
+  // A finished chain is all receipts: nothing heavy runs, so it neither yields nor repeats a producer.
+  assert.equal(await runPostVerifyCallbackChain(f.env,ctx,{productionAuthority:f.authority,taskRunner,yieldAfterHeavyTask:true}),'success')
+  assert.deepEqual(calls,tasks)
+  f.sqlite.close()
+})
+
+test('EC-F: a heavy task served from its receipt does not yield; the next fresh heavy task does',async()=>{
+  const f=fixture(), calls:string[]=[]
+  const taskRunner=async(task:string)=>{calls.push(task);return success(task)}
+  assert.equal(await runPostVerifyCallbackChain(f.env,f.ctx,{productionAuthority:f.authority,taskRunner,yieldAfterHeavyTask:true}),'continue')
+  assert.equal(await runPostVerifyCallbackChain(f.env,f.ctx,{productionAuthority:f.authority,taskRunner,yieldAfterHeavyTask:true}),'continue')
+  assert.deepEqual(calls,POST_VERIFY_HEAVY_TASKS.slice(0,2))
+  // Without the yield (the test default) the rest of the chain finishes in one invocation.
+  assert.equal(await runPostVerifyCallbackChain(f.env,f.ctx,{productionAuthority:f.authority,taskRunner}),'success')
+  assert.deepEqual(calls,tasks)
+  f.sqlite.close()
+})
+
+test('EC-F: a failing optional heavy task does not yield, so its rerun on every delivery cannot starve the tail',async()=>{
+  const f=fixture(), calls:string[]=[]
+  const taskRunner=async(task:string)=>{calls.push(task)
+    return task==='strategy-evidence-metric-backfill'?{...success(task),status:'error' as const,summary:'injected'}:success(task)}
+  const statuses:string[]=[]
+  for(let hop=0;hop<6;hop++){
+    const status=await runPostVerifyCallbackChain(f.env,f.ctx,{productionAuthority:f.authority,taskRunner,yieldAfterHeavyTask:true,hop})
+    statuses.push(status)
+    if(status!=='continue')break
+  }
+  assert.deepEqual(statuses,['continue','continue','continue','success'])
+  assert.deepEqual(calls,tasks)
+  f.sqlite.close()
+})
+
+test('EC-F: past the hop bound the chain finishes in one delivery instead of yielding again',async()=>{
+  const f=fixture(), calls:string[]=[]
+  const taskRunner=async(task:string)=>{calls.push(task);return success(task)}
+  assert.equal(await runPostVerifyCallbackChain(f.env,f.ctx,{productionAuthority:f.authority,taskRunner,yieldAfterHeavyTask:true,hop:POST_VERIFY_MAX_HOPS}),'success')
+  assert.deepEqual(calls,tasks)
   f.sqlite.close()
 })
 
@@ -475,4 +535,205 @@ test('Obsidian operation proof requires exact date, actual paths and both owner 
     assert.deepEqual(result.evidence.acks.owners[0].owner.paths,paths)
     assert.equal(await verifyPostVerifyOwnerEvidence(f.env,'obsidian-sync',date,result),true)
   }finally{globalThis.fetch=previous;f.sqlite.close()}
+})
+
+test('unrecordable result closes its claim as ERROR before failing instead of leaving it running',async()=>{
+  const f=fixture(), manager=await f.manager()
+  await assert.rejects(manager.run('huge',async()=>({...success('huge'),evidence:{blob:'x'.repeat(40_000)}}),{retrySafe:true}),/receipt_too_large/)
+  const row=f.sqlite.prepare('SELECT state,receipt_json FROM post_verify_task_receipts_v1').get() as any
+  assert.equal(row.state,'post_verify_task_v1:error')
+  assert.match(JSON.parse(row.receipt_json).result.summary,/receipt_too_large:huge; original_status=success/)
+  await assert.rejects(manager.run('bigint',async()=>({...success('bigint'),evidence:{n:1n}})),/BigInt/)
+  await assert.rejects(manager.run('thrown',async()=>{throw new Error('y'.repeat(40_000))}),/receipt_too_large/)
+  assert.equal((f.sqlite.prepare("SELECT COUNT(*) n FROM post_verify_task_receipts_v1 WHERE state='post_verify_task_v1:running'").get() as any).n,0)
+  assert.equal((f.sqlite.prepare("SELECT COUNT(*) n FROM post_verify_task_receipts_v1 WHERE state='post_verify_task_v1:error'").get() as any).n,3)
+  // The date is not blocked: the idempotent task runs again under the same lease.
+  assert.equal((await (await f.manager()).run('huge',async()=>success('huge'),{retrySafe:true})).status,'success')
+  f.sqlite.close()
+})
+
+const takeover=async(f:ReturnType<typeof fixture>,owner:string)=>{
+  f.sqlite.prepare("UPDATE pipeline_stage_runs SET lease_expires_at='2000-01-01 00:00:00'").run()
+  assert.ok(await claimPipelineStage(f.env.OPS_DB,{businessDate:date,stage:'post_verify_chain',canonicalRunId:run,ownerId:owner}))
+  return createPostVerifyTaskCheckpoints(f.env,{businessDate:date,canonicalRunId:run,leaseOwner:owner,productionEligible:true,assertStageLease:async()=>{}})
+}
+
+test('expired stage lease reclaims an idempotent running receipt; the stale producer stays fenced',async()=>{
+  const f=fixture();let calls=0
+  let release!:()=>void
+  const gate=new Promise<void>(resolve=>{release=resolve})
+  await assert.rejects((await f.manager()).run('projection',async env=>{
+    calls++;await gate
+    await env.DB.prepare("INSERT INTO writes VALUES(1,'stale')").run()
+    return success('projection')
+  },{retrySafe:true,timeoutMs:2}),/timeout_unsettled/)
+  // Same live lease: the claim may still be in flight, so nothing is reclaimed.
+  await assert.rejects((await f.manager()).run('projection',async()=>{calls++;return success('projection')},{retrySafe:true}),/unsettled_side_effect/)
+  assert.equal(calls,1)
+  const next=await takeover(f,'lease-B')
+  const result=await next.run('projection',async env=>{
+    calls++;await env.DB.prepare("INSERT INTO writes VALUES(2,'fresh')").run();return success('projection')
+  },{retrySafe:true})
+  assert.equal(result.status,'success');assert.equal(calls,2)
+  release()
+  await new Promise(resolve=>setTimeout(resolve,10))
+  assert.deepEqual(f.sqlite.prepare('SELECT id FROM writes').all().map((row:any)=>row.id),[2])
+  assert.equal((f.sqlite.prepare('SELECT state FROM post_verify_task_receipts_v1').get() as any).state,'post_verify_task_v1:success')
+  f.sqlite.close()
+})
+
+test('unexpired stage lease cannot be taken over, so its running receipt is never reclaimed',async()=>{
+  const f=fixture();let calls=0
+  await assert.rejects((await f.manager()).run('projection',async()=>{calls++;return new Promise<PostVerifyTaskResult>(()=>{})},
+    {retrySafe:true,timeoutMs:2}),/timeout_unsettled/)
+  assert.equal(await claimPipelineStage(f.env.OPS_DB,{businessDate:date,stage:'post_verify_chain',canonicalRunId:run,ownerId:'lease-B'}),null)
+  const other=await createPostVerifyTaskCheckpoints(f.env,{businessDate:date,canonicalRunId:run,leaseOwner:'lease-B',productionEligible:true,assertStageLease:async()=>{}})
+  await assert.rejects(other.run('projection',async()=>{calls++;return success('projection')},{retrySafe:true}),/authority_lost/)
+  assert.equal(calls,1)
+  assert.equal((f.sqlite.prepare('SELECT state FROM post_verify_task_receipts_v1').get() as any).state,'post_verify_task_v1:running')
+  f.sqlite.close()
+})
+
+test('expired lease keeps a non-idempotent running receipt blocked and names it',async()=>{
+  const f=fixture();let calls=0
+  await assert.rejects((await f.manager()).run('promotion',async()=>{calls++;return new Promise<PostVerifyTaskResult>(()=>{})},{timeoutMs:2}),/timeout_unsettled/)
+  const next=await takeover(f,'lease-B')
+  await assert.rejects(next.run('promotion',async()=>{calls++;return success('promotion')}),/unsettled_side_effect:promotion:expired_lease_requires_reconciliation:promotion/)
+  await assert.rejects(next.run('projection',async()=>{calls++;return success('projection')},{retrySafe:true}),/expired_lease_requires_reconciliation:promotion/)
+  assert.equal(calls,1)
+  assert.equal((f.sqlite.prepare('SELECT state FROM post_verify_task_receipts_v1').get() as any).state,'post_verify_task_v1:running')
+  f.sqlite.close()
+})
+
+test('legacy running receipt from an older revision is reclaimed by the same idempotent task under a new lease',async()=>{
+  const f=fixture();let calls=0
+  await assert.rejects((await f.manager()).run(tasks[0],async()=>{calls++;return new Promise<PostVerifyTaskResult>(()=>{})},
+    {retrySafe:true,timeoutMs:2}),/timeout_unsettled/)
+  // Receipts claimed before this change carry no retrySafe flag.
+  f.sqlite.prepare("UPDATE post_verify_task_receipts_v1 SET receipt_json=json_remove(receipt_json,'$.retrySafe')").run()
+  const stale=f.sqlite.prepare('SELECT receipt_key FROM post_verify_task_receipts_v1').get() as any
+  f.env.CF_VERSION_METADATA={tag:'d'.repeat(40),id:'version-D',timestamp:'now'}
+  const next=await takeover(f,'lease-B')
+  assert.equal((await next.run(tasks[0],async()=>{calls++;return success(tasks[0])},{retrySafe:true})).status,'success')
+  assert.equal(calls,2)
+  const closed=f.sqlite.prepare('SELECT state,receipt_json FROM post_verify_task_receipts_v1 WHERE receipt_key=?').get(stale.receipt_key) as any
+  assert.equal(closed.state,'post_verify_task_v1:error')
+  assert.match(JSON.parse(closed.receipt_json).result.summary,/lease_expired_reclaimed/)
+  // The closed receipt keeps a valid checksum for its own identity.
+  f.env.CF_VERSION_METADATA={tag:source,id:'version-A',timestamp:'now'}
+  const own=await createPostVerifyTaskCheckpoints(f.env,{businessDate:date,canonicalRunId:run,leaseOwner:'lease-B',productionEligible:true,assertStageLease:async()=>{}})
+  assert.equal((await own.run(tasks[0],async()=>{calls++;return success(tasks[0])},{retrySafe:true})).status,'success')
+  assert.equal(calls,3)
+  f.sqlite.close()
+})
+
+test('NEW-1030-22: a legacy running receipt of a retry-safe task is reclaimed across tasks after its lease expires',async()=>{
+  const f=fixture();let calls=0
+  // 10/28 shape: a pre-flag outcomes claim died with its invocation and stays running.
+  await assert.rejects((await f.manager()).run('strategy-multi-horizon-outcomes',async()=>{calls++;return new Promise<PostVerifyTaskResult>(()=>{})},
+    {retrySafe:true,timeoutMs:2}),/timeout_unsettled/)
+  f.sqlite.prepare("UPDATE post_verify_task_receipts_v1 SET receipt_json=json_remove(receipt_json,'$.retrySafe')").run()
+  const stale=f.sqlite.prepare('SELECT receipt_key FROM post_verify_task_receipts_v1').get() as any
+  f.env.CF_VERSION_METADATA={tag:'d'.repeat(40),id:'version-D',timestamp:'now'}
+  const next=await takeover(f,'lease-B')
+  // The new revision starts with projection, a different task: it closes the legacy claim and runs.
+  assert.equal((await next.run('price-horizon-projection',async()=>{calls++;return success('price-horizon-projection')},{retrySafe:true})).status,'success')
+  assert.equal(calls,2)
+  const closed=f.sqlite.prepare('SELECT state,receipt_json FROM post_verify_task_receipts_v1 WHERE receipt_key=?').get(stale.receipt_key) as any
+  assert.equal(closed.state,'post_verify_task_v1:error')
+  assert.match(JSON.parse(closed.receipt_json).result.summary,/lease_expired_reclaimed:strategy-multi-horizon-outcomes/)
+  f.sqlite.close()
+})
+
+test('NEW-1030-22 counter: a legacy running receipt of a task outside the retry-safe list still requires reconciliation',async()=>{
+  const f=fixture();let calls=0
+  await assert.rejects((await f.manager()).run('adapt',async()=>{calls++;return new Promise<PostVerifyTaskResult>(()=>{})},{timeoutMs:2}),/timeout_unsettled/)
+  f.sqlite.prepare("UPDATE post_verify_task_receipts_v1 SET receipt_json=json_remove(receipt_json,'$.retrySafe')").run()
+  const next=await takeover(f,'lease-B')
+  await assert.rejects(next.run('price-horizon-projection',async()=>{calls++;return success('price-horizon-projection')},{retrySafe:true}),
+    /unsettled_side_effect:price-horizon-projection:expired_lease_requires_reconciliation:adapt/)
+  await assert.rejects(next.run('adapt',async()=>{calls++;return success('adapt')}),/expired_lease_requires_reconciliation:adapt/)
+  assert.equal(calls,1)
+  assert.equal((f.sqlite.prepare('SELECT state FROM post_verify_task_receipts_v1').get() as any).state,'post_verify_task_v1:running')
+  f.sqlite.close()
+})
+
+test('EC-F: the 11/2 claim (strategy-evidence-current stored as retrySafe:false by an earlier revision) no longer blocks the next revision',async()=>{
+  const f=fixture();let calls=0
+  await assert.rejects((await f.manager()).run('strategy-evidence-current',async()=>{calls++;return new Promise<PostVerifyTaskResult>(()=>{})},
+    {timeoutMs:2}),/timeout_unsettled/)
+  const stored=f.sqlite.prepare('SELECT receipt_key,receipt_json FROM post_verify_task_receipts_v1').get() as any
+  assert.equal(JSON.parse(stored.receipt_json).retrySafe,false)
+  // The fix ships as a new version, so the next delivery has a new identity and starts at projection.
+  f.env.CF_VERSION_METADATA={tag:'d'.repeat(40),id:'version-D',timestamp:'now'}
+  const next=await takeover(f,'lease-B')
+  assert.equal((await next.run('price-horizon-projection',async()=>{calls++;return success('price-horizon-projection')},{retrySafe:true})).status,'success')
+  assert.equal(calls,2)
+  const closed=f.sqlite.prepare('SELECT state,receipt_json FROM post_verify_task_receipts_v1 WHERE receipt_key=?').get(stored.receipt_key) as any
+  assert.equal(closed.state,'post_verify_task_v1:error')
+  assert.match(JSON.parse(closed.receipt_json).result.summary,/lease_expired_reclaimed:strategy-evidence-current/)
+  f.sqlite.close()
+})
+
+test('NEW-1030-22: a settled receipt with v1 label evidence no longer verifies, so the retry-safe producer reruns once',async()=>{
+  const f=fixture();let calls=0
+  const legacyEvidence={schema:'post-verify-label-evidence-v1',checksum:'0'.repeat(64),input:{businessDate:date,canonicalRunId:run}}
+  const verifyResult=(result:PostVerifyTaskResult)=>verifyPostVerifyLabelEvidence(f.env,result.evidence)
+  const produce=async()=>{calls++;return {...success('price-horizon-projection'),evidence:calls===1?legacyEvidence:{schema:'fresh'}}}
+  assert.equal((await (await f.manager()).run('price-horizon-projection',produce,{retrySafe:true,verifyResult})).status,'success')
+  assert.equal(calls,1)
+  // The next attempt re-reads the stored v1 proof: superseded, so the idempotent producer runs again.
+  assert.equal((await (await f.manager()).run('price-horizon-projection',produce,{retrySafe:true,verifyResult})).status,'success')
+  assert.equal(calls,2)
+  assert.ok(f.sqlite.prepare("SELECT 1 FROM post_verify_task_receipts_v1 WHERE receipt_key LIKE '%:invalidated:%'").get(),'the v1 success receipt is preserved')
+  // Counter: a task that is not retry-safe never reruns on a superseded proof; it asks for reconciliation.
+  const g=fixture();let other=0
+  const once=async()=>{other++;return {...success('model-ic-rolling'),evidence:legacyEvidence}}
+  const check=(result:PostVerifyTaskResult)=>verifyPostVerifyLabelEvidence(g.env,result.evidence)
+  await (await g.manager()).run('model-ic-rolling',once,{verifyResult:check})
+  await assert.rejects((await g.manager()).run('model-ic-rolling',once,{verifyResult:check}),/artifact_changed_requires_reconciliation:model-ic-rolling/)
+  assert.equal(other,1)
+  f.sqlite.close();g.sqlite.close()
+})
+
+test('NEW-1030-22 operator CAS closes a dead running receipt exactly like the lease reclaim; a live owner is skipped',async()=>{
+  const f=fixture();let calls=0
+  await assert.rejects((await f.manager()).run('strategy-multi-horizon-outcomes',async()=>{calls++;return new Promise<PostVerifyTaskResult>(()=>{})},
+    {retrySafe:true,timeoutMs:2}),/timeout_unsettled/)
+  f.sqlite.prepare("UPDATE post_verify_task_receipts_v1 SET receipt_json=json_remove(receipt_json,'$.retrySafe')").run()
+  const receipts=f.sqlite.prepare('SELECT receipt_key,state,business_date,receipt_json FROM post_verify_task_receipts_v1').all() as any[]
+  // Counter: a post-verify run of the date (its owner or another) holds a live lease -> no statement.
+  const live=await reconcileStatements(receipts,[{business_date:date,status:'running',lease_owner:'lease-other',lease_live:1}])
+  assert.equal(live.statements.length,0);assert.match(String(live.report[0].action),/lease is live/)
+  // The SQL guard itself refuses while the stage lease is live, even if the dump was stale.
+  const stale=await reconcileStatements(receipts,[{business_date:date,status:'running',lease_owner:'lease-A',lease_live:0}])
+  assert.deepEqual(f.sqlite.prepare(stale.statements[0]).all(),[])
+  f.sqlite.prepare("UPDATE pipeline_stage_runs SET lease_expires_at='2000-01-01 00:00:00'").run()
+  const dead=await reconcileStatements(receipts,[{business_date:date,status:'running',lease_owner:'lease-A',lease_live:0}])
+  assert.equal(dead.statements.length,1);assert.equal(dead.report[0].retry_safe,'legacy')
+  assert.deepEqual(f.sqlite.prepare(dead.statements[0]).all().map((row:any)=>row.receipt_key),[receipts[0].receipt_key])
+  // The CAS is exact: running it again changes nothing.
+  assert.deepEqual(f.sqlite.prepare(dead.statements[0]).all(),[])
+  const closed=f.sqlite.prepare('SELECT state,receipt_json FROM post_verify_task_receipts_v1').get() as any
+  assert.equal(closed.state,'post_verify_task_v1:error')
+  // The closed receipt is valid for the checkpoint: the retry-safe task runs again under a new lease.
+  const next=await takeover(f,'lease-B')
+  assert.equal((await next.run('strategy-multi-horizon-outcomes',async()=>{calls++;return success('strategy-multi-horizon-outcomes')},{retrySafe:true})).status,'success')
+  assert.equal(calls,2)
+  // An uncertain receipt blocks its task too: reported, never closed by the operator CAS.
+  const uncertain=await reconcileStatements([{...receipts[0],state:'post_verify_task_v1:uncertain'}],[{business_date:date,status:'running',lease_owner:'lease-A',lease_live:0}])
+  assert.equal(uncertain.statements.length,0);assert.match(String(uncertain.report[0].action),/uncertain/)
+  assert.equal(uncertain.report[0].task,'strategy-multi-horizon-outcomes')
+  // Counter: a running receipt of a task that is not retry-safe (legacy 'adapt', or flagged false) gets no statement.
+  for(const [task,flag] of [['adapt',undefined],['strategy-multi-horizon-outcomes',false]] as const){
+    const g=fixture()
+    await assert.rejects((await g.manager()).run(task,async()=>new Promise<PostVerifyTaskResult>(()=>{}),{timeoutMs:2}),/timeout_unsettled/)
+    g.sqlite.prepare(flag===undefined?"UPDATE post_verify_task_receipts_v1 SET receipt_json=json_remove(receipt_json,'$.retrySafe')"
+      :"UPDATE post_verify_task_receipts_v1 SET receipt_json=json_set(receipt_json,'$.retrySafe',json('false'))").run()
+    const rows=g.sqlite.prepare('SELECT receipt_key,state,business_date,receipt_json FROM post_verify_task_receipts_v1').all() as any[]
+    const out=await reconcileStatements(rows,[{business_date:date,status:'running',lease_owner:'lease-A',lease_live:0}])
+    assert.equal(out.statements.length,0,task);assert.match(String(out.report[0].action),/not retry-safe/)
+    g.sqlite.close()
+  }
+  f.sqlite.close()
 })

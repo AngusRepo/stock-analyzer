@@ -67,6 +67,8 @@ async function main() {
   assert.equal((await readL4PortfolioPlan(env))?.plan_id,second.plan.plan_id)
   const invalid=structuredClone(first.plan);invalid.weights.B=.5;invalid.targets.B.weight=.5
   assert.throws(()=>validateL4PortfolioPlan(invalid),/target_invalid/)
+  // A forced-arm OPB replay is research evidence only; it can never be published.
+  assert.throws(()=>validateL4PortfolioPlan({...structuredClone(first.plan),execution_scope:'counterfactual'}),/counterfactual_plan_cannot_publish/)
   assert.equal(l4HasTargetBuyGap(first.plan,'A'),true)
   assert.equal(l4HasTargetBuyGap(first.plan,'C'),false)
   assert.equal(l4HasTargetBuyGap(first.plan,'A',{nav:1e6,price:100,shares:2999}),true)

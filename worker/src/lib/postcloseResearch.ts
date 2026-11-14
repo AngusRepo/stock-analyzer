@@ -2,15 +2,23 @@ import type { Bindings } from '../types'
 import { controllerJson } from './controllerClient'
 import { queuePostPipelineStage } from './pipelineStageLease'
 import { paperExecutionNow } from './paperExecutionScope'
+import { databaseForDataDomain } from './dataDomainRegistry'
+import { postcloseDispatchTwTime } from './schedulerManifestGovernance'
 
-/** A serving callback closes publication, not the after-close research chain. */
-export async function verifyServingOnlyCallback(env: Bindings, day: string, runId: string, checksum: unknown) {
+/** A serving callback closes publication, not the after-close research chain.
+ *  Returns when the post-close dispatch for the publication's trade date is due, if the receipt names one. */
+export async function verifyServingOnlyCallback(env: Bindings, day: string, runId: string, checksum: unknown): Promise<string | undefined> {
   if (env.PAPER_DAILY_PLAN_OWNER !== 'premarket_once_v1' || typeof checksum !== 'string' || !/^[a-f0-9]{64}$/.test(checksum))
     throw new Error('premarket_serving_callback_invalid')
-  const result=await controllerJson<{publication?: {checksum: string; signal_date: string; run_id: string}}>(
+  const result=await controllerJson<{publication?: {checksum: string; signal_date: string; run_id: string; trade_date?: string}}>(
     env,'/pipeline/v2/premarket-state?'+new URLSearchParams({date:day,run_id:runId}))
   if (!result.publication || result.publication.checksum!==checksum || result.publication.signal_date!==day || result.publication.run_id!==runId)
     throw new Error('premarket_serving_callback_receipt_mismatch')
+  const tradeDate=result.publication.trade_date
+  if (typeof tradeDate!=='string' || !/^\d{4}-\d{2}-\d{2}$/.test(tradeDate) || tradeDate<=day) return undefined
+  // The wait window is display only (status row and 7d strip; the deploy gate ignores it), so a bad manifest
+  // entry must not fail the serving callback.
+  try {return `${tradeDate}T${postcloseDispatchTwTime()}:00+08:00`} catch {return undefined}
 }
 
 type Dispatch = {status: string; run_id?: string; run_date?: string; reason?: string; observed_state?: string}
@@ -36,5 +44,24 @@ export async function runPostcloseResearch(env: Bindings, tradeDate: string) {
   }
   if (errors.length || ['error','reconciliation_required'].includes(result.status))
     throw new Error('postclose_dispatch_incomplete:'+errors.join(';'))
+  if (result.status==='no_published_work') return `${result.status}; research_jobs=0; ${await verifyNoPublicationForTradeDate(env,tradeDate)}`
   return `${result.status}; research_jobs=${result.results.length}; research_completion=awaiting_callback`
+}
+
+/** NEW-35: "no work" is only a success when this trade date has no published plan; an unverifiable state fails loud. */
+async function verifyNoPublicationForTradeDate(env: Bindings, tradeDate: string): Promise<string> {
+  const stage=await databaseForDataDomain(env,'ops').prepare(
+    "SELECT business_date, canonical_run_id FROM pipeline_stage_runs WHERE stage='pipeline_execution' AND business_date<? ORDER BY business_date DESC LIMIT 1")
+    .bind(tradeDate).first<{business_date: string; canonical_run_id: string}>()
+  if (!stage?.business_date) return 'publication_check=no_prior_pipeline_execution'
+  // A prior execution row without its run id cannot be checked: fail loudly rather than assume none.
+  if (!stage.canonical_run_id) throw new Error(`postclose_publication_state_unverifiable:${stage.business_date}:canonical_run_id_missing`)
+  let state: {publication?: {trade_date?: string} | null}
+  try {
+    state=await controllerJson(env,'/pipeline/v2/premarket-state?'+new URLSearchParams({date:stage.business_date,run_id:stage.canonical_run_id}))
+  } catch(error) {
+    throw new Error(`postclose_publication_state_unverifiable:${stage.canonical_run_id}:${error instanceof Error?error.message:String(error)}`)
+  }
+  if (state?.publication?.trade_date===tradeDate) throw new Error('postclose_work_missing_for_publication:'+stage.canonical_run_id)
+  return `publication_check=none_for_trade_date signal_run=${stage.canonical_run_id}`
 }

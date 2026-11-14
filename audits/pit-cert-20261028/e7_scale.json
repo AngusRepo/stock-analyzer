@@ -1,0 +1,471 @@
+{
+ "schema": "pit-cert-e7-scale-v1",
+ "generated_at_tw": "2026-10-28 (三) 晚間",
+ "code_under_test": "PR #78 8938d5e1 (+ neuralforecast 3.2.2 local venv, torch 2.14 CPU)",
+ "criterion": "plan §4.1 E7: input window × c, prediction unchanged within 1e-6. Forecast heads output a PRICE LEVEL (adj close); the served/OOF score is forecast/signal_close - 1 (sequence_training.py:294-302 forecast_return_from_signal_close; timexer_runtime.py:118 predict_inputs). Therefore tested: (a) equivariance out(c·x)/c vs out(x) (rel diff), (b) plain invariance of the raw output (expected to FAIL by construction, reported for completeness), (c) score invariance |score(c·x)-score(x)| ≤ 1e-6 = the decisive test.",
+ "c_values": [
+  0.5,
+  2.0,
+  10.0,
+  1000.0
+ ],
+ "extra_realistic_rebase_c": [
+  0.95,
+  0.99
+ ],
+ "input_data": {
+  "source": "gs://stockvision-models/finlab/v4/backfill/finlab-v4-daily-20261027-1793113295465/raw/daily_price_full_vintage/adj_close.parquet (9,342,760 B)",
+  "window": "last 512 sessions to 2026-10-27, series with complete positive window; 200 symbols stratified by last adj price (PatchTST/TimeXer), 1904-series panel for iTransformer",
+  "price_range_last_adj_close": {
+   "min_last_adj_close": 0.41039467237255284,
+   "max_last_adj_close": 33271.88209000678
+  }
+ },
+ "models": {
+  "PatchTST": {
+   "artifact_source": "gs://stockvision-models/universal/patchtst/r32-plan-a-fullfit-b3973a4983a8afc4-nf-window-r1.zip sha256 ebeabb401387d4f4c241c27cd9878f074e655ed21dcb0942cda217697ad352b8 (PatchTST_0.ckpt state_dict, 0 missing/unexpected keys)",
+   "normalization_found": [
+    "ml-service/app/neuralforecast_sequence_runtime.py:76-86 (scaler_type identity, revin True)",
+    "ckpt hparams: revin True, revin_affine False, revin_subtract_last True",
+    "ml-service/.venv/lib/python3.12/site-packages/neuralforecast/common/_modules.py:1143-1160 RevIN eps=1e-5 (stdev = sqrt(var + eps))"
+   ],
+   "input_semantics": "adj close price level (finlab adjusted), y column = close series (neuralforecast_sequence_runtime.py:311,431,487)",
+   "per_c": [
+    {
+     "c": 0.5,
+     "equivariance_max_rel_diff_out_over_c": 2.111362516640176e-06,
+     "plain_invariance_raw_output_max_abs_diff": 18084.671875,
+     "plain_invariance_raw_output_max_rel_diff": 0.5000001355768132,
+     "score_invariance_max_abs_diff": 2.07630915294299e-06,
+     "score_invariance_max_rel_diff": 0.0001706775900508586,
+     "score_invariance_p99_abs_diff": 6.172059776299227e-07,
+     "pass_score_abs_1e-6": false,
+     "pass_equivariance_rel_1e-6": false
+    },
+    {
+     "c": 2.0,
+     "equivariance_max_rel_diff_out_over_c": 5.684437544800474e-07,
+     "plain_invariance_raw_output_max_abs_diff": 36169.34375,
+     "plain_invariance_raw_output_max_rel_diff": 1.0000008081516643,
+     "score_invariance_max_abs_diff": 5.590063103522169e-07,
+     "score_invariance_max_rel_diff": 6.619009799187994e-05,
+     "score_invariance_p99_abs_diff": 3.265237197691558e-07,
+     "pass_score_abs_1e-6": true,
+     "pass_equivariance_rel_1e-6": true
+    },
+    {
+     "c": 10.0,
+     "equivariance_max_rel_diff_out_over_c": 7.633387560463153e-07,
+     "plain_invariance_raw_output_max_abs_diff": 325524.0625,
+     "plain_invariance_raw_output_max_rel_diff": 9.00000335429799,
+     "score_invariance_max_abs_diff": 7.506656167777237e-07,
+     "score_invariance_max_rel_diff": 0.00028050490928338464,
+     "score_invariance_p99_abs_diff": 2.8030983743265606e-07,
+     "pass_score_abs_1e-6": true,
+     "pass_equivariance_rel_1e-6": true
+    },
+    {
+     "c": 1000.0,
+     "equivariance_max_rel_diff_out_over_c": 7.529443559244621e-07,
+     "plain_invariance_raw_output_max_abs_diff": 36133170.65625,
+     "plain_invariance_raw_output_max_rel_diff": 999.0002429082684,
+     "score_invariance_max_abs_diff": 7.404437870617286e-07,
+     "score_invariance_max_rel_diff": 0.00023562412525064322,
+     "score_invariance_p99_abs_diff": 2.4314113521550374e-07,
+     "pass_score_abs_1e-6": true,
+     "pass_equivariance_rel_1e-6": true
+    }
+   ],
+   "diagnostics": {
+    "float32": {
+     "score_cross_sectional_std": 0.046144217714328785,
+     "0.5": {
+      "score_max_abs_diff": 2.076309106979757e-06,
+      "score_median_abs_diff": 0.0,
+      "max_diff_over_score_std": 4.499608422953105e-05,
+      "spearman_vs_base": 1.0
+     },
+     "0.95": {
+      "score_max_abs_diff": 4.701104494575503e-07,
+      "score_median_abs_diff": 5.17517649289978e-08,
+      "max_diff_over_score_std": 1.01878517557265e-05,
+      "spearman_vs_base": 1.0
+     },
+     "0.99": {
+      "score_max_abs_diff": 4.232422482486342e-07,
+      "score_median_abs_diff": 4.545641796305233e-08,
+      "max_diff_over_score_std": 9.172162173576263e-06,
+      "spearman_vs_base": 1.0
+     },
+     "2.0": {
+      "score_max_abs_diff": 5.590062980287414e-07,
+      "score_median_abs_diff": 0.0,
+      "max_diff_over_score_std": 1.2114330369396592e-05,
+      "spearman_vs_base": 1.0
+     },
+     "1000.0": {
+      "score_max_abs_diff": 1.0462900469354608e-06,
+      "score_median_abs_diff": 4.741367831684329e-08,
+      "max_diff_over_score_std": 2.2674347919665022e-05,
+      "spearman_vs_base": 1.0
+     }
+    },
+    "float64": {
+     "score_cross_sectional_std": 0.04614421814433928,
+     "0.5": {
+      "score_max_abs_diff": 2.169820731978689e-06,
+      "score_median_abs_diff": 3.4837116524855105e-10,
+      "max_diff_over_score_std": 4.702259176201625e-05,
+      "spearman_vs_base": 1.0
+     },
+     "0.95": {
+      "score_max_abs_diff": 7.817089153761003e-08,
+      "score_median_abs_diff": 1.25446875109958e-11,
+      "max_diff_over_score_std": 1.6940560417145048e-06,
+      "spearman_vs_base": 1.0
+     },
+     "0.99": {
+      "score_max_abs_diff": 1.4691832306290564e-08,
+      "score_median_abs_diff": 2.3577251262452137e-12,
+      "max_diff_over_score_std": 3.1838945153073046e-07,
+      "spearman_vs_base": 1.0
+     },
+     "2.0": {
+      "score_max_abs_diff": 5.427550094916356e-07,
+      "score_median_abs_diff": 8.709288845665242e-11,
+      "max_diff_over_score_std": 1.1762145536714828e-05,
+      "spearman_vs_base": 1.0
+     },
+     "1000.0": {
+      "score_max_abs_diff": 7.236992872750037e-07,
+      "score_median_abs_diff": 1.1612383277181948e-10,
+      "max_diff_over_score_std": 1.5683422894094115e-05,
+      "spearman_vs_base": 1.0
+     }
+    },
+    "float64_eps_zero_c2_score_max_abs_diff": 0.0
+   },
+   "pass_1e-6": {
+    "score_c0.5": false,
+    "score_c2": true,
+    "score_c10": true,
+    "score_c1000": "borderline (1.05e-6 float32 diag run, 7.4e-7 main run)",
+    "score_c0.95": true,
+    "score_c0.99": true
+   },
+   "notes": "Max score residual 2.1e-6 (c=0.5) = 4.5e-5 of the cross-sectional score std; Spearman vs baseline 1.0. Residual is entirely the fixed RevIN eps: float64 rerun gives the same residual, eps→0 gives exactly 0.0."
+  },
+  "iTransformer": {
+   "artifact_source": "gs://stockvision-models/universal/itransformer/r32-plan-a-fullfit-b3973a4983a8afc4-nf-window-r1.zip sha256 9bc6f1fcbba775e14d9a9e5f0b02016d9da5e39e45fd6dc94d67ab1c1410c898 (iTransformer_0.ckpt, n_series=1904, 0 missing/unexpected keys)",
+   "normalization_found": [
+    "ml-service/app/neuralforecast_sequence_runtime.py:87-95 (use_norm True, scaler_type identity)",
+    "ml-service/.venv/lib/python3.12/site-packages/neuralforecast/models/itransformer.py:201-209 per-variate mean/std with +1e-5 inside sqrt"
+   ],
+   "input_semantics": "adj close price level panel (1904 variates jointly)",
+   "per_c_whole_panel_scaled": [
+    {
+     "c": 0.5,
+     "equivariance_max_rel_diff_out_over_c": 0.00014037206914441571,
+     "plain_invariance_raw_output_max_abs_diff": 17634.171875,
+     "plain_invariance_raw_output_max_rel_diff": 0.5000701860345722,
+     "score_invariance_max_abs_diff": 0.00014574798207700468,
+     "score_invariance_max_rel_diff": 0.07650142993361489,
+     "score_invariance_p99_abs_diff": 2.048777892310406e-05,
+     "pass_score_abs_1e-6": false,
+     "pass_equivariance_rel_1e-6": false
+    },
+    {
+     "c": 2.0,
+     "equivariance_max_rel_diff_out_over_c": 3.506796873700607e-05,
+     "plain_invariance_raw_output_max_abs_diff": 35268.33203125,
+     "plain_invariance_raw_output_max_rel_diff": 1.000070135937474,
+     "score_invariance_max_abs_diff": 3.641098767093176e-05,
+     "score_invariance_max_rel_diff": 0.028169014092370617,
+     "score_invariance_p99_abs_diff": 4.9864397444366146e-06,
+     "pass_score_abs_1e-6": false,
+     "pass_equivariance_rel_1e-6": false
+    },
+    {
+     "c": 10.0,
+     "equivariance_max_rel_diff_out_over_c": 4.6369874090035815e-05,
+     "plain_invariance_raw_output_max_abs_diff": 317415.02734375,
+     "plain_invariance_raw_output_max_rel_diff": 9.0004636987409,
+     "score_invariance_max_abs_diff": 4.814572884037638e-05,
+     "score_invariance_max_rel_diff": 0.050704225338351415,
+     "score_invariance_p99_abs_diff": 6.694411169943007e-06,
+     "pass_score_abs_1e-6": false,
+     "pass_equivariance_rel_1e-6": false
+    },
+    {
+     "c": 1000.0,
+     "equivariance_max_rel_diff_out_over_c": 4.6860424875539965e-05,
+     "plain_invariance_raw_output_max_abs_diff": 35233067.65234375,
+     "plain_invariance_raw_output_max_rel_diff": 999.0468604248755,
+     "score_invariance_max_abs_diff": 4.865506654216922e-05,
+     "score_invariance_max_rel_diff": 0.051154929590628416,
+     "score_invariance_p99_abs_diff": 6.745243415351485e-06,
+     "pass_score_abs_1e-6": false,
+     "pass_equivariance_rel_1e-6": false
+    }
+   ],
+   "per_c_10_series_rebased": [
+    {
+     "c": 0.5,
+     "equivariance_max_rel_diff_out_over_c": 4.724881156769535e-05,
+     "plain_invariance_raw_output_max_abs_diff": 1274.13818359375,
+     "plain_invariance_raw_output_max_rel_diff": 0.5000236244057839,
+     "score_invariance_max_abs_diff": 5.090570027665997e-05,
+     "score_invariance_max_rel_diff": 0.0006577268360071778,
+     "score_invariance_p99_abs_diff": 4.634497438905206e-05,
+     "pass_score_abs_1e-6": false,
+     "pass_equivariance_rel_1e-6": false,
+     "untouched_series_score_max_abs_diff": 6.751516918868106e-07,
+     "pass_untouched_1e-6": true
+    },
+    {
+     "c": 2.0,
+     "equivariance_max_rel_diff_out_over_c": 1.1593146347565763e-05,
+     "plain_invariance_raw_output_max_abs_diff": 2548.27685546875,
+     "plain_invariance_raw_output_max_rel_diff": 1.0000231862926952,
+     "score_invariance_max_abs_diff": 1.2490414333043987e-05,
+     "score_invariance_max_rel_diff": 0.00016138233351164398,
+     "score_invariance_p99_abs_diff": 1.1375605981431838e-05,
+     "pass_score_abs_1e-6": false,
+     "pass_equivariance_rel_1e-6": false,
+     "untouched_series_score_max_abs_diff": 4.393766095400764e-07,
+     "pass_untouched_1e-6": true
+    },
+    {
+     "c": 10.0,
+     "equivariance_max_rel_diff_out_over_c": 1.5098051057294946e-05,
+     "plain_invariance_raw_output_max_abs_diff": 22934.4892578125,
+     "plain_invariance_raw_output_max_rel_diff": 9.000150980510574,
+     "score_invariance_max_abs_diff": 1.626658610831555e-05,
+     "score_invariance_max_rel_diff": 0.00021017234131962483,
+     "score_invariance_p99_abs_diff": 1.4825869476779998e-05,
+     "pass_score_abs_1e-6": false,
+     "pass_equivariance_rel_1e-6": false,
+     "untouched_series_score_max_abs_diff": 6.590649141990923e-07,
+     "pass_untouched_1e-6": true
+    },
+    {
+     "c": 1000.0,
+     "equivariance_max_rel_diff_out_over_c": 1.5598443606661606e-05,
+     "plain_invariance_raw_output_max_abs_diff": 2545728.2236328125,
+     "plain_invariance_raw_output_max_rel_diff": 999.0155984436067,
+     "score_invariance_max_abs_diff": 1.6805707247824486e-05,
+     "score_invariance_max_rel_diff": 0.00021713805320231505,
+     "score_invariance_p99_abs_diff": 1.5317472971869697e-05,
+     "pass_score_abs_1e-6": false,
+     "pass_equivariance_rel_1e-6": false,
+     "untouched_series_score_max_abs_diff": 6.463608805962195e-07,
+     "pass_untouched_1e-6": true
+    }
+   ],
+   "diagnostics": {
+    "float32": {
+     "score_cross_sectional_std": 0.06879764781754011,
+     "0.5": {
+      "score_max_abs_diff": 0.00014616410749779263,
+      "score_median_abs_diff": 1.9203565843062265e-07,
+      "max_diff_over_score_std": 0.0021245509422856716,
+      "spearman_vs_base": 0.9999999543637479
+     },
+     "0.95": {
+      "score_max_abs_diff": 5.157766969965394e-06,
+      "score_median_abs_diff": 7.906981042138383e-08,
+      "max_diff_over_score_std": 7.497010629846578e-05,
+      "spearman_vs_base": 0.9999999939151661
+     },
+     "0.99": {
+      "score_max_abs_diff": 8.217429243728702e-07,
+      "score_median_abs_diff": 7.31114250251963e-08,
+      "max_diff_over_score_std": 1.1944346215908926e-05,
+      "spearman_vs_base": 0.999999997392214
+     },
+     "2.0": {
+      "score_max_abs_diff": 3.6723081812573e-05,
+      "score_median_abs_diff": 7.867490248170128e-08,
+      "max_diff_over_score_std": 0.000533783973399311,
+      "spearman_vs_base": 0.9999999960883212
+     },
+     "1000.0": {
+      "score_max_abs_diff": 4.9184378219990776e-05,
+      "score_median_abs_diff": 1.0784744997049955e-07,
+      "max_diff_over_score_std": 0.0007149136602814365,
+      "spearman_vs_base": 0.9999999904381186
+     }
+    },
+    "float64": {
+     "score_cross_sectional_std": 0.06879765379799566,
+     "0.5": {
+      "score_max_abs_diff": 0.00014642266248876545,
+      "score_median_abs_diff": 1.876211468410105e-07,
+      "max_diff_over_score_std": 0.0021283089524926696,
+      "spearman_vs_base": 0.9999999530598548
+     },
+     "0.95": {
+      "score_max_abs_diff": 5.2761572679749236e-06,
+      "score_median_abs_diff": 6.760887738543886e-09,
+      "max_diff_over_score_std": 7.669094768066987e-05,
+      "spearman_vs_base": 1.0
+     },
+     "0.99": {
+      "score_max_abs_diff": 9.91633775759837e-07,
+      "score_median_abs_diff": 1.2706845575749526e-09,
+      "max_diff_over_score_std": 1.4413773159641196e-05,
+      "spearman_vs_base": 1.0
+     },
+     "2.0": {
+      "score_max_abs_diff": 3.66355529735074e-05,
+      "score_median_abs_diff": 4.696654198887984e-08,
+      "max_diff_over_score_std": 0.000532511662113901,
+      "spearman_vs_base": 0.9999999947844281
+     },
+     "1000.0": {
+      "score_max_abs_diff": 4.8850015680113046e-05,
+      "score_median_abs_diff": 6.262516882848956e-08,
+      "max_diff_over_score_std": 0.000710053511759964,
+      "spearman_vs_base": 0.9999999947844281
+     }
+    },
+    "worst_series": {
+     "last_adj_close": 1.1458972704460488,
+     "window_std": 0.11556192733953959,
+     "score_abs_diff": 0.00014616410749779263,
+     "eps_over_var": 0.0007488079510703682
+    }
+   },
+   "pass_1e-6": {
+    "whole_panel_any_c": false,
+    "rebased_series_any_c": false,
+    "untouched_series_when_10_rebased": true,
+    "score_c0.99": true,
+    "score_c0.95": false
+   },
+   "notes": "Max score residual 1.46e-4 (c=0.5), 3.7e-5 (c=2), 4.9e-5 (c=1000), 5.2e-6 (c=0.95), 8.2e-7 (c=0.99); = 2.1e-3 of score std at worst, Spearman ≥ 0.99999995. Worst series: last adj close 1.15, window std 0.116 (eps/var 7.5e-4) — heavily back-adjusted low-price history. Same residual in float64 → eps-driven, not precision. Rebasing 10 series leaves the other 1894 series within 6.8e-7."
+  },
+  "TimeXer": {
+   "artifact_source": "gs://stockvision-models/universal/timexer/r32-plan-a-fullfit-b3973a4983a8afc4/020c8250a54b5e94427e28d0674db795089ef6f702a91d494c98021f488c69fa/model.pt sha256 020c8250a54b5e94427e28d0674db795089ef6f702a91d494c98021f488c69fa (exo131, loaded via app.timexer_runtime.load_checkpoint weights_only=True)",
+   "normalization_found": [
+    "ml-service/app/timexer_runtime.py:21-24 ARCHITECTURE use_norm True",
+    "ml-service/app/timexer_runtime.py:64-65 causal_input per-window z-score of price: (p-mean)/(std+1e-4)",
+    "ml-service/app/timexer_training.py:45-49 same per-window z-score in training (target in same normalized space)",
+    "ml-service/app/vendor/timexer/models/TimeXer.py:157-163,179-182 use_norm normalizes ALL channels (price + 131 exogenous) per window, +1e-5 eps; denorm with price channel stats"
+   ],
+   "input_semantics": "adj close price level (price_basis 'finlab_adjusted_close', timexer_inference.py:109) z-scored per window + 131 exogenous features (not adj-derived); score = (forecast*scale+mean)/last - 1",
+   "per_c_price_channel_scaled": [
+    {
+     "c": 0.5,
+     "equivariance_max_rel_diff_out_over_c": 1.3622797917936716e-07,
+     "plain_invariance_raw_output_max_abs_diff": 15619.86699913349,
+     "plain_invariance_raw_output_max_rel_diff": 0.5000000681139896,
+     "score_invariance_max_abs_diff": 1.3515956376330962e-07,
+     "score_invariance_max_rel_diff": 0.0005261412437701505,
+     "score_invariance_p99_abs_diff": 1.0286581516250052e-07,
+     "pass_score_abs_1e-6": true,
+     "pass_equivariance_rel_1e-6": true,
+     "normalized_model_output_max_abs_diff": 0.0009199976921081543
+    },
+    {
+     "c": 2.0,
+     "equivariance_max_rel_diff_out_over_c": 1.6112991302146722e-07,
+     "plain_invariance_raw_output_max_abs_diff": 31239.733998266984,
+     "plain_invariance_raw_output_max_rel_diff": 1.000000322259826,
+     "score_invariance_max_abs_diff": 1.5040557421741596e-07,
+     "score_invariance_max_rel_diff": 0.0005455965205393203,
+     "score_invariance_p99_abs_diff": 1.2920501181401516e-07,
+     "pass_score_abs_1e-6": true,
+     "pass_equivariance_rel_1e-6": true,
+     "normalized_model_output_max_abs_diff": 0.00046116113662719727
+    },
+    {
+     "c": 10.0,
+     "equivariance_max_rel_diff_out_over_c": 1.3225974783738948e-07,
+     "plain_invariance_raw_output_max_abs_diff": 281157.58971162327,
+     "plain_invariance_raw_output_max_rel_diff": 9.000001322597477,
+     "score_invariance_max_abs_diff": 1.1893370899240807e-07,
+     "score_invariance_max_rel_diff": 0.0006277403287868508,
+     "score_invariance_p99_abs_diff": 1.0422936875364988e-07,
+     "pass_score_abs_1e-6": true,
+     "pass_equivariance_rel_1e-6": true,
+     "normalized_model_output_max_abs_diff": 0.0008293986320495605
+    },
+    {
+     "c": 1000.0,
+     "equivariance_max_rel_diff_out_over_c": 1.9960242713490474e-07,
+     "plain_invariance_raw_output_max_abs_diff": 31208492.074915215,
+     "plain_invariance_raw_output_max_rel_diff": 999.0000860091396,
+     "score_invariance_max_abs_diff": 1.4568290773731007e-07,
+     "score_invariance_max_rel_diff": 0.0010541210399303206,
+     "score_invariance_p99_abs_diff": 9.796121530625248e-08,
+     "pass_score_abs_1e-6": true,
+     "pass_equivariance_rel_1e-6": true,
+     "normalized_model_output_max_abs_diff": 0.0009208917617797852
+    }
+   ],
+   "per_c_price_and_exogenous_scaled": [
+    {
+     "c": 0.5,
+     "equivariance_max_rel_diff_out_over_c": 8.168644431280807e-06,
+     "plain_invariance_raw_output_max_abs_diff": 15619.798840528081,
+     "plain_invariance_raw_output_max_rel_diff": 0.500001512679497,
+     "score_invariance_max_abs_diff": 7.737045040423496e-06,
+     "score_invariance_max_rel_diff": 0.013264859364267986,
+     "score_invariance_p99_abs_diff": 6.198626461695323e-06,
+     "pass_score_abs_1e-6": false,
+     "pass_equivariance_rel_1e-6": false
+    },
+    {
+     "c": 2.0,
+     "equivariance_max_rel_diff_out_over_c": 2.5086078880318754e-06,
+     "plain_invariance_raw_output_max_abs_diff": 31239.667219006868,
+     "plain_invariance_raw_output_max_rel_diff": 1.0000015296679154,
+     "score_invariance_max_abs_diff": 2.376062807174506e-06,
+     "score_invariance_max_rel_diff": 0.007846476191689943,
+     "score_invariance_p99_abs_diff": 1.632479557532872e-06,
+     "pass_score_abs_1e-6": false,
+     "pass_equivariance_rel_1e-6": false
+    },
+    {
+     "c": 10.0,
+     "equivariance_max_rel_diff_out_over_c": 3.1798757710030338e-06,
+     "plain_invariance_raw_output_max_abs_diff": 281157.15830999543,
+     "plain_invariance_raw_output_max_rel_diff": 9.000009343876503,
+     "score_invariance_max_abs_diff": 3.011863506929835e-06,
+     "score_invariance_max_rel_diff": 0.010362163085128067,
+     "score_invariance_p99_abs_diff": 2.104293776911124e-06,
+     "pass_score_abs_1e-6": false,
+     "pass_equivariance_rel_1e-6": false
+    },
+    {
+     "c": 1000.0,
+     "equivariance_max_rel_diff_out_over_c": 3.319515681716705e-06,
+     "plain_invariance_raw_output_max_abs_diff": 31208451.503185563,
+     "plain_invariance_raw_output_max_rel_diff": 999.0010079025863,
+     "score_invariance_max_abs_diff": 3.1007522195425352e-06,
+     "score_invariance_max_rel_diff": 0.007543721935992297,
+     "score_invariance_p99_abs_diff": 2.0938987923546614e-06,
+     "pass_score_abs_1e-6": false,
+     "pass_equivariance_rel_1e-6": false
+    }
+   ],
+   "pass_1e-6": {
+    "price_channel_scaled_all_c": true,
+    "price_and_exogenous_scaled_all_c": false
+   },
+   "notes": "Price-channel scaling (the vendor adj-rebase case) is invariant to ≤1.5e-7 for all c because the window is z-scored twice (causal_input then use_norm). Scaling the exogenous channels too gives ≤7.7e-6 (exogenous features are not adj-derived, so not relevant to rebase). Exogenous input here is synthetic N(0,1), seed 42."
+  }
+ },
+ "timexer_verdict": "I",
+ "timexer_verdict_reason": "adj-series rebase (constant multiple of the price window) changes the TimeXer score by ≤1.5e-7 < 1e-6 → plan §1.3 level I holds for TimeXer; no normalization change needed.",
+ "patchtst_itransformer_flag": "Strict 1e-6 criterion FAILS for iTransformer (all c) and PatchTST (c=0.5) because RevIN/use_norm add a fixed eps=1e-5 to the variance; exactly 0 with eps→0. Magnitude ≤1.5e-4 score (≤0.21% of cross-sectional std, rank corr ≥0.99999995). Plan §1.3 assumed these two were I by RevIN/use_norm; they are I only up to this eps tolerance → needs a tolerance decision (e.g. accept ≤1e-3 of score std) or the adj series stays I-with-tolerance, not exact.",
+ "limitations": [
+  "Artifacts are the r32-plan-a full-fit cohort (2026-10-20), not a future R33 cohort; the property is architectural so it carries over, magnitudes depend on weights.",
+  "Single as-of window (ending 2026-10-27); worst cases come from very low adjusted-price/low-variance windows, older windows of heavily back-adjusted stocks may be lower still.",
+  "TimeXer exogenous context synthetic (real 131-feature history not downloaded); price-channel invariance does not depend on exogenous values beyond the eps term.",
+  "NF checkpoints loaded with a restricted unpickler (tensors only; other globals stubbed), models rebuilt from ckpt hyper_parameters and #78 defaults; forward() called directly (insample_y), bypassing NeuralForecast.predict dataset plumbing (scaler identity so no extra transform).",
+  "Local ml-service venv has pyarrow 26 incompatible with its numpy 1.26 (neuralforecast import fails); E7 used a scratch overlay pyarrow 20.0.0, venv untouched."
+ ],
+ "gcs_bytes_read": 77675492
+}

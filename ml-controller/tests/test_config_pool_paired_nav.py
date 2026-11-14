@@ -10,6 +10,9 @@ from routers import config_pool
 from services.backtest_engine import BacktestDataset
 from services.config_pool_policy import ConfigPoolPolicy
 
+# K16a: replay entries read the position-risk contract from trading:risk_config.
+pytestmark = pytest.mark.usefixtures('kv_position_risk')
+
 
 DAYS = [(date(2026, 6, 1) + timedelta(days=i)).isoformat() for i in range(60)]
 

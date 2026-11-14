@@ -10,9 +10,8 @@ def enabled(config, *, signal_date):
     return single_b_policy(config, signal_date=signal_date) is not None
 
 
-def capture_history(prepared, *, formal_payloads, signal_date, capture_source):
+def capture_history(prepared, *, formal_payloads, signal_date, capture_source, lookback):
     from services.l4_risk_history import load_canonical_risk_payloads
-    from services.recommendation_service import gnn_return_history_lookback
     from services.paired_nav_collection import capture_allocator_return_history
     # Formal payloads are already sealed in recommendation_context; store only
     # the extra candidate symbols and rebuild the full rows on read.
@@ -29,9 +28,9 @@ def capture_history(prepared, *, formal_payloads, signal_date, capture_source):
                 payloads[p['symbol']] = extra[p['symbol']] = deepcopy(p)
     rows = [payloads[s] for s in sorted(payloads)]
     canonical = load_canonical_risk_payloads(payloads=rows, held_payloads=[],
-        signal_date=signal_date, lookback=gnn_return_history_lookback(), capture_source=capture_source)
+        signal_date=signal_date, lookback=lookback, capture_source=capture_source)
     context = capture_allocator_return_history(payloads=rows, signal_date=signal_date,
-        held_payloads=[], canonical_risk_payloads=canonical)
+        held_payloads=[], canonical_risk_payloads=canonical, lookback=lookback)
     return {'payload_layout': FORMAL_PLUS_EXTRA, 'extra_payloads': [extra[s] for s in sorted(extra)],
             'payloads_checksum': context['payload_checksum'], 'context': context,
             'prepared_input_checksum': prepared['input_hash']}

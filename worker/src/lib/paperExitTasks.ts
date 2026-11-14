@@ -492,6 +492,8 @@ export function resolvePositionExitSellFill(
     price: weightedPrice,
     reason: complete ? (fills.length > 1 ? 'tw_equity_split_lot_sell_fill' : `${fills[0].lot_type}_sell_fill`) : 'tw_equity_visible_depth_partial_exit',
     detail: {
+      // AUD-24: exit fills are the authoritative book's depth VWAP (annotation only).
+      fill_model: 'authoritative_depth_vwap',
       requested_shares: shares,
       filled_shares: totalShares,
       remaining_shares: shares - totalShares,
@@ -2129,6 +2131,7 @@ export async function pollIntradayStopLoss(
         entry_date: pos.entry_date,
         order_intent: sellOrderIntent,
         order_legs: sellOrderIntent.orderLegs,
+        fill_model: 'authoritative_depth_vwap',
       }, { entryPrice: entryPx, exitPrice: sellFillPrice, shares, commission, tax })
 
       const tp1Fill = recordPositionTakeProfitFill(positionTakeProfit.progress, shares, pos.trade_lifecycle_json)
@@ -2280,6 +2283,8 @@ export async function pollIntradayStopLoss(
         entry_date: pos.entry_date,
         order_intent: sellOrderIntent,
         order_legs: sellOrderIntent.orderLegs,
+        // AUD-24: resolvePositionExitSellFill above is the authoritative depth VWAP (annotation only).
+        fill_model: 'authoritative_depth_vwap',
       }, { entryPrice: entryPx, exitPrice: fillPrice, shares: sellShares, commission, tax })
 
       const orderId = await executePaperSellBatch(env,[

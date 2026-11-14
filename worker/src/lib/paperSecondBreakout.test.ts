@@ -1,7 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { secondMomentumPasses, assessSecondBreakout, authorizeSecondBreakout, recoverSecondBreakout, recoveryDeadline, secondBreakoutEnabled, SECOND_BREAKOUT_POLICY } from './paperSecondBreakout'
-import { readSecondBreakout, latchSecondBreakout } from './paperSecondBreakoutState'
+import { readSecondBreakout, latchSecondBreakout, authorizeLatchedSecondBreakout, secondBreakoutLateAuthorizationOpen } from './paperSecondBreakoutState'
 import { previousAtrTR, applyAtrOnce } from './paperAtrOnce'
 import { assessSwingEntry, type SwingEntryInput } from './paperSwingPolicy'
 import { swingExecutionAuthorization, swingExecutionRejection } from './paperSwingExecution'
@@ -63,7 +64,11 @@ test('shared recovery keeps signal/ceiling; expired, stale and unobserved signal
   assert.ok(auth);assert.equal(auth.maxBuyPrice,103)
   assert.equal(swingExecutionRejection(auth,{nowMs:now,fillPrice:104,limitPrice:103,limitUp:110}),'swing_chase_limit')
   assert.equal(recoverSecondBreakout(r,{nowMs:x.nowMs+30*MIN,price:101,observedAtMs:x.nowMs+30*MIN,planReady:true,candidateAllowed:true})?.reason,'swing_recovery_expired')
-  assert.equal(authorizeSecondBreakout({...x,nowMs:x.nowMs+MIN},assessSecondBreakout(x,0)).authorization,undefined)
+  // R14: a first observation after the trigger minute still authorizes, but only before the original deadline.
+  const late=authorizeSecondBreakout({...x,nowMs:x.nowMs+MIN},assessSecondBreakout(x,0)).authorization
+  assert.ok(late);assert.equal(late.submitUntilMs,x.nowMs+30*MIN);assert.equal(late.signalMs,x.nowMs)
+  assert.equal(authorizeSecondBreakout({...x,nowMs:x.nowMs+30*MIN},assessSecondBreakout(x,0)).authorization,undefined)
+  assert.equal(authorizeSecondBreakout({...x,nowMs:x.nowMs-1},assessSecondBreakout(x,0)).authorization,undefined)
  }
  assert.equal(recoveryDeadline(date,open+260*MIN),open+261*MIN)
  assert.equal(secondBreakoutEnabled('2026-10-14'),false);assert.equal(secondBreakoutEnabled(date),true)
@@ -110,4 +115,76 @@ test('momentum equality and epsilon boundary remain strict, no threshold search'
  assert.equal(secondMomentumPasses(1.5+1e-10,1),false)
  assert.equal(secondMomentumPasses(1.5+2e-10,1),true)
  assert.equal(secondMomentumPasses(NaN,1),false)
+})
+
+test('R14 replay: 4991 and 2337 first observed late are authorized until the original deadline; 6994 never',()=>{
+ for(const [symbol,trigger,clock,deadline] of [['4991','10:40','10:41','11:10'],['2337','09:30','09:31','10:00']] as const) {
+  const evidence=assessSecondBreakout(actual(symbol,clock),symbol==='2337'?previousAtrTR(fixtures['2337'].priorBars,fixtures['2337'].previousSession,fixtures['2337'].previousClose,fixtures['2337'].previousClose)!:undefined)
+  const triggerMs=Date.parse(`2026-10-14T${trigger}:00+08:00`),deadlineMs=Date.parse(`2026-10-14T${deadline}:00+08:00`)
+  assert.equal(evidence.triggerMs,triggerMs)
+  // Observed 5 minutes after the trigger (e.g. the trigger-bar minute was missed): still authorized.
+  const late=authorizeSecondBreakout({...actual(symbol,clock),nowMs:triggerMs+5*MIN},evidence).authorization
+  assert.ok(late,symbol);assert.equal(late.submitUntilMs,deadlineMs);assert.equal(late.signalMs,triggerMs)
+  // The same price checks still run on recovery.
+  const quote={nowMs:triggerMs+6*MIN,observedAtMs:triggerMs+6*MIN,planReady:true,candidateAllowed:true}
+  assert.equal(recoverSecondBreakout({...evidence,authorization:late},{...quote,price:late.limitUp!})?.reason,'swing_buy_at_limit')
+  assert.equal(authorizeSecondBreakout({...actual(symbol,clock),nowMs:deadlineMs},evidence).authorization,undefined)
+ }
+ const r=assessSecondBreakout(actual('6994','13:20'))
+ assert.equal(authorizeSecondBreakout(actual('6994','13:20'),r).authorization,undefined)
+})
+test('R14: a passed signal latched without authorization (plan arrived late) is authorized once, never replaced',async()=>{
+ const f=l4NativeFixture();try {
+  const db=f.env.PAPER_DB,x=input([100,100,100,101])
+  const unauthorized=authorizeSecondBreakout({...x,planReady:false},assessSecondBreakout(x,0))
+  assert.equal(unauthorized.authorization,undefined)
+  const latched=await latchSecondBreakout(db,1,date,'X',unauthorized)
+  assert.equal(latched.status,'passed');assert.equal(latched.authorization,undefined)
+  const later={...x,nowMs:x.nowMs+7*MIN}
+  const first=authorizeSecondBreakout(later,latched)
+  const second=authorizeSecondBreakout({...later,nowMs:later.nowMs+MIN},latched)
+  await Promise.all([authorizeLatchedSecondBreakout(db,1,date,'X',first,later.nowMs),authorizeLatchedSecondBreakout(db,1,date,'X',second,later.nowMs+MIN)])
+  const saved=await readSecondBreakout(db,1,date,'X')
+  assert.ok(saved?.authorization);assert.equal(saved!.authorization!.submitUntilMs,x.nowMs+30*MIN)
+  assert.ok([first,second].some(v=>JSON.stringify(v.authorization)===JSON.stringify(saved!.authorization)))
+  // An existing authorization is never replaced, and a different trigger cannot write.
+  const before=JSON.stringify(saved!.authorization)
+  await authorizeLatchedSecondBreakout(db,1,date,'X',{...second,authorization:{...second.authorization!,submitUntilMs:1}},later.nowMs+2*MIN)
+  assert.equal(JSON.stringify((await readSecondBreakout(db,1,date,'X'))!.authorization),before)
+  await assert.rejects(authorizeLatchedSecondBreakout(db,1,date,'X',{...first,triggerMs:x.nowMs+5*MIN},later.nowMs),/first_signal_conflict/)
+  // Other accounts/dates are untouched.
+  assert.equal(await readSecondBreakout(db,2,date,'X'),null)
+  // Past the deadline nothing new is authorized.
+  assert.equal(authorizeSecondBreakout({...x,nowMs:x.nowMs+30*MIN},unauthorized).authorization,undefined)
+  // The UPDATE itself refuses a write at or after the original deadline, even with an authorization in hand.
+  const other=await latchSecondBreakout(db,1,date,'Y',unauthorized)
+  const deadline=recoveryDeadline(date,other.triggerMs!)
+  const stale=await authorizeLatchedSecondBreakout(db,1,date,'Y',authorizeSecondBreakout(later,other),deadline)
+  assert.equal(stale.authorization,undefined)
+  assert.ok((await authorizeLatchedSecondBreakout(db,1,date,'Y',authorizeSecondBreakout(later,other),deadline-1)).authorization)
+ } finally {f.close()}
+})
+test('R14 wiring: the swing assessor re-evaluates an unauthorized passed signal off the bar minute until its deadline',()=>{
+ const triggerMs=open+20*MIN
+ const saved={...assessSecondBreakout(input([100,100,100,101]),0),triggerMs}
+ assert.equal(saved.status,'passed');assert.equal(saved.authorization,undefined)
+ // Open from the trigger until the original deadline (exclusive), whatever the bar minute.
+ assert.equal(secondBreakoutLateAuthorizationOpen(saved,date,triggerMs+7*MIN+30_000),true)
+ assert.equal(secondBreakoutLateAuthorizationOpen(saved,date,recoveryDeadline(date,triggerMs)-1),true)
+ assert.equal(secondBreakoutLateAuthorizationOpen(saved,date,recoveryDeadline(date,triggerMs)),false)
+ // Already authorized, not passed, no trigger, or nothing saved: the old saved-signal path.
+ assert.equal(secondBreakoutLateAuthorizationOpen({...saved,authorization:{} as any},date,triggerMs+MIN),false)
+ assert.equal(secondBreakoutLateAuthorizationOpen({...saved,status:'weak_waiting'},date,triggerMs+MIN),false)
+ assert.equal(secondBreakoutLateAuthorizationOpen({...saved,triggerMs:undefined},date,triggerMs+MIN),false)
+ assert.equal(secondBreakoutLateAuthorizationOpen(null,date,triggerMs+MIN),false)
+ const src=readFileSync('src/lib/paperSwingAssessment.ts','utf8')
+ const late=src.indexOf('const lateAuthorization=secondBreakoutLateAuthorizationOpen(savedSecond,today,paperExecutionNow())')
+ assert.ok(late>0)
+ // It skips the saved-signal shortcut and the bar-minute gate, then authorizes the latched row once.
+ assert.ok(src.indexOf("if(savedSecond?.status==='passed' && !lateAuthorization)")>late)
+ assert.ok(src.indexOf('if(!lateAuthorization && (sinceOpen<20*60000')>late)
+ const write=src.indexOf('atr=await authorizeLatchedSecondBreakout(db,account,today,pending.symbol,authorizeSecondBreakout(swingInput,atr),swingInput.nowMs)')
+ assert.ok(write>src.indexOf('let atr=useSecond?savedSecond:'))
+ assert.ok(src.slice(write-120,write).includes('if(lateAuthorization && atr?.policy===SECOND_BREAKOUT_POLICY)'))
+ assert.ok(write<src.indexOf('assessment=recoverSecondBreakout(atr as SecondBreakoutEvidence'),'recovery still re-checks price after authorization')
 })

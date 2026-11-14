@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { DatabaseSync } from 'node:sqlite'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
-import { enqueueMaintenanceBacklogDrain, processMaintenanceBacklogDrain } from './maintenanceBacklogDrain'
+import { auditJsonFailureCooldownSeconds, enqueueMaintenanceBacklogDrain, processMaintenanceBacklogDrain } from './maintenanceBacklogDrain'
 import { admitSchedulerExecutionTicket, updateSchedulerExecutionTicket } from './schedulerExecutionTickets'
 import { logSchedulerResult } from './schedulerRunLogger'
 import { createAdminTriggerRoutes } from '../routes/adminTriggerRoutes'
@@ -27,10 +27,11 @@ function fixture() {
     return statement
   } }
   const values = new Map<string, string>()
+  const ttls = new Map<string, number | undefined>()
   const messages: UpdateQueueMsg[] = []
   const env = { DB: db, OPS_DB: db, MULTI_D1_ACTIVE_DOMAINS: 'ops', LOCAL_AUTH_BYPASS: '1', ENVIRONMENT: 'test', CF_VERSION_METADATA: { id: 'version-a' },
     KV: { async get(key: string, type?: string) { const v = values.get(key); return v == null ? null : type === 'json' ? JSON.parse(v) : v },
-      async put(key: string, value: string) { values.set(key, value) }, async delete(key: string) { values.delete(key) } },
+      async put(key: string, value: string, opts?: { expirationTtl?: number }) { values.set(key, value); ttls.set(key, opts?.expirationTtl) }, async delete(key: string) { values.delete(key) } },
     UPDATE_QUEUE: { async send(message: UpdateQueueMsg) { messages.push(message) } },
   } as any
   async function enqueue(runId = 'audit-run-1', archiveOptions = options) {
@@ -43,7 +44,7 @@ function fixture() {
     return ticket
   }
   const ticketRow = (id: string) => sql.prepare('SELECT * FROM scheduler_execution_tickets_v1 WHERE ticket_id=?').get(id)!
-  return { sql, db, values, messages, env, enqueue, ticketRow }
+  return { sql, db, values, ttls, messages, env, enqueue, ticketRow }
 }
 
 test('chunk errors retry boundedly under one ticket, then expose terminal error and cooldown', async () => {
@@ -62,6 +63,7 @@ test('chunk errors retry boundedly under one ticket, then expose terminal error 
     const receipt = JSON.parse(f.values.get(`${failureKey}:${ticket.run_id}`)!)
     assert.match(receipt.error, /audit_json_durable_unknown_target/)
     assert.equal(receipt.worker_version, 'version-a')
+    assert.equal(f.ttls.get(failureKey), 6 * 3600)
     const terminal = { ...f.ticketRow(ticket.ticket_id) }
     await processMaintenanceBacklogDrain(f.env, f.messages[2], openWindow)
     assert.deepEqual({ ...f.ticketRow(ticket.ticket_id) }, terminal)
@@ -385,7 +387,7 @@ function archiveFixture(paperRows: number) {
     return prepare(query)
   }
   const raw = JSON.stringify({ source: 'unchanged original', padding: 'x'.repeat(1500) })
-  for (let i = 1; i <= paperRows; i++) f.sql.prepare("INSERT INTO paper_execution_events(id,trade_date,symbol,side,event_type,status,detail_json) VALUES(?,'2020-01-01','2330','buy','entry','completed',?)").run(i, raw)
+  for (let i = 1; i <= paperRows; i++) f.sql.prepare("INSERT INTO paper_execution_events(id,trade_date,symbol,side,event_type,status,detail_json) VALUES(?,'2020-01-01','2330','buy','pending_buy','completed',?)").run(i, raw)
   const addStrategy = () => f.sql.prepare(`INSERT INTO strategy_decision_log(decision_id,date,symbol,strategy_id,strategy_version,strategy_status,alpha_bucket,matched,reason_code,context_json,evidence_json,context_id,evidence_artifact_id)
     VALUES('late','2020-01-01','2330','s','v1','active','trend',1,'matched',?,?,'ctx','artifact')`).run(raw, raw)
   const archiveOptions = { targets: ['strategy_decision_log', 'paper_execution_events'], retentionDays: 90, limitPerTable: 1, minBlobBytes: 1024 }
@@ -475,4 +477,9 @@ test('a failed narrowed chunk retries the original full scope and recovers newly
     assert.equal(JSON.parse(String(f.sql.prepare("SELECT context_json FROM strategy_decision_log WHERE decision_id='late'").get()!.context_json)).archived_to_r2, true)
     assert.equal(f.messages.length, 3)
   } finally { f.sql.close() }
+})
+
+test('a D1 overload cools down for one slot instead of the rest of the night', () => {
+  assert.equal(auditJsonFailureCooldownSeconds('D1_ERROR: D1 DB is overloaded. Too many resources consumed within a 10 second window.'), 20 * 60)
+  assert.equal(auditJsonFailureCooldownSeconds('audit_json_durable_unknown_target'), 6 * 3600)
 })

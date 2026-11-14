@@ -3,7 +3,9 @@ import { ACTIVE8_OOF_CONTINUATION_MAX_ATTEMPTS, active8OofContinuationDelay } fr
 import type { Bindings, Variables } from '../types'
 import { hasServiceToken, requireAdminOrServiceToken } from '../lib/auth'
 import { databaseForDataDomain } from '../lib/dataDomainRegistry'
-import { resolveFinLabDispatchFence, finLabCallbackSummary } from '../lib/finLabDispatchFence'
+import { writeSystemLog } from '../lib/notify'
+import { resolveFinLabDispatchFence, finLabCallbackSummary, finLabCompositionBlockerSuffix, finLabStartMarkerKey } from '../lib/finLabDispatchFence'
+import { classifyFinLabLateLaneNotReady, finLabLatePublicationFields, finLabLateRetryCutoffPassed, finLabLateRetryCutoffTw } from '../lib/finlabSourceContract'
 import { writeEvidenceArtifact } from '../lib/artifactLifecycle'
 import type { EvidenceArtifactWriteInput } from '../lib/evidenceArtifactContract'
 import { normalizeSingleD1BatchStatement } from '../lib/d1BatchStatement'
@@ -939,6 +941,25 @@ async function handleSchedulerCallback(c: any) {
     }
   }
 
+  if (
+    body.task === 'dataset-snapshot-export'
+    && ['success', 'error'].includes(String(body.status))
+    && callbackRunDate
+    && callbackRunId
+  ) {
+    // The post-close job writes the PIT residual shadow before its export, so the
+    // funnel enrichment the 14:20 chain parked runs here (an export error can still
+    // carry the shadow). Best effort: its outcome is logged on its own task.
+    c.executionCtx.waitUntil((async () => {
+      try {
+        const { runPitResidualFunnelEnrichmentAfterSnapshot } = await import('../lib/pitResidualFunnelEnrichment')
+        await runPitResidualFunnelEnrichmentAfterSnapshot(c.env, { businessDate: callbackRunDate })
+      } catch (e) {
+        console.warn('[scheduler-callback] PIT residual funnel enrichment after snapshot failed:', e)
+      }
+    })())
+  }
+
   if (body.task === 'dataset-snapshot-export' && body.status === 'success') {
     if (!callbackRunDate || !callbackRunId) {
       return c.json({ error: 'dataset snapshot callback missing run_date or run_id' }, 400)
@@ -992,6 +1013,18 @@ async function handleSchedulerCallback(c: any) {
       })
     }
     body.summary = finLabCallbackSummary(String(body.summary ?? ''), fence.incomingAttempt, current?.summary)
+      + finLabCompositionBlockerSuffix(body.result)
+    if (body.status === 'running' && callbackRunId) {
+      // Best effort: losing the marker must not lose the start heartbeat written below.
+      try {
+        await c.env.KV.put(finLabStartMarkerKey(callbackRunDate, callbackRunId, fence.incomingAttempt),
+          new Date().toISOString(), { expirationTtl: 2 * 86400 })
+      } catch (error) {
+        const message = `finlab start marker write failed run_id=${callbackRunId}: ${error instanceof Error ? error.message : String(error)}`
+        console.warn(`[finlab-v4-backfill] ${message}`)
+        await writeSystemLog(databaseForDataDomain(c.env, 'ops'), 'warn', 'finlab-v4-backfill', message)
+      }
+    }
   }
 
   if (body.task === 'screener' && ['success', 'error', 'skipped'].includes(String(body.status))) {
@@ -1195,9 +1228,15 @@ async function handleSchedulerCallback(c: any) {
       ?? 1,
     )
     if (Number.isFinite(dispatchAttempt) && dispatchAttempt > 1) {
+      // C28-25: a late lane still unpublished before the cutoff is not a watchdog failure; it retries.
+      const lateLaneWaiting = body.status === 'error'
+        && classifyFinLabLateLaneNotReady(`${String(body.summary ?? '')} ${String(body.error ?? '')}`)
+        && !finLabLateRetryCutoffPassed(callbackRunDate)
       await logSchedulerResult(c.env.KV, 'finlab-backfill-watchdog', {
-        status: body.status === 'success' ? 'success' : body.status === 'skipped' ? 'skipped' : 'error',
-        summary: `FinLab watchdog terminal callback status=${body.status} dispatch_attempt=${dispatchAttempt}`,
+        status: body.status === 'success' ? 'success' : body.status === 'skipped' ? 'skipped' : lateLaneWaiting ? 'waiting' : 'error',
+        summary: lateLaneWaiting
+          ? `FinLab watchdog late lane not ready dispatch_attempt=${dispatchAttempt}; retrying until ${finLabLateRetryCutoffTw()} TW`
+          : `FinLab watchdog terminal callback status=${body.status} dispatch_attempt=${dispatchAttempt}`,
         duration_ms: Number(body.duration_ms ?? 0),
         error: body.error != null ? String(body.error) : undefined,
         run_id: callbackRunId,
@@ -1321,6 +1360,19 @@ async function handleSchedulerCallback(c: any) {
     } else if (body.status === 'success' && callbackRunDate && callbackRunId) {
       const { queueFinLabCompletion } = await import('../lib/finlabCompletionOutbox')
       await queueFinLabCompletion(c.env, callbackRunDate, callbackRunId, forceContinuation, false)
+    } else if (body.status === 'error' && continueEveningChain && callbackRunDate
+      && classifyFinLabLateLaneNotReady(`${String(body.summary ?? '')} ${String(body.error ?? '')}`)
+      && !finLabLateRetryCutoffPassed(callbackRunDate)) {
+      const waiting = `status=waiting awaiting_late_lane fields=${finLabLatePublicationFields().join(',')} `
+        + `cutoff=${finLabLateRetryCutoffTw()} TW; FinLab watchdog retries run_id=${callbackRunId ?? 'unknown'}; `
+        + String(body.summary ?? body.status)
+      await logSchedulerResult(c.env.KV, 'update', {
+        status: 'waiting', summary: waiting, duration_ms: 0, run_id: callbackRunId, run_date: callbackRunDate,
+      })
+      await logSchedulerResult(c.env.KV, 'evening-chain', {
+        status: 'waiting', summary: waiting, duration_ms: 0, run_id: callbackRunId, run_date: callbackRunDate,
+        supersedePrevious: true,
+      })
     } else if (body.status !== 'success' && continueEveningChain) {
       await logSchedulerResult(c.env.KV, 'update', {
         status: 'blocked',
@@ -1523,7 +1575,8 @@ async function handleSchedulerCallback(c: any) {
           // Serving was published before the open. Research and verification wait
           // for the 14:20 post-close dispatch, which queues this same post-pipeline owner.
           const { verifyServingOnlyCallback } = await import('../lib/postcloseResearch')
-          await verifyServingOnlyCallback(c.env, callbackRunDate, callbackRunId, body.serving_publication_checksum)
+          const dispatchAt = await verifyServingOnlyCallback(c.env, callbackRunDate, callbackRunId, body.serving_publication_checksum)
+          const dispatchNote = dispatchAt ? ` at ${dispatchAt.slice(0, 10)} ${dispatchAt.slice(11, 16)}` : ''
           const servingStillCurrent = await isPipelineStageCanonicalState(databaseForDataDomain(c.env, 'ops'), {
             businessDate: callbackRunDate,
             stage: 'pipeline_execution',
@@ -1536,17 +1589,20 @@ async function handleSchedulerCallback(c: any) {
           const { resumeActive8PremarketTickets } = await import('../lib/active8PremarketWait')
           await resumeActive8PremarketTickets(c.env, callbackRunDate)
           await logAcceptedCallbackTask()
+          // The root stays running so the board keeps this chain date; wait_until tells the status
+          // reader it is parked on the dispatch, so its stall SLA starts there instead of now.
           await logSchedulerResult(c.env.KV, 'evening-chain', {
             status: 'running',
-            summary: `pipeline serving published; research waits for the after-close dispatch run_id=${callbackRunId}`,
+            summary: `pipeline serving published; research waits for the after-close dispatch${dispatchNote} run_id=${callbackRunId}`,
             duration_ms: 0,
             run_id: callbackRunId,
             run_date: callbackRunDate,
+            wait_until: dispatchAt,
             strict: true,
           }, c.env as any)
           await logSchedulerResult(c.env.KV, 'post-pipeline-chain', {
             status: 'waiting',
-            summary: `Serving published; research and verification wait for the after-close dispatch run_id=${callbackRunId}`,
+            summary: `Serving published; research and verification wait for the after-close dispatch${dispatchNote} run_id=${callbackRunId}`,
             duration_ms: 0,
             run_id: callbackRunId,
             run_date: callbackRunDate,

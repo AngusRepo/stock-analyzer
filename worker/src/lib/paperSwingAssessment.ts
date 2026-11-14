@@ -5,8 +5,8 @@ import { assessSwingEntry, SWING_POLICY_VERSION, SWING_LAST_ENTRY_MINUTE_FROM_OP
 import { loadSwingMinuteBars, loadOr15ResearchSessionBars, loadAtrTickWarmupBars } from './s12RuntimeBars'
 import { assessAtrOnce, applyAtrOnce, previousAtrTR } from './paperAtrOnce'
 import { readAtrOnce, latchAtrOnce } from './paperAtrOnceState'
-import { assessSecondBreakout, authorizeSecondBreakout, recoverSecondBreakout, secondBreakoutEnabled, SECOND_BREAKOUT_POLICY } from './paperSecondBreakout'
-import { readSecondBreakout, latchSecondBreakout } from './paperSecondBreakoutState'
+import { assessSecondBreakout, authorizeSecondBreakout, recoverSecondBreakout, secondBreakoutEnabled, SECOND_BREAKOUT_POLICY, type SecondBreakoutEvidence } from './paperSecondBreakout'
+import { readSecondBreakout, latchSecondBreakout, authorizeLatchedSecondBreakout, secondBreakoutLateAuthorizationOpen } from './paperSecondBreakoutState'
 import { paperExecutionNow, paperAccountId } from './paperExecutionScope'
 import { executionBookTimingAges } from './executionBookTiming'
 import { getPrevTradingDay } from './paperMarketData'
@@ -29,7 +29,10 @@ export function createSwingEntryAssessor(env: Bindings, today: string, maxChaseP
         const useSecond=secondBreakoutEnabled(today)
         const db=paperDomainDatabase(env), account=paperAccountId()
         const savedSecond=useSecond?await readSecondBreakout(db,account,today,pending.symbol):null
-        if(savedSecond?.status==='passed') {
+        // R14: a passed signal latched without authorization may still be authorized, once, before its
+        // original recovery deadline; it bypasses the bar-minute gate so a missed minute cannot cost it.
+        const lateAuthorization=secondBreakoutLateAuthorizationOpen(savedSecond,today,paperExecutionNow())
+        if(savedSecond?.status==='passed' && !lateAuthorization) {
           const timing=currentOhlc?.timingReceipt?executionBookTimingAges(currentOhlc.timingReceipt,paperExecutionNow()):null
           const age=currentOhlc?.confirmationMode==='quote_session_static_book'?timing?.quoteAgeMs:timing?.sourceAgeMs
           const observedAtMs=currentOhlc?.timingReceipt?paperExecutionNow()-(age??NaN):Date.parse(currentOhlc?.confirmationMode==='quote_session_static_book'?currentOhlc.confirmationTime??'':currentOhlc?.quoteTime??'')
@@ -39,7 +42,7 @@ export function createSwingEntryAssessor(env: Bindings, today: string, maxChaseP
           return {assessment,barSource:'saved_signal',barError:null}
         }
         const sinceOpen=paperExecutionNow()-Date.parse(today+'T09:00:00+08:00')
-        if(sinceOpen<20*60000 || sinceOpen>=(SWING_LAST_ENTRY_MINUTE_FROM_OPEN+1)*60000 || sinceOpen%(5*60000)>=60000) {
+        if(!lateAuthorization && (sinceOpen<20*60000 || sinceOpen>=(SWING_LAST_ENTRY_MINUTE_FROM_OPEN+1)*60000 || sinceOpen%(5*60000)>=60000)) {
           const reason=sinceOpen<20*60000?'swing_entry_window_not_open':sinceOpen>=(SWING_LAST_ENTRY_MINUTE_FROM_OPEN+1)*60000?'swing_entry_window_closed':'swing_waiting_next_bar'
           let assessment:SwingEntryDecision={action:'defer',reason,policy:SWING_POLICY_VERSION,conditions:{window:false}}
           const atr=useSecond?savedSecond:await readAtrOnce(db,account,today,pending.symbol)
@@ -107,9 +110,11 @@ export function createSwingEntryAssessor(env: Bindings, today: string, maxChaseP
             ? await latchSecondBreakout(db,account,today,pending.symbol,authorizeSecondBreakout(swingInput,candidate))
             : await latchAtrOnce(db,account,today,pending.symbol,candidate)
         }
-        assessment=applyAtrOnce(assessment,atr)
-        if(atr.policy===SECOND_BREAKOUT_POLICY && atr.status==='passed') {
-          assessment=recoverSecondBreakout(atr,{nowMs:swingInput.nowMs,price,observedAtMs:swingInput.quote.observedAtMs,planReady:swingInput.planReady,candidateAllowed:swingInput.candidateAllowed})
+        if(lateAuthorization && atr?.policy===SECOND_BREAKOUT_POLICY)
+          atr=await authorizeLatchedSecondBreakout(db,account,today,pending.symbol,authorizeSecondBreakout(swingInput,atr),swingInput.nowMs)
+        assessment=applyAtrOnce(assessment,atr!)
+        if(atr!.policy===SECOND_BREAKOUT_POLICY && atr!.status==='passed') {
+          assessment=recoverSecondBreakout(atr as SecondBreakoutEvidence,{nowMs:swingInput.nowMs,price,observedAtMs:swingInput.quote.observedAtMs,planReady:swingInput.planReady,candidateAllowed:swingInput.candidateAllowed})
             ?? {...assessment,action:'defer',reason:'swing_recovery_not_observed_live'}
         }
         // This sidecar receives placeholders for position state; the allocator/intent gate owns that check.

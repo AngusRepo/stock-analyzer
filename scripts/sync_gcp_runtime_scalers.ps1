@@ -15,7 +15,9 @@ $region = [string]$manifest.region
 $timezone = [string]$manifest.timezone
 $serviceAccount = [string]$manifest.scaler_service_account
 $repository = [string]$manifest.artifact_registry_repository
-$image = "gcr.io/google.com/cloudsdktool/cloud-sdk:slim"
+# Pinned: the floating :slim tag dropped python3 on 2026-11-04 and every scaler
+# script needs it. Bump only to a digest verified to ship python3.
+$image = "gcr.io/google.com/cloudsdktool/cloud-sdk@sha256:b38f2881552c3054d140c8eeb4ad88bdc0eb4deeeb38507c5dac1403adc3ee64"
 
 function Invoke-Gcloud([string[]]$Arguments) {
   $displayArguments = @($Arguments | ForEach-Object {

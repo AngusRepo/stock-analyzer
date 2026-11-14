@@ -37,8 +37,8 @@ import {
 import { refreshStrategyEvidenceOwnerCalibration } from './strategyEvidenceOwnerCalibration'
 import { assertAutomaticPromotionAllowed } from './shadowPromotionGovernance'
 import { resolveEveningChainRunAuthority } from './eveningChainRunAuthority'
-import { createPostVerifyTaskCheckpoints, postVerifyControllerResponse, type PostVerifyTaskResult } from './postVerifyTaskCheckpoint'
-import { capturePostVerifyLabelEvidence, verifyPostVerifyLabelEvidence } from './postVerifyLabelEvidence'
+import { POST_VERIFY_RETRY_SAFE_TASKS, createPostVerifyTaskCheckpoints, postVerifyControllerResponse, type PostVerifyTaskResult } from './postVerifyTaskCheckpoint'
+import { capturePostVerifyLabelEvidence, verifyPostVerifyLabelEvidence, verifyPostVerifyLabelEvidencePointer } from './postVerifyLabelEvidence'
 import { capturePostVerifyMetricEvidence, verifyPostVerifyMetricEvidence } from './postVerifyMetricEvidence'
 import { enablePostVerifyAdaptiveEvidence, capturePostVerifyAdaptiveEvidence, verifyPostVerifyAdaptiveEvidence } from './postVerifyAdaptiveEvidence'
 import { capturePostVerifyOwnerEvidence, verifyPostVerifyOwnerEvidence } from './postVerifyOwnerEvidence'
@@ -473,6 +473,7 @@ export async function runPostPipelineCallbackChain(
     learningDb: databaseForDataDomain(env, 'learning'),
     opsDb: databaseForDataDomain(env, 'ops'),
     coreDb: databaseForDataDomain(env, 'core'),
+    marketDb: databaseForDataDomain(env, 'market'),
     allowPointInTimeReconstruction: true,
     kv: env.KV,
   })
@@ -586,6 +587,7 @@ export async function runPostPipelineCallbackChain(
       learningDb: databaseForDataDomain(env, 'learning'),
       opsDb: databaseForDataDomain(env, 'ops'),
       coreDb: databaseForDataDomain(env, 'core'),
+      marketDb: databaseForDataDomain(env, 'market'),
       kv: env.KV,
     })
     await assertChainStageAuthority(ctx, 'post-pipeline:after_snapshot_readback')
@@ -631,21 +633,31 @@ export async function runPostPipelineCallbackChain(
     })
   }
   results.push(await logChainedTask(env, ctx, 'pit-residual-funnel-enrichment', async () => {
-    const { enrichCanonicalPitResidualFunnel } = await import('./pitResidualFunnelEnrichment')
-    const result = await enrichCanonicalPitResidualFunnel(env, {
+    const { enrichPitResidualFunnelForChain } = await import('./pitResidualFunnelEnrichment')
+    return enrichPitResidualFunnelForChain(env, {
       businessDate: ctx.runDate!,
       pipelineCanonicalRunId: String(ctx.upstreamRunId ?? ''),
     })
-    return result.summary
   }, { critical: false, timeoutMs: TASK_EXECUTION_TIMEOUT_MS }))
   results.push(await logChainedTask(env, ctx, 'pit-residual-funnel-recovery', async () => {
-    const { recoverMissingPitResidualFunnels } = await import('./pitResidualFunnelEnrichment')
-    const result = await recoverMissingPitResidualFunnels(env, {
-      throughDate: ctx.runDate!,
-      excludeBusinessDate: ctx.runDate!,
-      maxDates: 1,
-    })
-    return result.summary
+    const { recoverMissingPitResidualFunnels, settleStalePitResidualWaits } = await import('./pitResidualFunnelEnrichment')
+    const window = { throughDate: ctx.runDate!, excludeBusinessDate: ctx.runDate! }
+    let result: Awaited<ReturnType<typeof recoverMissingPitResidualFunnels>> | null = null
+    let recoveryError: unknown = null
+    try {
+      // Evidence-only backfill batch; three dates drain a missed-day backlog.
+      result = await recoverMissingPitResidualFunnels(env, { ...window, maxDates: 3 })
+    } catch (error) {
+      recoveryError = error
+    }
+    // Earlier 14:20 waits end as success or error even when recovery itself fails.
+    const settled = await settleStalePitResidualWaits(env, { ...window, recovery: result })
+      .catch((error) => `stale_waiting_settlement_error:${error instanceof Error ? error.message : String(error)}`)
+    if (recoveryError || !result) {
+      const message = recoveryError instanceof Error ? recoveryError.message : String(recoveryError)
+      throw new Error(`${message} ${settled}`)
+    }
+    return `${result.summary} ${settled}`
   }, { critical: false, timeoutMs: TASK_EXECUTION_TIMEOUT_MS }))
   const snapshotEvidenceKey = snapshotUnavailableInEvidenceOnlyMode
     ? 'active8-evidence-only-authority-v1'
@@ -744,6 +756,15 @@ export async function runPostPipelineCallbackChain(
   return verifyTask.status === 'error' ? 'error' : 'success'
 }
 
+/** Producers that each may need most of one invocation's CPU/wall budget. After one actually runs, the chain
+ * returns 'continue' so the queue consumer requeues the stage and the next delivery resumes from the receipts
+ * (EC-F: all four plus the tail shared one invocation, and 11/2 died inside strategy-evidence-current). */
+export const POST_VERIFY_HEAVY_TASKS: readonly string[] = ['price-horizon-projection', 'strategy-multi-horizon-outcomes',
+  'strategy-evidence-current', 'strategy-evidence-metric-backfill']
+/** One hop per heavy task normally; a receipt that keeps failing its fresh proof (each rerun yields again) is
+ * bounded here, after which the chain finishes in one invocation as it did before continuations. */
+export const POST_VERIFY_MAX_HOPS = POST_VERIFY_HEAVY_TASKS.length * 2
+
 export async function runPostVerifyCallbackChain(
   env: Bindings,
   ctx: ChainContext,
@@ -751,10 +772,20 @@ export async function runPostVerifyCallbackChain(
     productionAuthority?: typeof resolveEveningChainRunAuthority
     taskRunner?: (task: string, scoped: Bindings) => Promise<PostVerifyTaskResult>
     taskTimeoutMs?: number
+    yieldAfterHeavyTask?: boolean
+    hop?: number
   } = {},
-): Promise<'waiting' | 'success' | 'error'> {
+): Promise<'continue' | 'waiting' | 'success' | 'error'> {
   const startedAt = Date.now()
   const results: ChainedTask[] = []
+  const hop = Math.max(0, Math.floor(Number(dependencies.hop ?? 0)))
+  const yieldAfterHeavyTask = (dependencies.yieldAfterHeavyTask ?? !dependencies.taskRunner) && hop < POST_VERIFY_MAX_HOPS
+  let heavyTaskRan: string | null = null
+  const yieldToContinuation = () => {
+    if (!yieldAfterHeavyTask || !heavyTaskRan) return false
+    console.log(`[post-verify] ${ctx.runDate} hop=${hop} yielding to a queue continuation after ${heavyTaskRan}`)
+    return true
+  }
   await assertChainStageAuthority(ctx, 'post-verify:entry')
   const productionAuthority = await (dependencies.productionAuthority ?? resolveEveningChainRunAuthority)(env, {
     businessDate: String(ctx.runDate ?? ''),
@@ -771,7 +802,9 @@ export async function runPostVerifyCallbackChain(
   const runTask = async (task: string, fn: (scoped: Bindings) => Promise<unknown>,
     options: { critical?: boolean; timeoutMs?: number } = {}) => {
     const taskStarted = Date.now()
+    let producerRan = false
     const result = await checkpoints.run(task, async scoped => {
+      producerRan = true
       if (dependencies.taskRunner) return { ...await dependencies.taskRunner(task, scoped), critical: options.critical !== false }
       // Capture the original producer terminal return before observability or
       // a later lease check. A timeout is not cancellation; a late original
@@ -797,15 +830,19 @@ export async function runPostVerifyCallbackChain(
       }
     }, { timeoutMs: dependencies.taskTimeoutMs ?? options.timeoutMs ?? 180_000,
       critical:options.critical,
-      retrySafe: ['price-horizon-projection', 'strategy-multi-horizon-outcomes', 'linucb-reward-ledger'].includes(task),
+      retrySafe: POST_VERIFY_RETRY_SAFE_TASKS.includes(task),
       verifyResult:dependencies.taskRunner?undefined:async result=>{
-        if(['price-horizon-projection','strategy-multi-horizon-outcomes'].includes(task))return verifyPostVerifyLabelEvidence(env,result.evidence as any)
+        // Projection receipts are re-read from their status/run pointer rows first; outcomes always take the full capture.
+        if(task==='price-horizon-projection')return verifyPostVerifyLabelEvidencePointer(env,result.evidence as any)
+        if(task==='strategy-multi-horizon-outcomes')return verifyPostVerifyLabelEvidence(env,result.evidence as any)
         if(['strategy-evidence-current','strategy-evidence-metric-backfill'].includes(task))return verifyPostVerifyMetricEvidence(env,result.evidence as any)
         if(task==='linucb-reward-ledger'||task==='adapt')return verifyPostVerifyAdaptiveEvidence(env,task,String(ctx.runDate),result.evidence as any)
         if(task==='model-ic-rolling'||task==='artifact-auto-promotion')return verifyPostVerifyControllerEvidence(env,result.evidence as any)
         return verifyPostVerifyOwnerEvidence(env,task,String(ctx.runDate),result)
       } })
     await assertChainStageAuthority(ctx, `${task}:after_checkpoint`)
+    // A failed retry-safe producer reruns on every delivery; yielding after it would never reach the tail.
+    if (producerRan && result.status !== 'error' && POST_VERIFY_HEAVY_TASKS.includes(task)) heavyTaskRan = task
     if (!dependencies.taskRunner) await emitChainedTaskObservability(env, ctx, task, result.status,
       result.summary, Date.now() - taskStarted, result.status === 'error' ? result.summary : undefined)
     return result
@@ -840,6 +877,7 @@ export async function runPostVerifyCallbackChain(
     await logChainSummary(env, ctx, 'post-verify-chain', startedAt, results)
     throw new Error(`post_verify_chain_failed:price-horizon-projection:${projectionTask.summary}`)
   }
+  if (yieldToContinuation()) return 'continue'
 
   const outcomesTask = await runTask('strategy-multi-horizon-outcomes', async env => {
     const startedAt = Date.now()
@@ -856,6 +894,7 @@ export async function runPostVerifyCallbackChain(
     await logChainSummary(env, ctx, 'post-verify-chain', startedAt, results)
     throw new Error(`post_verify_chain_failed:strategy-multi-horizon-outcomes:${outcomesTask.summary}`)
   }
+  if (yieldToContinuation()) return 'continue'
 
   const currentEvidenceTask = await runTask('strategy-evidence-current', async env => {
     const stageMs: Record<string, number> = {}
@@ -878,6 +917,7 @@ export async function runPostVerifyCallbackChain(
     await logChainSummary(env, ctx, 'post-verify-chain', startedAt, results)
     throw new Error(`post_verify_chain_failed:strategy-evidence-current:${currentEvidenceTask.summary}`)
   }
+  if (yieldToContinuation()) return 'continue'
 
   results.push(await runTask('strategy-evidence-metric-backfill', async env => {
     const metricBackfill = await backfillMissingStrategyEvidenceMetricSnapshots(env, {
@@ -888,6 +928,7 @@ export async function runPostVerifyCallbackChain(
       canonicalRunId:ctx.upstreamRunId!,metrics:metricBackfill})
     return {summary:metricBackfill.summary,evidence}
   }, { critical: false, timeoutMs: 180_000 }))
+  if (yieldToContinuation()) return 'continue'
 
   results.push(await runTask('model-ic-rolling', env => runModelIcRollingRefresh(env, ctx.runDate)))
   if (productionEligible) {

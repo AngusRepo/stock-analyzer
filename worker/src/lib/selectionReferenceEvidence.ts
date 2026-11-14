@@ -56,6 +56,42 @@ export function buildStrategyFormalMatureCompatibilitySql(tableAlias = 'mr'): {
   }
 }
 
+// Backfill date selection of POST /api/admin/strategy/redundancy/backfill. The former query
+// checked the matrix and the snapshots by producer_run_id alone, which no index leads with,
+// so every call scanned both tables (2.36M rows on 2026-11-12, also in dry_run). The ready
+// runs are now reached from the canonical heads by primary key, and both NOT EXISTS checks
+// are confined to the run's own signal_date (primary-key prefix). Same result as the former
+// query followed by the route's canonical-head filter, because every writer stamps a
+// producer's matrix cells and snapshot rows with that producer's signal_date
+// (persistSelectionEvidenceV4 rejects other dates; the reconstruction repair writes one
+// funnel run's date). Bind order: canonical heads JSON ({signal_date: run_id}), start date,
+// end date, then the compatibility pairs.
+export function buildStrategyRedundancyBackfillDatesSql(formalMatureCompatibility: { sql: string }): string {
+  return `
+    SELECT DISTINCT mr.signal_date, mr.producer_run_id
+      FROM json_each(?) h
+      CROSS JOIN strategy_label_matrix_runs_v4 mr
+        ON mr.producer_run_id=h.value
+       AND mr.signal_date=h.key
+     WHERE mr.signal_date BETWEEN ? AND ?
+       AND mr.status='ready'
+       AND ${formalMatureCompatibility.sql}
+       AND NOT EXISTS (
+         SELECT 1 FROM strategy_label_matrix_v4 m
+          WHERE m.signal_date=mr.signal_date
+            AND m.producer_run_id=mr.producer_run_id
+            AND m.labeler_version IS NOT mr.labeler_version
+       )
+       AND NOT EXISTS (
+         SELECT 1 FROM selection_reference_snapshots_v1 r
+          WHERE r.signal_date=mr.signal_date
+            AND r.producer_run_id=mr.producer_run_id
+            AND r.strategy_labeler_version IS NOT mr.labeler_version
+       )
+     ORDER BY mr.signal_date
+  `
+}
+
 export function isStrategyFormalMatureEvidencePair(referenceContractVersion: unknown, labelerVersion: unknown): boolean {
   return SELECTION_REFERENCE_FORMAL_MATURE_COMPATIBILITY.some((entry) => (
     entry.referenceContractVersion === String(referenceContractVersion ?? '').trim()
@@ -643,6 +679,42 @@ export async function reconcileSelectionDecisionEvidenceV4(
   }
 }
 
+// Ready-run readback of persistSelectionEvidenceV4. The identity checks are non-correlated
+// IN lists: each JSON is expanded once into an ephemeral index, instead of once per stored
+// row in a correlated EXISTS (9.9M rows per readback on 2026-11-12). Same counts; NULLs
+// never match in either form. Binds: identity JSON, then the contract values, then
+// signal_date and producer_run_id.
+export const SELECTION_READY_REFERENCE_COVERAGE_SQL = `
+    SELECT COUNT(*) row_count,
+           SUM(CASE WHEN (r.symbol, r.stock_id) IN (
+             SELECT json_extract(j.value, '$.symbol'), CAST(json_extract(j.value, '$.stock_id') AS INTEGER)
+               FROM json_each(?) j
+           ) THEN 1 ELSE 0 END) identity_count,
+           SUM(CASE
+             WHEN r.signal_date=? AND r.hard_gate_passed=1
+              AND r.strategy_labeler_version=? AND r.strategy_registry_checksum=?
+              AND r.feature_contract_version=? AND r.evidence_artifact_id=?
+             THEN 1 ELSE 0 END) contract_count
+      FROM selection_reference_snapshots_v1 r
+     WHERE r.signal_date=? AND r.producer_run_id=?
+  `
+export const STRATEGY_READY_MATRIX_COVERAGE_SQL = `
+    SELECT COUNT(*) row_count,
+           SUM(CASE WHEN m.symbol IN (
+             SELECT refs.value FROM json_each(?) refs
+           ) THEN 1 ELSE 0 END) reference_identity_count,
+           SUM(CASE WHEN (m.strategy_id, m.strategy_version) IN (
+             SELECT json_extract(strategies.value, '$.strategy_id'), json_extract(strategies.value, '$.strategy_version')
+               FROM json_each(?) strategies
+           ) THEN 1 ELSE 0 END) strategy_identity_count,
+           SUM(CASE
+             WHEN m.signal_date=? AND m.labeler_version=?
+              AND m.strategy_registry_checksum=? AND m.reference_contract_version=?
+             THEN 1 ELSE 0 END) contract_count
+      FROM strategy_label_matrix_v4 m
+     WHERE m.signal_date=? AND m.producer_run_id=?
+  `
+
 export async function persistSelectionEvidenceV4(
   db: D1Database,
   input: {
@@ -847,52 +919,24 @@ export async function persistSelectionEvidenceV4(
       { strategy_id: row.strategy_id, strategy_version: row.strategy_version },
     ])).values()])
     const [referenceCoverage, matrixCoverage] = await Promise.all([
-      db.prepare(`
-        SELECT COUNT(*) row_count,
-               SUM(CASE WHEN EXISTS (
-                 SELECT 1 FROM json_each(?) j
-                  WHERE json_extract(j.value, '$.symbol')=r.symbol
-                    AND CAST(json_extract(j.value, '$.stock_id') AS INTEGER)=r.stock_id
-               ) THEN 1 ELSE 0 END) identity_count,
-               SUM(CASE
-                 WHEN r.signal_date=? AND r.hard_gate_passed=1
-                  AND r.strategy_labeler_version=? AND r.strategy_registry_checksum=?
-                  AND r.feature_contract_version=? AND r.evidence_artifact_id=?
-                 THEN 1 ELSE 0 END) contract_count
-          FROM selection_reference_snapshots_v1 r
-         WHERE r.producer_run_id=?
-      `).bind(
+      db.prepare(SELECTION_READY_REFERENCE_COVERAGE_SQL).bind(
         expectedReferenceIdentity,
         input.signalDate,
         input.labelerVersion,
         input.strategyRegistryChecksum,
         SELECTION_REFERENCE_CONTRACT_VERSION,
         input.evidenceArtifactId,
+        input.signalDate,
         input.producerRunId,
       ).first<{ row_count: number; identity_count: number; contract_count: number }>(),
-      db.prepare(`
-        SELECT COUNT(*) row_count,
-               SUM(CASE WHEN EXISTS (
-                 SELECT 1 FROM json_each(?) refs WHERE refs.value=m.symbol
-               ) THEN 1 ELSE 0 END) reference_identity_count,
-               SUM(CASE WHEN EXISTS (
-                 SELECT 1 FROM json_each(?) strategies
-                  WHERE json_extract(strategies.value, '$.strategy_id')=m.strategy_id
-                    AND json_extract(strategies.value, '$.strategy_version')=m.strategy_version
-               ) THEN 1 ELSE 0 END) strategy_identity_count,
-               SUM(CASE
-                 WHEN m.signal_date=? AND m.labeler_version=?
-                  AND m.strategy_registry_checksum=? AND m.reference_contract_version=?
-                 THEN 1 ELSE 0 END) contract_count
-          FROM strategy_label_matrix_v4 m
-         WHERE m.producer_run_id=?
-      `).bind(
+      db.prepare(STRATEGY_READY_MATRIX_COVERAGE_SQL).bind(
         expectedReferenceSymbols,
         expectedStrategies,
         input.signalDate,
         input.labelerVersion,
         input.strategyRegistryChecksum,
         SELECTION_REFERENCE_CONTRACT_VERSION,
+        input.signalDate,
         input.producerRunId,
       ).first<{
         row_count: number
@@ -1197,12 +1241,12 @@ export async function persistSelectionEvidenceV4(
     await db.batch([
       db.prepare(`
         DELETE FROM strategy_label_matrix_v4
-         WHERE producer_run_id=? AND EXISTS (${validatedAttempt})
-      `).bind(input.producerRunId, input.producerRunId, attemptId, payloadChecksum),
+         WHERE signal_date=? AND producer_run_id=? AND EXISTS (${validatedAttempt})
+      `).bind(input.signalDate, input.producerRunId, input.producerRunId, attemptId, payloadChecksum),
       db.prepare(`
         DELETE FROM selection_reference_snapshots_v1
-         WHERE producer_run_id=? AND EXISTS (${validatedAttempt})
-      `).bind(input.producerRunId, input.producerRunId, attemptId, payloadChecksum),
+         WHERE signal_date=? AND producer_run_id=? AND EXISTS (${validatedAttempt})
+      `).bind(input.signalDate, input.producerRunId, input.producerRunId, attemptId, payloadChecksum),
       db.prepare(`
         INSERT INTO selection_reference_snapshots_v1 (
           signal_date, symbol, producer_run_id, stock_id, name, market_segment, sector,

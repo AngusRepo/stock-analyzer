@@ -22,8 +22,8 @@ const finlabContract = JSON.parse(fs.readFileSync('../data/finlab_source_contrac
 }
 
 assert(
-  manifest.jobs.some((job) => job.id === 'evening-chain' && job.task === 'evening-chain' && job.schedule === '0 13 * * 1-5' && job.query === 'sync=1'),
-  'evening-chain must be the TW 21:00 primary GCP Scheduler root',
+  manifest.jobs.some((job) => job.id === 'evening-chain' && job.task === 'evening-chain' && job.schedule === '45 13 * * 1-5' && job.query === 'sync=1'),
+  'evening-chain must be the TW 21:45 primary GCP Scheduler root',
 )
 assert(
   !manifest.jobs.some((job) => job.id.startsWith('source-readiness-probe') || job.task === 'source-readiness-probe'),

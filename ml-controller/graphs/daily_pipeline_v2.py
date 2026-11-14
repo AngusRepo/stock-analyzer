@@ -654,6 +654,7 @@ class PipelineStateV2(TypedDict, total=False):
     # Computed
     payloads: list[dict]                    # PredictPayload as dict
     timexer_feature_source: dict           # sealed shared root/sequence/risk capture
+    timexer_pit_feature_sources: dict      # C28-02 P2: PIT-lagged TimeXer sources (pit_daily_sources)
     payload_source_observations: dict       # Original bulk-read observations; retained by existing async state artifact
     pipeline_sequence_observations: dict    # Dated adjusted prices shared by L2, formal L3 and Atomic slates
     paired_nav_atomic_inputs: dict          # Canonical full replacement population and own pre-L2 stock slates
@@ -673,6 +674,7 @@ class PipelineStateV2(TypedDict, total=False):
     paired_nav_atomic_allocation: dict      # Original sparse/OPB outputs; no native/ledger authority
     pipeline_screener_seed_context: dict    # Actual OPS/Core inputs and original merge, no historical PIT credit
     persona_computation: dict               # Explicit missing/failed source diagnostics
+    persona_opinions_write: dict            # Formal persona_opinions D1 write status (advisory)
     pipeline_timesfm_context: dict          # Frozen release policy/version/sequence requirement shared by all slates
     timesfm_l2_sidecars: dict                # symbol -> TimesFM L2 sidecar payload
     timesfm_l2_summary: dict                 # L2 feature enrichment telemetry
@@ -841,12 +843,35 @@ async def node_capture_atomic_inputs(state: PipelineStateV2) -> dict:
         return {'paired_nav_atomic_inputs': shadow_failure('atomic_daily_inputs', exc)}
 
 
+def _pit_daily_versions(state) -> tuple[list[str], dict | None]:
+    """PIT versions the legacy prep can build for this run's TimeXers, and the state value
+    to record when none can. A predictor error or a version this controller does not know
+    never reaches the legacy prep request; those TimeXers fail closed."""
+    from services.pit_daily_sources import STATE_SCHEMA, required_versions, variant_specs
+    try:
+        from services.walk_forward_retrain import _get_bucket
+        from services.pit_certification import CONTRACT_VERSION
+        versions = required_versions(state, query=LEARNING_D1_CLIENT.query, bucket_factory=_get_bucket)
+        known = [version for version in versions if version == CONTRACT_VERSION]
+        variant_specs("", known)  # the trigger repeats this; a contract load error must surface here
+    except Exception as exc:  # noqa: BLE001 - PIT TimeXers then fail closed for this run.
+        logger.warning("[Pipeline V2] PIT TimeXer version prediction failed: %s", type(exc).__name__)
+        return [], {"schema_version": STATE_SCHEMA, "required_versions": [], "sources": {}, "failures": {},
+                    "prediction_error": f"{type(exc).__name__}: {exc}"[:300]}
+    unknown = {version: "pit_variant_version_unknown" for version in versions if version not in known}
+    if not versions:
+        return [], None
+    return known, {"schema_version": STATE_SCHEMA, "required_versions": sorted(versions), "sources": {},
+                   "failures": unknown}
+
+
 @artifact_reads
 async def node_build_payloads(state: PipelineStateV2) -> dict:
     """
     Build PredictPayload list for all active stocks (bulk D1 reads).
     """
     logger.info("[Pipeline V2] node_build_payloads")
+    started = time.monotonic()
     from services.payload_builder import MarketEnv, capture_payload_sources
 
     # Reconstruct MarketEnv from dict
@@ -859,14 +884,28 @@ async def node_build_payloads(state: PipelineStateV2) -> dict:
     if sources is None:
         sources = capture_payload_sources(state['active_stocks'], state['run_date'])
     capture_source = state.get("timexer_feature_source")
+    pit_sources = state.get("timexer_pit_feature_sources")
     if sources.get("stocks"):
         from services.active8_prep_lifecycle import ensure_active8_daily_prep
         from services.daily_capture_sources import bind_daily_capture_sources
         if capture_source is None:
             if state.get("pipeline_sequence_observations") is not None:
                 raise ValueError("daily_capture_cannot_replace_frozen_sequence")
+            # PIT variants are decided and built only together with a fresh legacy prep,
+            # so a resumed state never rebuilds them.
+            pit_versions, pit_sources = await asyncio.to_thread(_pit_daily_versions, state)
             capture_source = await ensure_active8_daily_prep(end_date=state["run_date"], feature_only=True,
-                model_profile_schema_version="active8-release-model-profiles-v4-timexer-price")
+                model_profile_schema_version="active8-release-model-profiles-v4-timexer-price",
+                **({"pit_variant_versions": tuple(pit_versions)} if pit_versions else {}))
+            if pit_versions:
+                from services.pit_daily_sources import variant_sources
+                from services.walk_forward_retrain import _get_bucket
+                try:
+                    built = await asyncio.to_thread(variant_sources, _get_bucket(), capture_source, pit_versions)
+                except Exception as exc:  # noqa: BLE001 - only these versions' TimeXers fail closed.
+                    built = {"sources": {}, "failures": {v: f"{type(exc).__name__}: {exc}"[:300] for v in pit_versions}}
+                pit_sources = {**pit_sources, "sources": built["sources"],
+                               "failures": {**pit_sources["failures"], **built["failures"]}}
         from services.pipeline_slate_artifacts import scope_for, checkpoint_async, load
         capture_scope = scope_for({**state, 'payload_source_observations': sources})
         async def bind_sources():
@@ -874,6 +913,7 @@ async def node_build_payloads(state: PipelineStateV2) -> dict:
                 capture_source=capture_source, decision_date=state["run_date"])
         binding_ref = await checkpoint_async(capture_scope, ['bind-source', capture_source], bind_sources)
         sources = load(binding_ref, capture_scope)
+    logger.info("[Pipeline V2] node_build_payloads sources bound seconds=%.1f", time.monotonic() - started)
     global_history=sources.get("global_market_history")
     if global_history is not None:
         market_env.history=global_history
@@ -898,23 +938,40 @@ async def node_build_payloads(state: PipelineStateV2) -> dict:
             verified_sources=view,
         )
     from services.pipeline_slate_artifacts import shared_payload_pool, put_payloads
+    # When the captured universe is exactly the formal slate, one build serves both:
+    # the pool keeps only raw fields and is just the delta base, so loaded rows are unchanged.
+    same_universe = [(s['id'], s['symbol']) for s in sources['stocks']] == [
+        (s['id'], s['symbol']) for s in state['active_stocks']]
+    formal_rows = []
+
+    def formal_slate():
+        if not formal_rows:
+            formal_rows.append([dict(vars(p)) for p in build_slate(state['active_stocks'])])
+        return formal_rows[0]
+
     # This union supplies RAW fields only. Its stock_meta/runtime_options are
     # discarded; every real slate still computes its own peer features below.
     shared_ref = checkpoint(scope, ['shared-payloads', build_context],
-        lambda: shared_payload_pool([dict(vars(p)) for p in build_slate(sources['stocks'])]))
+        lambda: shared_payload_pool(formal_slate() if same_universe
+                                    else [dict(vars(p)) for p in build_slate(sources['stocks'])]))
     shared = load(shared_ref, scope)
+    logger.info("[Pipeline V2] node_build_payloads shared pool ready seconds=%.1f same_universe=%s",
+                time.monotonic() - started, same_universe)
 
-    def save_slate(stocks):
+    def save_slate(stocks, build=None):
         # The builder only reads the verified source. Serialize immediately;
         # never pass these shared nested rows to a mutable consumer.
         return checkpoint(scope, ['pre-l2', build_context, stocks],
-            lambda: [dict(vars(p)) for p in build_slate(stocks)],
+            build or (lambda: [dict(vars(p)) for p in build_slate(stocks)]),
             store=lambda rows, target_scope: put_payloads(rows, target_scope, shared_ref, shared))
 
-    formal_reference = save_slate(state['active_stocks'])
+    formal_reference = save_slate(state['active_stocks'], formal_slate if same_universe else None)
+    logger.info("[Pipeline V2] node_build_payloads formal slate saved seconds=%.1f", time.monotonic() - started)
     result = {"payload_source_observations": sources,
               "timexer_feature_source": capture_source, 'pipeline_slate_scope': scope,
               'pipeline_formal_payload_ref': formal_reference, 'pipeline_shared_payload_ref': shared_ref}
+    if pit_sources is not None:
+        result["timexer_pit_feature_sources"] = pit_sources
     atomic = state.get('paired_nav_atomic_inputs')
     if isinstance(atomic, dict) and atomic.get('status') == 'pre_l2_inputs_captured':
         from services.paired_nav_atomic_inputs import validate_daily_inputs
@@ -934,6 +991,7 @@ async def node_build_payloads(state: PipelineStateV2) -> dict:
     # Release that pool before hydrating the one formal consumer.
     del shared, view
     result['payloads'] = load(formal_reference, scope)
+    logger.info("[Pipeline V2] node_build_payloads done seconds=%.1f", time.monotonic() - started)
     return result
 
 
@@ -2085,14 +2143,22 @@ async def node_compute_personas(state: PipelineStateV2) -> dict:
     if computation['errors']:
         logger.warning('[Pipeline V2] persona evidence incomplete for %s', sorted(computation['errors']))
     # No candidate can write its opinion into the formal persona table.
+    # The table is evidence only: a failed write stays non-fatal, but is reported.
+    write_status = {'status': 'written', 'rows': 0, 'expected_rows': len(opinions)}
+    advisory = []
     try:
         written = write_persona_opinions(client_for_domain(D1DataDomain.LEARNING), opinions)
+        write_status['rows'] = written
         logger.info(f"[Pipeline V2] persona opinions written: {written}/{len(opinions)}")
     except Exception as e:
         logger.warning(f"[Pipeline V2] persona D1 write failed (non-fatal): {e}")
+        write_status.update(status='failed', error_type=type(e).__name__)
+        advisory.append(f'persona_opinions: d1_write_failed:{type(e).__name__}')
 
     result = {'persona_opinions': computation['opinions'], 'persona_computation': computation,
-              'pipeline_persona_context': context}
+              'pipeline_persona_context': context, 'persona_opinions_write': write_status}
+    if advisory:
+        result['errors'] = advisory
     if prepared is not None:
         from services.paired_nav_atomic_personas import compute_atomic_personas
         result['paired_nav_atomic_personas'] = compute_atomic_personas(
@@ -2276,6 +2342,10 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     if state.get('premarket_execution_scope') == 'postclose':
         raise ValueError('postclose_formal_allocation_forbidden')
     logger.info("[Pipeline V2] node_recommend")
+    from services.premarket_pipeline import recommend_progress
+    # Reads only until a seal may start; the premarket runner may then retry a
+    # transient D1 read failure. Mark 'seal' before every allocation-context write.
+    recommend_progress('pre_seal')
 
     # Phase 2: persona weight is KV-controllable for safe rollout
     #   ml:persona_score_weight ??float, default 1.0, 0 = disabled, 0.5 = shadow
@@ -2377,6 +2447,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     if evidence_only_result is not None:
         from services.paired_nav_journal import freeze_snapshot
         from services.paired_nav_collection import shadow_failure
+        recommend_progress('seal')
         try:
             seal = await asyncio.to_thread(freeze_snapshot,
                 signal_date=state["run_date"],
@@ -2546,17 +2617,19 @@ async def node_recommend(state: PipelineStateV2) -> dict:
 
     held_risk_payloads = None
     canonical_risk_payloads = None
+    from services.l4_opb_selection import allocator_return_history_lookback
+    risk_lookback = allocator_return_history_lookback(distribution_policy)
     if distribution_policy is not None and not state.get('pipeline_allocator_history_context'):
         from services.l4_risk_history import load_held_risk_payloads, load_canonical_risk_payloads
-        from services.recommendation_service import gnn_return_history_lookback
         held_risk_payloads = await asyncio.to_thread(load_held_risk_payloads,
             holdings=alpha_policy['l4Distribution']['runtime']['account']['holdings'],
-            payloads=state['payloads'], signal_date=state['run_date'], lookback=gnn_return_history_lookback())
+            payloads=state['payloads'], signal_date=state['run_date'], lookback=risk_lookback)
         canonical_risk_payloads = await asyncio.to_thread(load_canonical_risk_payloads,
-            payloads=state['payloads'],held_payloads=held_risk_payloads,signal_date=state['run_date'],lookback=gnn_return_history_lookback(),
+            payloads=state['payloads'],held_payloads=held_risk_payloads,signal_date=state['run_date'],lookback=risk_lookback,
             capture_source=state.get('timexer_feature_source'))
     allocator_history = capture_allocator_return_history(payloads=state['payloads'], signal_date=state['run_date'],
-        saved=state.get('pipeline_allocator_history_context'), held_payloads=held_risk_payloads,canonical_risk_payloads=canonical_risk_payloads)
+        saved=state.get('pipeline_allocator_history_context'), held_payloads=held_risk_payloads,canonical_risk_payloads=canonical_risk_payloads,
+        lookback=risk_lookback)
     if distribution_policy is not None and (allocator_history['schema_version'] != 'allocator-return-history-context-v3'
             or 'canonical_risk_payloads' not in allocator_history):
         raise ValueError('l4_risk_dated_history_required')
@@ -2569,6 +2642,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     from services.paired_nav_execution_environment import capture_pipeline_execution_environment
     paired_nav_source_run_id = str(state.get("producer_run_id") or f"daily:{state['run_date']}")
     allocation_phase_started = time.perf_counter()
+    recommend_progress('seal')
     # Read the independent risk owner, never infer it from trading:config.
     # Missing risk config is recorded as missing, not filled with current defaults.
     final, paired_nav_collection = await asyncio.to_thread(run_and_capture_allocation,
@@ -3008,6 +3082,7 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
         "final_recommendations": len(final),
         "sell_marked_non_buy": sell_marked_non_buy,
         "llm_reasons_count": len(state.get("llm_reasons") or {}),
+        "persona_opinions_write": state.get("persona_opinions_write"),
         "breeze2_reason_shadow": breeze2_reason_shadow_metrics(state.get("breeze2_reason_shadow") or {}),
         "alpha_bucket_counts": alpha_bucket_counts,
         "alpha_selected_bucket_counts": alpha_selected_bucket_counts,
@@ -4263,6 +4338,16 @@ async def _attach_pipeline_modal_serving_context(state: PipelineStateV2) -> dict
     return context
 
 
+def _pit_feature_source_sets(state, semantics, *, research_only: bool) -> dict:
+    """Request key for PIT-trained TimeXers; absent on legacy days and for research requests."""
+    sources = ((state.get("timexer_pit_feature_sources") or {}).get("sources") or {})
+    if research_only or not semantics or not sources:
+        return {}
+    from services.formal_feature_contract import inference_feature_sources
+    return {"timexer_pit_feature_sources": {version: inference_feature_sources(source, semantics)
+                                            for version, source in sorted(sources.items())}}
+
+
 @artifact_reads
 async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, state_gcs_uri: str,
                                                   research_only: bool = False) -> dict:
@@ -4440,6 +4525,7 @@ async def _build_pipeline_modal_prediction_payload(state: PipelineStateV2, *, st
         "predict_batch_v2_chunk_size": int(predict_contract.get("chunk_size") or len(payloads) or 1),
         "sequence_series": sequence_series,
         "timexer_feature_source": timexer_feature_source,
+        **_pit_feature_source_sets(state, semantics if needs_timexer else None, research_only=research_only),
         "sequence_model_series_by_model": sequence_series_by_model,
         "sequence_model_contracts": _json_safe(sequence_contracts),
         "active8_shadow_sequence_series_by_model": active8_shadow_sequence_series_by_model,
@@ -4917,7 +5003,7 @@ def _merge_pipeline_state_update(state: PipelineStateV2, update: dict | None) ->
         state["errors"] = list(state.get("errors") or []) + list(errors)
 
 
-PIPELINE_ADVISORY_ERROR_PREFIXES = ("llm_reasons:",)
+PIPELINE_ADVISORY_ERROR_PREFIXES = ("llm_reasons:", "persona_opinions:")
 
 
 def classify_pipeline_terminal_errors(errors: Any) -> dict[str, list[str]]:

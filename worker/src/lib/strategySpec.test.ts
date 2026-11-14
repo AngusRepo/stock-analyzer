@@ -829,14 +829,23 @@ const legacyScoreThresholdKeys = ['minSeedScore', 'minChipScore', 'minTechScore'
   const explicitReplay = resolveLegacyMonthlyRevenueEvidence({
     signalDate: '2026-08-15', observedTaipeiDate: '2026-08-15', evidenceMode: 'historical_replay',
   })
-  const backdatedLive = resolveLegacyMonthlyRevenueEvidence({
+  const crossMidnightLive = resolveLegacyMonthlyRevenueEvidence({
     signalDate: '2026-08-14', observedTaipeiDate: '2026-08-15', evidenceMode: 'live_current',
   })
-  assert(sameDayLive.queryAllowed && sameDayLive.evidence.status === 'LIVE_CURRENT_ONLY', 'only explicit same-day live mode may query legacy monthly revenue')
-  for (const blocked of [omittedMode, explicitReplay, backdatedLive]) {
-    assert(!blocked.queryAllowed, 'omitted, replay, and date-mismatched modes must fail closed')
+  assert(sameDayLive.queryAllowed && sameDayLive.evidence.status === 'LIVE_CURRENT_ONLY', 'explicit live mode may query legacy monthly revenue')
+  assert(
+    crossMidnightLive.queryAllowed && crossMidnightLive.evidence.status === 'LIVE_CURRENT_ONLY',
+    'a live rerun observed after midnight keeps revenue; the query bounds revenue_month by signalDate',
+  )
+  for (const blocked of [omittedMode, explicitReplay]) {
+    assert(!blocked.queryAllowed, 'omitted and replay modes must fail closed')
     assert(blocked.evidence.reason === MONTHLY_REVENUE_PIT_UNAVAILABLE_REASON, 'blocked monthly revenue evidence must retain the exact PIT reason')
   }
+  const rerunSignals = deriveStrategyRawSignals({
+    symbol: '3034',
+    raw_signals: { monthlyRevenueEvidence: crossMidnightLive.evidence, monthlyRevenueYoY: 18 },
+  }, { evidenceMode: 'live_current' })
+  assert(rerunSignals.monthlyRevenueYoY === 18, 'cross-midnight live evidence must keep monthly revenue signals')
 
   const candidate = {
     symbol: '3034',

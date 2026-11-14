@@ -74,7 +74,8 @@ class BacktestFitness:
 
 
 def prepare_ga_backtest(*, as_of_date=None):
-    from services.weekly_evidence_service import _resolve_snapshot, taiwan_today, _with_formal_position_risk
+    from services.weekly_evidence_service import _resolve_snapshot, taiwan_today
+    from services.position_risk_owner import with_formal_position_risk
     from services.trading_config_loader import load_merged_trading_config_with_contract
     from services.backtest_engine import BacktestDataset, replay_period, _snapshot_component_uris
     snapshot, start, end = _resolve_snapshot(as_of_date or taiwan_today(), prefer_corporate_history=True)
@@ -109,7 +110,7 @@ def prepare_ga_backtest(*, as_of_date=None):
     split = split_dates(evaluation_days(dataset))
     from services.research_corporate_preflight import require_corporate_coverage
     require_corporate_coverage(dataset, split['train_start'], split['validation_end'])
-    baseline = _with_formal_position_risk(load_merged_trading_config_with_contract().config)
+    baseline = with_formal_position_risk(load_merged_trading_config_with_contract().config)
     evaluator = BacktestFitness(dataset=dataset, baseline=baseline, split=split, snapshot=snapshot, replay=replay_period)
     return evaluator
 

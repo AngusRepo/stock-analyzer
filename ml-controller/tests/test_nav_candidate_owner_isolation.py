@@ -100,7 +100,7 @@ def test_original_nav_recovery_callbacks_close_the_same_admitted_root(isolated_j
     import subprocess
     from types import SimpleNamespace
     from routers import walk_forward
-    from services import cloud_run_jobs_client
+    from services import active8_daily_dispatch_guard, cloud_run_jobs_client
     from services import paired_nav_review_store as store, worker_config_client
     db, client, callbacks, _, _ = isolated_job
     child_env = dict(os.environ)
@@ -123,6 +123,9 @@ def test_original_nav_recovery_callbacks_close_the_same_admitted_root(isolated_j
     def dispatch(request):
         with monkeypatch.context() as scoped:
             scoped.setattr(cloud_run_jobs_client, 'CloudRunJobsClient', PrivateCloudJob)
+            # Guard state/scan semantics (9e7846473) live in test_active8_daily_dispatch_guard.py.
+            scoped.setattr(active8_daily_dispatch_guard, 'dispatch_daily_guarded',
+                lambda job_client, _bucket, *, env_overrides, expected_source_sha=None: job_client.run_job(env_overrides=env_overrides))
             scoped.delenv('OOF_MATERIALIZE_JOB_EXECUTION', raising=False)
             response = asyncio.run(client.original_oof_lifecycle(walk_forward.OofLifecycleRequest(**request)))
         assert response['status'] == 'spawned'

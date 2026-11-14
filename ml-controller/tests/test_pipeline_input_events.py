@@ -287,7 +287,7 @@ def test_consumption_once_and_terminal_result_reuse(store):
     assert events.claim_consumption(path)==result
 
 
-def prep_stage(store, monkeypatch):
+def prep_stage(store, monkeypatch, pit=None):
     from routers import retrain_trigger as trigger
     from services import retrain_lock
     monkeypatch.setattr(retrain_lock,'release',lambda *a,**kw:None)
@@ -298,6 +298,7 @@ def prep_stage(store, monkeypatch):
         'feature_semantic_version':trigger.ACTIVE8_FEATURE_SEMANTIC_VERSION,
         'feature_imputation_semantic':trigger.ACTIVE8_FEATURE_IMPUTATION_SEMANTIC_VERSION}
     template.update({key: {'capture_id': 'same-capture', 'source_sha256': key + '-original'} for key in ('price_capture', 'institutional_capture', 'market_cap_capture', 'auxiliary_capture', 'long_source_capture', 'global_capture')})
+    template.update(pit or {})
     calls=[]
     monkeypatch.setattr(events,'_launch_missing_prep',lambda bucket,path,stage:calls.append((path,stage)))
     payloads=[{'batch_index':idx,'retain_unlabeled_features':True,'gcs_prefix':template['output_gcs_prefix']} for idx in range(2)]
@@ -328,6 +329,26 @@ def test_prep_waits_for_every_batch_then_seals_without_training(store,monkeypatc
     for key in ('price_capture', 'institutional_capture', 'market_cap_capture', 'auxiliary_capture', 'long_source_capture', 'global_capture'):
         assert receipt[key] == stage['spec']['receipt_template'][key]
     assert len(jobs.calls)==1
+
+
+PIT = {'pit_contract_version': 'pit-availability-contract-v1', 'pit_contract_sha256': 'c' * 64}
+
+
+@pytest.mark.parametrize('second', [PIT, {'pit_contract_version': PIT['pit_contract_version']},
+                                    {**PIT, 'pit_contract_sha256': '0' * 64}, None])
+def test_a_pit_prep_seals_only_batches_that_applied_its_contract(store,monkeypatch,second):
+    # C28-02: an older ml-service ignores the contract fields; another image carries another contract file.
+    path,stage=prep_stage(store,monkeypatch,pit=PIT);jobs=Jobs()
+    batch_result(store,path,stage,0,cleaning_report=dict(PIT))
+    batch_result(store,path,stage,1,**({'cleaning_report':second} if second is not None else {}))
+    prefix=stage['spec']['receipt_template']['output_gcs_prefix']
+    if second == PIT:
+        assert events.dispatch_ready(path,jobs_client=jobs,store=store)['status']=='dispatched'
+        assert events.read(store,prefix+'/prep/immutable_receipt.json')['pit_contract_sha256']==PIT['pit_contract_sha256']
+        return
+    with pytest.raises(ValueError,match='pipeline_input_prep_pit_contract_not_applied'):
+        events.dispatch_ready(path,jobs_client=jobs,store=store)
+    assert events.read(store,prefix+'/prep/immutable_receipt.json') is None and not jobs.calls
 
 
 @pytest.mark.parametrize('override,pattern', [({'error':'OOM'},'prep_failed'),({'request_sha256':'bad'},'lineage_mismatch'),({'rows':1},'rows_insufficient')])
@@ -587,3 +608,42 @@ def test_cross_release_receipt_still_rejects_wrong_producer_or_bytes(store,monke
     with pytest.raises(ValueError,match='sealed_(receipt_invalid|checksum_mismatch)'):
         events.dispatch_ready(path,jobs_client=jobs,store=store)
     assert not jobs.calls
+
+
+def test_parallel_prep_persistence_keeps_batch_order_bytes_and_conflict_guard(store,monkeypatch):
+    """F3 (10/28): parallel encode/upload must yield the same refs, in batch order, as the sequential loop."""
+    import gzip
+    payloads=[{'batch_index':idx,'rows':list(range(idx*50)),'name':'台積電'} for idx in range(11)]
+    expected=[]
+    for payload in payloads:
+        raw=gzip.compress(events.encoded(payload),mtime=0)
+        expected.append({'path':events.PREFIX+'batches/'+events.digest(raw)+'.json.gz','sha256':events.digest(raw)})
+    monkeypatch.setattr(events,'_launch_missing_prep',lambda bucket,path,stage:None)
+    with events.input_context({'producer_run_id':'run-1','run_date':'2026-10-02'},'gs://fixture/sealed-l2'):
+        with pytest.raises(events.InputDeferred) as deferred:
+            events.defer_prep(payloads=payloads,receipt_template={},lock_key='lock',lock_run_id='prep-1')
+    stage=json.loads(store.blob(deferred.value.path).download_as_text())
+    assert stage['spec']['batches']==expected
+    assert all(gzip.decompress(store.blob(ref['path']).raw)==events.encoded(p) for ref,p in zip(expected,payloads))
+    # An existing batch with different bytes at the same address is still rejected.
+    store.blob(expected[3]['path']).raw=b'tampered'
+    with events.input_context({'producer_run_id':'run-2','run_date':'2026-10-02'},'gs://fixture/sealed-l2'):
+        with pytest.raises(ValueError,match='pipeline_input_batch_conflict'):
+            events.defer_prep(payloads=payloads,receipt_template={},lock_key='lock',lock_run_id='prep-2')
+
+
+def test_router_defers_prep_off_the_event_loop_with_input_context(store, monkeypatch):
+    """PERF-D6: blocking GCS/Modal dispatch runs in a worker thread, context intact."""
+    import inspect, threading
+    from routers import retrain_trigger as trigger
+    assert 'await asyncio.to_thread(defer_prep,' in inspect.getsource(trigger)
+    loop_thread, seen = threading.get_ident(), []
+    monkeypatch.setattr(events, '_launch_missing_prep',
+                        lambda bucket, path, stage: seen.append((threading.get_ident(), stage['spec']['lock_run_id'])))
+    async def run():
+        with events.input_context({'producer_run_id': 'run-1', 'run_date': '2026-10-02'}, 'gs://fixture/sealed-l2'):
+            await asyncio.to_thread(events.defer_prep, payloads=[{'batch_index': 0}], receipt_template={},
+                                    lock_key='lock', lock_run_id='prep-1')
+    with pytest.raises(events.InputDeferred):
+        asyncio.run(run())
+    assert len(seen) == 1 and seen[0][0] != loop_thread and seen[0][1] == 'prep-1'

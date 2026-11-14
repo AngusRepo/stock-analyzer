@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+import numpy as np
 import pandas as pd
 
 
@@ -378,8 +379,59 @@ def start_date_for_years(years: int) -> str:
     return today.replace(year=today.year - years).isoformat()
 
 
-def d1_request(sql: str, params: list[Any] | None = None) -> dict[str, Any]:
-    proxied = controller_d1_request(sql, params)
+# Backoff for one D1 POST that hit a transient edge failure (ops knob, not a trading constant).
+D1_PROXY_RETRY_DELAYS_SECONDS = tuple(
+    max(0.0, float(part)) for part in os.environ.get("FINLAB_D1_PROXY_RETRY_DELAYS_SECONDS", "2,8,20").split(",") if part.strip())
+D1_PROXY_TRANSIENT_HTTP_STATUS = frozenset({429, 502, 503, 504})
+# Every replayed D1 POST of this run (recorded in the manifest).
+D1_PROXY_RETRIES: list[dict[str, Any]] = []
+
+
+def d1_post_json(
+    url: str,
+    body: dict[str, Any],
+    headers: dict[str, str],
+    *,
+    timeout: float,
+    label: str,
+    retry_transient: bool = False,
+    error_limit: int = 800,
+) -> dict[str, Any]:
+    """POST one D1 request. With retry_transient the same body is replayed on HTTP 429/502/503/504,
+    connection errors and timeouts, so only reads and upsert-only writes may opt in. Other HTTP
+    statuses and SQL errors reported inside a 200 body are never replayed."""
+    data = json.dumps(body).encode("utf-8")
+    delays = D1_PROXY_RETRY_DELAYS_SECONDS if retry_transient else ()
+    for attempt in range(len(delays) + 1):
+        req = urllib.request.Request(
+            url, data=data, headers={**headers, "Content-Type": "application/json"}, method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:error_limit]
+            if exc.code not in D1_PROXY_TRANSIENT_HTTP_STATUS or attempt >= len(delays):
+                suffix = f" (http_{exc.code} after {attempt + 1} attempts)" if attempt else ""
+                raise RuntimeError(f"{detail}{suffix}") from exc
+            reason = f"http_{exc.code}"
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as exc:
+            if attempt >= len(delays):
+                raise
+            reason = type(exc).__name__
+        D1_PROXY_RETRIES.append({"label": label, "attempt": attempt + 1, "reason": reason})
+        print(
+            f"[finlab-backfill] d1_post_retry label={label} attempt={attempt + 1}/{len(delays)} "
+            f"reason={reason} sleep={delays[attempt]}",
+            file=sys.stderr,
+            flush=True,
+        )
+        time.sleep(delays[attempt])
+    raise AssertionError("unreachable")
+
+
+def d1_request(sql: str, params: list[Any] | None = None, *, retry_transient: bool = False) -> dict[str, Any]:
+    proxied = controller_d1_request(sql, params, retry_transient=retry_transient)
     if proxied is not None:
         return proxied
 
@@ -390,17 +442,10 @@ def d1_request(sql: str, params: list[Any] | None = None) -> dict[str, Any]:
     body: dict[str, Any] = {"sql": sql}
     if params:
         body["params"] = params
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(body).encode("utf-8"),
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-        method="POST",
+    payload = d1_post_json(
+        url, body, {"Authorization": f"Bearer {token}"},
+        timeout=120, label="cloudflare_d1_query", retry_transient=retry_transient, error_limit=500,
     )
-    try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        raise RuntimeError(exc.read().decode("utf-8")[:500]) from exc
     if not payload.get("success"):
         raise RuntimeError(str(payload.get("errors") or payload)[:500])
     result = payload.get("result") or []
@@ -433,7 +478,31 @@ def controller_d1_proxy_configured() -> bool:
     return bool(controller_proxy_token() and controller_d1_query_url())
 
 
-def controller_d1_request(sql: str, params: list[Any] | None = None, *, domain: str | None = None) -> dict[str, Any] | None:
+CF_D1_ENV = ("CF_API_TOKEN", "CF_ACCOUNT_ID", "CF_D1_DB_ID")
+# Read-only D1 steps skipped because this run has no D1 credentials (recorded in the manifest).
+D1_UNAVAILABLE_SKIPS: list[str] = []
+
+
+def d1_credentials_available() -> bool:
+    return controller_d1_proxy_configured() or all(os.environ.get(key) for key in CF_D1_ENV)
+
+
+def d1_unavailable(step: str) -> bool:
+    """True (and recorded) when a read-only D1 step must be skipped for missing credentials."""
+    if d1_credentials_available():
+        return False
+    if step not in D1_UNAVAILABLE_SKIPS:
+        D1_UNAVAILABLE_SKIPS.append(step)
+    return True
+
+
+def controller_d1_request(
+    sql: str,
+    params: list[Any] | None = None,
+    *,
+    domain: str | None = None,
+    retry_transient: bool = False,
+) -> dict[str, Any] | None:
     url = controller_d1_query_url()
     token = controller_proxy_token()
     if not url or not token:
@@ -441,20 +510,10 @@ def controller_d1_request(sql: str, params: list[Any] | None = None, *, domain: 
     body = {"sql": sql, "params": params or []}
     if domain:
         body["domain"] = domain
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(body).encode("utf-8"),
-        headers={
-            "X-Controller-Token": token,
-            "Content-Type": "application/json",
-        },
-        method="POST",
+    payload = d1_post_json(
+        url, body, {"X-Controller-Token": token},
+        timeout=180, label=f"controller_d1_query:{domain or 'default'}", retry_transient=retry_transient,
     )
-    try:
-        with urllib.request.urlopen(req, timeout=180) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as exc:
-        raise RuntimeError(exc.read().decode("utf-8")[:800]) from exc
     if not payload.get("success"):
         raise RuntimeError(str(payload.get("errors") or payload)[:800])
     result = payload.get("result") or []
@@ -467,6 +526,7 @@ def controller_d1_batch_execute(
     timeout: float = 120.0,
     chunk_size: int = 250,
     domain: str | None = None,
+    retry_transient: bool = False,
 ) -> dict[str, Any] | None:
     url = controller_d1_batch_url()
     token = controller_proxy_token()
@@ -494,20 +554,11 @@ def controller_d1_batch_execute(
                 file=sys.stderr,
                 flush=True,
             )
-        req = urllib.request.Request(
-            url,
-            data=json.dumps(body).encode("utf-8"),
-            headers={
-                "X-Controller-Token": token,
-                "Content-Type": "application/json",
-            },
-            method="POST",
+        payload = d1_post_json(
+            url, body, {"X-Controller-Token": token},
+            timeout=timeout, label=f"controller_d1_batch:{domain or 'default'}:chunk={chunk_no}/{chunk_count}",
+            retry_transient=retry_transient,
         )
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                payload = json.loads(resp.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            raise RuntimeError(exc.read().decode("utf-8")[:800]) from exc
         if not payload.get("ok"):
             raise RuntimeError(str(payload)[:800])
         part_total = int(payload["total"]) if payload.get("total") is not None else len(part)
@@ -567,13 +618,13 @@ def d1_query(
     domain: str | None = None,
 ) -> list[dict[str, Any]]:
     if domain:
-        proxied = controller_d1_request(sql, params, domain=domain)
+        proxied = controller_d1_request(sql, params, domain=domain, retry_transient=True)
         if proxied is not None:
             return proxied.get("results") or []
         from services.d1_domain_client import D1DataDomain, client_for_domain
 
         return client_for_domain(D1DataDomain(domain)).query(sql, params=params, timeout=120.0)
-    return d1_request(sql, params).get("results") or []
+    return d1_request(sql, params, retry_transient=True).get("results") or []
 
 
 def d1_exec(
@@ -598,10 +649,10 @@ def d1_batch_execute(
     timeout: float = 120.0,
     chunk_size: int = 250,
     domain: str | None = None,
+    retry_transient: bool = False,
 ) -> dict[str, Any]:
-    proxied = controller_d1_batch_execute(
-        statements, timeout=timeout, chunk_size=chunk_size, domain=domain,
-    )
+    proxied = controller_d1_batch_execute(statements, timeout=timeout, chunk_size=chunk_size, domain=domain,
+                                          retry_transient=retry_transient)
     if proxied is not None:
         return proxied
     if domain:
@@ -628,9 +679,10 @@ def ops_d1_batch_execute(
     *,
     timeout: float = 120.0,
     chunk_size: int = 250,
+    retry_transient: bool = False,
 ) -> dict[str, Any]:
     return d1_batch_execute(
-        statements, timeout=timeout, chunk_size=chunk_size, domain="ops",
+        statements, timeout=timeout, chunk_size=chunk_size, domain="ops", retry_transient=retry_transient,
     )
 
 
@@ -656,6 +708,27 @@ def market_d1_query(sql: str, params: list[Any] | None = None) -> list[dict[str,
 
 def market_d1_exec(sql: str, params: list[Any] | None = None) -> dict[str, Any]:
     return d1_exec(sql, params, domain=market_owner_domain())
+
+
+def report_taxonomy_prune_skips(materialization_id: str) -> list[dict[str, Any]]:
+    """Q02: record each skipped taxonomy prune in ops system_logs; warn-only, never raises."""
+    try:
+        from services.finlab_canonical_materializer import (
+            taxonomy_prune_guard_receipt_query,
+            taxonomy_prune_skip_escalate_after,
+            taxonomy_prune_skip_log_statements,
+        )
+
+        receipts = market_d1_query(*taxonomy_prune_guard_receipt_query(materialization_id))
+        logs = taxonomy_prune_skip_log_statements(receipts, escalate_after=taxonomy_prune_skip_escalate_after())
+        for _, params in logs:
+            print(f"[finlab-taxonomy] {params[0]} {params[2]}", file=sys.stderr)
+        if logs and int((ops_d1_batch_execute(logs, timeout=60.0) or {}).get("error_count") or 0):
+            print("[finlab-taxonomy] prune_guard_report_failed system_logs write errors", file=sys.stderr)
+        return [json.loads(params[3]) for _, params in logs]
+    except Exception as exc:
+        print(f"[finlab-taxonomy] prune_guard_report_failed {type(exc).__name__}: {exc}", file=sys.stderr)
+        return []
 
 
 def market_d1_batch_execute(
@@ -688,6 +761,12 @@ TRAINING_AUX_FIELDS = {
     "fundamental_factor_diversity": {"eps":"eps", "roe":"roe", "pe":"pe", "pb":"pb",
         "dividend_yield":"dividend_yield", "revenue_growth_yoy":"revenue_growth_yoy"},
 }
+# Training (training_auxiliary_full_vintage) and serving (canonical_fundamental_features /
+# daily composition) consume only these fundamental fields; the other ~60 lane fields
+# feed neither, so a training capture need not fetch or gate them.
+MONTHLY_RELEASE_LANES = frozenset({"revenue"})
+MONTHLY_RELEASE_WINDOW_DAYS = 45
+FUNDAMENTAL_TRAINING_KEY_SCOPE = {"fundamental_factor_diversity": set(TRAINING_AUX_FIELDS["fundamental_factor_diversity"])}
 
 def write_training_auxiliary_vintage(frames, *, lane, run_dir, years, end_date, start_date=None, requested_fields=None):
     """Preserve full vendor windows before daily-tail materialization clips them."""
@@ -788,16 +867,18 @@ def filter_rows_date_range(
     start_date: str | None = None,
     end_date: str | None = None,
 ) -> pd.DataFrame:
-    out = pd.DataFrame(df).copy()
+    out = pd.DataFrame(df)
     if out.empty or date_col not in out.columns or (not start_date and not end_date):
-        return out
+        return out.copy()
+    # take() equals out[mask].copy() (same rows/labels, no is_copy flag) but makes
+    # one row-filtered copy instead of full copy + masked copy + copy.
     parsed = pd.to_datetime(out[date_col], errors="coerce")
     mask = parsed.notna()
     if start_date:
         mask &= parsed >= pd.Timestamp(start_date)
     if end_date:
         mask &= parsed <= pd.Timestamp(end_date)
-    return out[mask.to_numpy()].copy()
+    return out.take(np.flatnonzero(mask.to_numpy()))
 
 
 def non_null_cells(df: pd.DataFrame) -> int:
@@ -1019,8 +1100,30 @@ def source_key_report_row(
         "error_code": type(error).__name__ if error else None,
         "error_message": str(error)[:500] if error else None,
         "generated_at": generated_at,
+        # C28-02 C8: wall-clock time this run held the field (generated_at is the run start).
+        "observed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "metadata_json": json.dumps(metadata or {}, ensure_ascii=False, sort_keys=True, default=str),
     }
+
+
+def lane_first_seen(reports: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """C28-02 C8: when this capture itself first held each lane field's target-date rows.
+
+    Comparing these across daily captures lets a later month reach PIT level O
+    (observed vintage). Only a field that held target-date rows (status ok) is a
+    sighting; reused, empty, missing-target or failed fields are not.
+    """
+    seen: dict[str, dict[str, Any]] = {}
+    for row in reports:
+        if (row.get("status") != "ok" or row.get("error_code") or not row.get("observed_at")
+                or int(row.get("target_rows") or 0) <= 0):
+            continue
+        key = f"{row.get('lane')}:{row.get('field')}"
+        if key not in seen or row["observed_at"] < seen[key]["observed_at"]:
+            seen[key] = {"target_date": row.get("target_date"), "observed_at": row["observed_at"],
+                         "status": row.get("status"), "rows": row.get("rows"), "target_rows": row.get("target_rows"),
+                         "latest_date": row.get("latest_date"), "artifact_checksum": row.get("artifact_checksum")}
+    return dict(sorted(seen.items()))
 
 
 def parse_gcs_uri(uri: str) -> tuple[str, str] | None:
@@ -1070,7 +1173,7 @@ def read_ready_source_key_artifacts(
     fields: Iterable[str],
 ) -> dict[str, dict[str, Any]]:
     wanted = sorted({str(field).strip() for field in fields if str(field).strip()})
-    if not wanted:
+    if not wanted or d1_unavailable("source_key_report_reuse"):
         return {}
     placeholders = ",".join("?" for _ in wanted)
     try:
@@ -1202,6 +1305,7 @@ def required_wide_field_errors(
     *,
     target_date: str | None = None,
     requested_fields: set[str] | None = None,
+    target_window_days: int = 0,
 ) -> list[str]:
     required = REQUIRED_ATOMIC_WIDE_FIELDS.get(lane)
     if not required:
@@ -1216,9 +1320,12 @@ def required_wide_field_errors(
             errors.append(f"{field}=missing")
             continue
         if target_date:
-            target = filter_date_range(frame, start_date=target_date, end_date=target_date)
+            window_start = (str((pd.Timestamp(target_date) - pd.Timedelta(days=target_window_days)).date())
+                            if target_window_days else target_date)
+            target = filter_date_range(frame, start_date=window_start, end_date=target_date)
             if non_null_cells(target) <= 0:
-                errors.append(f"{field}=missing_target_date:{target_date}")
+                errors.append(f"{field}=missing_target_date:{target_date}"
+                              + (f":window_days={target_window_days}" if target_window_days else ""))
                 continue
         elif non_null_cells(frame) <= 0:
             errors.append(f"{field}=empty")
@@ -1347,7 +1454,7 @@ def write_official_training_calendar(*, run_dir: Path, allow_historical_fetch: b
                     cached=read_cached(cache_key)
                     if cached is None and not allow_historical_fetch and ym not in {end[:7], previous_month}:
                         raise ValueError(f"daily_official_history_cache_missing:{cache_key}")
-                    body=json.loads(cached) if cached is not None else official_json_get(url,label=f"training_calendar_{market}_{ym}")
+                    body=json.loads(cached) if cached is not None else official_history_json_get(url,label=f"training_calendar_{market}_{ym}")
                     official_month_sessions(body,market,ym)
                     write_json(path,body)
                     if cached is None:
@@ -1379,7 +1486,7 @@ def write_training_breadth_capture(*,run_dir: Path, allow_historical_fetch: bool
             key="breadth/TWSE-"+day+".json";raw=read_cached(key)
             if raw is None and not allow_historical_fetch and day != manifest["end_date"]:
                 raise ValueError(f"daily_official_history_cache_missing:{key}")
-            body=json.loads(raw) if raw is not None else official_json_get("https://www.twse.com.tw/exchangeReport/MI_INDEX?date="+day.replace("-","")+"&response=json&type=MS",label="training_breadth_"+day)
+            body=json.loads(raw) if raw is not None else official_history_json_get("https://www.twse.com.tw/exchangeReport/MI_INDEX?date="+day.replace("-","")+"&response=json&type=MS",label="training_breadth_"+day)
             parse_breadth(body,day);write_json(path,body)
             if raw is None:write_cached(key,path.read_bytes());time.sleep(4)
         raw=path.read_bytes();parse_breadth(json.loads(raw),day)
@@ -1408,8 +1515,62 @@ def write_institutional_vintage(frames: dict[str, pd.DataFrame], *, run_dir: Pat
     })
 
 
+def chip_pit_daily_enabled() -> bool:
+    """Off unless CHIP_PIT_DAILY_RECORD=1; when off the FinLab daily refresh path is unchanged."""
+    return os.environ.get("CHIP_PIT_DAILY_RECORD", "0") == "1"
+
+
+def chip_pit_lane_fields(lane: str) -> tuple[str, ...]:
+    from services.chip_pit import lane_fields
+    return lane_fields(lane)
+
+
+def write_chip_pit_window(frames: dict[str, pd.DataFrame], *, lane: str, run_dir: Path, end_date: str | None) -> None:
+    """Trailing sessions for the chip PIT log: a table the vendor publishes after this capture
+    (margin/lending usually land after 21:00) is still observed by the next day's capture."""
+    from services.chip_pit import CAPTURE_WINDOW_SESSIONS
+    for field in chip_pit_lane_fields(lane):
+        if field in frames:
+            frame = filter_date_range(frames[field], end_date=end_date)
+            write_parquet(run_dir / "raw" / "chip_pit_window" / f"{field}.parquet", frame.tail(CAPTURE_WINDOW_SESSIONS))
+
+
+def chip_pit_window_failed(errors: list[dict[str, Any]], *, lane: str, step: str, exc: Exception) -> None:
+    print(f"[finlab-backfill] chip_pit_window {step} failed lane={lane}: {type(exc).__name__}: {exc}",
+          file=sys.stderr, flush=True)
+    errors.append({"lane": lane, "step": step, "error": f"{type(exc).__name__}: {exc}"[:500]})
+
+
+def chip_pit_lane_fields_soft(lane: str, errors: list[dict[str, Any]]) -> tuple[str, ...]:
+    """Evidence only: on failure the lane is captured exactly as with the flag off."""
+    try:
+        return chip_pit_lane_fields(lane)
+    except Exception as exc:
+        chip_pit_window_failed(errors, lane=lane, step="lane_fields", exc=exc)
+        return ()
+
+
+def write_chip_pit_window_soft(frames: dict[str, pd.DataFrame], *, lane: str, fields: tuple[str, ...], run_dir: Path,
+                               end_date: str | None, errors: list[dict[str, Any]]) -> None:
+    """Evidence only: a failed window write never fails the lane."""
+    try:
+        write_chip_pit_window(frames, lane=lane, run_dir=run_dir, end_date=end_date)
+    except Exception as exc:
+        chip_pit_window_failed(errors, lane=lane, step="write_window", exc=exc)
+        # record_daily_capture reads the lane's own files when a class's window is incomplete.
+        for field in fields:
+            try:
+                (run_dir / "raw" / "chip_pit_window" / f"{field}.parquet").unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
 OFFICIAL_USER_AGENT = "StockVisionDataPipeline/1.0 (+GCP materialization)"
 OFFICIAL_MARKET_SUMMARY_LOOKBACK_DAYS = int(os.environ.get("OFFICIAL_MARKET_SUMMARY_LOOKBACK_DAYS", "10"))
+# Ops pacing for a late exchange index publication; not a trading parameter.
+OFFICIAL_INDEX_FETCH_ATTEMPTS = max(1, int(os.environ.get("OFFICIAL_INDEX_FETCH_ATTEMPTS", "3")))
+OFFICIAL_INDEX_RETRY_DELAYS_SECONDS = tuple(
+    max(0.0, float(part)) for part in os.environ.get("OFFICIAL_INDEX_RETRY_DELAYS_SECONDS", "2,5").split(",") if part.strip())
 
 
 def official_json_get(url: str, *, label: str, timeout: float = 30.0) -> Any:
@@ -1427,6 +1588,21 @@ def official_json_get(url: str, *, label: str, timeout: float = 30.0) -> Any:
     except Exception as exc:
         print(f"[finlab-backfill] official_fetch_failed label={label} error={type(exc).__name__}:{exc}", flush=True)
         return None
+
+
+# A full training capture fetches ~1600 uncached history days; one throttled
+# non-JSON reply used to abort it. Bounded backoff, then fail closed.
+OFFICIAL_HISTORY_RETRY_SLEEPS = (30, 90)
+
+
+def official_history_json_get(url: str, *, label: str) -> Any:
+    for pause in (*OFFICIAL_HISTORY_RETRY_SLEEPS, None):
+        body = official_json_get(url, label=label)
+        if body is not None:
+            return body
+        if pause is not None:
+            time.sleep(pause)
+    raise ValueError(f"official_history_fetch_failed:{label}:attempts={len(OFFICIAL_HISTORY_RETRY_SLEEPS) + 1}")
 
 
 def parse_official_number(value: Any) -> float | None:
@@ -1471,8 +1647,9 @@ def recent_calendar_dates(days: int) -> list[str]:
     return [(today - timedelta(days=offset)).isoformat() for offset in range(max(1, days))]
 
 
-def fetch_official_twse_index_frame() -> pd.DataFrame:
-    query_day = taipei_today().replace("-", "")
+def fetch_official_twse_index_frame(target_date: str | None = None) -> pd.DataFrame:
+    # A gated daily read queries the target month and never stamps an unparsed row as today.
+    query_day = (target_date or taipei_today()).replace("-", "")
     body = official_json_get(
         f"https://www.twse.com.tw/rwd/zh/TAIEX/MI_5MINS_HIST?date={query_day}&response=json",
         label="twse_mi_5mins_hist",
@@ -1482,7 +1659,7 @@ def fetch_official_twse_index_frame() -> pd.DataFrame:
     for row in rows if isinstance(rows, list) else []:
         if not isinstance(row, list) or len(row) < 5:
             continue
-        date = parse_official_date(row[0], taipei_today())
+        date = parse_official_date(row[0], None if target_date else taipei_today())
         close = parse_official_number(row[4])
         if close is None:
             continue
@@ -1536,11 +1713,11 @@ def fetch_official_board_frame() -> pd.DataFrame:
     return pd.DataFrame(output, columns=columns).drop_duplicates(["symbol", "board"])
 
 
-def fetch_official_tpex_index_frame() -> pd.DataFrame:
+def fetch_official_tpex_index_frame(target_date: str | None = None) -> pd.DataFrame:
     body = official_json_get("https://www.tpex.org.tw/openapi/v1/tpex_index", label="tpex_index")
     rows = body if isinstance(body, list) else []
     output: list[dict[str, Any]] = []
-    fallback = taipei_today()
+    fallback = None if target_date else taipei_today()
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -1565,6 +1742,68 @@ def fetch_official_tpex_index_frame() -> pd.DataFrame:
     frame = frame[frame["date"].notna()].sort_values("date")
     frame["date"] = frame["date"].dt.strftime("%Y-%m-%d")
     return frame
+
+
+def official_index_frame_for_target(fetch, *, field: str, api_key: str, target_date: str | None,
+                                    report: dict[str, Any], reports: list, blockers: list) -> pd.DataFrame:
+    """Daily refresh needs the target session; a failed or stale exchange read is a not-ready lane."""
+    if not target_date:
+        return fetch()
+    frame = pd.DataFrame()
+    for attempt in range(OFFICIAL_INDEX_FETCH_ATTEMPTS):
+        if attempt:
+            delays = OFFICIAL_INDEX_RETRY_DELAYS_SECONDS or (0.0,)
+            time.sleep(delays[min(attempt, len(delays)) - 1])
+        frame = fetch(target_date)
+        if not frame.empty and (frame["date"] == target_date).any():
+            return frame
+    latest = str(frame["date"].max()) if not frame.empty else None
+    reports.append({**source_key_report_row(**report, target_date=target_date, field=field, api_key=api_key,
+        status="missing_target_date", rows=len(frame), latest_date=latest,
+        metadata={"kind": "official_index", "attempts": OFFICIAL_INDEX_FETCH_ATTEMPTS}), "source": "official"})
+    blockers.append({"lane": report["lane"], "kind": "official_index", "reason": "official_index_target_date_missing",
+                     "field": field, "target_date": target_date, "latest_date": latest,
+                     "attempts": OFFICIAL_INDEX_FETCH_ATTEMPTS})
+    return frame.iloc[0:0]
+
+
+# Lanes whose materialization writes the local inputs read by
+# produce_daily_inference_composition (raw/daily_price_full_vintage,
+# raw/training_auxiliary_full_vintage, raw/training_long_full_vintage).
+COMPOSITION_INPUT_LANES = frozenset({"daily_price", "training_shareholding", *TRAINING_AUX_FIELDS}
+                                    | {spec.lane for spec in CORE_SPECS if spec.kind == "broker_aggregate"})
+
+
+def composition_seal_allowed(blockers: Iterable[dict[str, Any]], failed_datasets: Iterable[str] = ()) -> bool:
+    """The daily composition may be sealed and its head published only when every blocker names a
+    known lane outside its inputs (e.g. regime_context waiting on TPEx) and no canonical apply failed."""
+    sealable = {spec.lane for spec in CORE_SPECS} - COMPOSITION_INPUT_LANES
+    return not list(failed_datasets or []) and all(
+        isinstance(blocker, dict) and blocker.get("lane") in sealable for blocker in blockers or [])
+
+
+def reuse_sealed_daily_inference_head(bucket, business_date: str | None, run_id: str) -> dict[str, Any]:
+    """A lane repair without composition inputs may only point at a head sealed by this same run_id:
+    the sequence refresh after a success callback reads the price vintage under the callback's run prefix."""
+    from services.daily_inference_composition import read_frame, read_verified, validate_composition
+    from services.daily_inference_producer import HEAD_PREFIX
+    if not business_date:
+        raise ValueError("daily_inference_head_business_date_missing")
+    blob = bucket.blob(HEAD_PREFIX + business_date + ".json")
+    if not blob.exists():
+        raise FileNotFoundError("daily_inference_head_missing:" + business_date)
+    reference = json.loads(blob.download_as_bytes())
+    value = json.loads(read_verified(bucket, reference))
+    if reference.get("business_date") != business_date:
+        raise ValueError("daily_composition_head_date_mismatch")
+    if reference.get("capture_id") != run_id:
+        raise ValueError("daily_composition_head_capture_mismatch")
+    validated = validate_composition(bucket, value, source=reference, run_date=business_date, price_capture={
+        "capture_id": reference.get("capture_id"), "capture_manifest_sha256": value.get("price_manifest_sha256")})
+    for item in (*validated["auxiliary"].values(), *validated["long"].values()):
+        read_frame(bucket, item, run_date=business_date)
+    return {"status": "reused_sealed_head", "business_date": business_date, "capture_id": reference.get("capture_id"),
+            "path": reference.get("path"), "sha256": reference.get("sha256")}
 
 
 def _sum_values(rows: list[Any], column_index: int) -> float | None:
@@ -1714,7 +1953,10 @@ def upload_dir_to_gcs(local_dir: Path, *, bucket_name: str, prefix: str,
                           uploaded_files=uploaded_files if uploaded_files is not None else {})
 
 
-def d1_counts(start: str) -> dict[str, int]:
+def d1_counts(start: str) -> dict[str, int] | None:
+    """StockVision row counts for the diff report; None when D1 is not observable."""
+    if d1_unavailable("d1_counts"):
+        return None
     queries = {
         "daily_price": "SELECT COUNT(*) AS n FROM stock_prices WHERE date >= ?",
         "chip_diversity": "SELECT COUNT(*) AS n FROM chip_data WHERE date >= ?",
@@ -1856,6 +2098,11 @@ def build_broker_rank_daily(
     ]
     if broker_daily.empty:
         return pd.DataFrame(columns=columns)
+    buy, sell = _broker_rank_sides(broker_daily)
+    return _finish_broker_rank([buy], [sell], market_segment=market_segment, source=source)
+
+
+def _broker_rank_sides(broker_daily: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     base = broker_daily.copy()
     base["broker_code"] = base["broker_code"].astype(str).str.strip()
     base["broker_name"] = None
@@ -1873,17 +2120,24 @@ def build_broker_rank_daily(
     ).groupby(["date", "stock_id"], observed=True).head(3).copy()
     sell["rank_side"] = "sell"
     sell["rank_no"] = sell.groupby(["date", "stock_id"], observed=True).cumcount() + 1
+    return buy, sell
 
-    ranked = pd.concat([buy, sell], ignore_index=True)
+
+def _finish_broker_rank(buys: list[pd.DataFrame], sells: list[pd.DataFrame], *, market_segment: str, source: str) -> pd.DataFrame:
+    columns = ["date", "stock_id", "market_segment", "rank_side", "rank_no", "broker_code",
+               "broker_name", "buy_lots", "sell_lots", "net_lots", "source"]
+    # Date-ordered window pieces concatenate to the same rows as one global pass.
+    ranked = pd.concat([*buys, *sells], ignore_index=True)
+    buys.clear(), sells.clear()  # release window pieces before the column copy below
     if ranked.empty:
         return pd.DataFrame(columns=columns)
     ranked["market_segment"] = market_segment
     ranked["source"] = source
-    ranked = ranked.rename(columns={
+    ranked.rename(columns={
         "broker_buy_shares": "buy_lots",
         "broker_sell_shares": "sell_lots",
         "broker_net": "net_lots",
-    })
+    }, inplace=True)
     return ranked[columns]
 
 
@@ -1921,6 +2175,134 @@ def normalize_broker_transactions_daily(frame: pd.DataFrame, start: str) -> pd.D
         print(f"[finlab-backfill] broker_transactions schema unsupported missing={missing} columns={list(frame.columns)[:12]}", flush=True)
         return pd.DataFrame()
 
+    columns = (date_col, stock_col, broker_col, buy_col, sell_col)
+    if not frame.columns.is_unique:
+        return _broker_pandas_fallback("duplicate_columns", frame, start, columns)
+    # Groups never span dates, so 7-day windows give the same rows as one pass
+    # while only one window is copied; the vendor archive itself is never copied.
+    parsed = pd.to_datetime(frame[date_col], errors="coerce")
+    if not pd.api.types.is_datetime64_dtype(parsed.dtype):  # pyarrow or tz-aware dates
+        return _broker_pandas_fallback("date_dtype", frame, start, columns)
+    first = pd.Timestamp(start)
+    if not (parsed >= first).any():
+        return pd.DataFrame()
+    values = parsed.to_numpy()
+    keys = [key for key in _SYMBOL_ROW_KEYS if key in frame.columns]
+    window_columns = list(dict.fromkeys([date_col, stock_col, *([broker_col] if broker_col else []), buy_col, sell_col, *keys]))
+    positions = [frame.columns.get_loc(column) for column in window_columns]
+    pieces, buys, sells = [], [], []
+    lower, last = first, parsed.max()
+    while lower <= last:
+        upper = lower + pd.Timedelta(days=7)
+        rows = np.flatnonzero((values >= lower.to_datetime64()) & (values < upper.to_datetime64()))
+        lower = upper
+        if not len(rows):
+            continue
+        # take() rows first: iloc[rows, cols] copies the chosen columns in full first.
+        out = frame.take(rows).iloc[:, positions].copy()
+        out["date"] = values[rows]
+        piece = _normalize_broker_window(out, stock_col=stock_col, broker_col=broker_col,
+                                         buy_col=buy_col, sell_col=sell_col, keys=keys)
+        if piece is not None:
+            pieces.append(piece[0]);buys.append(piece[1]);sells.append(piece[2])
+    if not pieces:
+        return pd.DataFrame()
+    grouped = pd.concat(pieces, ignore_index=True)
+    pieces.clear()
+    grouped.attrs["broker_rank_daily"] = _finish_broker_rank(
+        buys, sells, market_segment="LISTED_OTC", source="finlab.broker_transactions")
+    return grouped
+
+
+_SYMBOL_ROW_KEYS = ("stock_id", "symbol", "code", "股票代號", "證券代號", "公司代號")
+
+
+def _clean_symbol_column(out: pd.DataFrame, stock_col: str, keys: list[str]) -> list[str]:
+    """_clean_symbol(row[stock_col], row) memoized on the identity fields it reads."""
+    memo: dict[tuple, str] = {}
+    result = []
+    for item in zip(out[stock_col].tolist(), *(out[key].tolist() for key in keys)):
+        try:
+            symbol = memo[item]
+        except KeyError:
+            symbol = memo[item] = _clean_symbol(item[0], dict(zip(keys, item[1:])))
+        except TypeError:
+            symbol = _clean_symbol(item[0], dict(zip(keys, item[1:])))
+        result.append(symbol)
+    return result
+
+
+def _normalize_broker_window(out: pd.DataFrame, *, stock_col: str, broker_col: str | None,
+                             buy_col: str, sell_col: str, keys: list[str]):
+    out["stock_id"] = _clean_symbol_column(out, stock_col, keys)
+    out["broker_code"] = out[broker_col].astype(str).str.strip() if broker_col else "unknown"
+    out["buy_shares_raw"] = pd.to_numeric(out[buy_col], errors="coerce").fillna(0)
+    out["sell_shares_raw"] = pd.to_numeric(out[sell_col], errors="coerce").fillna(0)
+    out["broker_net"] = out["buy_shares_raw"] - out["sell_shares_raw"]
+    out = out[(out["stock_id"] != "") & out["date"].notna()]
+    if out.empty:
+        return None
+
+    broker_daily = out.groupby(["date", "stock_id", "broker_code"], observed=True).agg(
+        broker_buy_shares=("buy_shares_raw", "sum"),
+        broker_sell_shares=("sell_shares_raw", "sum"),
+        broker_net=("broker_net", "sum"),
+    ).reset_index()
+    broker_daily["abs_broker_net"] = broker_daily["broker_net"].abs()
+    dominant = (
+        broker_daily.sort_values(["date", "stock_id", "abs_broker_net"], ascending=[True, True, False])
+        .groupby(["date", "stock_id"], observed=True)
+        .head(1)[["date", "stock_id", "broker_code", "broker_net", "abs_broker_net"]]
+        .rename(columns={
+            "broker_code": "dominant_broker_code",
+            "broker_net": "dominant_net_shares",
+            "abs_broker_net": "dominant_abs_net_shares",
+        })
+    )
+    pressure = broker_daily.groupby(["date", "stock_id"], observed=True).agg(
+        gross_imbalance_shares=("abs_broker_net", "sum"),
+        directional_broker_count=("abs_broker_net", lambda values: int((values > 0).sum())),
+    ).reset_index()
+    grouped = out.groupby(["date", "stock_id"], observed=True).agg(
+        buy_shares=("buy_shares_raw", "sum"),
+        sell_shares=("sell_shares_raw", "sum"),
+        broker_count=("broker_code", "nunique"),
+    ).reset_index()
+    grouped = grouped.merge(dominant, on=["date", "stock_id"], how="left").merge(pressure, on=["date", "stock_id"], how="left")
+    grouped["buy_sell_net"] = grouped["dominant_net_shares"].fillna(0)
+    grouped["source"] = "finlab.broker_transactions"
+    grouped["market_segment"] = "LISTED_OTC"
+    return (grouped, *_broker_rank_sides(broker_daily))
+
+
+def _broker_pandas_fallback(reason: str, frame: pd.DataFrame, start: str, columns: tuple) -> pd.DataFrame:
+    print(f"[finlab-backfill] broker normalize path=pandas reason={reason}", flush=True)
+    return _normalize_broker_transactions_daily_pandas(frame, start, *columns)
+
+
+def _finish_broker_daily(grouped: pd.DataFrame, broker_daily: pd.DataFrame) -> pd.DataFrame:
+    grouped["buy_sell_net"] = grouped["dominant_net_shares"].fillna(0)
+    grouped["source"] = "finlab.broker_transactions"
+    grouped["market_segment"] = "LISTED_OTC"
+    grouped.attrs["broker_rank_daily"] = build_broker_rank_daily(
+        broker_daily,
+        market_segment="LISTED_OTC",
+        source="finlab.broker_transactions",
+    )
+    return grouped
+
+
+def _normalize_broker_transactions_daily_pandas(
+    frame: pd.DataFrame,
+    start: str,
+    date_col: str,
+    stock_col: str,
+    broker_col: str | None,
+    buy_col: str,
+    sell_col: str,
+) -> pd.DataFrame:
+    """Reference pandas path for inputs outside the windowed path (pyarrow or
+    tz-aware dates, duplicate column labels)."""
     out = frame.copy()
     out["date"] = pd.to_datetime(out[date_col], errors="coerce")
     out = out[out["date"] >= pd.Timestamp(start)]
@@ -1962,15 +2344,7 @@ def normalize_broker_transactions_daily(frame: pd.DataFrame, start: str) -> pd.D
         broker_count=("broker_code", "nunique"),
     ).reset_index()
     grouped = grouped.merge(dominant, on=["date", "stock_id"], how="left").merge(pressure, on=["date", "stock_id"], how="left")
-    grouped["buy_sell_net"] = grouped["dominant_net_shares"].fillna(0)
-    grouped["source"] = "finlab.broker_transactions"
-    grouped["market_segment"] = "LISTED_OTC"
-    grouped.attrs["broker_rank_daily"] = build_broker_rank_daily(
-        broker_daily,
-        market_segment="LISTED_OTC",
-        source="finlab.broker_transactions",
-    )
-    return grouped
+    return _finish_broker_daily(grouped, broker_daily)
 
 
 def write_source_session_calendar(source_close: pd.DataFrame, *, run_dir: Path, years: int, end_date: str | None) -> Path:
@@ -2011,8 +2385,11 @@ def materialize_specs(
     monthly_contract_sha256: str | None = None,
     price_venue_scope_manifest: str | Path | None = None,
     price_venue_scope_sha256: str | None = None,
+    chip_pit_window_errors: list[dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
     start = source_start_date or start_date_for_years(years)
+    chip_pit_daily = daily_refresh and chip_pit_daily_enabled()
+    chip_pit_errors = chip_pit_window_errors if chip_pit_window_errors is not None else []
     if bool(price_venue_scope_manifest) != bool(price_venue_scope_sha256):
         raise ValueError("price_venue_scope_pair_required")
     if price_venue_scope_manifest and (reuse_successful_artifacts or not sealed_raw_root):
@@ -2100,7 +2477,8 @@ def materialize_specs(
     if financial_keys:
         date_owners = (data.get("etl:financial_statements_disclosure_dates"),
                        data.get("etl:financial_statements_deadline"))
-        financial_sessions = data.get("price:收盤價").index
+        financial_prices = data.get("price:收盤價")
+        financial_sessions = financial_prices.index
         financial_native = {}
         for key in sorted(financial_keys):
             financial_native[key] = data.get(key)
@@ -2111,6 +2489,20 @@ def materialize_specs(
                 selected_native, scope_proof = scope_financial_history(
                     selected_native, date_owners, financial_sessions,
                     symbols=sealed_source.roster, start_date=start, lifecycle=lifecycle)
+            elif training_capture_start_date is not None:
+                # Live training capture: gate the requested window, not 2013+ delisted history.
+                from services.financial_scope import live_price_universe_symbols, scope_financial_history
+                symbols, roster_proof = live_price_universe_symbols(
+                    selected_native, financial_prices,
+                    start_date=training_capture_start_date, end_date=target_date)
+                selected_native, scope_proof = scope_financial_history(
+                    selected_native, date_owners, financial_sessions, symbols=symbols,
+                    start_date=training_capture_start_date, omit_deadline_absent_from_start=True)
+                scope_proof["live_roster"] = roster_proof
+                if scope_proof["remaining_unresolved_cells"]:
+                    raise ValueError("financial_request_unresolved_cells:%s:%d:%s" % (
+                        key, scope_proof["remaining_unresolved_cells"],
+                        json.dumps(scope_proof["remaining_unresolved_sample"][:5], ensure_ascii=False)))
             financial_frames[key] = normalize_finlab_wide_field(
                 selected_native, api_key_name=key, date_owners=date_owners, sessions=financial_sessions)
             if scope_proof is not None:
@@ -2180,6 +2572,7 @@ def materialize_specs(
         if spec.kind == "wide_fields":
             field_frames: dict[str, pd.DataFrame] = {}
             unsliced_frames: dict[str, pd.DataFrame] = {}
+            chip_pit_fields = chip_pit_lane_fields_soft(spec.lane, chip_pit_errors) if chip_pit_daily else ()
             if spec.lane == "daily_price":
                 # Daily raw prices are clipped to one date. Keep source-calendar
                 # facts from the full FinLab window so a failed prior date is
@@ -2231,7 +2624,8 @@ def materialize_specs(
                     if spec.lane == "daily_price" and field in {"adj_close", "adj_open", "open", "high", "low", "close", "volume", "value", "market_value"}:
                         unsliced_frames[field] = source_frame
                     if ((spec.lane == "chip_diversity" and field in {"foreign_net", "trust_net", "dealer_self_net", "dealer_hedge_net"})
-                            or field in TRAINING_AUX_FIELDS.get(spec.lane, {})):
+                            or field in TRAINING_AUX_FIELDS.get(spec.lane, {})
+                            or field in chip_pit_fields):
                         unsliced_frames[field] = source_frame
                     frame = filter_date_range(
                         source_frame,
@@ -2314,6 +2708,9 @@ def materialize_specs(
                         seal_daily_history(run_dir,updated_history)
             if spec.lane == "chip_diversity":
                 write_institutional_vintage(unsliced_frames, run_dir=run_dir, years=years, end_date=source_end_date, start_date=training_capture_start_date)
+            if chip_pit_fields:
+                write_chip_pit_window_soft(unsliced_frames, lane=spec.lane, fields=chip_pit_fields, run_dir=run_dir,
+                                           end_date=source_end_date, errors=chip_pit_errors)
             if spec.lane in TRAINING_AUX_FIELDS:
                 write_training_auxiliary_vintage(unsliced_frames, lane=spec.lane, run_dir=run_dir,
                     years=years, end_date=source_end_date,
@@ -2323,6 +2720,10 @@ def materialize_specs(
                 spec.lane,
                 field_frames,
                 target_date=target_date,
+                # Monthly revenue is indexed by release date (~10th); a training capture ending
+                # on any other session still requires a release within the last 45 days.
+                target_window_days=(MONTHLY_RELEASE_WINDOW_DAYS
+                                    if training_capture_start_date and spec.lane in MONTHLY_RELEASE_LANES else 0),
                 requested_fields=(
                     set(spec_keys)
                     if key_scope and spec.lane in key_scope
@@ -2420,7 +2821,11 @@ def materialize_specs(
                     metadata={"kind": spec.kind, "shape": list(frame.shape)},
                 ))
             if spec.lane == "regime_context":
-                frame = fetch_official_twse_index_frame()
+                index_target = source_end_date if daily_refresh else None
+                index_check = {"target_date": index_target, "reports": source_key_reports, "blockers": source_key_blockers,
+                               "report": {"run_id": run_dir.name, "generated_at": generated_at, "lane": spec.lane}}
+                frame = official_index_frame_for_target(fetch_official_twse_index_frame, field="official_twse_index",
+                                                        api_key="twse.mi_5mins_hist.official", **index_check)
                 if not frame.empty:
                     field = "official_twse_index"
                     path = lane_dir / f"{field}.parquet"
@@ -2435,7 +2840,8 @@ def materialize_specs(
                         "shape": list(frame.shape),
                         "non_null_cells": non_null_cells(frame),
                     })
-                frame = fetch_official_tpex_index_frame()
+                frame = official_index_frame_for_target(fetch_official_tpex_index_frame, field="official_tpex_index",
+                                                        api_key="tpex.openapi.tpex_index", **index_check)
                 if not frame.empty:
                     field = "official_tpex_index"
                     path = lane_dir / f"{field}.parquet"
@@ -2450,6 +2856,15 @@ def materialize_specs(
                         "shape": list(frame.shape),
                         "non_null_cells": non_null_cells(frame),
                     })
+                for artifact in artifacts if index_target else []:
+                    if artifact["field"] in {"official_twse_index", "official_tpex_index"}:
+                        written = pd.read_parquet(artifact["path"])
+                        source_key_reports.append({**source_key_report_row(
+                            run_id=run_dir.name, generated_at=generated_at, target_date=index_target, lane=spec.lane,
+                            field=artifact["field"], api_key=artifact["api_key"], status="ok", rows=len(written),
+                            target_rows=int((written["date"] == index_target).sum()), latest_date=latest_index(written),
+                            path=Path(artifact["path"]), run_dir=run_dir, gcs_bucket=gcs_bucket, gcs_prefix=gcs_prefix,
+                            metadata={"kind": "official_index"}), "source": "official"})
         elif spec.kind == "table":
             # Multiple source tables share one lane/manifest, but never a path
             # or field receipt. Do not overwrite the taxonomy table with a master.
@@ -2552,9 +2967,13 @@ def materialize_specs(
             if not frame.empty:
                 from services.training_long_sources import write_broker_capture
                 write_broker_capture(frame,run_dir=run_dir,
-                    start=start if daily_refresh else start_date_for_years(years),end=source_end_date or target_date)
+                    start=start if daily_refresh else (training_capture_start_date or start_date_for_years(years)),
+                    end=source_end_date or target_date)
             source_observation = broker_source_observation(frame, target_date)
-            grouped = normalize_broker_transactions_daily(frame, start)
+            # broker_daily/broker_rank_daily feed only canonical D1 windows, never
+            # training (that reads training_long_full_vintage/broker.parquet), so a
+            # longer --source-start-date does not widen them past --years.
+            grouped = normalize_broker_transactions_daily(frame, max(start, start_date_for_years(years)))
             rank_rows = grouped.attrs.get("broker_rank_daily")
             grouped = filter_rows_date_range(
                 grouped,
@@ -2728,8 +3147,9 @@ def materialize_specs(
         else:
             raise ValueError(f"unsupported spec kind: {spec.kind}")
 
-        stockvision_rows = stockvision_count_for_lane(counts, spec.lane)
-        missing = max(finlab_rows - stockvision_rows, 0)
+        # Without D1 the StockVision side is unobserved: report None, never a fake zero.
+        stockvision_rows = None if counts is None else stockvision_count_for_lane(counts, spec.lane)
+        missing = None if stockvision_rows is None else max(finlab_rows - stockvision_rows, 0)
         conflicts = 0
         diff = {
             "schema_version": "finlab-remote-diff-aggregate-v1",
@@ -2743,9 +3163,9 @@ def materialize_specs(
             "summary": {
                 "finlab_rows": finlab_rows,
                 "stockvision_rows": stockvision_rows,
-                "matched": min(finlab_rows, stockvision_rows),
+                "matched": None if stockvision_rows is None else min(finlab_rows, stockvision_rows),
                 "missing_in_stockvision": missing,
-                "missing_in_finlab": max(stockvision_rows - finlab_rows, 0),
+                "missing_in_finlab": None if stockvision_rows is None else max(stockvision_rows - finlab_rows, 0),
                 "value_conflicts": conflicts,
                 "schema_extra_fields": schema_fields,
             },
@@ -2766,6 +3186,13 @@ def materialize_specs(
             flush=True,
         )
 
+    if training_capture_start_date is not None:
+        # Training captures fail closed: a requested lane that was skipped or came back empty
+        # without its own recorded blocker makes the run partial_failed (exit 2), never ready.
+        produced = {s["lane"] for s in dataset_summaries if s["artifacts"] or s["finlab_rows"]}
+        blocked = {str(b.get("lane")) for b in source_key_blockers}
+        for lane in sorted({spec.lane for spec in specs} - produced - blocked):
+            source_key_blockers.append({"lane": lane, "reason": "requested_lane_produced_no_dataset"})
     return dataset_summaries, diff_reports, source_key_reports, source_key_blockers
 
 
@@ -3665,11 +4092,15 @@ def materialize_canonical_to_d1(
             "raise(abort,'stocks_listing_capture_conflict')",
         )):
             raise RuntimeError('finlab_core_listing_immutable_capture_migration_missing')
-        core_result = d1_batch_execute(core_statements, timeout=120., chunk_size=chunk_size, domain='core')
+        core_result = d1_batch_execute(
+            core_statements, timeout=120., chunk_size=chunk_size, domain='core', retry_transient=True)
         require_finlab_write_ack(core_result, len(core_statements), phase='core_security_master')
         apply_result = dict(core_result)
+    # Canonical statements are upserts, guarded prunes and idempotent metric updates, so a chunk that hit a
+    # transient proxy failure is replayed as-is.
     if not dry_run and statements:
-        legacy_result = controller_d1_batch_execute(statements, timeout=120.0, chunk_size=chunk_size)
+        legacy_result = controller_d1_batch_execute(statements, timeout=120.0, chunk_size=chunk_size,
+                                                    retry_transient=True)
         if legacy_result is None:
             from services.d1_client import batch_execute
 
@@ -3684,6 +4115,7 @@ def materialize_canonical_to_d1(
                 timeout=120.0,
                 chunk_size=chunk_size,
                 domain="market",
+                retry_transient=True,
             )
         else:
             from services import d1_client
@@ -3702,10 +4134,15 @@ def materialize_canonical_to_d1(
             "error_count": int(apply_result.get("error_count") or 0) + int(market_result.get("error_count") or 0),
             "changes_total": int(apply_result.get("changes_total") or 0) + int(market_result.get("changes_total") or 0),
         }
+    taxonomy_prune_skips = (
+        report_taxonomy_prune_skips(outputs.generated_at)
+        if not dry_run and outputs.finlab_taxonomy_tags else []
+    )
     # Publish metadata only after all data-domain writes have succeeded.
     if not dry_run and ops_statements:
         require_finlab_write_ack(apply_result, len(statements) + len(core_statements) + len(market_statements), phase="data")
-        ops_result = ops_d1_batch_execute(ops_statements, timeout=120.0, chunk_size=chunk_size)
+        ops_result = ops_d1_batch_execute(
+            ops_statements, timeout=120.0, chunk_size=chunk_size, retry_transient=True)
         require_finlab_write_ack(ops_result, len(ops_statements), phase="ops")
         apply_result = {key: int(apply_result.get(key) or 0) + int(ops_result.get(key) or 0)
                         for key in ("total", "success_count", "error_count", "changes_total")}
@@ -3718,6 +4155,7 @@ def materialize_canonical_to_d1(
         "end_date": end_date,
         "datasets": datasets,
         "row_counts": outputs.manifest.get("row_counts", {}),
+        "taxonomy_prune_skips": taxonomy_prune_skips,
         "statement_count": len(statements) + len(core_statements) + len(ops_statements) + len(market_statements),
         "writes_by_domain": writes_by_domain,
         "apply_result": apply_result,
@@ -3886,6 +4324,7 @@ def checksum_manifest(payload: dict[str, Any]) -> str:
 
 
 def main() -> int:
+    D1_PROXY_RETRIES.clear()  # Modal reuses the container, and with it this module, across runs.
     parser = argparse.ArgumentParser(description="Run FinLab V4 remote backfill and D1 summary writeback.")
     parser.add_argument("--years", type=int, choices=[3, 5], required=True)
     parser.add_argument("--run-id", required=True)
@@ -3903,6 +4342,8 @@ def main() -> int:
     parser.add_argument("--canonical-dry-run", action="store_true")
     parser.add_argument("--lanes", default="", help="Comma-separated FinLab source lanes to materialize. Empty means all CORE_SPECS lanes.")
     parser.add_argument("--key-scope-json", default="", help="JSON object/list limiting data.get calls to lane fields.")
+    parser.add_argument("--fundamental-training-fields-only", action="store_true",
+                        help="Limit fundamental_factor_diversity to the fields training/serving consume.")
     parser.add_argument("--reuse-successful-artifacts", action="store_true", help="Allow materializer repair to reuse previous successful key artifacts.")
     parser.add_argument("--sealed-raw-root", default="", help="Explicit sealed daily numeric capture; no SDK fallback.")
     parser.add_argument("--sealed-raw-receipt-sha256", default="", help="Exact SHA256 of the sealed capture.json.")
@@ -3920,8 +4361,10 @@ def main() -> int:
     args = parser.parse_args()
 
     required_env = [] if args.sealed_raw_root else ["FINLAB_API_KEY"]
-    if not controller_d1_proxy_configured():
-        required_env.extend(["CF_API_TOKEN", "CF_ACCOUNT_ID", "CF_D1_DB_ID"])
+    # D1 credentials are required only when this run writes D1; read-only D1 steps
+    # skip cleanly without them and are listed under manifest["d1_unavailable"].
+    if (args.write_d1 or args.apply_canonical_d1) and not controller_d1_proxy_configured():
+        required_env.extend(CF_D1_ENV)
     missing = [key for key in required_env if not os.environ.get(key)]
     if missing:
         raise SystemExit(f"missing env vars: {','.join(missing)}")
@@ -3938,6 +4381,14 @@ def main() -> int:
     requested_lanes = parse_lanes(args.lanes)
     if key_scope and not requested_lanes:
         requested_lanes = sorted(key_scope)
+    if args.fundamental_training_fields_only:
+        if key_scope:
+            raise SystemExit("fundamental_training_fields_only_conflicts_with_key_scope_json")
+        if "fundamental_factor_diversity" not in requested_lanes:
+            raise SystemExit("fundamental_training_fields_only_requires_explicit_fundamental_lane")
+        # A key_scope skips every lane it does not name; an empty field set keeps all of a lane's keys.
+        key_scope = {lane: set() for lane in requested_lanes}
+        key_scope.update({lane: set(fields) for lane, fields in FUNDAMENTAL_TRAINING_KEY_SCOPE.items()})
     source_start_date = args.source_start_date or None
     source_end_date = args.source_end_date or None
     effective_reuse_successful_artifacts = bool(args.reuse_successful_artifacts and finlab_artifact_reuse_enabled())
@@ -3951,10 +4402,12 @@ def main() -> int:
         daily_history = load_daily_history(storage.Client().bucket(args.gcs_bucket),
             run_date=source_end_date,capture_prefix=args.gcs_prefix,
             bootstrap_ref=json.loads(bootstrap) if bootstrap else None)
+    chip_pit_window_errors: list[dict[str, Any]] = []
     dataset_summaries, diff_reports, source_key_reports, source_key_blockers = materialize_specs(
         years=args.years,
         run_dir=run_dir,
         lanes=requested_lanes,
+        chip_pit_window_errors=chip_pit_window_errors,
         source_start_date=source_start_date,
         training_capture_start_date=args.training_capture_start_date or None,
         daily_refresh=args.daily_refresh,
@@ -3980,9 +4433,9 @@ def main() -> int:
     summary = {
         "dataset_count": len(dataset_summaries),
         "finlab_rows": sum(int(item["finlab_rows"]) for item in dataset_summaries),
-        "gap_fill_rows": sum(1 for item in diff_reports if item["summary"]["missing_in_stockvision"] > 0),
+        "gap_fill_rows": sum(1 for item in diff_reports if (item["summary"]["missing_in_stockvision"] or 0) > 0),
         "value_conflicts": sum(int(item["summary"]["value_conflicts"]) for item in diff_reports),
-        "missing_in_stockvision": sum(int(item["summary"]["missing_in_stockvision"]) for item in diff_reports),
+        "missing_in_stockvision": sum(int(item["summary"]["missing_in_stockvision"] or 0) for item in diff_reports),
     }
     manifest = {
         "schema_version": "finlab-v4-remote-backfill-v1",
@@ -4001,24 +4454,43 @@ def main() -> int:
         "datasets": dataset_summaries,
         "diff_reports": diff_reports,
         "source_key_reports": source_key_reports,
+        "lane_first_seen": lane_first_seen(source_key_reports),
         "source_key_blockers": source_key_blockers,
         "backfill_status": "partial_failed" if source_key_blockers else "ready",
         **sealed_raw_source_binding(run_dir),
+        **({"d1_unavailable": {"reason": "no_d1_credentials", "skipped": list(D1_UNAVAILABLE_SKIPS),
+                               "stockvision_rows_observed": False}} if D1_UNAVAILABLE_SKIPS else {}),
     }
     manifest["checksum"] = checksum_manifest({"run_id": run_id, "summary": summary, "datasets": dataset_summaries})
     write_json(run_dir / "manifest.json", manifest)
 
     # A daily canonical success must also provide all inference inputs for the
     # same capture; never leave the pipeline relying on a manually dated registry.
-    if args.daily_refresh and not source_key_blockers:
+    if args.daily_refresh and composition_seal_allowed(source_key_blockers):
         if not args.gcs_bucket:
             raise ValueError("daily_inference_composition_requires_gcs_bucket")
         from google.cloud import storage
         from services.daily_inference_producer import produce_daily_inference_composition
-        manifest["inference_composition"] = produce_daily_inference_composition(
-            run_dir=run_dir, bucket=storage.Client().bucket(args.gcs_bucket),
-            capture_prefix=f"{args.gcs_prefix.rstrip('/')}/{run_id}",
-        )
+        scoped_lanes = set(requested_lanes) | set(key_scope)
+        if scoped_lanes and not scoped_lanes & COMPOSITION_INPUT_LANES:
+            # A lane-only repair wrote no composition inputs: reuse the sealed head or fail closed.
+            try:
+                manifest["inference_composition"] = reuse_sealed_daily_inference_head(
+                    storage.Client().bucket(args.gcs_bucket), source_end_date, run_id)
+            except Exception as exc:
+                # One blocker per scoped lane also blocks its canonical apply: readiness must not
+                # turn green for a date without a sealed composition.
+                source_key_blockers.extend({
+                    "lane": lane, "kind": "daily_inference_composition",
+                    "reason": "daily_inference_composition_requires_full_capture",
+                    "business_date": source_end_date, "requested_lanes": sorted(scoped_lanes),
+                    "error": f"{type(exc).__name__}:{exc}"[:500]} for lane in sorted(scoped_lanes))
+                manifest["backfill_status"] = "partial_failed"
+        else:
+            manifest["inference_composition"] = produce_daily_inference_composition(
+                run_dir=run_dir, bucket=storage.Client().bucket(args.gcs_bucket),
+                capture_prefix=f"{args.gcs_prefix.rstrip('/')}/{run_id}",
+            )
         write_json(run_dir / "manifest.json", manifest)
 
     start_phase('publish', previous_status='failed' if source_key_blockers else 'completed')
@@ -4031,6 +4503,21 @@ def main() -> int:
             uploaded_files=uploaded_files,
         )
         manifest["gcs_upload_raw"] = gcs
+        write_json(run_dir / "manifest.json", manifest)
+
+    # Chip challenger PIT log (chip-pit/v1/daily). Evidence only: a failure is recorded, never fatal.
+    if args.daily_refresh and args.gcs_bucket and chip_pit_daily_enabled():
+        try:
+            from google.cloud import storage
+            from services.chip_pit import record_daily_capture
+            manifest["chip_pit_daily"] = record_daily_capture(
+                run_dir=run_dir, bucket=storage.Client().bucket(args.gcs_bucket), business_date=source_end_date,
+                capture_id=run_id, capture_ready=not source_key_blockers)
+        except Exception as exc:
+            print(f"[finlab-backfill] chip_pit_daily failed: {type(exc).__name__}: {exc}", file=sys.stderr, flush=True)
+            manifest["chip_pit_daily"] = {"status": "failed", "error": f"{type(exc).__name__}: {exc}"[:500]}
+        if chip_pit_window_errors:
+            manifest["chip_pit_daily"]["window_errors"] = chip_pit_window_errors
         write_json(run_dir / "manifest.json", manifest)
 
     if args.write_d1 and finlab_key_report_enabled():
@@ -4072,6 +4559,8 @@ def main() -> int:
         if manifest["canonical_d1_apply"].get("status") != "ready":
             manifest["backfill_status"] = "partial_failed"
         print("[finlab-backfill] canonical_d1_apply done", file=sys.stderr, flush=True)
+        if D1_PROXY_RETRIES:
+            manifest["d1_proxy_retries"] = list(D1_PROXY_RETRIES)
         write_json(run_dir / "manifest.json", manifest)
 
     if args.write_d1:
@@ -4079,6 +4568,8 @@ def main() -> int:
         print("[finlab-backfill] runtime_table_writeback start", file=sys.stderr, flush=True)
         manifest["runtime_table_writeback"] = insert_finlab_runtime_tables(manifest)
         print("[finlab-backfill] runtime_table_writeback done", file=sys.stderr, flush=True)
+        if D1_PROXY_RETRIES:
+            manifest["d1_proxy_retries"] = list(D1_PROXY_RETRIES)
         write_json(run_dir / "manifest.json", manifest)
 
     if args.gcs_bucket:
@@ -4091,7 +4582,8 @@ def main() -> int:
         manifest["gcs_upload"] = gcs
         write_json(run_dir / "manifest.json", manifest)
 
-        if manifest.get("backfill_status") == "ready" and manifest.get("inference_composition"):
+        if (manifest.get("inference_composition") and manifest["inference_composition"].get("status") != "reused_sealed_head"
+                and composition_seal_allowed(source_key_blockers, manifest.get("failed_datasets"))):
             from services.daily_inference_producer import publish_daily_inference_head
             publish_daily_inference_head(storage.Client().bucket(args.gcs_bucket), manifest["inference_composition"])
 

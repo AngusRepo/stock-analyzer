@@ -12,7 +12,7 @@ import { fileURLToPath } from 'node:url'
 import { runIntradayCheck } from './paperEntryTasks'
 import { pollIntradayStopLoss, runEODExit } from './paperExitTasks'
 import { getTradingConfig } from './tradingConfig'
-import { DEFAULT_RISK_CONFIG } from './riskConfig'
+import { RISK_CONFIG_FIXTURE } from './riskConfig.testSupport'
 import { DEFAULT_ADAPTIVE_PARAMS } from './adaptiveConfig'
 import assert from 'node:assert/strict'
 import test from 'node:test'
@@ -157,7 +157,7 @@ for(const scenario of ['l4_partial_continuation','rotation_readiness','rotation_
       f.sqls.paper.exec('UPDATE paper_accounts SET cash=100000,initial_cash=100000 WHERE id=1')
       f.cfg.position.minPositionValue=1000
     }
-    f.kvs.set('trading:risk_config',JSON.stringify(DEFAULT_RISK_CONFIG))
+    f.kvs.set('trading:risk_config',JSON.stringify(RISK_CONFIG_FIXTURE))
     f.kvs.set('ml:adaptive_params',JSON.stringify({...DEFAULT_ADAPTIVE_PARAMS,recent_accuracy_30d:.6,provenance:{...DEFAULT_ADAPTIVE_PARAMS.provenance,source:'ml-controller',fallback:false}}))
     f.sqls.core.exec("INSERT INTO market_risk(date,twii_close,risk_score,risk_level) VALUES('2026-09-11',30000,10,'green'),('2026-09-10',30000,10,'green')")
     f.sqls.market.exec("INSERT INTO market_breadth(date,advance_ratio,bull_alignment_pct) VALUES('2026-09-11',.6,60)")
@@ -173,6 +173,8 @@ for(const scenario of ['l4_partial_continuation','rotation_readiness','rotation_
       for (const pnl of [-2884,-93,-1852]) f.sqls.paper.prepare(`
         INSERT INTO paper_orders(account_id,symbol,side,shares,price,total_cost,note,created_at)
         VALUES(1,'3374','sell',1,20,20,?,'2026-09-11')`).run(JSON.stringify({realized_pnl:pnl}))
+      // AUD-21: an account that traded in an earlier session needs that session's close for P8.
+      f.sqls.paper.exec("INSERT INTO paper_daily_snapshots(account_id,date,cash,positions_value,total_value,pnl,pnl_pct) SELECT id,'2026-09-11',cash,0,cash,0,0 FROM paper_accounts WHERE id=1")
       assert.equal(f.sqls.paper.prepare('SELECT COUNT(*) n FROM paper_positions').get()?.n,0)
     }
     const account=(await withPaperExecutionScope(f.ports,()=>captureL4AccountContext(f.env,'2026-09-11'))).result
@@ -245,7 +247,7 @@ for(const scenario of ['l4_partial_continuation','rotation_readiness','rotation_
         f.sqls.core.exec("UPDATE stocks SET sector='X' WHERE symbol='2330';INSERT INTO stocks(id,symbol,name,market,sector) VALUES(3,'2337','second','TWSE','X')")
         guarded.execution_review!.weights['2337']=.08
         guarded.sealed_execution.exit_rules['3374'].credits!.push({symbol:'2337',credit_start:0,credit_end:5000})
-        f.kvs.set('trading:risk_config',JSON.stringify({...DEFAULT_RISK_CONFIG,position:{...DEFAULT_RISK_CONFIG.position,maxPerSector:1}}))
+        f.kvs.set('trading:risk_config',JSON.stringify({...RISK_CONFIG_FIXTURE,position:{...RISK_CONFIG_FIXTURE.position,maxPerSector:1}}))
         await withPaperExecutionScope(f.ports,()=>replacePendingBuyState(f.env,{
           tradeDate:'2026-09-14',sourceRecoDate:'2026-09-11',status:'ready',
           pendingBuys:[snapshot.pendingBuys[0],{...snapshot.pendingBuys[0],symbol:'2337',name:'second'}]}))

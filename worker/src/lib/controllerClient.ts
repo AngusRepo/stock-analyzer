@@ -1,6 +1,6 @@
 import { paperExecutionFetch } from './paperExecutionScope'
 import type { Bindings } from '../types'
-import { assertPostVerifyEffectAllowed, recordPostVerifyOwnerAck, isPostVerifyTaskScope } from './postVerifyTaskCheckpoint'
+import { assertPostVerifyEffectAllowed, recordPostVerifyOwnerAck, isPostVerifyTaskScope } from './postVerifyEffectScope'
 
 type ControllerMethod = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'
 

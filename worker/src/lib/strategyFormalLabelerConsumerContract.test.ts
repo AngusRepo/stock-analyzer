@@ -11,6 +11,12 @@ const sources = {
   adminRoute: fs.readFileSync('src/routes/adminWriteRoutes.ts', 'utf8'),
 }
 const learning = fs.readFileSync('src/lib/strategyLearning.ts', 'utf8')
+const selectionReferenceEvidence = fs.readFileSync('src/lib/selectionReferenceEvidence.ts', 'utf8')
+// The backfill date SQL lives in buildStrategyRedundancyBackfillDatesSql so its equivalence is testable.
+const backfillDatesBuilder = selectionReferenceEvidence.slice(
+  selectionReferenceEvidence.indexOf('export function buildStrategyRedundancyBackfillDatesSql'),
+  selectionReferenceEvidence.indexOf('export function isStrategyFormalMatureEvidencePair'),
+)
 
 const rewardConsumer = learning.slice(
   learning.indexOf('export async function listStrategyRewardSourceRows'),
@@ -43,7 +49,7 @@ for (const [name, source] of Object.entries(sources)) {
 }
 
 const pipelineTrackingMatrixQueries = sources.publicRoute.match(
-  /const \{ results: rawMatrixRows \}[\s\S]*?const loadStageStrategyRows/,
+  /const \{ results: rawMatrixRows \}[\s\S]*?loadFunnelStageStrategyRows\(opsDb/,
 )?.[0]
 assert.ok(pipelineTrackingMatrixQueries, 'public pipeline tracking route must load canonical matrix evidence')
 assert.equal(
@@ -78,7 +84,9 @@ for (const [name, source, anchor] of [
     `${name} must bind the paired mature compatibility values`,
   )
   assert(
-    consumer.includes('${formalMatureCompatibility.sql}'),
+    consumer.includes('${formalMatureCompatibility.sql}')
+      || (consumer.includes('buildStrategyRedundancyBackfillDatesSql(formalMatureCompatibility)')
+        && backfillDatesBuilder.includes('${formalMatureCompatibility.sql}')),
     `${name} SQL must consume paired mature compatibility`,
   )
   assert.doesNotMatch(
@@ -87,11 +95,14 @@ for (const [name, source, anchor] of [
     `${name} must not collapse mature evidence back to only the current reference contract`,
   )
 }
+// All four matrix counts come from the one matrix_counts pass.
 assert.equal(
   sources.eligibility.match(/m\.reference_contract_version=mr\.reference_contract_version/g)?.length,
-  4,
+  1,
   'route eligibility must bind every matrix count to the same immutable reference contract as its run',
 )
+assert.equal(sources.eligibility.match(/(?:FROM|JOIN) strategy_label_matrix_v4\b/g)?.length, 1)
+assert.equal(sources.eligibility.match(/COALESCE\(MAX\(c\.\w+\), 0\)/g)?.length, 4)
 
 const maturityConsumer = sources.maturity.slice(sources.maturity.indexOf('export async function buildPipelineDecisionMaturityPacket'))
 assert(
@@ -156,5 +167,6 @@ assert.match(sources.maturity, /m\.labeler_version=r\.labeler_version/)
 assert.match(sources.maturity, /matrix\.labeler_version=run\.labeler_version/)
 assert.match(sources.publicRoute, /mr\.labeler_version=strategy_label_matrix_v4\.labeler_version/)
 assert.match(sources.publicRoute, /mr\.labeler_version=selection_reference_snapshots_v1\.strategy_labeler_version/)
-assert.match(sources.adminRoute, /m\.labeler_version IS NOT mr\.labeler_version/)
-assert.match(sources.adminRoute, /r\.strategy_labeler_version IS NOT mr\.labeler_version/)
+assert.match(sources.adminRoute, /buildStrategyRedundancyBackfillDatesSql\(formalMatureCompatibility\)/)
+assert.match(backfillDatesBuilder, /m\.labeler_version IS NOT mr\.labeler_version/)
+assert.match(backfillDatesBuilder, /r\.strategy_labeler_version IS NOT mr\.labeler_version/)

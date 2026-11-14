@@ -51,7 +51,7 @@ assert.match(source, /SET evaluable=\?, evaluability_status=\?, unavailable_reas
 assert.match(source, /COALESCE\(r\.evaluation_contract_version, ''\) <> 'strategy-evaluation-v2'/)
 assert.match(source, /existingMatrix\.reference_contract_version\) === sourceReferenceContractVersion/)
 assert.match(source, /SET status='success'[\s\S]*evaluation_contract_version='strategy-evaluation-v2'/)
-assert.match(source, /valid_runs AS \([\s\S]*STRATEGY_FORMAL_LABELER_VERSION[\s\S]*STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION[\s\S]*LEFT JOIN valid_runs v ON v\.signal_date=d\.date[\s\S]*r\.status='success' AND v\.signal_date IS NULL/)
+assert.match(source, /r\.status <> 'success'[\s\S]*WHEN NOT \(\s+mr\.labeler_version IN \([\s\S]*STRATEGY_FORMAL_LABELER_VERSION[\s\S]*STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION[\s\S]*WHEN julianday\(mr\.updated_at\) <= julianday\(r\.updated_at\) THEN 0[\s\S]*ELSE 1\s+END=1/)
 assert.match(source, /m\.labeler_version=mr\.labeler_version/)
 assert.match(source, /m\.strategy_registry_checksum=mr\.strategy_registry_checksum/)
 assert.match(source, /m\.reference_contract_version=mr\.reference_contract_version/)
@@ -66,3 +66,21 @@ assert.doesNotMatch(source, /JOIN canonical_run_heads h[\s\S]{0,240}m\.signal_da
 assert.match(source, /l\.outcome_known_date IS NOT NULL/)
 assert.match(source, /l\.outcome_known_date <= \?/)
 assert.match(source, /if \(!frozenProjectionComplete\)/)
+// strategy_label_matrix_v4 is keyed by signal_date first; a producer_run_id-only
+// filter scans the whole matrix (1.5M rows on 2026-11-12) and overloads learning-db.
+assert.doesNotMatch(source, /FROM strategy_label_matrix_v4(?:\s+\w+)?\s+WHERE\s+(?:\w+\.)?producer_run_id\s*=\s*\?/)
+// Other matrix readers (finalizer closure, route eligibility, dashboard maturity,
+// pipeline tracking) must not filter by producer_run_id alone either.
+for (const path of [
+  './strategyLearning.ts',
+  './eveningChainEvidenceClosure.ts',
+  './strategyRouteBackfillEligibility.ts',
+  './pipelineDecisionMaturity.ts',
+  '../routes/other.ts',
+]) {
+  assert.doesNotMatch(
+    readFileSync(new URL(path, import.meta.url), 'utf8'),
+    /FROM strategy_label_matrix_v4(?:\s+\w+)?\s+WHERE\s+(?:\w+\.)?producer_run_id\s*=/,
+    path,
+  )
+}

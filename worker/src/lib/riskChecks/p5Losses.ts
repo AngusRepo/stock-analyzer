@@ -5,6 +5,7 @@ import { failClosedRiskCheck } from './failClosed'
 import { estimateSellOrderRealizedPnl, parseSellOrderNote } from '../paperOrderAccounting'
 import { paperExecutionNow } from '../paperExecutionScope'
 import { sellReceiptExitCategory } from '../paperExitAttribution'
+import { circuitPositionScales } from '../circuitPositionScales'
 
 export interface P5LossGuardPolicy {
   lookbackSessions:number; releaseAfterSessions:number; channel:'stopouts'|'net_pnl';
@@ -41,7 +42,11 @@ export function evaluateBoundedLosses(rows:any[],held:Array<{symbol:string;entry
 }
 
 // Loss count reduces Paper sizing; monetary loss/drawdown gates own hard halts.
+// Legacy-shape constant only; circuit.positionScales.lossStreak owns it once written.
 export const P5_LOSS_POSITION_SCALE = 0.5
+export function p5LossStreakScale(circuit: { positionScales?: unknown } | null | undefined): number {
+  return circuitPositionScales(circuit)?.lossStreak ?? P5_LOSS_POSITION_SCALE
+}
 export const P5_LOSS_POLICY = 'paper-stopout-count-scale-v2'
 
 // Approved channel: count losing stops within the existing latest-five-sell
@@ -55,6 +60,7 @@ export async function checkP5Losses(
   db: D1Database,
   deps: LegacyLayerDeps,
   window?:{policy:P5LossGuardPolicy;sessions:string[]},
+  circuit?:{ positionScales?: unknown },
 ): Promise<LegacyLayerResult> {
   const { defaults } = deps
 
@@ -95,11 +101,12 @@ export async function checkP5Losses(
     const summary = summarizeP5Stopouts(recentSells)
     if (summary.total < 3 || summary.losses < 3) return null
 
-    console.warn(`[CircuitBreaker] Layer5 SCALE: ${summary.losses}/${summary.total} recent stops are losses; position cap × ${P5_LOSS_POSITION_SCALE}`)
+    const scale = p5LossStreakScale(circuit)
+    console.warn(`[CircuitBreaker] Layer5 SCALE: ${summary.losses}/${summary.total} recent stops are losses; position cap × ${scale}`)
     return {
       ...defaults,
-      reason: `近五筆賣出中的 ${summary.total} 筆停損有 ${summary.losses} 筆虧損，部位上限降為原設定的 50%（停損筆數不停止買入）`,
-      maxPositionPct: defaults.maxPositionPct * P5_LOSS_POSITION_SCALE,
+      reason: `近五筆賣出中的 ${summary.total} 筆停損有 ${summary.losses} 筆虧損，部位上限降為原設定的 ${Math.round(scale * 100)}%（停損筆數不停止買入）`,
+      maxPositionPct: defaults.maxPositionPct * scale,
     }
   } catch (e) {
     console.error('[CircuitBreaker] Layer5 check failed; fail closed:', e)

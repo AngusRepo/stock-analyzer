@@ -3,9 +3,10 @@ import { executeContinuousPaperBatch, isPaperContinuousSession } from './paperCo
 import type { Bindings } from '../types'
 import { formatDailySummary, sendDiscordNotification } from './notify'
 import { recordSellSettlement, getPrevTradingDay } from './paperMarketData'
-import { batchGetClosingPricesByDomain, getLatestPriceByDomain } from './paperMarketDomainData'
+import { batchGetClosingMarksByDomain, batchGetClosingPricesByDomain } from './paperMarketDomainData'
 import { batchGetIntradayPrices, type IntradayOHLC } from './paperIntradayData'
 import { refreshOpenPositionPostClosePriceCache } from './paperIntradayPriceCache'
+import { sessionMarkDateIssues } from './paperValuationDate'
 import { calcCommission, calcTax, resolveMarketSellFill } from './paperTradeMath'
 import { buildSellOrderNote } from './paperOrderAccounting'
 import { recordPaperExecutionEvent } from './paperExecutionEvents'
@@ -52,17 +53,38 @@ export async function runDailySnapshot(env: Bindings, options: DailySnapshotOpti
     [...postCloseRefresh.prices.entries()].map(([symbol, snapshot]) => [symbol, snapshot.price]),
   )
   const missingFinalSymbols = finalSymbols.filter((symbol: string) => !finalPriceMap.has(symbol))
-  const eodPrices = await batchGetClosingPricesByDomain(env, missingFinalSymbols, valuationSession)
-  for (const [symbol, price] of eodPrices) finalPriceMap.set(symbol, price)
+  const eodMarks = await batchGetClosingMarksByDomain(env, missingFinalSymbols, valuationSession)
+  for (const [symbol, mark] of eodMarks) finalPriceMap.set(symbol, mark.price)
   const markEvidence = Object.fromEntries(finalSymbols.filter(s => finalPriceMap.has(s)).map(symbol => {
     const quote = postCloseRefresh.prices.get(symbol)
-    return [symbol, { price: finalPriceMap.get(symbol), price_date: valuationSession,
+    // price_date comes from the row that supplied the price, never from the session we asked for.
+    return [symbol, { price: finalPriceMap.get(symbol), price_date: quote?.trade_date ?? eodMarks.get(symbol)?.date ?? null,
       source: quote?.source ?? 'stock_prices.exact_session_close',
       quote_time: quote?.quote_time ?? null, observed_at: quote?.updated_at ?? null }]
   }))
 
   // Never persist a partial valuation as a genuine account loss. Retrying after
   // prices arrive is safe; no snapshot/closure has been written at this point.
+  // O04: every held mark must be dated the valuation session. Record the pending valuation before
+  // failing so the gap is visible; a price from another day never stands in.
+  const heldSymbols = (finalPos ?? []).filter((p: any) => Number(p.shares) > 0).map((p: any) => String(p.symbol))
+  const markIssues = sessionMarkDateIssues(heldSymbols, markEvidence, valuationSession, postCloseRefresh.rejected)
+  if (markIssues.length > 0) {
+    const dateMismatch = markIssues.filter(issue => issue.issue !== 'missing')
+    const reason = dateMismatch.length ? 'paper_snapshot_mark_date_mismatch' : 'paper_snapshot_held_marks_missing'
+    await recordPaperExecutionEvent(env, {
+      tradeDate: today, eventType: 'snapshot_audit', status: 'pending_valuation', reason,
+      detail: { valuation_session: valuationSession, mark_issues: markIssues,
+        missing_symbols: markIssues.filter(issue => issue.issue === 'missing').map(issue => issue.symbol),
+        positions: Object.fromEntries((finalPos ?? []).map((p: any) => [p.symbol, p.shares])),
+        marks: Object.fromEntries(finalPriceMap), mark_evidence: markEvidence,
+        rejected_quotes: Object.fromEntries(postCloseRefresh.rejected) },
+      source: 'daily-snapshot',
+    })
+    if (dateMismatch.length) {
+      throw new Error(`${reason}:${valuationSession}:` + dateMismatch.map(issue => `${issue.symbol}@${issue.price_date ?? 'undated'}`).join(','))
+    }
+  }
   const finalPosValue = requireCompletePaperPositionValue(finalPos ?? [], finalPriceMap)
 
   const settlement = await getUnsettledSettlementSummary(paperDb, paperAccountId())
@@ -101,14 +123,22 @@ export async function runDailySnapshot(env: Bindings, options: DailySnapshotOpti
   const pnl = totalValue - updatedAcc.initial_cash
   const pnlPct = updatedAcc.initial_cash > 0 ? pnl / updatedAcc.initial_cash * 100 : 0
 
-  const [benchmarkValue, twiiRow] = await Promise.all([
-    getLatestPriceByDomain(env, '0050', today),
+  // AUD-20: benchmarks are the valuation session's exact closes; a gap stays null, never an older close.
+  const [benchmarkPrices, twiiRow] = await Promise.all([
+    batchGetClosingPricesByDomain(env, ['0050'], valuationSession),
     databaseForDataDomain(env, 'core').prepare(
-      'SELECT twii_close FROM market_risk WHERE date <= ? ORDER BY date DESC LIMIT 1',
-    ).bind(today).first<any>(),
+      'SELECT twii_close FROM market_risk WHERE date = ? AND twii_close > 0',
+    ).bind(valuationSession).first<any>(),
   ])
-  const normalizedBenchmarkValue: number | null = benchmarkValue ?? null
+  const normalizedBenchmarkValue: number | null = benchmarkPrices.get('0050') ?? null
   const twiiValue: number | null = twiiRow?.twii_close ?? null
+  if (normalizedBenchmarkValue == null || twiiValue == null) {
+    await recordPaperExecutionEvent(env, {
+      tradeDate: today, eventType: 'snapshot_audit', status: 'warn', reason: 'benchmark_mark_missing',
+      detail: { valuation_session: valuationSession, benchmark_0050: normalizedBenchmarkValue, twii: twiiValue },
+      source: 'daily-snapshot',
+    })
+  }
 
   const { results: allSnapshots } = await paperDb.prepare(
     'SELECT total_value FROM paper_daily_snapshots WHERE account_id=? AND date < ? ORDER BY date ASC',
@@ -213,6 +243,8 @@ export async function runDailySnapshot(env: Bindings, options: DailySnapshotOpti
     positionsValue: finalPosValue,
     totalValue,
   })
+  const { reconcilePaperNavCashFlow } = await import('./paperSnapshotAudit')
+  await reconcilePaperNavCashFlow(env, { date: today, valuation, notify: !priorSnapshot })
   await writeDailyExecutionPaperClosureArtifacts(env, today)
   const { recordL4AccountReward } = await import('./l4AccountReward')
   const l4Reward = await recordL4AccountReward(env, today, totalValue)

@@ -250,3 +250,19 @@ def test_all_candidates_without_l3_evidence_hold_cash_without_truncation():
     assert plan['cash_weight'] == pytest.approx(1)
     assert plan['proof']['evaluated_candidate_count'] == 3
     assert plan['prediction_coverage']['available'] == 0
+
+
+def test_opb_skips_incomplete_late_day_rewards_without_validating_them():
+    # #50 deviation #8: a late-day receipt is stored with complete=False; it is audit-only, never a reward.
+    _,policy,_=fixture();identity='d'*64
+    policy['opb']={'enabled':True,'approved_policy_identity':identity,'exploration':.01,
+        'arms':[{'id':'base','constraints':{}},{'id':'lower_risk','constraints':{'risk_aversion':2.}}]}
+    reward={'policy_identity':identity,'arm_id':'base','complete':True,'known_date':'2026-09-10',
+            'reward_kind':'complete_policy_account_net_return','reward':-.03}
+    expected=choose_opb(policy,[reward],identity,'2026-09-11')
+    assert choose_opb(policy,[reward,dict(reward,arm_id='lower_risk',known_date='2026-09-09',complete=False,reward=.5)],
+        identity,'2026-09-11')==expected
+    late={**reward,'complete':False,'known_date':'2026-09-11',
+          'reward_kind':'selected_stock_return','arm_id':'retired','reward':float('nan')}
+    assert choose_opb(policy,[reward,late,dict(late,arm_id='base',known_date='2026-09-10')],identity,'2026-09-11')==expected
+    assert choose_opb(policy,[late],identity,'2026-09-11')[1]['status']=='cold_start_base'

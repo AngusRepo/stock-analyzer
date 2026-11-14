@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import test from 'node:test'
 import {
   indicatorQueueRetryDelaySeconds,
   recordIndicatorQueueBatchProgress,
@@ -177,3 +178,88 @@ main().catch((error) => {
   process.exitCode = 1
 })
 
+const watchdogDate = '2026-11-04'
+const watchdogRunId = '2026-11-04-test'
+const watchdogPrefix = `cron:indicator-queue:${watchdogDate}:${watchdogRunId}`
+const watchdogStaleReceipt = {
+  task: 'indicator-queue', status: 'running', duration_ms: 0, run_date: watchdogDate,
+  summary: `indicator queue started for ${watchdogDate}; run_id=${watchdogRunId}; shards=4`,
+  timestamp: '2020-01-01T00:00:00.000Z',
+}
+
+test('watchdog: a finalized marker is convergence even while the KV receipt still says running', async () => {
+  const kv = new FakeKv()
+  kv.values.set(`scheduler:run:indicator-queue:${watchdogDate}`, JSON.stringify(watchdogStaleReceipt))
+  kv.values.set(`${watchdogPrefix}:finalized`, '1')
+  for (let shard = 0; shard < 4; shard++) kv.values.set(`${watchdogPrefix}:done:${shard}`, '1')
+  const { env, sent, batches } = fakeEnv(kv)
+  const summary = await runIndicatorQueueRecoveryWatchdog(env, watchdogDate)
+  assert.match(summary, /^skipped: .*finali[sz]e/)
+  assert.equal(sent.length + batches.length, 0)
+  assert.equal(await kv.get(`${watchdogPrefix}:watchdog-recoveries`), null)
+})
+
+function withScreenerHandoff(env: any, canonicalRunId: string) {
+  env.DB = { prepare(sql: string) { return { bind() { return { async first() {
+    return sql.includes("stage='screener_v2'") ? { canonical_run_id: canonicalRunId } : null
+  } } } } } }
+}
+
+test('watchdog: the durable screener producer owns recovery after this run handed off', async () => {
+  const kv = new FakeKv()
+  kv.values.set(`scheduler:run:indicator-queue:${watchdogDate}`, JSON.stringify(watchdogStaleReceipt))
+  for (let shard = 0; shard < 4; shard++) kv.values.set(`${watchdogPrefix}:done:${shard}`, '1')
+  const { env, sent, batches } = fakeEnv(kv)
+  withScreenerHandoff(env, watchdogRunId)
+  const summary = await runIndicatorQueueRecoveryWatchdog(env, watchdogDate)
+  assert.match(summary, /^skipped: .*screener_v2/)
+  assert.equal(sent.length + batches.length, 0)
+  assert.equal(await kv.get(`${watchdogPrefix}:watchdog-recoveries`), null)
+  assert.ok(await kv.get(`${watchdogPrefix}:finalized`))
+})
+
+test('watchdog: a stuck shard, or a screener cursor from another run, is still recovered', async () => {
+  for (const [label, doneShards, screenerRun] of [
+    ['stuck shard', 3, watchdogRunId], ['other run', 4, 'earlier-run'],
+  ] as const) {
+    const kv = new FakeKv()
+    kv.values.set(`scheduler:run:indicator-queue:${watchdogDate}`, JSON.stringify(watchdogStaleReceipt))
+    for (let shard = 0; shard < doneShards; shard++) kv.values.set(`${watchdogPrefix}:done:${shard}`, '1')
+    const { env, sent, batches } = fakeEnv(kv)
+    withScreenerHandoff(env, screenerRun)
+    const summary = await runIndicatorQueueRecoveryWatchdog(env, watchdogDate)
+    assert.doesNotMatch(summary, /screener_v2/, label)
+    assert.equal(await kv.get(`${watchdogPrefix}:finalized`), null, `${label}: not marked finalized`)
+    assert.equal(sent.length + batches.length, 1, `${label}: recovery enqueued`)
+    assert.equal(await kv.get(`${watchdogPrefix}:watchdog-recoveries`), '1')
+  }
+})
+
+test('watchdog: a finalizer between deferred retries spends no recovery budget and enqueues nothing', async () => {
+  const kv = new FakeKv()
+  kv.values.set(`scheduler:run:indicator-queue:${watchdogDate}`, JSON.stringify(watchdogStaleReceipt))
+  kv.values.set(`${watchdogPrefix}:watchdog-recoveries`, '2')
+  kv.values.set(`${watchdogPrefix}:finalize-deferred`, JSON.stringify({ continuation_attempt: 3 }))
+  for (let shard = 0; shard < 4; shard++) kv.values.set(`${watchdogPrefix}:done:${shard}`, '1')
+  const { env, sent, batches } = fakeEnv(kv)
+  const summary = await runIndicatorQueueRecoveryWatchdog(env, watchdogDate)
+  assert.match(summary, /^skipped: .*deferred/)
+  assert.equal(sent.length + batches.length, 0)
+  assert.equal(await kv.get(`${watchdogPrefix}:watchdog-recoveries`), '2')
+})
+
+test('watchdog: exhaustion alerts once; later ticks neither rewrite evening-chain nor throw', async () => {
+  const kv = new FakeKv()
+  kv.values.set(`scheduler:run:indicator-queue:${watchdogDate}`, JSON.stringify(watchdogStaleReceipt))
+  kv.values.set(`${watchdogPrefix}:watchdog-recoveries`, '6')
+  const { env } = fakeEnv(kv)
+  await assert.rejects(() => runIndicatorQueueRecoveryWatchdog(env, watchdogDate), /watchdog exhausted/)
+  assert.ok(await kv.get(`${watchdogPrefix}:watchdog-exhausted`))
+  kv.values.delete(`${watchdogPrefix}:watchdog-lease`)
+  kv.values.delete(`scheduler:run:evening-chain:${watchdogDate}`)
+  const indicatorBefore = kv.values.get(`scheduler:run:indicator-queue:${watchdogDate}`)
+  const summary = await runIndicatorQueueRecoveryWatchdog(env, watchdogDate)
+  assert.match(summary, /^skipped: .*exhausted already reported/)
+  assert.equal(await kv.get(`scheduler:run:evening-chain:${watchdogDate}`), null)
+  assert.equal(kv.values.get(`scheduler:run:indicator-queue:${watchdogDate}`), indicatorBefore)
+})

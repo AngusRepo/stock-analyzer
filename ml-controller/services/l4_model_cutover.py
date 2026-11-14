@@ -8,7 +8,7 @@ import hashlib
 from pathlib import Path
 
 from services.l4_distribution import digest, validate_bundle
-from services.l4_distribution_runtime import distribution_policy_identity, choose_opb
+from services.l4_distribution_runtime import distribution_policy_identity, validate_opb_policy
 from services.paper_strategy_mode import MLP_MODE, validate_model_mode
 
 SCHEMA = 'l4-full-mlp-median-paper-cutover-v1'
@@ -55,7 +55,7 @@ def validate_cutover(approval, *, admission, now):
     new_static={k:v for k,v in new.items() if k not in ('artifact','operating_mode','strategy_role','opb')}
     if old_static!=new_static:
         raise RuntimeError('l4_cutover_unapproved_policy_fields')
-    choose_opb(new,[],identity,grant['signal_date'])
+    validate_opb_policy(new,identity,grant['signal_date'])
     # Only the exact released model/mode and its new OPB identity may differ.
     before['trading_config']['l4Distribution']=deepcopy(new)
     for section in ('allocator_source_identity','l3_inference_source_identity'):

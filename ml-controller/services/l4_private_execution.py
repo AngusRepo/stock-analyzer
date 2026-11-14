@@ -3,6 +3,7 @@ import json
 from copy import deepcopy
 from services.l4_distribution import digest
 from services.l4_distribution_runtime import run
+from services.l4_opb_selection import is_v2
 
 
 def allocate_private(store,account):
@@ -19,7 +20,14 @@ def allocate_private(store,account):
     if account.get('active_plan_id')!=(head[0] if head else None):
         raise ValueError('private_l4_account_head_changed')
     policy['runtime']['account']=account
-    ledger=[json.loads(row[0]) for row in store.db.execute('SELECT payload_json FROM l4_policy_account_rewards_v1 ORDER BY known_date,receipt_id')]
+    if is_v2(policy):
+        # v2 learns only from the full-information arm replay ledger sealed into
+        # these inputs, as the formal allocation and replan do. Private v1
+        # account receipts carry no context identity and would all be skipped.
+        ledger=inputs.get('opb_reward_ledger')
+        if not isinstance(ledger,list):raise ValueError('private_l4_opb_reward_ledger_missing')
+    else:
+        ledger=[json.loads(row[0]) for row in store.db.execute('SELECT payload_json FROM l4_policy_account_rewards_v1 ORDER BY known_date,receipt_id')]
     captures = []
     shadow=inputs.get('r2_shadow')
     if shadow is not None:

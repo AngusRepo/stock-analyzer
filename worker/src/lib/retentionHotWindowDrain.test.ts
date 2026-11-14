@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import {
   RETENTION_HOT_WINDOW_DRAIN_CONFIRM_PHRASE,
   RETENTION_HOT_WINDOW_DRAIN_POLICY_IDS,
+  retentionHotDrainSettings,
 } from './retentionHotWindowDrain'
 import { retentionR2PolicyConfig } from './retentionArchiveOnly'
 
@@ -39,8 +40,46 @@ assert.match(exactSource, /RETURNING/)
 assert.match(exactSource, /AS MATERIALIZED/)
 assert.doesNotMatch(deleteFunction, /for \(let offset/)
 assert.match(implementation, /options\.confirmPhrase !== RETENTION_HOT_WINDOW_DRAIN_CONFIRM_PHRASE/)
-assert.match(implementation, /limitPerDataset \?\? 100/)
-assert(implementation.includes('Math.min(Math.floor(options.limitPerDataset ?? 100), 250)'))
+assert.match(implementation, /options\.limitPerDataset \?\? settings\.limitPerDataset\.default/)
+// NEW-D08: unset Worker vars keep the original 100/250 rows, 1/10 rounds and 60/120 s budget.
+assert.deepEqual(retentionHotDrainSettings({}), {
+  limitPerDataset: { default: 100, max: 250 },
+  maxRounds: { default: 1, max: 10 },
+  budgetMs: { default: 60_000, max: 120_000 },
+})
+assert.deepEqual(retentionHotDrainSettings({ RETENTION_HOT_DRAIN_MAX_ROUNDS_MAX: '40',
+  RETENTION_HOT_DRAIN_MAX_ROUNDS_DEFAULT: ' 34 ', RETENTION_HOT_DRAIN_BUDGET_MS_MAX: '180000',
+  RETENTION_HOT_DRAIN_LIMIT_PER_DATASET_DEFAULT: '' }), {
+  limitPerDataset: { default: 100, max: 250 },
+  maxRounds: { default: 34, max: 40 },
+  budgetMs: { default: 60_000, max: 180_000 },
+})
+// A lowered cap pulls the built-in default down with it instead of failing.
+assert.deepEqual(retentionHotDrainSettings({ RETENTION_HOT_DRAIN_LIMIT_PER_DATASET_MAX: '50' }).limitPerDataset,
+  { default: 50, max: 50 })
+for (const bad of [
+  { RETENTION_HOT_DRAIN_LIMIT_PER_DATASET_MAX: '251' }, // exact-delete statement holds at most 250 rows
+  { RETENTION_HOT_DRAIN_MAX_ROUNDS_MAX: '101' },
+  { RETENTION_HOT_DRAIN_BUDGET_MS_MAX: '180001' }, // stays within the 180 s default attempt deadline
+  { RETENTION_HOT_DRAIN_MAX_ROUNDS_MAX: '1e1' },
+  { RETENTION_HOT_DRAIN_MAX_ROUNDS_MAX: '0x10' },
+  { RETENTION_HOT_DRAIN_MAX_ROUNDS_MAX: '10.0' },
+  { RETENTION_HOT_DRAIN_MAX_ROUNDS_MAX: '-5' },
+  { RETENTION_HOT_DRAIN_MAX_ROUNDS_DEFAULT: '11' }, // default above the (built-in) cap
+  { RETENTION_HOT_DRAIN_MAX_ROUNDS_MAX: '20', RETENTION_HOT_DRAIN_MAX_ROUNDS_DEFAULT: '21' },
+  { RETENTION_HOT_DRAIN_MAX_ROUNDS_MAX: '2.5' },
+  { RETENTION_HOT_DRAIN_MAX_ROUNDS_MAX: '0' },
+  { RETENTION_HOT_DRAIN_MAX_ROUNDS_MAX: 'ten' },
+] as Record<string, string>[]) {
+  assert.throws(() => retentionHotDrainSettings(bad), /retention_hot_drain_setting_invalid:RETENTION_HOT_DRAIN_/)
+}
+const routeSource = readFileSync('src/lib/adminTriggerWorkerDomainTasks.ts', 'utf8')
+const routeBody = routeSource.slice(routeSource.indexOf("'retention-hot-window-drain': async"),
+  routeSource.indexOf("'legacy-learning-deletion-readiness': async"))
+assert.match(routeBody, /const settings = retentionHotDrainSettings\(c\.env\)/)
+for (const [query, key] of [['limit_per_dataset', 'limitPerDataset'], ['max_rounds', 'maxRounds'], ['budget_ms', 'budgetMs']]) {
+  assert(new RegExp(`query\\('${query}'\\),\\s*settings\\.${key}\\.default, settings\\.${key}\\.max\\)`).test(routeBody), query)
+}
 
 const scheduler = JSON.parse(readFileSync('../infra/gcp-scheduler-jobs.json', 'utf8'))
 const preflight = scheduler.jobs.find((job: { id: string }) => job.id === 'retention-hot-window-drain')
@@ -74,7 +113,8 @@ console.log('retention hot-window drain contract tests passed')
 
 // Exercise the real dry-run path: an empty predictions table cannot hide ten unverified readers.
 import { test } from 'node:test'
-import { runRetentionHotWindowDrain } from './retentionHotWindowDrain'
+import { runRetentionHotWindowDrain, summarizeRetentionHotWindowDrain } from './retentionHotWindowDrain'
+import { classifySchedulerSummary } from './schedulerRunLogger'
 import type { Bindings } from '../types'
 test('dry-run reports every Learning source and never touches unsupported readers', async () => {
   const db = { prepare(sql: string) {
@@ -98,10 +138,82 @@ test('dry-run reports every Learning source and never touches unsupported reader
     businessDate: '2026-09-26', maxRounds: 10 })
   assert.equal(result.dry_run, true)
   assert.equal(result.complete, false)
-  assert.equal(result.status, 'error')
+  // M1-d: ten archive-only sources are blocked datasets, not a policy failure.
+  assert.equal(result.status, 'dry_run')
+  assert.deepEqual(result.failed_policies, [])
+  assert.equal(result.policies[0].status, 'dry_run')
+  assert.equal(result.policies[0].error, undefined)
   assert.equal(result.policy_attempts, 1)
   assert.equal(result.deleted_rows, 0)
   assert.equal(result.backlog_remaining, true)
+  assert.deepEqual(result.pending_policies, ['learning_lineage_v1'])
   assert.equal(result.policies[0].datasets.length, learningConfig!.sources.length)
   assert.equal(result.policies[0].datasets.filter(d => d.status === 'blocked').length, 10)
+  const archiveOnly = learningConfig!.sources.filter(source => !source.deleteTable || !source.deleteKeyColumn).map(source => source.datasetId)
+  assert.equal(archiveOnly.length, 10)
+  assert.deepEqual(result.policies[0].blocked_datasets, archiveOnly)
+  assert.deepEqual(result.blocked_datasets, archiveOnly.map(dataset => `learning_lineage_v1:${dataset}`))
+  assert.match(summarizeRetentionHotWindowDrain(result), /status=dry_run .* failed=none blocked=10$/)
+  assert.equal(classifySchedulerSummary(summarizeRetentionHotWindowDrain(result)), 'success')
+})
+
+// A permissive D1 stand-in: the Learning policy row, predictions columns, and no eligible rows.
+function confirmedFixture(failPredictions = false) {
+  const writes: Array<{ sql: string; args: unknown[] }> = []
+  const db = { prepare(sql: string) {
+    let args: unknown[] = []
+    const statement = {
+      bind(...values: unknown[]) { args = values; return statement },
+      async first() {
+        if (sql.includes('FROM data_retention_policies')) return { policy_id: 'learning_lineage_v1',
+          hot_retention_days: 120, cold_retention_days: 3650, archive_store: 'r2', action: 'archive_delete',
+          hard_reference_protected: 1, status: 'active' }
+        return null
+      },
+      async all() {
+        if (sql.includes('pragma_table_info')) return { results: [{ name: 'date' }, { name: 'symbol' }] }
+        if (failPredictions && sql.includes('WITH candidates AS MATERIALIZED')) throw new Error('predictions_reader_failed')
+        return { results: [] }
+      },
+      async run() { writes.push({ sql, args }); return { success: true, meta: { changes: 1 } } },
+    }
+    return statement
+  }, async batch(statements: any[]) { return Promise.all(statements.map(s => s.run())) } }
+  const env = { DB: db, ARTIFACTS: {} } as unknown as Bindings
+  return { env, writes }
+}
+
+test('M1-d: a confirmed Learning drain succeeds on its deletable sources while blocked sources stay pending', async () => {
+  const { env, writes } = confirmedFixture()
+  const result = await runRetentionHotWindowDrain(env, { policyIds: ['learning_lineage_v1'],
+    businessDate: '2026-10-29', maxRounds: 10, confirmPhrase: RETENTION_HOT_WINDOW_DRAIN_CONFIRM_PHRASE })
+  assert.equal(result.dry_run, false)
+  assert.equal(result.status, 'success')
+  assert.equal(result.policies[0].status, 'success')
+  assert.deepEqual(result.failed_policies, [])
+  assert.equal(result.complete, false)
+  assert.equal(result.stop_reason, 'blocked_or_no_progress')
+  assert.equal(result.blocked_datasets.length, 10)
+  const drained = result.policies[0].datasets.filter(d => d.status !== 'blocked')
+  assert.ok(drained.length >= 1 && drained.every(d => d.status === 'skipped'))
+  // Ledger: blocked items are skipped with backlog, and the run itself finishes as success.
+  const blockedItems = writes.filter(w => /data_retention_run_items/.test(w.sql)
+    && String(w.args[1]).startsWith('hot-drain:') && /cold_reader_not_verified/.test(JSON.stringify(w.args)))
+  assert.equal(blockedItems.length, 10)
+  assert.ok(blockedItems.every(w => w.args[2] === 'skipped'))
+  const finished = writes.filter(w => /UPDATE data_retention_runs/.test(w.sql))
+  assert.equal(finished.length, 1)
+  assert.ok(finished[0].args.includes('success'))
+  assert.match(summarizeRetentionHotWindowDrain(result), /status=success .* failed=none blocked=10$/)
+})
+
+test('M1-d: a failing deletable source still fails the policy and the route', async () => {
+  const { env } = confirmedFixture(true)
+  const result = await runRetentionHotWindowDrain(env, { policyIds: ['learning_lineage_v1'],
+    businessDate: '2026-10-29', maxRounds: 10, confirmPhrase: RETENTION_HOT_WINDOW_DRAIN_CONFIRM_PHRASE })
+  assert.equal(result.status, 'error')
+  assert.deepEqual(result.failed_policies, ['learning_lineage_v1'])
+  assert.match(String(result.policies[0].error), /predictions_reader_failed/)
+  assert.doesNotMatch(String(result.policies[0].error), /cold_reader_not_verified/)
+  assert.equal(result.blocked_datasets.length, 10)
 })

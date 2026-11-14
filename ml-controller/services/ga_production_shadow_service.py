@@ -420,6 +420,9 @@ def run_ga_production_shadow(
                 "prediction_source": "mode_a_relative_no_mutable_ml_cache",
             }
 
+        from services.position_risk_owner import with_formal_position_risk
+        # A frozen baseline that pins the risk contract keeps it; an older one takes the KV owner.
+        baseline_config = with_formal_position_risk(baseline_config, keep_existing=True)
         evidence = evidence_runner(
             {
                 "id": active["ga_candidate_id"],

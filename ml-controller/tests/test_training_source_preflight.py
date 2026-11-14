@@ -186,3 +186,51 @@ def test_missing_indicator_owner_stops_paid_boundary():
     prep=seal(prep)
     with pytest.raises(ValueError,match="training_source_indicator_owner_binding_required"):
         require_single_adjustment_capture(Bucket(prep,seq),prep_gcs_prefix="prep",sequence_gcs_prefix="seq")
+
+
+def _counted(seq_fields):
+    prep,seq=manifests()
+    seq=seal({**{k:v for k,v in seq.items() if k!="manifest_checksum"},**seq_fields},True)
+    prep["sequence_manifest_checksum"]=prep["price_capture"]["sequence_manifest_checksum"]=seq["manifest_checksum"]
+    return seal(prep),seq
+
+
+def _spawn_ready(monkeypatch,prep,seq):
+    from types import SimpleNamespace
+    from routers import walk_forward as wf
+    from services import walk_forward_retrain as retrain,modal_client,payload_builder
+
+    window=SimpleNamespace(window_id=0,train_start="2026-01-01",train_end="2026-03-01",test_start="2026-03-02",test_end="2026-04-01")
+    monkeypatch.setattr(retrain,"_get_bucket",lambda:Bucket(prep,seq))
+    monkeypatch.setattr(wf,"_walk_forward_calendar_and_windows",lambda req:([],{},[window]))
+    monkeypatch.setattr(wf,"_load_resume_plan",lambda *a,**k:{"new_window_ids":[0]})
+    def unused_market_env(*a,**k):
+        raise AssertionError("KD-14: walk-forward dispatch must not read market_env")
+    monkeypatch.setattr(payload_builder,"load_market_env",unused_market_env)
+    spawn=AsyncMock(return_value=SimpleNamespace(object_id="fc-1"))
+    monkeypatch.setattr(modal_client,"spawn_walk_forward_orchestrator",spawn)
+    return wf,spawn
+
+
+def test_paid_orchestrator_gets_sealed_batch_counts_not_defaults(monkeypatch):
+    prep,seq=_counted({"batch_count":3,"batch_rows":[1,1,1]})
+    wf,spawn=_spawn_ready(monkeypatch,prep,seq)
+    req=wf.WalkForwardRequest(start_date="2026-01-01",end_date="2026-04-01",confirm=True,prep_gcs_prefix="prep",sequence_gcs_prefix="seq")
+    asyncio.run(wf.walk_forward_run(req))
+    payload=spawn.call_args.args[0]
+    assert (payload["batch_count"],payload["sequence_batch_count"])==(len(prep["batch_rows"]),3)
+    assert payload["market_env"]=={}
+
+
+@pytest.mark.parametrize("seq_fields,explicit,reason",[
+    ({},{},"training_source_batch_inventory_invalid"),
+    ({"batch_count":3,"batch_rows":[1,1]},{},"training_source_batch_inventory_invalid"),
+    ({"batch_count":3},{"batch_count":5},"walk_forward_batch_count_mismatch"),
+    ({"batch_count":3},{"sequence_batch_count":5},"walk_forward_sequence_batch_count_mismatch")])
+def test_unsealed_or_conflicting_batch_counts_stop_paid_dispatch(monkeypatch,seq_fields,explicit,reason):
+    prep,seq=_counted(seq_fields)
+    wf,spawn=_spawn_ready(monkeypatch,prep,seq)
+    req=wf.WalkForwardRequest(start_date="2026-01-01",end_date="2026-04-01",confirm=True,prep_gcs_prefix="prep",sequence_gcs_prefix="seq",**explicit)
+    with pytest.raises(wf.HTTPException,match=reason) as error:asyncio.run(wf.walk_forward_run(req))
+    assert error.value.status_code==422
+    spawn.assert_not_called()

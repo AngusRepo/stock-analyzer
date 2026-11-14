@@ -13,6 +13,18 @@ import { failClosedRiskCheck } from './failClosed'
 export interface DailyPnlContext {tradeDate:string;previousSession:string;currentNav:number;netExternalFlow:number}
 
 
+/** Baseline for an account with no snapshot and no order before today (its first session); any other gap is not a baseline. */
+async function freshAccountBaseline(db: D1Database, tradeDate: string, previousSession: string): Promise<{ date: string; total_value: number } | null> {
+  const row = await db.prepare(
+    `SELECT a.initial_cash AS initial_cash,
+      (SELECT COUNT(*) FROM paper_daily_snapshots s WHERE s.account_id=a.id) AS snapshots,
+      (SELECT COUNT(*) FROM paper_orders o WHERE o.account_id=a.id AND date(o.created_at,'+8 hours')<?) AS orders
+     FROM paper_accounts a WHERE a.id=?`,
+  ).bind(tradeDate, paperAccountId()).first<{ initial_cash: number; snapshots: number; orders: number }>()
+  if (!row || Number(row.snapshots) !== 0 || Number(row.orders) !== 0) return null
+  return { date: previousSession, total_value: Number(row.initial_cash) }
+}
+
 export async function checkP8DailyPnl(
   db: D1Database,
   riskCfg: RiskConfig,
@@ -26,19 +38,31 @@ export async function checkP8DailyPnl(
   // Need at least yesterday's equity + today's current total_value snapshot.
   // paper_daily_snapshots is updated daily via 'daily-snapshot' cron.
   try {
-  const { results: snaps } = await db.prepare(
-    'SELECT date, total_value FROM paper_daily_snapshots WHERE account_id=? AND date<=? ORDER BY date DESC LIMIT 2'
-  ).bind(paperAccountId(),tradeDate).all<{ date: string; total_value: number }>()
-
-  if (!snaps || snaps.length < (context ? 1 : 2)) return null
-  const [today] = snaps
-  if(!context && today.date!==tradeDate) return null // Prior two closes are not today's loss.
-  const yday=context ? snaps.find(s=>s.date===context.previousSession) : snaps[1]
-  if (!yday?.total_value || yday.total_value <= 0) return null
+  let today: { date: string; total_value: number } | undefined
+  let yday: { date: string; total_value: number } | null
+  if (context) {
+    // The previous session's close is the only baseline. A missing or invalid row blocks new
+    // buys instead of passing them (AUD-21); only an account that has never been marked nor
+    // traded before today starts from its initial cash, so its own first-day fills do not block it.
+    yday = await db.prepare('SELECT date, total_value FROM paper_daily_snapshots WHERE account_id=? AND date=?')
+      .bind(paperAccountId(), context.previousSession).first<{ date: string; total_value: number }>()
+    if (!yday) yday = await freshAccountBaseline(db, context.tradeDate, context.previousSession)
+    if (!yday) throw new Error(`previous_session_snapshot_missing:${context.previousSession}`)
+    if (!(Number(yday.total_value) > 0)) throw new Error(`previous_session_snapshot_invalid:${context.previousSession}`)
+  } else {
+    const { results: snaps } = await db.prepare(
+      'SELECT date, total_value FROM paper_daily_snapshots WHERE account_id=? AND date<=? ORDER BY date DESC LIMIT 2'
+    ).bind(paperAccountId(),tradeDate).all<{ date: string; total_value: number }>()
+    if (!snaps || snaps.length < 2) return null
+    today = snaps[0]
+    if(today.date!==tradeDate) return null // Prior two closes are not today's loss.
+    yday = snaps[1]
+    if (!yday?.total_value || yday.total_value <= 0) return null
+  }
   if(context && (!/^\d{4}-\d{2}-\d{2}$/.test(tradeDate) || context.previousSession>=tradeDate
     || !Number.isFinite(context.currentNav) || context.currentNav<=0 || !Number.isFinite(context.netExternalFlow)))
     throw new Error('daily_pnl_context_invalid')
-  const pnl = (context?.currentNav ?? today.total_value) - yday.total_value - (context?.netExternalFlow ?? 0)
+  const pnl = (context?.currentNav ?? today!.total_value) - yday.total_value - (context?.netExternalFlow ?? 0)
   const pnlPct = pnl / yday.total_value
 
   const hitAbs = pnl <= dailyPnlLossLimit

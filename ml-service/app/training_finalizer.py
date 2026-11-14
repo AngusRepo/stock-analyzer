@@ -200,6 +200,7 @@ def reduce_tree_model_child_results(
     *,
     combined_oos_artifact: dict | None = None,
     oos_artifact_error: str | None = None,
+    required_models: list[str] | None = None,
 ) -> dict:
     """Merge per-tree-model child results into the existing tree-group shape."""
 
@@ -269,9 +270,9 @@ def reduce_tree_model_child_results(
     if oos_artifact_error:
         child_errors.append({"model": "tree", "error": str(oos_artifact_error)})
 
-    required = set(TREE_MODELS)
+    required = list(required_models or TREE_MODELS)
     trained = set(merged_results)
-    missing = sorted(required - trained, key=TREE_MODELS.index)
+    missing = [name for name in required if name not in trained]
     if missing:
         child_errors.append({"model": "tree", "error": f"missing_tree_models:{','.join(missing)}"})
 

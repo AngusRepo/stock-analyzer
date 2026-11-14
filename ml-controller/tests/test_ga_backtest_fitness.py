@@ -115,7 +115,7 @@ def test_history_preflight_blocks_incomplete_scope_without_changing_stock_univer
     monkeypatch.setattr(backtest_engine.BacktestDataset,'load_from_snapshot_manifest',lambda **kw:dataset)
     monkeypatch.setattr(backtest_snapshot_state,'frozen_mode_b',lambda ds:None)
     monkeypatch.setattr(trading_config_loader,'load_merged_trading_config_with_contract',lambda:SimpleNamespace(config={}))
-    monkeypatch.setattr(weekly_evidence_service,'_with_formal_position_risk',lambda cfg:cfg)
+    monkeypatch.setattr('services.position_risk_owner.with_formal_position_risk',lambda cfg:cfg)
     import polars as pl
     dataset.market_risk=pl.DataFrame({'date':days})
     dataset.replay_frames={'signals':pl.DataFrame({'prediction_date':days}),

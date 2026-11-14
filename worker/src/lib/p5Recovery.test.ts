@@ -6,7 +6,7 @@ import { checkP5Losses } from './riskChecks/p5Losses'
 import { checkP1Mdd } from './riskChecks/p1Mdd'
 import { checkP8DailyPnl } from './riskChecks/p8DailyPnl'
 import { checkS1KillSwitch } from './riskChecks/s1KillSwitch'
-import { DEFAULT_RISK_CONFIG } from './riskConfig'
+import { RISK_CONFIG_FIXTURE } from './riskConfig.testSupport'
 import { adminConfigCoreRoutes } from '../routes/adminConfigCoreRoutes'
 import { withPaperExecutionScope } from './paperExecutionScope'
 
@@ -84,9 +84,9 @@ test('account isolation and all other loss/kill-switch controls survive P5 re-ar
       f.sqls.paper.prepare('INSERT INTO paper_daily_snapshots(account_id,date,cash,positions_value,total_value,pnl,pnl_pct) VALUES(1,?,?,0,?,0,0)').run(date,nav,nav)
     }
     assert.equal((await checkP1Mdd(f.env.PAPER_DB, f.cfg, deps))?.halt, true)
-    assert.equal((await checkP8DailyPnl(f.env.PAPER_DB, DEFAULT_RISK_CONFIG, deps,
+    assert.equal((await checkP8DailyPnl(f.env.PAPER_DB, RISK_CONFIG_FIXTURE, deps,
       {tradeDate:'2026-09-03',previousSession:'2026-09-02',currentNav:500000,netExternalFlow:0}))?.halt, true)
-    f.kvs.set('trading:risk_config', JSON.stringify({ ...DEFAULT_RISK_CONFIG, system: { ...DEFAULT_RISK_CONFIG.system, killSwitch: true } }))
+    f.kvs.set('trading:risk_config', JSON.stringify({ ...RISK_CONFIG_FIXTURE, system: { ...RISK_CONFIG_FIXTURE.system, killSwitch: true } }))
     assert.equal((await checkS1KillSwitch(f.env.KV, deps))?.halt, true)
   } finally { f.close() }
 })

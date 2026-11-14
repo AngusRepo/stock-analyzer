@@ -23,28 +23,33 @@ export async function recordL4AccountReward(env: Bindings, day: string, endNav: 
   const previousSession = await getPrevTradingDay(databaseForDataDomain(env,'core'), env.KV, day)
   const db = paperDomainDatabase(env)
   const accountId = paperAccountId()
-  const unavailable = (reason: string): L4AccountRewardResult => ({ status: 'unavailable', reason, learning_eligible: false })
+  const unavailable = (reason: string): L4AccountRewardResult => {
+    console.warn(`[L4Reward] ${day} receipt unavailable: ${reason}`)
+    return { status: 'unavailable', reason, learning_eligible: false }
+  }
   const { results } = await db.prepare('SELECT payload_json,created_at FROM l4_portfolio_plans_v1 WHERE account_id=? AND activated=1 AND signal_date=? ORDER BY rowid')
     .bind(accountId,previousSession).all<{ payload_json: string; created_at: string }>()
   // Account valuation remains valid without an attributable policy session.
-  // Missing or late plans never create a zero-return learning receipt.
+  // A missing plan never creates a receipt; a late one is audit-only (complete:false).
   if (!results.length) return unavailable('l4_reward_session_plan_missing')
   const plans = results.map(row => validateL4PortfolioPlan(JSON.parse(row.payload_json)))
   const first = plans[0]
   const sessionOpen = Date.parse(day+'T09:00:00+08:00')
   const publicationTimes = results.map(row => Date.parse(row.created_at.replace(' ', 'T')+'Z'))
   if (publicationTimes.some(time => !Number.isFinite(time))) throw new Error('l4_reward_plan_publication_time_invalid')
-  if (publicationTimes[0] >= sessionOpen) return unavailable('l4_reward_plan_published_after_session_open')
+  const publishedLate = publicationTimes[0] >= sessionOpen
   if (dailyPlanOwner(env)) {
     const head = await db.prepare('SELECT checksum FROM paper_daily_plan_heads_v1 WHERE account_id=? AND trade_date=?')
       .bind(accountId,day).first<{checksum:string}>()
     if (!head) return unavailable('l4_reward_daily_plan_not_finalized')
   }
   const dailyReview=dailyPlanOwner(env) ? (await readL4ExecutionPlan(env,undefined,day))?.execution_review : null
-  if(dailyPlanOwner(env) && (!dailyReview || plans.length!==1 || dailyReview.planId!==first.plan_id))
+  if(dailyPlanOwner(env) && (!dailyReview || plans.length!==1 || dailyReview.planId!==first.plan_id)) {
+    if (publishedLate) return unavailable('l4_reward_plan_published_after_session_open')
     throw new Error('l4_reward_daily_plan_lineage_incomplete')
-  if (dailyReview && dailyReview.finalizedAtMs >= sessionOpen)
-    return unavailable('l4_reward_plan_finalized_after_session_open')
+  }
+  const lateReason = publishedLate ? 'l4_reward_plan_published_after_session_open'
+    : dailyReview && dailyReview.finalizedAtMs >= sessionOpen ? 'l4_reward_plan_finalized_after_session_open' : null
   const policies = new Set(plans.map(plan => `${plan.policy_identity}:${plan.opb.arm_id}`))
   const manual = await db.prepare("SELECT COUNT(*) AS n FROM paper_orders WHERE account_id=? AND source='manual' AND date(created_at,'+8 hours')=?")
     .bind(accountId,day).first<{n:number}>()
@@ -60,11 +65,13 @@ export async function recordL4AccountReward(env: Bindings, day: string, endNav: 
   const receipt = { receipt_id: `${first.plan_id}:${day}`, known_date: day,
     execution_policy:env.PAPER_INTRADAY_ENTRY_OWNER ?? 'legacy',daily_review_checksum:dailyReview?.checksum ?? null,
     policy_identity: first.policy_identity, arm_id: first.opb.arm_id,
-    reward_kind: 'complete_policy_account_net_return', complete: policies.size===1 && Number(manual?.n ?? 0)===0 && !mixedExecution,
+    // Policy v2 plans carry the arm's effective limits; v1 payloads stay byte-identical.
+    ...(first.opb.effective_digest!==undefined ? {effective_digest:first.opb.effective_digest,arm_inert:first.opb.arm_inert===true} : {}),
+    reward_kind: 'complete_policy_account_net_return', complete: lateReason===null && policies.size===1 && Number(manual?.n ?? 0)===0 && !mixedExecution,
     start_nav: first.nav_at_decision, end_nav: endNav,
     reward: endNav/first.nav_at_decision-1, plan_ids: plans.map(plan=>plan.plan_id),
     includes_cash: true, includes_costs: true, includes_failed_orders: true,
-    reason: mixedExecution ? 'mixed_execution_policy' : policies.size!==1 ? 'mixed_policy_session' : Number(manual?.n ?? 0)>0 ? 'manual_trades_in_session' : 'complete_account' }
+    reason: lateReason ?? (mixedExecution ? 'mixed_execution_policy' : policies.size!==1 ? 'mixed_policy_session' : Number(manual?.n ?? 0)>0 ? 'manual_trades_in_session' : 'complete_account') }
   const payload = JSON.stringify(receipt)
   await db.prepare('INSERT INTO l4_policy_account_rewards_v1(receipt_id,known_date,policy_identity,payload_json) VALUES(?,?,?,?) ON CONFLICT(receipt_id) DO NOTHING')
     .bind(receipt.receipt_id,day,receipt.policy_identity,payload).run()

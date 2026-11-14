@@ -12,9 +12,14 @@ try:
     import google.cloud as google_cloud
 except ImportError:
     google_cloud = sys.modules.setdefault("google.cloud", types.ModuleType("google.cloud"))
-run_v2_stub = types.SimpleNamespace(JobsClient=object, ExecutionsClient=object)
-setattr(google_cloud, "run_v2", run_v2_stub)
-sys.modules.setdefault("google.cloud.run_v2", run_v2_stub)
+# Stub only when the SDK is absent: an installed run_v2 must not be shadowed for
+# modules collected later in the same xdist worker (test_pipeline_execution_status).
+try:
+    from google.cloud import run_v2  # noqa: F401
+except ImportError:
+    run_v2_stub = types.SimpleNamespace(JobsClient=object, ExecutionsClient=object)
+    setattr(google_cloud, "run_v2", run_v2_stub)
+    sys.modules.setdefault("google.cloud.run_v2", run_v2_stub)
 sys.modules.setdefault("httpx", types.SimpleNamespace(AsyncClient=object))
 
 import dataset_snapshot_job_main  # noqa: E402
@@ -218,6 +223,11 @@ def test_deploy_provisions_detached_dataset_snapshot_job():
     dataset_snapshot_sync = deploy.split("sync_dataset_snapshot_job()", 1)[1].split("run_preflight()", 1)[0]
     assert '"roles/run.jobsExecutorWithOverrides"' in dataset_snapshot_sync
     assert '"roles/run.viewer"' in dataset_snapshot_sync
+    # input/status and reconcile run in the controller service and read snapshot executions.
+    controller_grant = dataset_snapshot_sync.split('local controller_member="serviceAccount:${SERVICE_RUNTIME_SERVICE_ACCOUNT}"', 1)[1]
+    assert '--member="$controller_member"' in controller_grant
+    assert '--role="roles/run.viewer"' in controller_grant
+    assert "jobsExecutorWithOverrides" not in controller_grant
     assert '--task-timeout="$PIPELINE_JOB_TIMEOUT"' in deploy
     assert 'PIPELINE_JOB_TIMEOUT="${PIPELINE_JOB_TIMEOUT:-6600s}"' in deploy
 
@@ -250,3 +260,27 @@ def test_input_snapshot_failure_is_terminal_without_false_callback(monkeypatch):
     monkeypatch.setattr(dataset_snapshot_job_main, "export_backtest_dataset_snapshot", failed_export)
     monkeypatch.setattr(dataset_snapshot_job_main, "_callback_worker", forbidden_callback)
     assert asyncio.run(dataset_snapshot_job_main._run()) == 1
+
+
+def test_snapshot_chunk_default_is_one_day_without_env_override(monkeypatch):
+    # SNAP-7500: multi-day chunks exceed D1's 50 MB response limit; the job must
+    # not depend on the GCP env override to stay at one day per query.
+    monkeypatch.delenv("DATASET_SNAPSHOT_CHUNK_DAYS", raising=False)
+    assert dataset_snapshot_job_main._chunk_days() == 1
+    for raw in ("", "not-a-number", "0"):
+        monkeypatch.setenv("DATASET_SNAPSHOT_CHUNK_DAYS", raw)
+        assert dataset_snapshot_job_main._chunk_days() == 1
+    monkeypatch.setenv("DATASET_SNAPSHOT_CHUNK_DAYS", "45")
+    assert dataset_snapshot_job_main._chunk_days() == 30
+
+
+def test_all_snapshot_chunk_defaults_match_the_job():
+    # Same one-day default as the job path; callers may still ask for up to 30.
+    from routers.dataset_snapshots import ExportColdArchiveRequest, ExportSnapshotRequest
+    from services.dataset_snapshot_exporter import D1ColdArchiveExportRequest, DatasetSnapshotExportRequest
+
+    dates = dict(business_date="2026-11-13", start_date="2026-01-01", end_date="2026-11-13")
+    assert ExportSnapshotRequest(**dates).chunk_days == 1
+    assert ExportColdArchiveRequest(**dates).chunk_days == 1
+    assert D1ColdArchiveExportRequest(**dates).chunk_days == 1
+    assert DatasetSnapshotExportRequest(**dates).chunk_days == 1  # in-process pipeline callers

@@ -1,0 +1,17 @@
+{
+  "schema_version": "stockvision-kv-config-manifest-v1",
+  "store": "gs://stockvision-config-private/kv-config/",
+  "keys": {
+    "trading:config": {
+      "digest": "c4ef295821675fb027bbd1405327c294f314a375dd69686d5717e99ff8ad73b5",
+      "runtime_owned": [
+        "alphaFramework.allocation.controller",
+        "alphaFramework.allocation.opbArmPrior"
+      ]
+    },
+    "trading:risk_config": {
+      "digest": "67cd6ca78c1ea2744707feb7ff26a4cf6b40fa02013e6c29b601e47652e51913",
+      "runtime_owned": []
+    }
+  }
+}

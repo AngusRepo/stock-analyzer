@@ -3,8 +3,10 @@ import { runPremarketProducerTask } from './premarketProducerStatus'
 import { runWeeklyCleanup, runWeeklyLocalMaintenance } from './localMaintenance'
 import { runDailySnapshot } from './paperWorkerTasks'
 import { runEODExit } from './paperExitTasks'
+import { runEodExitUnderIntradayLease } from './eodExitLease'
 import { runWeeklyModelRegistryCheck } from './controllerWorkflows'
 import { databaseForTable } from './dataDomainRegistry'
+import { eodExitSchedule } from './schedulerManifestGovernance'
 
 interface WorkerCronDeps {
   cron: string
@@ -65,9 +67,9 @@ export async function handleWorkerDomainCron(deps: WorkerCronDeps): Promise<bool
     return true
   }
 
-  if (cron === '25 5 * * 1-5') {
+  if (cron === eodExitSchedule().cron) {
     runWithLog('eod-exit', async () => {
-      await runEODExit(env)
+      await runEodExitUnderIntradayLease(env, () => runEODExit(env))
       return 'EOD exit done'
     })
     return true

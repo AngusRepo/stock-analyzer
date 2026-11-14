@@ -87,17 +87,34 @@ export async function batchGetAtrByDomain(
   )
 }
 
-/** Exact session close for accounting. Never substitute an earlier day's mark. */
-export async function batchGetClosingPricesByDomain(
+export interface ClosingMark { price: number; date: string }
+
+/** Exact session close with the row's own date, so callers can prove the mark date. */
+export async function batchGetClosingMarksByDomain(
   env: PaperMarketDomainDataEnv, symbols: string[], session: string,
-): Promise<Map<string, number>> {
+): Promise<Map<string, ClosingMark>> {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(session)) throw new Error('paper_valuation_session_invalid')
   const identity = await identities(databaseForDataDomain(env, 'core'), symbols)
   const ids = [...new Set(identity.values())]
   if (!ids.length) return new Map()
   const { results } = await databaseForDataDomain(env, 'market').prepare(`
-    SELECT stock_id, close AS price FROM stock_prices
+    SELECT stock_id, close AS price, date FROM stock_prices
     WHERE stock_id IN (${ids.map(() => '?').join(',')}) AND date=? AND close>0
-  `).bind(...ids, session).all<PriceRow>()
-  return mapByIdentity(identity, results ?? [], row => Number(row.price))
+  `).bind(...ids, session).all<PriceRow & { date: string }>()
+  const bySymbol = new Map([...identity].map(([symbol, id]) => [id, symbol]))
+  const marks = new Map<string, ClosingMark>()
+  for (const row of results ?? []) {
+    const symbol = bySymbol.get(Number(row.stock_id))
+    const price = Number(row.price)
+    if (symbol && Number.isFinite(price)) marks.set(symbol, { price, date: String(row.date) })
+  }
+  return marks
+}
+
+/** Exact session close for accounting. Never substitute an earlier day's mark. */
+export async function batchGetClosingPricesByDomain(
+  env: PaperMarketDomainDataEnv, symbols: string[], session: string,
+): Promise<Map<string, number>> {
+  const marks = await batchGetClosingMarksByDomain(env, symbols, session)
+  return new Map([...marks].map(([symbol, mark]) => [symbol, mark.price]))
 }

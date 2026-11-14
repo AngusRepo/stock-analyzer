@@ -149,3 +149,43 @@ def test_leading_zero_security_cannot_be_reassigned_to_retired_numeric_alias():
         load_training_price_capture(bucket,stock_rows=[{"id":293,"symbol":"9801"}],**kwargs)
     prices,_,_=load_training_price_capture(bucket,stock_rows=[{"id":20411,"symbol":"009801"}],**kwargs)
     assert prices[20411][0]["close"]==101. and 293 not in prices
+
+
+def test_prefetched_blobs_keeps_order_and_surfaces_errors_at_their_position():
+    """PERF-D5: one-blob lookahead; a later blob's failure cannot pre-empt earlier work."""
+    import threading
+    from services.training_price_capture import prefetched_blobs
+    started = []
+    class Blob:
+        def __init__(self, key): self.key = key
+        def download_as_bytes(self):
+            started.append((self.key, threading.get_ident()))
+            if self.key == 'bad': raise FileNotFoundError(self.key)
+            return self.key.encode()
+    bucket = type('B', (), {'blob': lambda self, key: Blob(key)})()
+    downloads = prefetched_blobs(bucket, ['a', 'b', 'bad', 'c'])
+    assert next(downloads) == b'a'
+    assert next(downloads) == b'b'
+    with pytest.raises(FileNotFoundError):
+        next(downloads)
+    assert 'c' not in [k for k, _ in started] and threading.get_ident() not in {t for _, t in started}
+    assert list(prefetched_blobs(bucket, [])) == []
+
+
+def test_prefetched_blobs_early_close_does_not_wait_for_lookahead():
+    import threading
+    import time
+    from services.training_price_capture import prefetched_blobs
+    release = threading.Event()
+    class Blob:
+        def __init__(self, key): self.key = key
+        def download_as_bytes(self):
+            if self.key == 'slow': release.wait(5)
+            return self.key.encode()
+    bucket = type('B', (), {'blob': lambda self, key: Blob(key)})()
+    downloads = prefetched_blobs(bucket, ['a', 'slow'])
+    assert next(downloads) == b'a'  # 'slow' is now downloading in the background
+    started = time.monotonic()
+    downloads.close()  # e.g. the caller's validation raised
+    assert time.monotonic() - started < 1.0
+    release.set()

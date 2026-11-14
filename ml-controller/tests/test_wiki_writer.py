@@ -10,6 +10,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# The fake vault is "C:/wiki-vault" as configured; the service resolves it, so its
+# native form is C:\wiki-vault on Windows and <cwd>/C:/wiki-vault on POSIX.
+VAULT_NATIVE = Path("C:/wiki-vault").resolve()
+
 from services.wiki_writer import (
     TW_TZ,
     append_moc_links_to_local_vault,
@@ -175,7 +179,7 @@ def test_wiki_writer_writes_note_inside_local_vault(monkeypatch):
         "Sessions/"
         "2026-05-08-obsidian-local-write-smoke.draft.md"
     )
-    assert file_info["absolute_path"].startswith("C:\\wiki-vault\\")
+    assert file_info["absolute_path"].startswith(str(VAULT_NATIVE) + os.sep)
     assert file_info["wikilink"] == (
         "[[02_Products/StockVision/Sessions/2026-05-08-obsidian-local-write-smoke.draft|"
         "Obsidian local write smoke]]"
@@ -387,9 +391,9 @@ Obsidian memory implementation detail.
 """,
     }
     scoped_files = {
-        "C:\\wiki-vault\\06_MOC": [global_moc],
-        "C:\\wiki-vault\\02_Products\\StockVision\\決策紀錄_decisions": [decision],
-        "C:\\wiki-vault\\02_Products\\StockVision\\Sessions": [session],
+        str(VAULT_NATIVE / "06_MOC"): [global_moc],
+        str(VAULT_NATIVE / "02_Products/StockVision/決策紀錄_decisions"): [decision],
+        str(VAULT_NATIVE / "02_Products/StockVision/Sessions"): [session],
     }
 
     monkeypatch.setattr(Path, "exists", lambda self: True)
@@ -412,7 +416,7 @@ Obsidian memory implementation detail.
 
 
 def test_append_moc_links_to_local_vault_adds_note_link_once(monkeypatch):
-    moc_path = Path("C:/wiki-vault/02_Products/StockVision/超級連結_moc/MOC-StockVision.md")
+    moc_path = VAULT_NATIVE / "02_Products/StockVision/超級連結_moc/MOC-StockVision.md"
     written: dict[str, str] = {}
     existing = "# MOC-StockVision\n\n## Linked Notes\n\n<!-- wiki-writer-links -->\n"
     write_result = {
@@ -467,8 +471,8 @@ def test_append_moc_links_to_local_vault_skips_existing_link(monkeypatch):
 def test_inspect_wiki_vault_reports_ok_with_recent_session(monkeypatch):
     session_path = Path("C:/wiki-vault/02_Products/StockVision/Sessions/2026-05-08-obsidian-health.draft.md")
     notes_by_scope = {
-        "C:\\wiki-vault\\06_MOC": [Path("C:/wiki-vault/06_MOC/MOC-Home.md")],
-        "C:\\wiki-vault\\02_Products\\StockVision\\Sessions": [session_path],
+        str(VAULT_NATIVE / "06_MOC"): [Path("C:/wiki-vault/06_MOC/MOC-Home.md")],
+        str(VAULT_NATIVE / "02_Products/StockVision/Sessions"): [session_path],
     }
 
     monkeypatch.setattr(Path, "exists", lambda self: True)
@@ -497,7 +501,7 @@ def test_inspect_wiki_vault_uses_mtime_for_same_day_latest_session(monkeypatch):
     monkeypatch.setattr(
         Path,
         "rglob",
-        lambda self, pattern: [older_session, newer_session] if str(self).endswith("\\Sessions") else [],
+        lambda self, pattern: [older_session, newer_session] if str(self).endswith(os.sep + "Sessions") else [],
     )
     monkeypatch.setattr(
         Path,
@@ -517,14 +521,14 @@ def test_inspect_wiki_vault_uses_mtime_for_same_day_latest_session(monkeypatch):
 def test_inspect_wiki_vault_reports_missing_required_and_stale_session(monkeypatch):
     session_path = Path("C:/wiki-vault/02_Products/StockVision/Sessions/2026-05-01-old-session.draft.md")
     existing = {
-        "C:\\wiki-vault",
-        "C:\\wiki-vault\\02_Products\\StockVision",
-        "C:\\wiki-vault\\02_Products\\StockVision\\Sessions",
+        str(VAULT_NATIVE),
+        str(VAULT_NATIVE / "02_Products/StockVision"),
+        str(VAULT_NATIVE / "02_Products/StockVision/Sessions"),
     }
 
     monkeypatch.setattr(Path, "exists", lambda self: str(self) in existing)
     monkeypatch.setattr(Path, "is_file", lambda self: True)
-    monkeypatch.setattr(Path, "rglob", lambda self, pattern: [session_path] if str(self).endswith("\\Sessions") else [])
+    monkeypatch.setattr(Path, "rglob", lambda self, pattern: [session_path] if str(self).endswith(os.sep + "Sessions") else [])
 
     result = inspect_wiki_vault(
         vault_root="C:/wiki-vault",

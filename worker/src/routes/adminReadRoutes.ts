@@ -343,6 +343,7 @@ adminReadRoutes.get('/api/admin/storage/capacity', async (c) => {
       median_daily_growth_bytes: estimate.median_daily_growth_bytes,
       net_daily_growth_bytes: estimate.net_daily_growth_bytes,
       projected_days_to_warning_65pct: estimate.projected_days_to_warning_65pct,
+      projected_days_to_critical_90pct: estimate.projected_days_to_critical_90pct,
       projected_days_to_max: estimate.projected_days_to_max,
     }
   })

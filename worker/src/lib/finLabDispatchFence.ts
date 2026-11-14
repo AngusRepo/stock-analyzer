@@ -5,9 +5,12 @@ export type FinLabDispatchFenceResult = {
   activeAttempt: number
 }
 
+/** Highest dispatch_attempt the controller accepts (ml-controller/routers/finlab.py dispatch_attempt le=5). */
+export const FINLAB_DISPATCH_ATTEMPT_MAX = 5
+
 function boundedAttempt(value: unknown): number {
   const attempt = Math.floor(Number(value) || 1)
-  return Math.max(1, Math.min(5, attempt))
+  return Math.max(1, Math.min(FINLAB_DISPATCH_ATTEMPT_MAX, attempt))
 }
 
 export function resolveFinLabDispatchFence(params: {
@@ -36,9 +39,33 @@ export function resolveFinLabDispatchFence(params: {
   }
 }
 
+/** R33-NEW-32: per-attempt start marker. The scheduler head is one KV value that a dispatcher in another
+ * colo can overwrite with `triggered` after the start heartbeat landed; this key is never overwritten. */
+export function finLabStartMarkerKey(runDate: string, runId: string, attempt: unknown): string {
+  return `finlab:start-observed:${runDate}:${runId}:${boundedAttempt(attempt)}`
+}
+
 /** Preserve dispatch identity when a callback replaces the scheduler head. */
 export function finLabCallbackSummary(summary: string, attempt: unknown, activeSummary?: string | null): string {
   const call = String(activeSummary ?? '').match(/(?:^|\s)function_call_id=([^\s;]+)/)?.[1]
   const clean = summary.replace(/(?:^|\s)(?:dispatch_attempt|function_call_id)=[^\s;]+/g, '').trim()
   return `${clean} dispatch_attempt=${boundedAttempt(attempt)}${call ? ` function_call_id=${call}` : ''}`
+}
+
+/**
+ * The FinLab job reports a composition fail-closed (daily_inference_composition_*) only in the canonical
+ * apply blockers of the callback result; the run log keeps it as a summary field the watchdog can read.
+ */
+export function finLabCompositionBlockerSuffix(result: unknown): string {
+  const perDataset = (result as { canonical_d1_apply?: { per_dataset?: unknown } } | null)?.canonical_d1_apply?.per_dataset
+  const reasons = new Set<string>()
+  for (const dataset of perDataset && typeof perDataset === 'object' ? Object.values(perDataset) : []) {
+    const blockers = (dataset as { blockers?: unknown } | null)?.blockers
+    for (const blocker of Array.isArray(blockers) ? blockers : []) {
+      const reason = (blocker as { kind?: unknown; reason?: unknown } | null)
+      if (reason?.kind === 'daily_inference_composition' && typeof reason.reason === 'string'
+        && /^[a-z0-9_]+$/.test(reason.reason)) reasons.add(reason.reason)
+    }
+  }
+  return reasons.size ? ` composition_blockers=${[...reasons].sort().join(',')}` : ''
 }

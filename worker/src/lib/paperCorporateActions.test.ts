@@ -377,6 +377,11 @@ test('exact share conversion adjusts quantity, cost and stops without spending a
   await f.process(source)
   const pos: any = f.sql.prepare('SELECT * FROM paper_positions WHERE account_id=2').get()
   assert.equal(pos.shares, 75)
+  // O04: the conversion is recorded once (the second run is the same session) for NAV reconciliation.
+  assert.deepEqual(f.sql.prepare("SELECT account_id, trade_date, symbol, reason, detail_json FROM paper_execution_events WHERE event_type='corporate_share_conversion'").all()
+    .map((row: any) => ({ ...row, detail_json: JSON.parse(row.detail_json) })),
+    [{ account_id: 2, trade_date: '2026-09-07', symbol: '2330', reason: 'exchange',
+      detail_json: { action_id: 'exchange', shares_before: 100, shares_after: 75 } }])
   assert.equal(pos.avg_cost, 130)
   assert.equal(pos.entry_price, 130)
   assert.equal(pos.initial_stop, 123.5)

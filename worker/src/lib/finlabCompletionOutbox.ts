@@ -27,6 +27,23 @@ export async function queueFinLabCompletion(env: Bindings, date: string, runId: 
   await dispatchFinLabCompletion(env, date)
 }
 
+/**
+ * A restart re-arms a failed or waiting market continuation under its own run id, so the
+ * continuation it runs next is not dropped as a superseded delivery. Success and running rows stay.
+ * Returns the row status after the re-arm (null when there is no row yet).
+ */
+export async function rearmFinLabMarketCompletion(env: Bindings, date: string, runId: string, force = false) {
+  const db = databaseForDataDomain(env, 'ops')
+  await db.prepare(`UPDATE pipeline_stage_runs SET status='queued',cursor_key=?,
+    attempt_count=0,lease_owner=NULL,lease_expires_at=NULL,started_at=NULL,completed_at=NULL,last_error=NULL,
+    queued_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
+    WHERE business_date=? AND stage='finlab_market' AND status IN ('error','waiting')`)
+    .bind(JSON.stringify({runId,force}),date).run()
+  const row = await db.prepare(`SELECT status FROM pipeline_stage_runs WHERE business_date=? AND stage='finlab_market'`)
+    .bind(date).first<{status:string}>()
+  return row?.status ?? null
+}
+
 export async function dispatchFinLabCompletion(env: Bindings, date: string, delaySeconds = 0) {
   const db = databaseForDataDomain(env, 'ops')
   await db.prepare(`UPDATE pipeline_stage_runs SET status='queued',lease_owner=NULL,lease_expires_at=NULL,
@@ -76,6 +93,12 @@ export async function runFinLabCompletionStage(
     await heartbeat.assertActive('before_complete')
     const waiting = result.startsWith('source waiting;')
     if (!await markPipelineStageFenced(db,{...identity,status:waiting?'waiting':'success'})) throw new Error('finlab_completion_stale_owner')
+    // Another path completed the canonical market data: close the producer's failed display receipt and keep
+    // its cursor_key as evidence. Observability only, so it cannot turn this success into an error.
+    if (!waiting && stage === 'finlab_market') await db.prepare(`UPDATE pipeline_stage_runs
+      SET status='success',last_error='superseded_by_finlab_market',completed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
+      WHERE business_date=? AND stage='finlab_progress' AND status<>'success'`)
+      .bind(date).run().catch(error => console.warn('[finlabCompletion] finlab_progress close failed:', error))
     if (waiting) await db.prepare(`UPDATE pipeline_stage_runs SET attempt_count=MAX(0,attempt_count-1)
       WHERE business_date=? AND stage=? AND canonical_run_id=? AND status='waiting' AND lease_owner IS NULL`)
       .bind(date,stage,runId).run()

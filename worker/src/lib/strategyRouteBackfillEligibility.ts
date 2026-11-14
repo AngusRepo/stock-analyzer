@@ -188,6 +188,9 @@ export async function auditStrategyRouteBackfillEligibility(
 
   const canonicalRunIdsJson = JSON.stringify(canonicalRunIds)
   const formalMatureCompatibility = buildStrategyFormalMatureCompatibilitySql('mr')
+  // matrix_counts reads each head date's matrix cells once. Four correlated
+  // COUNTs re-read every cell of the date once each (6.1M rows per call on
+  // 2026-11-12). A formal run is unique per producer, so it has one row per head.
   const result = await db.prepare(`
     WITH canonical_heads AS (
       SELECT h.key signal_date, CAST(h.value AS TEXT) producer_run_id
@@ -199,6 +202,21 @@ export async function auditStrategyRouteBackfillEligibility(
              reference_contract_version
         FROM strategy_label_matrix_runs_v4 mr
        WHERE status='ready' AND ${formalMatureCompatibility.sql}
+    ),
+    matrix_counts AS (
+      SELECT mr.signal_date, mr.producer_run_id,
+             COUNT(*) matrix_rows,
+             SUM(CASE WHEN m.evaluable=1 THEN 1 ELSE 0 END) evaluable_matrix_rows,
+             SUM(CASE WHEN m.evaluable=1 AND m.strategy_hit=1 THEN 1 ELSE 0 END) matched_matrix_rows,
+             SUM(CASE WHEN m.evaluable=1 AND m.strategy_hit=1 AND m.affinity_evidence_count>0
+                      THEN 1 ELSE 0 END) threshold_margin_rows
+        FROM formal_runs mr
+        JOIN strategy_label_matrix_v4 m
+          ON m.signal_date=mr.signal_date AND m.producer_run_id=mr.producer_run_id
+         AND m.labeler_version=mr.labeler_version
+         AND m.reference_contract_version=mr.reference_contract_version
+       WHERE (mr.signal_date, mr.producer_run_id) IN (SELECT signal_date, producer_run_id FROM canonical_heads)
+       GROUP BY mr.signal_date, mr.producer_run_id
     )
     SELECT h.signal_date, h.producer_run_id,
            COUNT(r.symbol) reference_rows,
@@ -215,36 +233,13 @@ export async function auditStrategyRouteBackfillEligibility(
                 AND q.symbol=r.symbol
                 AND q.producer_run_id=h.producer_run_id
            ) THEN 1 ELSE 0 END) rejected_label_rows,
-           COALESCE((
-             SELECT COUNT(*) FROM strategy_label_matrix_v4 m
-              WHERE m.signal_date=h.signal_date AND m.producer_run_id=h.producer_run_id
-                AND m.labeler_version=mr.labeler_version
-                AND m.reference_contract_version=mr.reference_contract_version
-           ), 0) matrix_rows,
+           COALESCE(MAX(c.matrix_rows), 0) matrix_rows,
            COALESCE(mr.expected_cell_count, 0) expected_matrix_rows,
-           COALESCE((
-             SELECT COUNT(*) FROM strategy_label_matrix_v4 m
-              WHERE m.signal_date=h.signal_date AND m.producer_run_id=h.producer_run_id
-                AND m.labeler_version=mr.labeler_version
-                AND m.reference_contract_version=mr.reference_contract_version
-                AND m.evaluable=1
-           ), 0) evaluable_matrix_rows,
-           COALESCE((
-             SELECT COUNT(*) FROM strategy_label_matrix_v4 m
-              WHERE m.signal_date=h.signal_date AND m.producer_run_id=h.producer_run_id
-                AND m.labeler_version=mr.labeler_version
-                AND m.reference_contract_version=mr.reference_contract_version
-                AND m.evaluable=1 AND m.strategy_hit=1
-           ), 0) matched_matrix_rows,
+           COALESCE(MAX(c.evaluable_matrix_rows), 0) evaluable_matrix_rows,
+           COALESCE(MAX(c.matched_matrix_rows), 0) matched_matrix_rows,
            SUM(CASE WHEN r.strategy_challenger_affinity_version=?
                     THEN 1 ELSE 0 END) challenger_affinity_rows,
-           COALESCE((
-             SELECT COUNT(*) FROM strategy_label_matrix_v4 m
-              WHERE m.signal_date=h.signal_date AND m.producer_run_id=h.producer_run_id
-                AND m.labeler_version=mr.labeler_version
-                AND m.reference_contract_version=mr.reference_contract_version
-                AND m.evaluable=1 AND m.strategy_hit=1 AND m.affinity_evidence_count>0
-           ), 0) threshold_margin_rows,
+           COALESCE(MAX(c.threshold_margin_rows), 0) threshold_margin_rows,
            SUM(CASE WHEN COALESCE(
                      e.route_score,
                      CASE WHEN r.strategy_challenger_route_version=?
@@ -253,6 +248,8 @@ export async function auditStrategyRouteBackfillEligibility(
       FROM canonical_heads h
       LEFT JOIN formal_runs mr
         ON mr.signal_date=h.signal_date AND mr.producer_run_id=h.producer_run_id
+      LEFT JOIN matrix_counts c
+        ON c.signal_date=h.signal_date AND c.producer_run_id=h.producer_run_id
       LEFT JOIN selection_reference_snapshots_v1 r
         ON r.signal_date=h.signal_date
        AND r.producer_run_id=h.producer_run_id

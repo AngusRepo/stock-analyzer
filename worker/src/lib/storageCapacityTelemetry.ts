@@ -118,6 +118,7 @@ export type StorageCapacityGrowthEstimate = {
   median_daily_growth_bytes: number | null
   net_daily_growth_bytes: number | null
   projected_days_to_warning_65pct: number | null
+  projected_days_to_critical_90pct: number | null
   projected_days_to_max: number | null
 }
 
@@ -161,6 +162,7 @@ export function buildStorageCapacityGrowthEstimate(input: {
       median_daily_growth_bytes: null,
       net_daily_growth_bytes: null,
       projected_days_to_warning_65pct: null,
+      projected_days_to_critical_90pct: null,
       projected_days_to_max: null,
     }
   }
@@ -202,6 +204,61 @@ export function buildStorageCapacityGrowthEstimate(input: {
     median_daily_growth_bytes: medianDailyGrowthBytes,
     net_daily_growth_bytes: netDailyGrowthBytes,
     projected_days_to_warning_65pct: projected(maxBytes * 0.65),
+    projected_days_to_critical_90pct: projected(maxBytes * 0.9),
     projected_days_to_max: projected(maxBytes),
   }
+}
+
+// D7a observation only: runway to the 90% critical line, alerted below this many days.
+export const STORAGE_CAPACITY_RUNWAY_ALERT_DAYS = 30
+
+export type StorageCapacityRunway = {
+  domain: StorageCapacityRow['domain']
+  binding_name: string
+  utilization_pct: number
+  forecast_status: StorageCapacityGrowthEstimate['status']
+  daily_growth_bytes: number | null
+  projected_days_to_critical_90pct: number | null
+}
+
+export async function loadStorageCapacityRunway(
+  env: Pick<Bindings, 'DB'> & Partial<Bindings>,
+  rows: readonly StorageCapacityRow[],
+  observedDate: string,
+): Promise<StorageCapacityRunway[]> {
+  // Same history window and replay exclusion as storage-capacity-report.
+  const [history, baselines] = await Promise.all([
+    databaseForDataDomain(env, 'ops').prepare(`
+      SELECT binding_name, used_bytes, observed_date
+        FROM storage_capacity_daily
+       WHERE observed_date >= date(?, '-45 days')
+         AND date(observed_at, '+8 hours') = observed_date
+       ORDER BY observed_date ASC, observed_at ASC
+    `).bind(observedDate).all<{ binding_name: string; used_bytes: number; observed_date: string }>(),
+    loadStorageCapacityBackfillBaselines(env),
+  ])
+  const baselineByDomain = new Map(
+    (baselines.results ?? []).map((row) => [row.domain, row.baseline_after] as const),
+  )
+  const legacyBaseline = [...baselineByDomain.values()].sort().at(-1) ?? null
+  return rows.map((row) => {
+    const points = (history.results ?? [])
+      .filter((point) => point.binding_name === row.binding_name)
+      .map((point) => ({ observed_date: point.observed_date, used_bytes: Number(point.used_bytes) }))
+    points.push({ observed_date: observedDate, used_bytes: row.used_bytes })
+    const estimate = buildStorageCapacityGrowthEstimate({
+      currentUsedBytes: row.used_bytes,
+      maxBytes: row.max_bytes,
+      history: points,
+      baselineAfter: row.domain === 'legacy' ? legacyBaseline : baselineByDomain.get(row.domain) ?? null,
+    })
+    return {
+      domain: row.domain,
+      binding_name: row.binding_name,
+      utilization_pct: row.utilization_pct,
+      forecast_status: estimate.status,
+      daily_growth_bytes: estimate.daily_growth_bytes,
+      projected_days_to_critical_90pct: estimate.projected_days_to_critical_90pct,
+    }
+  })
 }

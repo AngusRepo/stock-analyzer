@@ -2,6 +2,8 @@ import { validSingleBModel } from './paperStrategyMode'
 import { validateR2Learning } from './l4R2LearningConfig'
 import { validL4FeatureSchema, l4ReleaseEvidenceError } from './l4ReleaseEvidence'
 import { evaluateBoundedLosses } from './riskChecks/p5Losses'
+import { circuitPositionScales } from './circuitPositionScales'
+import { L4_POLICY_V2, L4_V2_ALLOCATOR_KEYS, L4_V2_COST_OBJECTIVES } from './l4PolicySchema'
 import { paperExecutionNow, paperExecutionDate, privateL4ResearchAllowed } from './paperExecutionScope'
 /**
  * tradingConfig.ts — 統一交易參數管理
@@ -116,7 +118,7 @@ export interface AlphaFrameworkConfig {
 
 export interface TradingConfig {
   l4R2Learning?: import('./l4R2LearningConfig').L4R2LearningConfig
-  l4Distribution?: { scope: 'paper' | 'private_research'; artifact: Record<string, unknown>; constraints: Record<string, unknown>; opb?: Record<string, unknown>; operating_mode?: import('./paperStrategyMode').SingleBMode; strategy_role?: 'B';sealedExecution?:Record<string,unknown>;sealedExecutionCalibration?:Record<string,unknown> }
+  l4Distribution?: { policy_schema?: typeof import('./l4PolicySchema').L4_POLICY_V2; scope: 'paper' | 'private_research'; artifact: Record<string, unknown>; constraints: Record<string, unknown>; opb?: Record<string, unknown>; operating_mode?: import('./paperStrategyMode').SingleBMode; strategy_role?: 'B';sealedExecution?:Record<string,unknown>;sealedExecutionCalibration?:Record<string,unknown> }
 
   fees: {
     commission: number     // 買賣手續費率（預設 0.001425 = 0.1425%）
@@ -127,6 +129,8 @@ export interface TradingConfig {
   circuit: {
     /** New policy requires explicit locally validated windows; no guessed defaults. */
     lossGuard?: import('./riskChecks/p5Losses').P5LossGuardPolicy
+    /** Relative layer scales; never defaulted (see circuitPositionScales.ts). */
+    positionScales?: import('./circuitPositionScales').CircuitPositionScales
     maxPositionPct: number       // 正常最大單一部位佔比（預設 0.08）
     buyConfThreshold: number     // 正常買入信心門檻（預設 0.60）
     sellConfThreshold: number    // 正常賣出信心門檻（預設 0.65）
@@ -169,7 +173,6 @@ export interface TradingConfig {
   position: {
     dailyBuyLimit: number        // 每日自動買入上限 NT$
     manualDailyLimit: number     // 每日手動買入上限 NT$
-    maxPctOfPortfolio: number    // 單筆最大佔 portfolio %（預設 0.25）
     maxPctOfCash: number         // legacy cash pacing hint; execution hard cap uses available cash + NAV risk caps
     minCashToTrade: number       // 最低可交易現金（預設 10000）
     minStopPct: number           // 最低停損 %（預設 0.03）
@@ -476,7 +479,6 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
   position: {
     dailyBuyLimit: 800_000,
     manualDailyLimit: 800_000,
-    maxPctOfPortfolio: 0.25,
     maxPctOfCash: 0.30,
     minCashToTrade: 10_000,
     minStopPct: 0.03,
@@ -1632,6 +1634,7 @@ export function validateTradingConfig(config: TradingConfig, privateResearch = f
   if(config.circuit.lossGuard) {
     try {evaluateBoundedLosses([],[],[],config.circuit.lossGuard)} catch {errors.push('circuit.lossGuard requires valid explicit session windows and loss categories')}
   }
+  try {circuitPositionScales(config.circuit)} catch {errors.push('circuit.positionScales requires highVol/severeHighVol/momentumZone{RED,YELLOW}/lossStreak in (0,1]')}
   if (config.l4Distribution!=null) {
     const policy=config.l4Distribution
     const c=policy.constraints
@@ -1659,7 +1662,27 @@ export function validateTradingConfig(config: TradingConfig, privateResearch = f
       || (!isolatedCandidate && (a?.release?.scope!=='paper' || a?.release?.decision!=='PASS'
         || a?.release?.model_checksum!==a?.model_checksum
         || !/^[a-f0-9]{64}$/.test(a?.release?.validation_receipt_checksum ?? '')))) errors.push('l4Distribution requires a validated Paper release')
-    if (!c || !isFiniteNumber(c.exposure_cap) || c.exposure_cap<0 || c.exposure_cap>1
+    const schema=(policy as any).policy_schema
+    if (schema!=null && schema!==L4_POLICY_V2) errors.push('l4Distribution.policy_schema is unknown')
+    if (schema===L4_POLICY_V2) {
+      // Risk owns the envelope (exposure/name/count/floor/fees); OPB arms only scale it.
+      const opb=policy.opb as any
+      if (!c || Object.keys(c).some(k=>!L4_V2_ALLOCATOR_KEYS.has(k)) || typeof c.cost_objective!=='string' || !L4_V2_COST_OBJECTIVES.has(c.cost_objective)
+        || !Number.isSafeInteger(c.return_history_lookback_sessions) || Number(c.return_history_lookback_sessions)<60
+        || Number(c.return_history_lookback_sessions)>504 || !isFiniteNumber(c.risk_aversion) || c.risk_aversion<0)
+        errors.push('l4Distribution v2 constraints must hold allocator-owned parameters only')
+      if (opb?.schema_version!=='l4-opb-relative-arms-v2' || !Array.isArray(opb.arms) || opb.arms[0]?.id!=='base'
+        || Object.keys(opb.arms[0]).length!==1 || 'exploration' in opb
+        || !Number.isSafeInteger(opb.reward_window_observations) || opb.reward_window_observations<1
+        || !isFiniteNumber(opb.reward_half_life_observations) || opb.reward_half_life_observations<=0
+        || opb.arms.some((arm:any)=>Object.keys(arm).some(k=>!['id','exposure_fraction','name_fraction','risk_aversion'].includes(k))
+          || ['exposure_fraction','name_fraction'].some(k=>arm[k]!==undefined && (!isFiniteNumber(arm[k]) || arm[k]<=0 || arm[k]>1))
+          || arm.risk_aversion!==undefined && (!isFiniteNumber(arm.risk_aversion) || arm.risk_aversion<0)))
+        errors.push('l4Distribution v2 OPB arms must be fractions of the risk envelope')
+      if (!config.circuit.positionScales) errors.push('l4Distribution v2 requires circuit.positionScales')
+      if ('maxPctOfPortfolio' in (config.position as any))
+        errors.push('l4Distribution v2 forbids position.maxPctOfPortfolio (risk_config owns the single-name cap)')
+    } else if (!c || !isFiniteNumber(c.exposure_cap) || c.exposure_cap<0 || c.exposure_cap>1
       || !isFiniteNumber(c.name_cap) || c.name_cap<=0 || c.name_cap>1
       || !isFiniteNumber(c.min_weight) || c.min_weight<0 || c.min_weight>c.name_cap
       || !(c.max_positions===null || typeof c.max_positions==='number' && Number.isSafeInteger(c.max_positions) && c.max_positions>0))

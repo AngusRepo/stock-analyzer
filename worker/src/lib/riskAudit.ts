@@ -6,6 +6,7 @@
  */
 import type { CircuitBreakerState } from './riskTypes'
 import type { OrderValidation } from './riskTypes'
+import { paperAccountId } from './paperExecutionScope'
 
 export type RiskTriggerEvent =
   | 'morning_setup'
@@ -48,9 +49,10 @@ export async function writeAuditEntry(
         (trigger_event, account_id, symbol, side, decision, halt,
          triggered_count, severity, max_position_pct, buy_conf_threshold,
          sell_conf_threshold, risk_state_json, order_validation_json, config_version)
-       VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).bind(
       entry.triggerEvent,
+      paperAccountId(),
       entry.symbol ?? null,
       entry.side ?? null,
       entry.decision,

@@ -932,3 +932,18 @@ def test_the_shadow_flag_never_enters_the_gpu_input_or_its_stage_digest():
     gpu_calls = [n for n in ast.walk(fn) if isinstance(n, ast.Call) and getattr(n.func, 'attr', '') == 'gpu']
     assert len(gpu_calls) == 1 and getattr(gpu_calls[0].args[0], 'id', '') == 'gpu_input'
     assert [k.arg for k in gpu_calls[0].keywords] == ['shadow']
+
+
+def test_timexer_inference_prefers_l4_and_falls_back_to_a10():
+    # 10/29 and 11/11: L4-only inference queued over 2 h for capacity and the run failed.
+    import ast
+    from pathlib import Path
+    import modal_app
+    tree = ast.parse(Path(modal_app.__file__).read_text())
+    fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == 'timexer_universal_predict')
+    [decorator] = [d for d in fn.decorator_list if isinstance(d, ast.Call) and getattr(d.func, 'attr', '') == 'function']
+    spec = {k.arg: ast.literal_eval(k.value) for k in decorator.keywords}
+    # Modal tries the list in order; the first entry is the preferred GPU.
+    assert spec['gpu'] == ['L4', 'A10']
+    # Execution timeout only (queueing excluded); the lease must outlive it.
+    assert spec['timeout'] == 900 < GPU_LEASE_SECONDS and spec['max_containers'] == 1

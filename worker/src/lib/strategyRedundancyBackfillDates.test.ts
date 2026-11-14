@@ -170,7 +170,9 @@ test('no table of the backfill selection is scanned', () => {
     assert.ok(!plan.some((detail) => /^SCAN (m|r|mr)\b/.test(detail)), joined)
     assert.ok(plan.some((detail) => /^SEARCH mr USING (INDEX \w+|PRIMARY KEY) \(producer_run_id=\?/.test(detail)), joined)
     assert.ok(plan.some((detail) => /^SEARCH m USING .*\(signal_date=\?/.test(detail)), joined)
-    assert.ok(plan.some((detail) => /^SEARCH r USING .*\(signal_date=\?/.test(detail)), joined)
+    // Or by idx_selection_reference_v1_producer_run (learning 0067). Writers stamp one signal_date
+    // per producer; legacy cross-date rows only widen the bound to that producer's rows.
+    assert.ok(plan.some((detail) => /^SEARCH r USING .*\((signal_date|producer_run_id)=\?/.test(detail)), joined)
   } finally {
     db.close()
   }

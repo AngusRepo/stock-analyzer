@@ -633,21 +633,31 @@ export async function runPostPipelineCallbackChain(
     })
   }
   results.push(await logChainedTask(env, ctx, 'pit-residual-funnel-enrichment', async () => {
-    const { enrichCanonicalPitResidualFunnel } = await import('./pitResidualFunnelEnrichment')
-    const result = await enrichCanonicalPitResidualFunnel(env, {
+    const { enrichPitResidualFunnelForChain } = await import('./pitResidualFunnelEnrichment')
+    return enrichPitResidualFunnelForChain(env, {
       businessDate: ctx.runDate!,
       pipelineCanonicalRunId: String(ctx.upstreamRunId ?? ''),
     })
-    return result.summary
   }, { critical: false, timeoutMs: TASK_EXECUTION_TIMEOUT_MS }))
   results.push(await logChainedTask(env, ctx, 'pit-residual-funnel-recovery', async () => {
-    const { recoverMissingPitResidualFunnels } = await import('./pitResidualFunnelEnrichment')
-    const result = await recoverMissingPitResidualFunnels(env, {
-      throughDate: ctx.runDate!,
-      excludeBusinessDate: ctx.runDate!,
-      maxDates: 1,
-    })
-    return result.summary
+    const { recoverMissingPitResidualFunnels, settleStalePitResidualWaits } = await import('./pitResidualFunnelEnrichment')
+    const window = { throughDate: ctx.runDate!, excludeBusinessDate: ctx.runDate! }
+    let result: Awaited<ReturnType<typeof recoverMissingPitResidualFunnels>> | null = null
+    let recoveryError: unknown = null
+    try {
+      // Evidence-only backfill batch; three dates drain a missed-day backlog.
+      result = await recoverMissingPitResidualFunnels(env, { ...window, maxDates: 3 })
+    } catch (error) {
+      recoveryError = error
+    }
+    // Earlier 14:20 waits end as success or error even when recovery itself fails.
+    const settled = await settleStalePitResidualWaits(env, { ...window, recovery: result })
+      .catch((error) => `stale_waiting_settlement_error:${error instanceof Error ? error.message : String(error)}`)
+    if (recoveryError || !result) {
+      const message = recoveryError instanceof Error ? recoveryError.message : String(recoveryError)
+      throw new Error(`${message} ${settled}`)
+    }
+    return `${result.summary} ${settled}`
   }, { critical: false, timeoutMs: TASK_EXECUTION_TIMEOUT_MS }))
   const snapshotEvidenceKey = snapshotUnavailableInEvidenceOnlyMode
     ? 'active8-evidence-only-authority-v1'

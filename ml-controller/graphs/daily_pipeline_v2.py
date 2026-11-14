@@ -674,6 +674,7 @@ class PipelineStateV2(TypedDict, total=False):
     paired_nav_atomic_allocation: dict      # Original sparse/OPB outputs; no native/ledger authority
     pipeline_screener_seed_context: dict    # Actual OPS/Core inputs and original merge, no historical PIT credit
     persona_computation: dict               # Explicit missing/failed source diagnostics
+    persona_opinions_write: dict            # Formal persona_opinions D1 write status (advisory)
     pipeline_timesfm_context: dict          # Frozen release policy/version/sequence requirement shared by all slates
     timesfm_l2_sidecars: dict                # symbol -> TimesFM L2 sidecar payload
     timesfm_l2_summary: dict                 # L2 feature enrichment telemetry
@@ -2142,14 +2143,22 @@ async def node_compute_personas(state: PipelineStateV2) -> dict:
     if computation['errors']:
         logger.warning('[Pipeline V2] persona evidence incomplete for %s', sorted(computation['errors']))
     # No candidate can write its opinion into the formal persona table.
+    # The table is evidence only: a failed write stays non-fatal, but is reported.
+    write_status = {'status': 'written', 'rows': 0, 'expected_rows': len(opinions)}
+    advisory = []
     try:
         written = write_persona_opinions(client_for_domain(D1DataDomain.LEARNING), opinions)
+        write_status['rows'] = written
         logger.info(f"[Pipeline V2] persona opinions written: {written}/{len(opinions)}")
     except Exception as e:
         logger.warning(f"[Pipeline V2] persona D1 write failed (non-fatal): {e}")
+        write_status.update(status='failed', error_type=type(e).__name__)
+        advisory.append(f'persona_opinions: d1_write_failed:{type(e).__name__}')
 
     result = {'persona_opinions': computation['opinions'], 'persona_computation': computation,
-              'pipeline_persona_context': context}
+              'pipeline_persona_context': context, 'persona_opinions_write': write_status}
+    if advisory:
+        result['errors'] = advisory
     if prepared is not None:
         from services.paired_nav_atomic_personas import compute_atomic_personas
         result['paired_nav_atomic_personas'] = compute_atomic_personas(
@@ -2333,6 +2342,10 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     if state.get('premarket_execution_scope') == 'postclose':
         raise ValueError('postclose_formal_allocation_forbidden')
     logger.info("[Pipeline V2] node_recommend")
+    from services.premarket_pipeline import recommend_progress
+    # Reads only until a seal may start; the premarket runner may then retry a
+    # transient D1 read failure. Mark 'seal' before every allocation-context write.
+    recommend_progress('pre_seal')
 
     # Phase 2: persona weight is KV-controllable for safe rollout
     #   ml:persona_score_weight ??float, default 1.0, 0 = disabled, 0.5 = shadow
@@ -2434,6 +2447,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     if evidence_only_result is not None:
         from services.paired_nav_journal import freeze_snapshot
         from services.paired_nav_collection import shadow_failure
+        recommend_progress('seal')
         try:
             seal = await asyncio.to_thread(freeze_snapshot,
                 signal_date=state["run_date"],
@@ -2628,6 +2642,7 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     from services.paired_nav_execution_environment import capture_pipeline_execution_environment
     paired_nav_source_run_id = str(state.get("producer_run_id") or f"daily:{state['run_date']}")
     allocation_phase_started = time.perf_counter()
+    recommend_progress('seal')
     # Read the independent risk owner, never infer it from trading:config.
     # Missing risk config is recorded as missing, not filled with current defaults.
     final, paired_nav_collection = await asyncio.to_thread(run_and_capture_allocation,
@@ -3067,6 +3082,7 @@ async def node_write_d1(state: PipelineStateV2) -> dict:
         "final_recommendations": len(final),
         "sell_marked_non_buy": sell_marked_non_buy,
         "llm_reasons_count": len(state.get("llm_reasons") or {}),
+        "persona_opinions_write": state.get("persona_opinions_write"),
         "breeze2_reason_shadow": breeze2_reason_shadow_metrics(state.get("breeze2_reason_shadow") or {}),
         "alpha_bucket_counts": alpha_bucket_counts,
         "alpha_selected_bucket_counts": alpha_selected_bucket_counts,
@@ -4987,7 +5003,7 @@ def _merge_pipeline_state_update(state: PipelineStateV2, update: dict | None) ->
         state["errors"] = list(state.get("errors") or []) + list(errors)
 
 
-PIPELINE_ADVISORY_ERROR_PREFIXES = ("llm_reasons:",)
+PIPELINE_ADVISORY_ERROR_PREFIXES = ("llm_reasons:", "persona_opinions:")
 
 
 def classify_pipeline_terminal_errors(errors: Any) -> dict[str, list[str]]:

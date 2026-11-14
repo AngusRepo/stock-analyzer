@@ -367,16 +367,25 @@ async function loadRows(
   return []
 }
 
-// Every legacy domain is in writer cutover: the writer-epoch triggers abort
-// writes, so legacy rows and the eligibility computed from them are frozen.
+// The domains owning every legacy source table (screener funnel and run heads:
+// ops; pending buys and execution events: paper; the rest: learning).
+const LEGACY_SOURCE_DOMAINS = ['ops', 'paper', 'learning'] as const
+
+// Every legacy source domain is in writer cutover: the writer-epoch triggers
+// abort writes, so legacy rows and the eligibility computed from them are
+// frozen. A missing domain row or a failed read keeps the old cursor meaning.
 async function legacyWritersCutOver(db: D1Database): Promise<boolean> {
-  const row = await db.prepare(`
-    SELECT COUNT(*) AS domains,
-           COALESCE(SUM(CASE WHEN writer_state='cutover' THEN 1 ELSE 0 END), 0) AS cutover
-      FROM data_domain_writer_epochs
-  `).first<{ domains?: number; cutover?: number }>()
-  const domains = Number(row?.domains ?? 0)
-  return domains > 0 && Number(row?.cutover ?? -1) === domains
+  try {
+    const row = await db.prepare(`
+      SELECT COUNT(*) AS cutover
+        FROM data_domain_writer_epochs
+       WHERE domain IN (${LEGACY_SOURCE_DOMAINS.map(() => '?').join(', ')})
+         AND writer_state='cutover'
+    `).bind(...LEGACY_SOURCE_DOMAINS).first<{ cutover?: number }>()
+    return Number(row?.cutover ?? 0) === LEGACY_SOURCE_DOMAINS.length
+  } catch {
+    return false
+  }
 }
 
 // A page shorter than the limit has judged every row below the cutoff. On a
@@ -452,10 +461,13 @@ async function runR2Policy(
     const source = retentionSourceAtCutoff(configured, cutoffDate)
     const cursor = await loadRetentionCursor(opsDb, policyId, source.datasetId)
     try {
+      // Read the cutover state before the rows: once cut over, no write can
+      // change a row this page judges.
+      const frozen = source.sourceDomain === 'legacy'
+        && await (legacyFrozen ??= legacyWritersCutOver(env.DB))
       const rows = await loadRows(sourceDatabase(env, source.sourceDomain), source, cutoffDate, limit, cursor)
       scannedRows += rows.length
-      const watermark = rows.length < limit && source.sourceDomain === 'legacy'
-        && await (legacyFrozen ??= legacyWritersCutOver(env.DB))
+      const watermark = frozen && rows.length < limit
         ? frozenSourceWatermark(cursor, cutoffDate)
         : null
       if (!rows.length) {

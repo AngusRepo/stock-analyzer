@@ -198,21 +198,26 @@ test('a frozen legacy source parks its cursor at the cutoff and later runs read 
   } finally { legacy.close(); ops.close() }
 })
 
-test('without a full legacy writer cutover the cursor keeps its archived-row meaning', async () => {
-  const legacy = new DatabaseSync(':memory:')
-  const ops = new DatabaseSync(':memory:')
-  try {
-    legacy.exec(LEGACY_DDL)
-    legacy.exec(`UPDATE data_domain_writer_epochs SET writer_state='open' WHERE domain='paper'`)
-    ops.exec(OPS_DDL)
-    seedScreener(legacy, '2026-05-01', [
-      { id: 'obsolete', status: 'success', created: '2026-05-01 09:00', items: 3 },
-      { id: 'latest', status: 'success', created: '2026-05-01 10:00', items: 4 },
-    ])
-    const { result } = await runLegacy(legacy, ops, '2026-06-01', [])
-    assert.equal(result.policies[0].archived_rows, 3)
-    const lastObsolete = legacy.prepare(`SELECT MAX(id) AS id FROM screener_funnel_items WHERE run_id='obsolete'`).get() as { id: number }
-    assert.deepEqual(cursorOf(ops, 'obsolete_screener_items'), { cursor_date: '2026-05-01', cursor_key: String(lastObsolete.id) })
-    assert.deepEqual(cursorOf(ops, 'superseded_pending_events'), { cursor_date: null, cursor_key: null })
-  } finally { legacy.close(); ops.close() }
-})
+for (const [label, notCutOver] of [
+  ['an open', `UPDATE data_domain_writer_epochs SET writer_state='open' WHERE domain='paper'`],
+  ['a missing', `DELETE FROM data_domain_writer_epochs WHERE domain='paper'`],
+] as const) {
+  test(`with ${label} legacy source domain the cursor keeps its archived-row meaning`, async () => {
+    const legacy = new DatabaseSync(':memory:')
+    const ops = new DatabaseSync(':memory:')
+    try {
+      legacy.exec(LEGACY_DDL)
+      legacy.exec(notCutOver)
+      ops.exec(OPS_DDL)
+      seedScreener(legacy, '2026-05-01', [
+        { id: 'obsolete', status: 'success', created: '2026-05-01 09:00', items: 3 },
+        { id: 'latest', status: 'success', created: '2026-05-01 10:00', items: 4 },
+      ])
+      const { result } = await runLegacy(legacy, ops, '2026-06-01', [])
+      assert.equal(result.policies[0].archived_rows, 3)
+      const lastObsolete = legacy.prepare(`SELECT MAX(id) AS id FROM screener_funnel_items WHERE run_id='obsolete'`).get() as { id: number }
+      assert.deepEqual(cursorOf(ops, 'obsolete_screener_items'), { cursor_date: '2026-05-01', cursor_key: String(lastObsolete.id) })
+      assert.deepEqual(cursorOf(ops, 'superseded_pending_events'), { cursor_date: null, cursor_key: null })
+    } finally { legacy.close(); ops.close() }
+  })
+}

@@ -144,7 +144,10 @@ const POLICY_CONFIGS: Record<RetentionArchiveOnlyPolicyId, PolicyConfig> = {
         selectSql: 'i.*',
         dateExpression: 'i.date',
         keyExpression: 'i.rowid',
-        eligibilitySql: `NOT EXISTS (SELECT 1 FROM canonical_run_heads h WHERE h.run_id=i.run_id)
+        // canonical_run_heads has no run_id index; a correlated NOT EXISTS
+        // re-scans it for every item. NOT IN builds the head set once (both
+        // run_id columns are NOT NULL, so the result is the same).
+        eligibilitySql: `i.run_id NOT IN (SELECT h.run_id FROM canonical_run_heads h)
           AND i.run_id <> COALESCE((
             SELECT latest.run_id FROM screener_funnel_runs latest
              WHERE latest.date=i.date AND latest.status='success'
@@ -267,12 +270,28 @@ export function retentionSourceDatabase(
   return sourceDatabase(env, domain)
 }
 
+type ArchiveCursor = { cursor_date: string | null; cursor_key: string | null }
+
+function hasCursor(cursor: ArchiveCursor | null): cursor is { cursor_date: string; cursor_key: string } {
+  return Boolean(cursor?.cursor_date) && cursor?.cursor_key != null
+}
+
+// Legacy cursors may sit on substr(date) archive dates. The raw date is never
+// below its own 10-character prefix, so `raw >= cursor_date` is implied by the
+// cursor and lets the date index start at the cursor instead of the table head.
+function boundsLegacyCursor(source: RetentionArchiveSource, cursor: ArchiveCursor | null): boolean {
+  return source.sourceDomain === 'legacy' && hasCursor(cursor)
+}
+
 export function buildRetentionArchiveOnlyQuery(
   source: RetentionArchiveSource,
-  cursor: { cursor_date: string | null; cursor_key: string | null } | null,
+  cursor: ArchiveCursor | null,
 ): string {
-  const cursorPredicate = cursor?.cursor_date && cursor.cursor_key != null
+  const cursorPredicate = hasCursor(cursor)
     ? 'AND (__archive_date, __cursor_key) > (?, ?)'
+    : ''
+  const legacyCursorBound = boundsLegacyCursor(source, cursor)
+    ? `AND ${source.dateExpression} >= ?`
     : ''
   // These source columns contain canonical YYYY-MM-DD business dates. Keep
   // their date index usable for both the cutoff and the acknowledged cursor.
@@ -297,6 +316,7 @@ export function buildRetentionArchiveOnlyQuery(
         FROM ${source.fromSql}
        WHERE ${source.dateExpression} IS NOT NULL
          AND ${source.dateExpression} < ?
+         ${legacyCursorBound}
          AND (${source.scanEligibilitySql ?? source.eligibilitySql})
     ) archive_rows
    WHERE __archive_date IS NOT NULL
@@ -304,6 +324,18 @@ export function buildRetentionArchiveOnlyQuery(
    ORDER BY __archive_date ASC, __cursor_key ASC
    LIMIT ?
   `
+}
+
+export function retentionArchiveOnlyBinds(
+  source: RetentionArchiveSource,
+  cutoffDate: string,
+  cursor: ArchiveCursor | null,
+  limit: number,
+): unknown[] {
+  if (!hasCursor(cursor)) return [cutoffDate, limit]
+  return boundsLegacyCursor(source, cursor)
+    ? [cutoffDate, cursor.cursor_date, cursor.cursor_date, cursor.cursor_key, limit]
+    : [cutoffDate, cursor.cursor_date, cursor.cursor_key, limit]
 }
 
 export function isRetryableRetentionArchiveD1Error(error: unknown): boolean {
@@ -316,16 +348,13 @@ async function loadRows(
   source: RetentionArchiveSource,
   cutoffDate: string,
   limit: number,
-  cursor: { cursor_date: string | null; cursor_key: string | null } | null,
+  cursor: ArchiveCursor | null,
 ): Promise<Record<string, unknown>[]> {
-  const cursorBinds = cursor?.cursor_date && cursor.cursor_key != null
-    ? [cursor.cursor_date, cursor.cursor_key]
-    : []
   const maxAttempts = 4
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
       const result = await db.prepare(buildRetentionArchiveOnlyQuery(source, cursor))
-        .bind(cutoffDate, ...cursorBinds, limit)
+        .bind(...retentionArchiveOnlyBinds(source, cutoffDate, cursor, limit))
         .all<Record<string, unknown>>()
       return result.results ?? []
     } catch (error) {
@@ -336,6 +365,37 @@ async function loadRows(
     }
   }
   return []
+}
+
+// The domains owning every legacy source table (screener funnel and run heads:
+// ops; pending buys and execution events: paper; the rest: learning).
+const LEGACY_SOURCE_DOMAINS = ['ops', 'paper', 'learning'] as const
+
+// Every legacy source domain is in writer cutover: the writer-epoch triggers
+// abort writes, so legacy rows and the eligibility computed from them are
+// frozen. A missing domain row or a failed read keeps the old cursor meaning.
+async function legacyWritersCutOver(db: D1Database): Promise<boolean> {
+  try {
+    const row = await db.prepare(`
+      SELECT COUNT(*) AS cutover
+        FROM data_domain_writer_epochs
+       WHERE domain IN (${LEGACY_SOURCE_DOMAINS.map(() => '?').join(', ')})
+         AND writer_state='cutover'
+    `).bind(...LEGACY_SOURCE_DOMAINS).first<{ cutover?: number }>()
+    return Number(row?.cutover ?? 0) === LEGACY_SOURCE_DOMAINS.length
+  } catch {
+    return false
+  }
+}
+
+// A page shorter than the limit has judged every row below the cutoff. On a
+// frozen source those verdicts are final, so park the cursor at the cutoff
+// (rowids are positive) and later runs read only rows that newly cross it.
+// Without this, a source with nothing left to archive re-reads its whole
+// ineligible history on every run.
+function frozenSourceWatermark(cursor: ArchiveCursor | null, cutoffDate: string): { cursor_date: string; cursor_key: string } {
+  if (hasCursor(cursor) && cursor.cursor_date >= cutoffDate) return cursor
+  return { cursor_date: cutoffDate, cursor_key: '0' }
 }
 
 type PolicyRow = {
@@ -394,21 +454,32 @@ async function runR2Policy(
   let archivedBytes = 0
   let backlogRemaining = false
   const errors: string[] = []
+  let legacyFrozen: Promise<boolean> | null = null
   await beginRetentionRun(opsDb, { runId, policyId, businessDate })
 
   for (const configured of config.sources) {
     const source = retentionSourceAtCutoff(configured, cutoffDate)
     const cursor = await loadRetentionCursor(opsDb, policyId, source.datasetId)
     try {
+      // Read the cutover state before the rows: once cut over, no write can
+      // change a row this page judges.
+      const frozen = source.sourceDomain === 'legacy'
+        && await (legacyFrozen ??= legacyWritersCutOver(env.DB))
       const rows = await loadRows(sourceDatabase(env, source.sourceDomain), source, cutoffDate, limit, cursor)
       scannedRows += rows.length
+      const watermark = frozen && rows.length < limit
+        ? frozenSourceWatermark(cursor, cutoffDate)
+        : null
       if (!rows.length) {
         await checkpointRetentionItem(opsDb, {
           runId, policyId, datasetId: source.datasetId, status: 'skipped', deletedRows: 0,
-          cursorDate: cursor?.cursor_date ?? null,
-          cursorKey: cursor?.cursor_key ?? null,
+          cursorDate: watermark?.cursor_date ?? cursor?.cursor_date ?? null,
+          cursorKey: watermark?.cursor_key ?? cursor?.cursor_key ?? null,
           backlogRemaining: false,
-          evidence: { archive_only: true, archive_store: 'r2', cutoff_date: cutoffDate, reason: 'no_new_eligible_rows' },
+          evidence: {
+            archive_only: true, archive_store: 'r2', cutoff_date: cutoffDate, reason: 'no_new_eligible_rows',
+            ...(watermark ? { frozen_source_watermark: true } : {}),
+          },
         })
         continue
       }
@@ -456,12 +527,13 @@ async function runR2Policy(
         runId, policyId, datasetId: source.datasetId, status: 'success',
         scannedRows: rows.length, archivedRows: rows.length, deletedRows: 0,
         archivedBytes: artifact.byte_size,
-        cursorDate: String(last.__archive_date ?? '') || null,
-        cursorKey: String(last.__cursor_key ?? '') || null,
+        cursorDate: watermark?.cursor_date ?? (String(last.__archive_date ?? '') || null),
+        cursorKey: watermark?.cursor_key ?? (String(last.__cursor_key ?? '') || null),
         backlogRemaining: sourceBacklog,
         evidence: {
           archive_only: true,
           archive_store: 'r2',
+          ...(watermark ? { frozen_source_watermark: true } : {}),
           artifact_id: artifact.artifact_id,
           r2_key: artifact.r2_key,
           checksum: artifact.checksum,

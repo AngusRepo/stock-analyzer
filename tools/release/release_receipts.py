@@ -30,6 +30,9 @@ from runtime_context import GC, PROJECT
 BUCKET = 'gs://stockvision-models/release-receipts'
 # The Docker context is already in the Cloud Build source staging object.
 UNPUBLISHED_DIRS = {'context'}
+# Written by `release.py verify --from-receipts --reconcile` once the live controller and jobs of
+# an unreconciled attempt agree again; the rollout's refusal skips that attempt from then on.
+RECONCILIATION = 'reconcile/reconciliation.json'
 _progress = itertools.count(1)
 
 
@@ -133,8 +136,45 @@ def unreconciled(state: dict | None) -> bool:
     return state.get('status') == 'staging' or (state.get('status') == 'failed' and state.get('rollback_status') != 'verified')
 
 
-def unreconciled_attempts(sha: str, skip: str | None = None) -> list[str]:
-    return [attempt for attempt in attempts(sha) if attempt != skip and unreconciled(rollout_state(sha, attempt))]
+def _sha_attempt(url: str) -> tuple[str, str]:
+    sha, attempt = url[len(BUCKET) + 1:].split('/')[:2]
+    return sha, attempt
+
+
+def reconciled(state: dict | None) -> bool:
+    return bool(state) and state.get('status') == 'reconciled'
+
+
+def unreconciled_anywhere(skip: tuple[str, str] | None = None, superseded_after: str | None = None) -> list[str]:
+    """'<sha>/<attempt>' of every attempt in the store, any commit, whose rollout may have left a
+    mutation behind (unreconciled()) and that has neither a reconciliation receipt
+    (RECONCILIATION, written by verify --from-receipts --reconcile) nor a verified release after
+    it (superseded_after: verified_at of the live release's current.json, which proved the
+    controller, Modal and every job on one sha). Three listings, then the attempts' newest
+    controller-release.json copies, as rollout_receipt picks them."""
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import datetime
+    base = BUCKET + '/'
+    newest = {}
+    # Progress copies in sequence order, then the stage copy, which wins.
+    for line in (sorted(listing(base + '*/*/rollout/progress/*-controller-release.json'))
+                 + listing(base + '*/*/rollout/controller-release.json')):
+        newest[_sha_attempt(line)] = line
+    markers = listing(base + '*/*/' + RECONCILIATION)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        done = {_sha_attempt(line) for line, raw in zip(markers, pool.map(read, markers))
+                if raw is not None and reconciled(json.loads(raw))}
+        keys = [key for key in sorted(newest) if key != skip and key not in done]
+        states = dict(zip(keys, pool.map(lambda key: json.loads(read(newest[key]) or b'null'), keys)))
+    stale = []
+    for key, state in states.items():
+        if not unreconciled(state):
+            continue
+        at = state.get('failed_at') or state.get('started_at')
+        if superseded_after and at and datetime.fromisoformat(at) < datetime.fromisoformat(superseded_after):
+            continue
+        stale.append('/'.join(key))
+    return stale
 
 
 def current_raw(sha: str) -> bytes | None:

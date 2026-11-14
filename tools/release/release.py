@@ -11,6 +11,11 @@
   verify    --from-receipts --sha S [--attempt A] --out DIR
                                                the same, from a rollout's receipts in the store
                                                (a run whose verify step failed or was cancelled)
+  verify    --from-receipts --reconcile --sha S --attempt A --out DIR
+                                               no GCP writes: once the live controller and jobs agree
+                                               again, record attempt A reconciled so rollouts start
+  alert     --out DIR                          no credentials: CD failure step; annotates a rollout
+                                               this run left unreconciled (local receipt only)
   seed-receipts ...                            one-time: publish receipts of a release made by hand
 
 Stages share --out (out/admission, out/build, out/rollout, out/verify). With --publish (the
@@ -294,6 +299,16 @@ def rollout_prior(args) -> dict:
             'bootstrap': json.loads(receipts.read_current(tag, 'rollout/bootstrap-verification.json'))}
 
 
+RECONCILE_HINT = (' -- make the live controller and application jobs agree again (by hand if needed), then record it:'
+                  ' deploy-controller workflow_dispatch mode=reconcile sha=<sha> attempt=<attempt>, or'
+                  ' release.py verify --from-receipts --reconcile --sha <sha> --attempt <attempt> --out DIR --publish')
+
+
+def release_base(args) -> str:
+    """The live sha this release replaces (rollout refuses unless it is still live)."""
+    return json.loads((args.out / 'build/deployment-build-packet.json').read_bytes())['base_source_sha']
+
+
 def cmd_rollout(args):
     def action():
         import release_rollout as deployer
@@ -301,11 +316,15 @@ def cmd_rollout(args):
         if args.publish:
             import release_receipts as receipts
             head, attempt = release_sha(args), attempt_id(args.out)
-            # A killed or unrolled-back attempt of this commit may have left a staged revision,
-            # Modal version or job image behind: reconcile it (verify --from-receipts or by hand).
-            stale = receipts.unreconciled_attempts(head, skip=attempt)
+            # A killed or unrolled-back attempt of any commit may have left a staged revision, Modal
+            # version or job image behind (2026-11-13: jobs on the failed commit, controller reverted).
+            # A verified release of the live sha after it proved everything coherent again.
+            # A seeded pointer (seed-receipts) proved only Modal, so it supersedes nothing.
+            live = receipts.current(release_base(args))
+            stale = receipts.unreconciled_anywhere(skip=(head, attempt), superseded_after=(
+                live.get('verified_at') if live and live.get('status') == 'verified' and not live.get('seeded') else None))
             if stale:
-                raise RuntimeError('previous_rollout_attempt_unreconciled:' + ','.join(stale))
+                raise RuntimeError('previous_rollout_attempt_unreconciled:' + ','.join(stale) + RECONCILE_HINT)
 
             def hook(path):
                 print(json.dumps({'receipt': receipts.publish_progress(head, attempt, path, 'rollout')}), flush=True)
@@ -408,14 +427,91 @@ def verify_release(out: Path, *, publish: bool, sha: str | None = None) -> dict:
     return result
 
 
+def reconcile_attempt(out: Path, sha: str, *, publish: bool, gc=None) -> dict:
+    """A fetched attempt that may have left a mutation behind: read the live controller and
+    application jobs (never mutates) and, when every one is back on the SHA the rollback restores,
+    or all agree on one sha with a verified current.json, write reconcile/reconciliation.json under
+    the attempt so rollout stops refusing. Otherwise fail with the components that differ."""
+    import release_receipts as receipts
+    import release_rollout as deployer
+    if gc is None:
+        from runtime_context import gc
+    attempt = attempt_id(out)
+    state = json.loads((out / 'rollout/controller-release.json').read_bytes())
+    if not receipts.unreconciled(state):
+        return {'status': 'nothing_to_reconcile', 'sha': sha, 'attempt': attempt, 'rollout_status': state.get('status')}
+    live = deployer.live_source_state(gc, json.loads((out / 'rollout/rollback.json').read_bytes()))
+    if live['read_errors']:
+        raise RuntimeError('reconcile_live_state_unreadable:' + ','.join(row['component'] for row in live['read_errors']))
+    basis = 'rollback_restored_every_component' if live['status'] == 'aligned' else None
+    observed = {live['controller_sha'], *live['serving'].values(), *live['jobs'].values()}
+    if basis is None and len(observed) == 1 and None not in observed:
+        (agreed,) = observed
+        pointer = receipts.current(agreed)
+        if pointer and pointer.get('status') == 'verified' and not pointer.get('seeded'):
+            basis = 'all_on_verified_release:' + agreed
+    if basis is None:
+        raise RuntimeError('reconcile_live_state_not_coherent:' + ','.join(row['component'] for row in live['mismatches']))
+    value = dict(status='reconciled', sha=sha, attempt=attempt, reconciled_at=datetime.now(timezone.utc).isoformat(),
+                 basis=basis, rollout_status=state.get('status'), rollback_status=state.get('rollback_status'),
+                 live_state=live, modal='not_read: Modal has no rollback on this plan; rollout_prior binds its receipts')
+    (out / 'reconcile').mkdir(parents=True, exist_ok=True)
+    (out / receipts.RECONCILIATION).write_text(json.dumps(value, indent=2) + '\n', encoding='utf-8')
+    if publish:
+        receipts.publish_stage(sha, attempt, out, 'reconcile')
+        stored = receipts.read(receipts.prefix(sha, attempt) + '/' + receipts.RECONCILIATION)
+        if stored is None or not receipts.reconciled(json.loads(stored)):
+            raise RuntimeError('reconciliation_receipt_not_in_store')
+    return {key: value[key] for key in ('status', 'sha', 'attempt', 'basis')}
+
+
 def cmd_verify(args):
     def action():
         if args.from_receipts:
             attempt, state = fetch_attempt(args.sha, args.attempt, args.out)
             print(json.dumps({'attempt': attempt, 'rollout_status': state.get('status')}), flush=True)
+            if args.reconcile:
+                return reconcile_attempt(args.out, args.sha, publish=args.publish)
             return verify_release(args.out, publish=args.publish, sha=args.sha)
         return verify_release(args.out, publish=args.publish)
     return action
+
+
+def rollout_alert(out: Path) -> list[str]:
+    """After a failed or cancelled CD job: GitHub annotations for a rollout this run left
+    unreconciled, from the local receipt only (no store, no credentials). Prints only states,
+    component names and commit SHAs; never the receipt's error text (public logs)."""
+    path = out / 'rollout/controller-release.json'
+    if not path.exists():
+        return []
+    import release_receipts as receipts
+    state = json.loads(path.read_bytes())
+    attempt, sha = attempt_id(out), state.get('source_sha', '?')
+    post = state.get('post_rollback_state') or {}
+    if not receipts.unreconciled(state) and post.get('status', 'aligned') == 'aligned':
+        return []
+    lines = [f'::error::controller rollout {sha} attempt {attempt}: status={state.get("status")} '
+             f'rollback={state.get("rollback_status")} error_type={state.get("error_type")} '
+             f'post_rollback_state={post.get("status", "not_read")}; every later controller rollout refuses to start'
+             + RECONCILE_HINT.replace('<sha>', sha).replace('<attempt>', attempt)]
+    for row in state.get('rollback_errors') or []:
+        lines.append(f'::error::rollback step failed: {row.get("component")} ({row.get("error_type")})')
+    for row in post.get('mismatches') or []:
+        lines.append(f'::error::live {row.get("component")} on {row.get("actual")}, rollback restores {row.get("expected")}')
+    for row in post.get('read_errors') or []:
+        lines.append(f'::error::live {row.get("component")} unread after rollback ({row.get("error_type")})')
+    return lines
+
+
+def cmd_alert(args) -> int:
+    lines = rollout_alert(args.out)
+    print('\n'.join(lines) if lines else 'no unreconciled rollout in this run', flush=True)
+    summary = os.environ.get('GITHUB_STEP_SUMMARY')
+    if lines and summary:
+        with open(summary, 'a', encoding='utf-8') as handle:
+            handle.write('## Controller rollout needs reconciliation\n\n'
+                         + '\n'.join('- ' + line.split('::error::', 1)[1] for line in lines) + '\n')
+    return 1 if lines else 0
 
 
 def cmd_window(args):
@@ -486,6 +582,7 @@ def parser() -> argparse.ArgumentParser:
     p = sub.add_parser('classify')
     p.add_argument('--live', required=True)
     sub.add_parser('window')
+    sub.add_parser('alert').add_argument('--out', type=Path, required=True)
     for name in ('admission', 'build', 'rollout', 'verify', 'seed-receipts'):
         p = sub.add_parser(name)
         p.add_argument('--source', type=Path, default=ROOT, help='release checkout (default: this repo)')
@@ -516,6 +613,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument('--from-receipts', action='store_true', help='verify a rollout from the receipt store')
     p.add_argument('--sha', help='release commit (with --from-receipts)')
     p.add_argument('--attempt', help='rollout attempt, e.g. gh-<run id>-<run attempt> (with --from-receipts)')
+    p.add_argument('--reconcile', action='store_true',
+                   help='with --from-receipts: record an unreconciled attempt as reconciled once live agrees again')
     p = sub.choices['seed-receipts']
     p.add_argument('--sha', required=True)
     p.add_argument('--modal-release', type=Path, required=True)
@@ -543,6 +642,8 @@ def main(argv=None) -> None:
     if args.stage == 'window':
         print(json.dumps(cmd_window(args)), flush=True)
         return
+    if args.stage == 'alert':
+        raise SystemExit(cmd_alert(args))
     args.source, args.out = args.source.resolve(), args.out.resolve()
     if args.stage == 'admission' and args.new_grant and not all((args.new_native_bundle, args.release_id, args.authorization)):
         raise SystemExit('--new-grant needs --new-native-bundle, --release-id and --authorization')
@@ -550,6 +651,8 @@ def main(argv=None) -> None:
         raise SystemExit('--identities-checked-by-plan is for the CD deploy job only')
     if args.stage == 'verify' and args.from_receipts and not (args.sha and len(args.sha) == 40):
         raise SystemExit('--from-receipts needs --sha <40-hex release commit>')
+    if args.stage == 'verify' and args.reconcile and not args.from_receipts:
+        raise SystemExit('--reconcile needs --from-receipts')
     if args.stage == 'seed-receipts' and in_cd():
         raise SystemExit('seed-receipts is a one-time manual step')
     if args.stage == 'seed-receipts':

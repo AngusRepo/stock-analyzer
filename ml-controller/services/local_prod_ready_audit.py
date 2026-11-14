@@ -338,7 +338,6 @@ def _semantic_boundary_checks(root: Path) -> list[dict[str, Any]]:
             (
                 "const L2_TIMESFM_MODELS = ['TimesFM']",
                 "const L3_FORMAL_MODELS = ['LightGBM', 'XGBoost', 'ExtraTrees', 'TabM', 'GNN', 'DLinear', 'PatchTST', 'iTransformer']",
-                "ACTIVE_8_DIRECT_ALPHA_TEACHER_MODELS",
                 "layer2_timesfm_enrichment_summary_v1",
                 "layer3_8ml_formal_summary_v1",
                 "timesfm_sequence_sidecar_feature_enrichment_not_selector",
@@ -455,9 +454,9 @@ def _active8_data_chain_checks(root: Path) -> list[dict[str, Any]]:
         _check_text_contains(
             root,
             "worker/src/lib/screenerFunnelEvidence.ts",
-            ("ACTIVE_8_DIRECT_ALPHA_TEACHER_MODELS", "expected_teacher_count", "teacher_label_scope"),
-            "roadmap:p1:active8_teacher_labels",
-            "PLE/Listwise router evidence expects active-8 direct-alpha teacher labels without fake backfill",
+            ("admission_policy: 'eligible_for_ml_and_active_strategy_label_only'", "route_score_teacher_term: false"),
+            "roadmap:p1:l15_strategy_only_admission",
+            "R33 O3: L1.5 router evidence admits on eligibleForMl + active strategy label, no ML teacher term",
         ),
     ]
 
@@ -1382,13 +1381,12 @@ def _finlab_l0_p0_p9_closure_checks(root: Path) -> list[dict[str, Any]]:
             root,
             "worker/src/lib/multiStrategyPleRouter.ts",
             (
-                "training_teacher_labels_offline_runtime_teacher_evidence_optional",
-                "previous_trading_day_or_latest_verified_cache_no_same_day_l2_l3_dependency",
-                "missing_runtime_teacher_cache",
-                "historical_verified_cache",
+                "L15_ADMISSION_RULE_VERSION",
+                "L15_ROUTE_SCORE_FORMULA_VERSION",
+                "l15-route-score-strategy-only-v1",
             ),
-            "finlab_p7:teacher_label_runtime_contract",
-            "P7: daily routing uses verified runtime teacher cache only and does not require same-day L2/L3",
+            "finlab_p7:l15_route_score_strategy_only",
+            "P7 (R33 O3): daily routing scores strategy evidence only; no ML teacher term or teacher cache read",
         ),
         _check_text_contains(
             root,

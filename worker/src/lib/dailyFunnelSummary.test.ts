@@ -21,7 +21,7 @@ test('capped-detail regression conserves full L0 and candidate populations', () 
   const layers = build(fixture())
   assert.equal(layers[0].passed, 806); assert.equal(layers[0].eliminated, 1133)
   assert.equal(layers[1].metrics[1].value, 179); assert.equal(layers[1].eliminated, null)
-  assert.equal(layers[4].metrics[1].value, 627); assert.equal(layers[4].eliminated, null)
+  assert.equal(layers[3].metrics[1].value, 627); assert.equal(layers[3].eliminated, null)
   assert(layers.every(l => l.availability === 'available'))
 })
 test('missing, invalid and unfinished receipts never fall back to partial logs', () => {
@@ -37,20 +37,23 @@ test('candidate and queue coverage mismatch cannot become zero loss', () => {
   assert.equal(build(f)[1].availability, 'unavailable')
   const missing = fixture(); missing.stages = missing.stages.filter(s => s.stage !== 'l15_ml_slate_queue')
   assert.equal(build(missing)[2].passed, null)
+  assert.equal(build(missing)[2].reason_code, 'ml_queue_coverage_incomplete')
+  assert.equal(build(missing)[3].passed, null)
 })
 test('failed ML contracts are not counted as evidence qualified', () => {
   const f = fixture(); f.stages[3].pass_count = 620; f.stages[3].drop_count = 7
-  assert.deepEqual(build(f)[3].metrics.map(m => m.value), [627, 620, 7])
-  assert.equal(build(f)[3].eliminated, null)
+  assert.deepEqual(build(f)[2].metrics.map(m => m.value), [627, 620, 7])
+  assert.equal(build(f)[2].eliminated, null)
 })
 test('partial ML evidence remains unknown', () => {
   const f = fixture(); f.stages[3].total_count = 100
-  assert.equal(build(f)[3].availability, 'unavailable')
+  assert.equal(build(f)[2].availability, 'unavailable')
+  assert.equal(build(f)[2].reason_code, 'ml_evidence_coverage_incomplete')
 })
 test('BUY HOLD SELL other are separate conservative categories', () => {
   const f = fixture(); Object.assign(f.signals, { buy_signal_count: 2, hold_count: 600, sell_count: 20, other_count: 5 })
-  assert.deepEqual(build(f)[4].metrics.map(m => m.value), [2, 600, 20, 5])
-  f.signals.hold_count = 627; assert.equal(build(f)[4].availability, 'unavailable')
+  assert.deepEqual(build(f)[3].metrics.map(m => m.value), [2, 600, 20, 5])
+  f.signals.hold_count = 627; assert.equal(build(f)[3].availability, 'unavailable')
 })
 test('missing or wrong-population final signals do not publish exact totals', () => {
   assert.equal(buildFinalSignalLayer(null).passed, null)
@@ -64,4 +67,11 @@ test('complete zero population is available', () => {
   for (const s of f.stages.slice(1)) Object.assign(s, { total_count: 0, pass_count: 0, selected_count: 0, drop_count: 0 })
   Object.assign(f.signals, { recommendation_count: 0, hold_count: 0 })
   assert(build(f).every(l => l.availability === 'available'))
+})
+test('dashboard funnel is L0 -> L1 -> L3 -> L4 with no L2 stage (R33 L3-2)', () => {
+  const layers = build(fixture())
+  assert.deepEqual(layers.map(l => l.layer), ['L0', 'L1', 'L3', 'L4'])
+  assert(!layers.some(l => /評估佇列|正式 ML 證據/.test(l.label)))
+  assert.equal(layers[2].label, 'ML 模型評分')
+  assert.match(String(layers[2].note), /不篩選/)
 })

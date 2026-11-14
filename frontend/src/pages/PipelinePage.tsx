@@ -147,7 +147,6 @@ function layerTraceRowsFromRec(rec: any): LayerTraceRow[] {
   const l1 = evidenceObject(evidence.layer1_strategy_labeler)
   const l125 = evidenceObject(evidence.layer125_finlab_portfolio_intelligence)
   const l15 = evidenceObject(evidence.layer15_multi_strategy_router) ?? evidenceObject(evidence.layer1_breadth)
-  const l2 = evidenceObject(evidence.layer2_timesfm_enrichment) ?? evidenceObject(evidence.layer2_3ml_coarse) ?? evidenceObject(evidence.layer2_coarse_ml) ?? evidenceObject(evidence.layer2_queue_seed)
   const l3 = evidenceObject(evidence.layer3_8ml_formal) ?? evidenceObject(evidence.layer3_6ml_formal) ?? evidenceObject(evidence.layer3_formal_ml)
   const l35 = evidenceObject(evidence.layer35_evidence_fusion)
   const l4 = evidenceObject(rec?.l4_sparse_allocation)
@@ -206,24 +205,13 @@ function layerTraceRowsFromRec(rec: any): LayerTraceRow[] {
       detail: l15?.selection_policy ?? 'multi-strategy router evidence not found',
       metrics: [
         `route ${percentMetric(l15?.route_score)}`,
-        `formal L2 ${boolMetric(l15?.formal_l2_queue, 'queue', 'observe')}`,
-        `teachers ${numberMetric(l15?.teacher_label_count, 0)}`,
-      ],
-    },
-    {
-      layer: 'L2',
-      title: '3ML Coarse / TimesFM Enrichment',
-      status: l2 ? boolMetric(l2.l2_feature_input_active, 'active', textMetric(l2.reason_code, 'observe')) : 'no evidence',
-      detail: l2?.decision_policy ?? 'TimesFM L2 enrichment evidence not found',
-      metrics: [
-        `expected ${numberMetric(l2?.expected_model_count, 0)}`,
-        `features ${numberMetric(l2?.populated_feature_count, 0)}`,
-        `direct ${boolMetric(l2?.direct_alpha_blocked, 'blocked', 'allowed')}`,
+        `ML ${boolMetric(l15?.formal_l2_queue, 'queue', 'observe')}`,
+        `strategies ${numberMetric(l15?.strategy_count, 0)}`,
       ],
     },
     {
       layer: 'L3',
-      title: 'Formal ML Family Vote',
+      title: 'ML Model Scoring (no filter)',
       status: l3 ? textMetric(l3.decision ?? 'formal vote') : 'no evidence',
       detail: l3?.decision_policy ?? 'formal family-vote evidence not found',
       metrics: [

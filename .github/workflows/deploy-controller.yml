@@ -14,6 +14,8 @@ name: deploy-controller
 # the controller requirements (needed to compute the allocator / L3 identities) stay in `plan`.
 # workflow_dispatch mode=verify re-runs only the verify stage from a rollout's receipts in the
 # store (a run whose Verify step failed, or that was cancelled after traffic moved).
+# workflow_dispatch mode=reconcile records a failed / killed attempt as reconciled once the live
+# controller and application jobs agree again (read-only on GCP); until then rollout refuses to start.
 # Inert until the repository variable CD_CONTROLLER_ENABLED is 'true'.
 on:
   push:
@@ -21,9 +23,9 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: dry-run = read-only admission + build packet; deploy = full release; verify = verify a rollout from its receipts
+        description: dry-run = read-only admission + build packet; deploy = full release; verify = verify a rollout from its receipts; reconcile = record an unreconciled attempt as reconciled
         type: choice
-        options: [dry-run, deploy, verify]
+        options: [dry-run, deploy, verify, reconcile]
         default: dry-run
       units:
         description: changed = only if controller/Modal inputs differ from live; controller = even if not
@@ -31,11 +33,11 @@ on:
         options: [changed, controller]
         default: changed
       sha:
-        description: verify only - release commit (default this run's commit)
+        description: verify / reconcile only - release commit (default this run's commit)
         type: string
         default: ''
       attempt:
-        description: verify only - rollout attempt gh-<run id>-<run attempt> (default the only one)
+        description: verify / reconcile only - rollout attempt gh-<run id>-<run attempt> (default the only one)
         type: string
         default: ''
 
@@ -55,7 +57,7 @@ concurrency:
 
 jobs:
   plan:
-    if: vars.CD_CONTROLLER_ENABLED == 'true' && github.ref == 'refs/heads/main' && !(github.event_name == 'workflow_dispatch' && inputs.mode == 'verify')
+    if: vars.CD_CONTROLLER_ENABLED == 'true' && github.ref == 'refs/heads/main' && !(github.event_name == 'workflow_dispatch' && (inputs.mode == 'verify' || inputs.mode == 'reconcile'))
     runs-on: ubuntu-latest
     timeout-minutes: 160
     permissions:
@@ -202,9 +204,15 @@ jobs:
           if [ ! -f "$OUT/rollout/controller-release.json" ]; then echo "no rollout in this run"; exit 0; fi
           # On failure: workflow_dispatch mode=verify (sha, attempt gh-<run id>-<run attempt>).
           python tools/release/release.py verify --out "$OUT" --publish
+      - name: Alert on an unreconciled rollout
+        # A rollback that could not restore every component leaves the controller and jobs on
+        # different SHAs (2026-11-13) and blocks later rollouts; nothing else reports it. Reads this
+        # run's local receipt only (no store, no credentials); annotations + job summary.
+        if: (failure() || cancelled()) && steps.tip.outputs.current == 'true' && env.MODE == 'deploy'
+        run: python3 tools/release/release.py alert --out "$RUNNER_TEMP/release"
 
   reverify:
-    if: vars.CD_CONTROLLER_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && inputs.mode == 'verify'
+    if: vars.CD_CONTROLLER_ENABLED == 'true' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && (inputs.mode == 'verify' || inputs.mode == 'reconcile')
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 30
@@ -231,8 +239,11 @@ jobs:
         env:
           SHA: ${{ inputs.sha }}
           ATTEMPT: ${{ inputs.attempt }}
+          MODE: ${{ inputs.mode }}
         run: |
           set -e
-          # Reads the rollout receipts from the store, re-checks the live release, writes current.json.
+          # Reads the rollout receipts from the store, re-checks the live release, writes current.json
+          # (reconcile: reads the live controller and jobs, writes the attempt's reconciliation receipt).
           attempt=(); [ -z "$ATTEMPT" ] || attempt=(--attempt "$ATTEMPT")
-          python tools/release/release.py verify --from-receipts --sha "${SHA:-$GITHUB_SHA}" "${attempt[@]}" --out "$RUNNER_TEMP/reverify" --publish
+          reconcile=(); [ "$MODE" != reconcile ] || reconcile=(--reconcile)
+          python tools/release/release.py verify --from-receipts --sha "${SHA:-$GITHUB_SHA}" "${attempt[@]}" "${reconcile[@]}" --out "$RUNNER_TEMP/reverify" --publish

@@ -1181,7 +1181,7 @@ interface PendingBuyBoardRow {
   trade_date: string
 }
 
-interface PriceShapeRow {
+export interface PriceShapeRow {
   stock_id: number
   open?: number | null
   avg_price?: number | null
@@ -1310,30 +1310,40 @@ async function loadPendingBuyStats(
   }
 }
 
-async function loadLatestPriceShapes(
+/**
+ * Latest stock_prices row on or before the cutoff for each id (binds: JSON array of ids, cutoff).
+ * The former ROW_NUMBER() OVER (PARTITION BY stock_id ORDER BY date DESC) read every row of each
+ * stock up to the cutoff (~130k reads per run, 17.5B over 31 days); each id is now one backward
+ * seek on idx_prices_stock_date plus one rowid lookup (rowid is the id column). UNIQUE(stock_id,
+ * date) leaves one row per date, and an id with no row on or before the cutoff yields nothing,
+ * as rn = 1 did.
+ */
+export const LATEST_PRICE_SHAPES_SQL = `
+  SELECT sp.stock_id, sp.open, sp.avg_price
+    FROM json_each(?) AS ids
+    CROSS JOIN stock_prices AS sp
+   WHERE sp.rowid = (
+           SELECT latest.rowid
+             FROM stock_prices AS latest
+            WHERE latest.stock_id = ids.value
+              AND latest.date <= ?
+            ORDER BY latest.date DESC
+            LIMIT 1
+         )
+`
+
+export async function loadLatestPriceShapes(
   marketDb: D1Database,
   cutoffDate: string,
   stockIds: number[],
 ): Promise<Map<number, PriceShapeRow>> {
   const uniqueIds = [...new Set(stockIds.filter((value) => Number.isFinite(value) && value > 0))]
   const output = new Map<number, PriceShapeRow>()
-  for (let offset = 0; offset < uniqueIds.length; offset += 90) {
-    const chunk = uniqueIds.slice(offset, offset + 90)
-    const placeholders = chunk.map(() => '?').join(',')
-    const result = await marketDb.prepare(`
-      WITH ranked AS (
-        SELECT stock_id, open, avg_price,
-               ROW_NUMBER() OVER (PARTITION BY stock_id ORDER BY date DESC) AS rn
-          FROM stock_prices
-         WHERE date <= ?
-           AND stock_id IN (${placeholders})
-      )
-      SELECT stock_id, open, avg_price
-        FROM ranked
-       WHERE rn = 1
-    `).bind(cutoffDate, ...chunk).all<PriceShapeRow>()
-    for (const row of result.results ?? []) output.set(Number(row.stock_id), row)
-  }
+  if (uniqueIds.length === 0) return output
+  const result = await marketDb.prepare(LATEST_PRICE_SHAPES_SQL)
+    .bind(JSON.stringify(uniqueIds), cutoffDate)
+    .all<PriceShapeRow>()
+  for (const row of result.results ?? []) output.set(Number(row.stock_id), row)
   return output
 }
 

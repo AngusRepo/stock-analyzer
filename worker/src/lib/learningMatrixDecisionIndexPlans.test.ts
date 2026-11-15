@@ -9,7 +9,8 @@ import { buildStrategyFormalMatureCompatibilitySql } from './selectionReferenceE
 // 0069's partial oof_hits index for the mature OOF returns seek (hit cells only).
 // strategy_decision_log stays at 8 full indexes, plus 0069's two audit-json pending partial
 // indexes, until runtimes that no longer re-create
-// _symbol/_status are live everywhere (follow-up 0067). A full EXPLAIN QUERY PLAN sweep of every
+// _symbol/_status are live everywhere (an M2 follow-up migration, 0070 or later:
+// main took 0067 and 0069, d1/m3 reserves 0068). A full EXPLAIN QUERY PLAN sweep of every
 // statement on both tables (audits/matrix-split-plan-20261112) found the dropped
 // ones unused, or used only as a tie for a signal_date=? lookup that another
 // index serves with the same columns. These plans lock the kept access paths.

@@ -2,6 +2,7 @@ import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import {
   enqueuePipelineStage,
+  failPipelineExecutionDispatch,
   markPipelineStageFenced,
 } from './pipelineStageLease'
 import { logSchedulerResult } from './schedulerRunLogger'
@@ -179,6 +180,34 @@ function sqliteUtcMs(value: string): number {
   return Date.parse(normalized)
 }
 
+// FG-05: one same-date redispatch for errors a rerun can clear. Contract, GPU, identity,
+// lineage and memory errors fail the same way again and stay manual.
+export const PIPELINE_AUTO_REDISPATCH_STAGE = 'pipeline_auto_redispatch'
+export const PIPELINE_DISPATCH_LOST_ERROR = 'pipeline_dispatch_lost_no_execution'
+export const TRANSIENT_REDISPATCH_REASON = 'transient_error_redispatch_once_per_date'
+// ml-controller d1_client._TRANSIENT_D1_ERROR (exhausted retries) or the Worker D1 overload message,
+// as the whole stored error: the job joins several critical errors with '; ' and wraps GPU errors,
+// so a D1 message anywhere else in the string may be secondary to a contract or GPU failure.
+const TRANSIENT_D1_ERROR = /^(?:[A-Za-z]*Error: )?(?:D1 (?:raw )?request (?:failed: (?:network error: |HTTP (?:429|500|502|503|504): )|unsuccessful: [\s\S]*(?:d1 db is overloaded|requests queued for too long))|D1_ERROR: D1 DB is overloaded)/i
+// D+1 05:45 TW: a full rerun (~70 min to L3) must start by then to seal before the 07:15 premarket resume.
+const TRANSIENT_REDISPATCH_CUTOFF_UTC = 'T21:45:00Z'
+
+export function pipelineTransientRedispatchDecision(input: {
+  failure: PipelineExecutionFailure | null
+  businessDate: string
+  nowMs: number
+}): PipelineProvenanceRecoveryDecision | null {
+  const error = String(input.failure?.last_error ?? '')
+  if (input.failure?.status !== 'error'
+    || !(error === PIPELINE_DISPATCH_LOST_ERROR || (TRANSIENT_D1_ERROR.test(error) && !error.includes('; ')))) {
+    return null
+  }
+  if (input.nowMs >= Date.parse(`${input.businessDate}${TRANSIENT_REDISPATCH_CUTOFF_UTC}`)) {
+    return { retry: false, reason: 'transient_redispatch_window_closed' }
+  }
+  return { retry: true, reason: TRANSIENT_REDISPATCH_REASON }
+}
+
 export function pipelineProvenanceRecoveryDecision(input: {
   failure: PipelineExecutionFailure | null
   workerVersion?: Bindings['CF_VERSION_METADATA']
@@ -237,13 +266,15 @@ export function pipelineProvenanceRecoveryDecision(input: {
 }
 
 export async function reconcilePipelineCloudFailure(
-  env: Bindings, businessDate: string,
+  env: Bindings, businessDate: string, nowMs = Date.now(),
 ): Promise<{ reason: string }> {
-  const row = await databaseForDataDomain(env, 'ops').prepare(`
-    SELECT canonical_run_id, status, cursor_key, last_error
+  const opsDb = databaseForDataDomain(env, 'ops')
+  const row = await opsDb.prepare(`
+    SELECT canonical_run_id, status, cursor_key, last_error, lease_owner, lease_expires_at
       FROM pipeline_stage_runs WHERE business_date=? AND stage='pipeline_execution'
   `).bind(businessDate).first<{
     canonical_run_id: string; status: string; cursor_key: string | null; last_error: string | null
+    lease_owner: string | null; lease_expires_at: string | null
   }>()
   if(row?.last_error==='awaiting_premarket')return {reason:'awaiting_premarket_l3_sealed'}
   if (!row || !(['running', 'waiting'].includes(row.status)
@@ -266,6 +297,15 @@ export async function reconcilePipelineCloudFailure(
     || result.run_id !== row.canonical_run_id || result.run_date !== businessDate) {
     throw new Error('pipeline_cloud_reconcile_identity_mismatch')
   }
+  // An ambiguous dispatch (controller 5xx or timeout) keeps its reservation as 'running'. Once that
+  // lease has expired and the controller finds no execution for the run, nothing will call back.
+  if (row.status === 'running' && result.reason === 'exact_run_execution_not_found'
+    && row.lease_owner === row.canonical_run_id && sqliteUtcMs(String(row.lease_expires_at ?? '')) < nowMs
+    && await failPipelineExecutionDispatch(opsDb, {
+      businessDate, attemptId: row.canonical_run_id, error: PIPELINE_DISPATCH_LOST_ERROR,
+    })) {
+    return { reason: 'lost_dispatch_closed' }
+  }
   // The controller invokes the existing exact-run Worker callback/root owner.
   // Re-read D1 below; never manufacture terminal success from a process exit.
   return { reason: result.failure_callback_sent ? 'cloud_failure_callback_closed' : String(result.reason ?? result.state) }
@@ -277,9 +317,11 @@ export async function enqueuePostScreenerPipelineRecovery(
     businessDate: string
     workerVersion?: Bindings['CF_VERSION_METADATA']
     source: string
+    nowMs?: number
   },
-): Promise<{ queued: boolean; canonicalRunId: string | null; status: string; reason: string }> {
-  await reconcilePipelineCloudFailure(env, options.businessDate)
+): Promise<{ queued: boolean; canonicalRunId: string | null; status: string; reason: string; lastError: string | null }> {
+  const nowMs = options.nowMs ?? Date.now()
+  await reconcilePipelineCloudFailure(env, options.businessDate, nowMs)
   const opsDb = databaseForDataDomain(env, 'ops')
   const failure = await opsDb.prepare(`
     SELECT canonical_run_id, status, last_error, updated_at
@@ -291,32 +333,40 @@ export async function enqueuePostScreenerPipelineRecovery(
   const navGapCertified = await certifiedSep29NavGap(
     env, options.businessDate, String(failure?.last_error ?? ''),
   )
-  const decision = pipelineProvenanceRecoveryDecision({
+  const provenance = pipelineProvenanceRecoveryDecision({
     failure: failure ?? null,
     workerVersion: options.workerVersion,
     runtimeApproval,
     navGapCertified,
   })
+  const decision = provenance.reason === 'pipeline_error_not_provenance_mismatch'
+    ? pipelineTransientRedispatchDecision({ failure: failure ?? null, businessDate: options.businessDate, nowMs }) ?? provenance
+    : provenance
+  const lastError = failure?.last_error ?? null
   if (!decision.retry || !failure) {
     return {
       queued: false,
       canonicalRunId: failure?.canonical_run_id ?? null,
       status: failure?.status ?? 'missing',
       reason: decision.reason,
+      lastError,
     }
   }
 
-  const releaseId = String(options.workerVersion!.id).trim()
-  const sourceSha = String(options.workerVersion!.tag).trim()
-  const recoveryRunId = `pipeline-provenance-recovery:${options.businessDate}:${releaseId}`
+  const transient = decision.reason === TRANSIENT_REDISPATCH_REASON
+  const releaseId = transient ? '' : String(options.workerVersion!.id).trim()
+  const sourceSha = transient ? '' : String(options.workerVersion!.tag).trim()
+  const recoveryRunId = transient
+    ? `pipeline-transient-recovery:${options.businessDate}`
+    : `pipeline-provenance-recovery:${options.businessDate}:${releaseId}`
   // The CAS alone does not bound a timeout retry: a failed recovery continuation is
   // adopted back to the chain root id and would pass the CAS again on the same release.
   if (decision.reason === 'provenance_timeout_retry_once_per_release'
     && await env.KV.get(`cron:pipeline-recovery:${options.businessDate}:${releaseId}:enqueued`)) {
     return { queued: false, canonicalRunId: failure.canonical_run_id, status: failure.status,
-      reason: 'provenance_timeout_retry_already_used' }
+      reason: 'provenance_timeout_retry_already_used', lastError }
   }
-  const recovered = await opsDb.prepare(`
+  const cas = opsDb.prepare(`
     UPDATE pipeline_stage_runs
        SET canonical_run_id=?, status='queued', cursor_key=NULL,
            processed_count=0, expected_count=NULL, persisted_count=0,
@@ -338,6 +388,10 @@ export async function enqueuePostScreenerPipelineRecovery(
             AND pipeline.last_error=?
             AND pipeline.updated_at=?
        )
+       ${transient ? `AND NOT EXISTS (
+         SELECT 1 FROM pipeline_stage_runs marker
+          WHERE marker.business_date=? AND marker.stage='${PIPELINE_AUTO_REDISPATCH_STAGE}'
+       )` : ''}
     RETURNING business_date, stage, canonical_run_id, status, cursor_key,
               processed_count, expected_count, persisted_count, attempt_count,
               lease_owner, lease_expires_at
@@ -351,7 +405,27 @@ export async function enqueuePostScreenerPipelineRecovery(
     failure.canonical_run_id,
     failure.last_error,
     failure.updated_at,
-  ).first<import('./pipelineStageLease').PipelineStageRow>()
+    ...(transient ? [options.businessDate] : []),
+  )
+  type Row = import('./pipelineStageLease').PipelineStageRow
+  let recovered: Row | null
+  if (transient) {
+    // The once-per-date marker commits in the same batch as the CAS, and only when the CAS
+    // queued this recovery id, so a failed recovery continuation can never pass again.
+    const [claimed] = await opsDb.batch<Row>([cas, opsDb.prepare(`
+      INSERT OR IGNORE INTO pipeline_stage_runs (business_date, stage, canonical_run_id, status, cursor_key, completed_at)
+      SELECT ?, '${PIPELINE_AUTO_REDISPATCH_STAGE}', ?, 'success', ?, CURRENT_TIMESTAMP
+       WHERE EXISTS (
+         SELECT 1 FROM pipeline_stage_runs continuation
+          WHERE continuation.business_date=? AND continuation.stage=?
+            AND continuation.canonical_run_id=? AND continuation.status='queued'
+       )
+    `).bind(options.businessDate, recoveryRunId, failure.canonical_run_id,
+      options.businessDate, POST_SCREENER_CONTINUATION_STAGE, recoveryRunId)])
+    recovered = claimed?.results?.[0] ?? null
+  } else {
+    recovered = await cas.first<Row>()
+  }
 
   if (!recovered) {
     const current = await opsDb.prepare(`
@@ -360,19 +434,31 @@ export async function enqueuePostScreenerPipelineRecovery(
        WHERE business_date=? AND stage=?
     `).bind(options.businessDate, POST_SCREENER_CONTINUATION_STAGE)
       .first<{ canonical_run_id?: string | null; status?: string | null }>()
+    // A concurrent tick that lost the CAS sees its winner's recovery still in flight: not blocked.
+    const inFlight = transient && current?.canonical_run_id === recoveryRunId
+      && ['queued', 'running'].includes(String(current?.status ?? ''))
+    const used = transient && !inFlight && await opsDb.prepare(`
+      SELECT 1 AS used FROM pipeline_stage_runs WHERE business_date=? AND stage='${PIPELINE_AUTO_REDISPATCH_STAGE}'
+    `).bind(options.businessDate).first<{ used: number }>()
     return {
       queued: false,
       canonicalRunId: String(current?.canonical_run_id ?? '').trim() || null,
-      status: String(current?.status ?? 'missing'),
-      reason: current?.canonical_run_id === recoveryRunId
+      // A used retry reports the failed pipeline, so the watchdog treats the date as blocked.
+      status: used ? failure.status : String(current?.status ?? 'missing'),
+      reason: inFlight ? 'transient_redispatch_in_flight'
+        : used ? 'transient_redispatch_already_used'
+        : current?.canonical_run_id === recoveryRunId
         ? 'release_recovery_already_claimed'
         : 'recovery_cas_not_acquired',
+      lastError,
     }
   }
 
   await logSchedulerResult(env.KV, 'evening-chain', {
     status: 'running',
-    summary: `pipeline provenance recovery queued for ${options.businessDate}; failed_run_id=${failure.canonical_run_id}; recovery_run_id=${recoveryRunId}; source_sha=${sourceSha}; source=${options.source}`,
+    summary: transient
+      ? `pipeline transient recovery queued for ${options.businessDate}; failed_run_id=${failure.canonical_run_id}; recovery_run_id=${recoveryRunId}; source=${options.source}`
+      : `pipeline provenance recovery queued for ${options.businessDate}; failed_run_id=${failure.canonical_run_id}; recovery_run_id=${recoveryRunId}; source_sha=${sourceSha}; source=${options.source}`,
     duration_ms: 0,
     run_date: options.businessDate,
     run_id: recoveryRunId,
@@ -396,15 +482,18 @@ export async function enqueuePostScreenerPipelineRecovery(
     })
     throw error
   }
-  await env.KV.put(
-    `cron:pipeline-recovery:${options.businessDate}:${releaseId}:enqueued`,
-    new Date().toISOString(),
-    { expirationTtl: 30 * 86400 },
-  ).catch((error) => console.warn('[Queue] Pipeline recovery marker write failed:', error))
+  if (!transient) {
+    await env.KV.put(
+      `cron:pipeline-recovery:${options.businessDate}:${releaseId}:enqueued`,
+      new Date().toISOString(),
+      { expirationTtl: 30 * 86400 },
+    ).catch((error) => console.warn('[Queue] Pipeline recovery marker write failed:', error))
+  }
   return {
     queued: true,
     canonicalRunId: recoveryRunId,
     status: 'queued',
     reason: decision.reason,
+    lastError,
   }
 }

@@ -9,6 +9,7 @@ import {
 import {
   enqueuePostScreenerPipelineContinuation,
   enqueuePostScreenerPipelineRecovery,
+  TRANSIENT_REDISPATCH_REASON,
 } from './postScreenerContinuation'
 import { finLabLateRetryCutoffTw } from './finlabSourceContract'
 import { manifestRepeatingWindow } from './schedulerManifestGovernance'
@@ -388,6 +389,23 @@ async function screenerRunMissingSummary(env: Bindings, opsDb: D1Database, busin
   return `status=error screener_run_missing:${businessDate} evening_chain=${eveningChain}`
 }
 
+/** FG-05: one ops warn per date when the pipeline is redispatched automatically, and one when it stays in error. */
+export async function alertPipelineRecovery(
+  env: Bindings,
+  businessDate: string,
+  recovery: { queued: boolean; canonicalRunId: string | null; reason: string; lastError: string | null },
+): Promise<void> {
+  const error = String(recovery.lastError ?? '').slice(0, 300)
+  const meta = { run_date: businessDate, run_id: recovery.canonicalRunId, reason: recovery.reason, error }
+  if (recovery.queued) {
+    await logScreenerAlertOnce(env, `cron:alert:pipeline-auto-redispatch:${businessDate}`, 'pipeline-auto-redispatch',
+      `pipeline_execution for ${businessDate} failed with a transient error and was redispatched once: ${error}`, meta)
+    return
+  }
+  await logScreenerAlertOnce(env, `cron:alert:pipeline-error-no-auto-redispatch:${businessDate}`, 'pipeline-error-no-auto-redispatch',
+    `pipeline_execution for ${businessDate} is in error and was not redispatched (${recovery.reason}); manual recovery needed: ${error}`, meta)
+}
+
 export async function runScreenerRecoveryWatchdog(
   env: Bindings,
   trigger: TriggerScreener,
@@ -442,6 +460,9 @@ export async function runScreenerRecoveryWatchdog(
         })
       : null
     const blocked = pipelineRecovery?.status === 'error' && !pipelineRecovery.queued
+    if (pipelineRecovery && (blocked || pipelineRecovery.reason === TRANSIENT_REDISPATCH_REASON)) {
+      await alertPipelineRecovery(env, businessDate, pipelineRecovery)
+    }
     return [
       `${blocked ? 'status=error pipeline_blocked' : 'success'} funnel=${funnel.run_id}`,
       `universe=${Number(funnel.universe_count ?? 0)}`,

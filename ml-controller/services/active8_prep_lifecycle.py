@@ -580,6 +580,8 @@ async def ensure_active8_daily_prep(
         raise RuntimeError(
             f"immutable feature prep failed: {prep_result.get('error') or prep_status or 'unknown'}"
             f"; detail={prep_result.get('detail') or 'not_provided'}"
+            # An exception's text is only in the controller log, under this run_id.
+            f"; run_id={prep_result.get('run_id') or 'not_provided'}"
         )
 
     if feature_only:

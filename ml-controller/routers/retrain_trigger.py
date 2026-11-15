@@ -223,6 +223,21 @@ def _verified_prep_only_receipt(bucket: object, prefix: str, run_date: str, *,
         raise ValueError("prep_only_feature_names_missing")
     return receipt
 
+
+_PREP_RECEIPT_REJECTIONS = (
+    "prep_only_sealed_receipt_invalid", "prep_only_sealed_inventory_missing",
+    "prep_only_sealed_batch_inventory_invalid", "prep_only_sealed_checksum_mismatch",
+    "prep_only_feature_names_missing",
+)
+
+
+def _rejection(exc: Exception, run_id: str, reason: str, known: tuple[str, ...] = ()) -> str:
+    """Response code for a caught exception: its reason code when listed in `known`, else `reason`.
+    The exception text goes only to the log (CodeQL py/stack-trace-exposure)."""
+    logger.warning("[retrain/universal] %s run_id=%s: %s: %s", reason, run_id, type(exc).__name__, exc)
+    code = str(exc).split(":", 1)[0]
+    return next((name for name in known if name == code), reason)
+
 def _exact_dataset_snapshot_rejection(
     *,
     require_exact: bool,
@@ -1452,7 +1467,8 @@ async def trigger_universal_retrain(
         try:
             pit_variants = variant_specs(prep_output_gcs_prefix, req.pit_variant_versions)
         except ValueError as exc:
-            return {"status":"rejected", "error":str(exc)}
+            return {"status":"rejected", "error":_rejection(exc, run_id, "pit_variant_specs_invalid", ("pit_variant_version_unknown",)),
+                    "run_id":run_id}
     if req.pit_certification is not None and not req.prebuilt_prep_gcs_prefix:
         # Only an OOF full-fit from a verified prebuilt prep can carry a PIT receipt.
         return {"status":"rejected", "error":"pit_certification_requires_prebuilt_prep"}
@@ -1481,8 +1497,9 @@ async def trigger_universal_retrain(
         except (ValueError, json.JSONDecodeError) as exc:
             return {
                 "status": "rejected",
-                "error": str(exc),
+                "error": _rejection(exc, run_id, "prep_only_sealed_receipt_unreadable", _PREP_RECEIPT_REJECTIONS),
                 "output_gcs_prefix": prep_output_gcs_prefix,
+                "run_id": run_id,
             }
         if sealed is not None:
             if not sealed.get("global_capture"):
@@ -1514,8 +1531,8 @@ async def trigger_universal_retrain(
                 sequence_gcs_prefix=req.sequence_gcs_prefix, run_date=run_date, inference_only=req.inference_only,
                 **({"per_field_auxiliary": True, "require_aligned_history": True} if r33_prep else {}))
         except Exception as exc:
-            return {"status": "rejected", "error": "prep_source_inventory_unreadable",
-                    "detail": str(exc), "run_id": run_id}
+            return {"status": "rejected", "error": _rejection(exc, run_id, "prep_source_inventory_unreadable"),
+                    "run_id": run_id}
         if inventory["status"] != "inventory_ready":
             return {"status": "rejected", "error": "prep_source_inventory_incomplete",
                     "detail": json.dumps(inventory["issues"], sort_keys=True),
@@ -1595,8 +1612,7 @@ async def trigger_universal_retrain(
             )
             return {
                 "status": "rejected",
-                "error": "prebuilt_oof_full_fit_validation_or_dispatch_failed",
-                "detail": f"{type(exc).__name__}: {exc}",
+                "error": _rejection(exc, run_id, "prebuilt_oof_full_fit_validation_or_dispatch_failed"),
                 "run_id": run_id,
                 "lock_key": lock_key,
             }
@@ -1724,7 +1740,7 @@ async def trigger_universal_retrain(
             _upsert_retrain_status(run_id, status="prep_failed",
                 summary={"reason": "roster_sidecar_rejected", "error": str(exc)},
                 downstream_notes="aborted_before_batch_prep")
-            return {"status": "rejected", "error": "roster_sidecar_rejected", "detail": str(exc), "run_id": run_id}
+            return {"status": "rejected", "error": _rejection(exc, run_id, "roster_sidecar_rejected"), "run_id": run_id}
         stock_rows = [*stock_rows, *sidecar_rows]
         stock_ids = [r["id"] for r in stock_rows]
         symbols = [r["symbol"] for r in stock_rows]
@@ -1776,7 +1792,7 @@ async def trigger_universal_retrain(
             _upsert_retrain_status(run_id, status="prep_failed",
                 summary={"reason":"root_price_capture_rejected", "error":str(exc)},
                 downstream_notes="aborted_before_batch_prep")
-            return {"status":"rejected", "error":"root_price_capture_rejected", "detail":str(exc), "run_id":run_id}
+            return {"status":"rejected", "error":_rejection(exc, run_id, "root_price_capture_rejected"), "run_id":run_id}
         dataset_snapshot_info = {**(dataset_snapshot_info or {}), "price_capture":price_capture, "institutional_capture":institutional_capture, "market_cap_capture":market_cap_capture, "auxiliary_capture":auxiliary_capture, "long_source_capture":long_source_capture, "global_capture":global_capture}
 
     snapshot_components = set((dataset_snapshot_info or {}).get("components") or [])

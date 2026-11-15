@@ -20,16 +20,19 @@ import { STRATEGY_FORMAL_LABELER_VERSION } from './strategySpec'
 // Measured 2026-11-13 with production-length identifiers (strategy_id ~42 B,
 // sha256 registry checksum 71 B, labeler 49 B, reference contract 52 B):
 //   strategy_label_matrix_v4         517 B/row record, 341 B/row in its 5 indexes
+//     + learning 0069 (main #187) partial oof_hits index over hit cells only: 365 B/row in 6
+//       indexes at this fixture's 1-in-9 hit rate (0069's own estimate: ~28 MB, +0.43 MB/day)
 //   strategy_label_matrix_runs_v4    558 B, one header row per run incl. the count summary
 //   selection_reference_snapshots_v1 1,956 B/row, of which score_components ~1.4 KB; 7 indexes
+//     + learning 0067 (main) producer_run_id index for the previous-routing seek: 8 indexes, 374 B/row
 const BUDGET = {
   matrixRow: 540,
-  matrixIndexes: 360,
-  matrixIndexCount: 5,
+  matrixIndexes: 370,
+  matrixIndexCount: 6,
   headerRow: 600,
   referenceRow: 2_050,
-  referenceIndexCount: 7,
-  decisionIndexCount: 8,
+  referenceIndexCount: 8,
+  decisionIndexCount: 10,
 }
 
 const SIGNAL_DATE = '2026-11-12'

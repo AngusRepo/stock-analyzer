@@ -1,0 +1,61 @@
+name: actions cache prune
+
+# CodeQL default setup stores an overlay base database in the Actions cache for every
+# default-branch commit (javascript ~326 MB + python ~190 MB); PR analysis reads only the newest.
+# The older ones filled the repo's 10 GB cache (8.25 GB on 2026-11-15) and pushed the pip, npm
+# and buildkit caches out by LRU. Keep the newest per ref and language, delete the rest.
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '30 19 * * *' # 03:30 TW
+  workflow_dispatch:
+
+permissions:
+  actions: write
+
+concurrency:
+  group: actions-cache-prune
+  cancel-in-progress: false
+
+jobs:
+  prune:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # No checkout: the step runs no repository code with the actions:write token.
+      - name: Keep the newest CodeQL overlay base database per ref and language
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DRY_RUN: '0'
+        run: |
+          set -euo pipefail
+          # Oldest first, so caches saved while paging append at the end instead of shifting
+          # earlier pages; unique_by drops an entry a shifted page returned twice.
+          gh api --paginate "repos/$REPO/actions/caches?key=codeql-overlay-base-database-&sort=created_at&direction=asc&per_page=100" \
+            --jq '.actions_caches[]' > caches.json
+          # Group by everything before <codeql version>-<sha>-<run>-<attempt>; a key in any other
+          # format is skipped, so a format change keeps caches rather than deleting a language's newest.
+          jq -s -r 'unique_by(.id)
+            | map(select(.key | test("^codeql-overlay-base-database-1-[0-9a-f]+-[a-z_]+-[0-9][^-]*-[0-9a-f]{40}-[0-9]+-[0-9]+$")))
+            | group_by([.ref, (.key | split("-")[:-4] | join("-"))])
+            | map(sort_by(.created_at, .id) | reverse | .[1:]) | flatten
+            | .[] | [.id, .size_in_bytes, .ref, .key] | @tsv' caches.json > stale.tsv
+          count=0; bytes=0; failed=0
+          while IFS=$'\t' read -r id size ref key; do
+            echo "delete $id $ref $key ($((size / 1048576)) MiB)"
+            if [ "$DRY_RUN" != '1' ]; then
+              # 404: a concurrent run already deleted it; anything else (403 on a wrong token) fails the job
+              if ! out="$(gh api -X DELETE "repos/$REPO/actions/caches/$id" 2>&1 </dev/null)"; then
+                case "$out" in
+                  *'HTTP 404'*) echo "::warning::cache $id already gone" ;;
+                  *) echo "::error::cache $id not deleted: $out"; failed=$((failed + 1)) ;;
+                esac
+                continue
+              fi
+            fi
+            count=$((count + 1)); bytes=$((bytes + size))
+          done < stale.tsv
+          echo "pruned $count CodeQL overlay caches, $((bytes / 1048576)) MiB (dry_run=$DRY_RUN, failed=$failed)"
+          [ "$failed" -eq 0 ]

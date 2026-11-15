@@ -397,6 +397,9 @@ class Store:
         base = url[:-2] if url.endswith('**') else url
         if url.endswith('**'):
             return sorted(k for k in self.files if k.startswith(base))
+        if '*' in url:                                  # gcloud wildcards: '*' stays inside one segment
+            pattern = re.escape(url).replace(r'\*', '[^/]*')
+            return sorted(k for k in self.files if re.fullmatch(pattern, k))
         children = {base + k[len(base):].split('/')[0] + ('/' if '/' in k[len(base):] else '') for k in self.files if k.startswith(base)}
         return sorted(children)
 
@@ -416,17 +419,19 @@ def test_killed_or_unrolled_back_attempts_block_a_rerun(monkeypatch):
         f'{SHA}/gh-3-1/rollout/controller-release.json': {'status': 'failed', 'rollback_status': 'requires_reconciliation'},
         f'{SHA}/gh-4-1/rollout/progress/001-controller-release.json': {'status': 'staging'},
         f'{SHA}/gh-4-1/rollout/progress/002-controller-release.json': {'status': 'verified'},
+        f'{SHA}/gh-4-1/rollout/controller-release.json': {'status': 'verified'},
         f'{SHA}/gh-5-1/build/deployment-build-packet.json': {},
     })
     assert receipts.attempts(SHA) == ['gh-1-1', 'gh-2-1', 'gh-3-1', 'gh-4-1', 'gh-5-1']
-    assert receipts.rollout_state(SHA, 'gh-4-1') == {'status': 'verified'}       # newest progress copy
-    assert receipts.unreconciled_attempts(SHA) == ['gh-1-1', 'gh-3-1']
-    assert receipts.unreconciled_attempts(SHA, skip='gh-1-1') == ['gh-3-1']
+    assert receipts.rollout_state(SHA, 'gh-4-1') == {'status': 'verified'}       # the stage copy wins
+    assert receipts.unreconciled_anywhere() == [f'{SHA}/gh-1-1', f'{SHA}/gh-3-1']
+    assert receipts.unreconciled_anywhere(skip=(SHA, 'gh-1-1')) == [f'{SHA}/gh-3-1']
     args = Namespace(publish=True, out=Path('unused'), source=ROOT, python=sys.executable, resume_staged=False,
                      from_receipts=False)
     monkeypatch.setattr(release, 'attempt_id', lambda out: 'gh-6-1')
     monkeypatch.setattr(release, 'release_sha', lambda a: SHA)
-    with pytest.raises(RuntimeError, match='previous_rollout_attempt_unreconciled:gh-1-1,gh-3-1'):
+    monkeypatch.setattr(release, 'release_base', lambda a: 'b' * 40)
+    with pytest.raises(RuntimeError, match=f'previous_rollout_attempt_unreconciled:{SHA}/gh-1-1,{SHA}/gh-3-1 '):
         release.cmd_rollout(args)()
 
 
@@ -704,7 +709,7 @@ def test_oidc_jobs_install_only_hash_pinned_wheels():
 
 def test_verify_can_be_rerun_from_receipts_by_dispatch():
     text = workflow('deploy-controller.yml')
-    assert 'options: [dry-run, deploy, verify]' in text
+    assert 'options: [dry-run, deploy, verify, reconcile]' in text
     block = text.split('\n  reverify:\n', 1)[1]
     assert "inputs.mode == 'verify'" in block and 'environment: production' in block
     assert 'release.py verify --from-receipts --sha' in block
@@ -766,3 +771,242 @@ def test_prior_falls_back_to_the_attempt_that_left_modal_live(monkeypatch):
     prior = release.rollout_prior(Namespace(prior_modal_release=None, prior_bootstrap=None, python=sys.executable))
     assert prior['modal_tag'] == SHA and prior['attempt'] == 'gh-2-1'
     assert prior['modal_release']['completed_at'] == '2026-11-13T02:00:00+00:00'
+
+
+OLD, NEW = 'c' * 40, 'd' * 40
+
+
+def live_rollback(sha=OLD):
+    return {'service_revision': 'ml-controller-old', 'service_source': {'STOCKVISION_SOURCE_SHA': sha},
+            'jobs': {name: {'source': {'STOCKVISION_SOURCE_SHA': sha}} for name in rollout.JOBS}}
+
+
+def live_gc(controller=OLD, serving=OLD, jobs=None, broken=()):
+    """Fake gcloud describes of the live controller, its serving revision and every Job."""
+    jobs = jobs or {}
+    described = []
+
+    def env(sha):
+        return [{'name': 'STOCKVISION_SOURCE_SHA', 'value': sha}]
+
+    def gc(*argv):
+        kind, name = argv[1], argv[3]
+        described.append(name)
+        if name in broken:
+            raise subprocess.CalledProcessError(1, ['gcloud', kind, 'describe', name])
+        if kind == 'services':
+            return json.dumps({'spec': {'template': {'spec': {'containers': [{'image': 'img', 'env': env(controller)}]}}},
+                               'status': {'traffic': [{'revisionName': 'ml-controller-old', 'percent': 100},
+                                                      {'revisionName': 'ml-controller-new', 'tag': 'perf-x'}]}})
+        if kind == 'revisions':
+            return json.dumps({'spec': {'containers': [{'image': 'img', 'env': env(serving)}]}})
+        if name not in rollout.JOBS and name not in jobs:   # e.g. a *-min-* scaler job
+            raise AssertionError('not an application job: ' + name)
+        return json.dumps(_job_resource('img', jobs.get(name, OLD), 'cd@example.com'))
+    gc.described = described
+    return gc
+
+
+def failed_receipt():
+    return {'status': 'failed', 'source_sha': NEW, 'error_type': 'RuntimeError', 'error': 'concurrent_job_change:x'}
+
+
+def test_post_rollback_read_records_jobs_left_on_the_release_sha(tmp_path, monkeypatch):
+    # 2026-11-13: every job rollback failed, the controller was reverted, nothing alerted.
+    monkeypatch.setattr(rollout, 'OUT', tmp_path)
+    monkeypatch.setattr(rollout, 'PUBLISH', None)
+    gc = live_gc(jobs={name: NEW for name in rollout.JOBS})
+    post = rollout.live_source_state(gc, live_rollback())
+    assert post['status'] == 'mismatch' and post['controller_sha'] == OLD and post['serving'] == {'ml-controller-old': OLD}
+    assert [row['component'] for row in post['mismatches']] == sorted('jobs/' + name for name in rollout.JOBS)
+    assert all(row == {'component': row['component'], 'expected': OLD, 'actual': NEW} for row in post['mismatches'])
+    assert sorted(set(gc.described) - {'ml-controller', 'ml-controller-old'}) == sorted(rollout.JOBS)  # no scaler jobs
+    receipt = failed_receipt()
+    errors = [{'component': 'jobs/pipeline-v2', 'error_type': 'RuntimeError', 'reason': 'x'}]
+    error = rollout.close_failed_rollout(receipt, errors=errors, reverted=['service-template'], post=post, grant_staged=False)
+    assert str(error) == 'controller_modal_release_failed_see_receipt:post_rollback_controller_job_sha_mismatch'
+    saved = json.loads((tmp_path / 'controller-release.json').read_text())
+    assert saved['rollback_status'] == 'requires_reconciliation' and saved['post_rollback_state'] == post
+    assert saved['error'] == 'concurrent_job_change:x' and saved['error_type'] == 'RuntimeError'   # the original error stays
+    assert receipts.unreconciled(saved)
+
+
+def test_post_rollback_read_of_a_fully_reverted_release_is_aligned(tmp_path, monkeypatch):
+    monkeypatch.setattr(rollout, 'OUT', tmp_path)
+    monkeypatch.setattr(rollout, 'PUBLISH', None)
+    post = rollout.live_source_state(live_gc(), live_rollback())
+    assert post['status'] == 'aligned' and post['mismatches'] == [] and post['read_errors'] == []
+    receipt = failed_receipt()
+    error = rollout.close_failed_rollout(receipt, errors=[], reverted=['service-template'], post=post, grant_staged=False)
+    assert str(error) == 'controller_modal_release_failed_see_receipt'
+    assert receipt['rollback_status'] == 'verified' and not receipts.unreconciled(receipt)
+    # The controller template, or the revision that serves, on the release sha is a mismatch too.
+    for gc in (live_gc(controller=NEW), live_gc(serving=NEW)):
+        assert rollout.live_source_state(gc, live_rollback())['status'] == 'mismatch'
+
+
+def test_post_rollback_read_failure_is_recorded_and_never_aligned(tmp_path, monkeypatch):
+    monkeypatch.setattr(rollout, 'OUT', tmp_path)
+    monkeypatch.setattr(rollout, 'PUBLISH', None)
+    for broken in (('pipeline-v2',), ('ml-controller',), ('ml-controller-old',)):
+        post = rollout.live_source_state(live_gc(broken=broken), live_rollback())
+        assert post['status'] == 'unknown' and post['mismatches'] == []
+        assert [row['error_type'] for row in post['read_errors']] == ['CalledProcessError']
+        receipt = failed_receipt()
+        error = rollout.close_failed_rollout(receipt, errors=[], reverted=[], post=post, grant_staged=False)
+        assert str(error) == 'controller_modal_release_failed_see_receipt:post_rollback_state_unknown'
+        assert receipt['rollback_status'] == 'requires_reconciliation'
+    # A mismatch beside an unreadable job reports both.
+    post = rollout.live_source_state(live_gc(jobs={'screener-v2': NEW}, broken=('verify-v2',)), live_rollback())
+    assert post['status'] == 'mismatch'
+    assert str(rollout.close_failed_rollout(failed_receipt(), errors=[], reverted=[], post=post, grant_staged=False)) == (
+        'controller_modal_release_failed_see_receipt:post_rollback_controller_job_sha_mismatch:post_rollback_state_unknown')
+    # The read itself crashing (rollout catches it into this shape), or the receipt save failing,
+    # still ends in the release error, never in aligned.
+    crashed = {'status': 'unknown', 'mismatches': [], 'read_errors': [{'component': 'post-rollback-state'}]}
+
+    def broken_save(*args, **kwargs):
+        raise OSError('disk')
+    monkeypatch.setattr(rollout, 'save', broken_save)
+    receipt = failed_receipt()
+    error = rollout.close_failed_rollout(receipt, errors=[], reverted=[], post=crashed, grant_staged=False)
+    assert str(error).endswith(':post_rollback_state_unknown') and receipt['rollback_status'] == 'requires_reconciliation'
+    source = (ROOT / 'tools/release/release_rollout.py').read_text(encoding='utf-8')
+    assert source.count('raise close_failed_rollout(') == 1 and 'post = live_source_state(' in source
+    # The rollback detail is durable before the live read starts.
+    assert source.index("receipt.update(rollback_status='requires_reconciliation', reverted=reverted") < source.index('post = live_source_state(')
+
+
+def test_unreconciled_attempt_of_another_commit_refuses_the_rollout(monkeypatch):
+    other = 'b' * 40
+    failed = {'status': 'failed', 'rollback_status': 'requires_reconciliation', 'failed_at': '2026-11-13T05:00:00+00:00'}
+    store = use_store(monkeypatch, {
+        # the attempt rollout_prior reads the live Modal receipts from (PR #175)
+        f'{other}/gh-9-1/rollout/controller-release.json': failed,
+        f'{other}/gh-9-1/rollout/modal-release.json': {'status': 'verified', 'completed_at': '2026-11-13T04:50:00+00:00',
+                                                       'provenance': {'source_sha': other}},
+        f'{other}/gh-9-1/rollout/bootstrap-verification.json': {'status': 'PASS'},
+        f'{other}/gh-8-1/rollout/progress/003-controller-release.json': {**failed, 'failed_at': '2026-11-12T05:00:00+00:00'},
+        f'{SHA}/gh-1-1/rollout/controller-release.json': {'status': 'failed', 'rollback_status': 'verified'},
+    })
+    assert receipts.unreleased_modal(other)['attempt'] == 'gh-9-1'
+    assert receipts.unreconciled_anywhere() == [f'{other}/gh-8-1', f'{other}/gh-9-1']
+    # A verified release of the live sha after an attempt proved everything coherent since.
+    assert receipts.unreconciled_anywhere(superseded_after='2026-11-12T23:00:00+00:00') == [f'{other}/gh-9-1']
+    args = Namespace(publish=True, out=Path('unused'), source=ROOT, python=sys.executable, resume_staged=False,
+                     from_receipts=False)
+    monkeypatch.setattr(release, 'attempt_id', lambda out: 'gh-10-1')
+    monkeypatch.setattr(release, 'release_sha', lambda a: SHA)
+    monkeypatch.setattr(release, 'release_base', lambda a: other)
+    store.files[f'{receipts.BUCKET}/{other}/current.json'] = json.dumps(
+        {'status': 'verified', 'verified_at': '2026-11-14T00:00:00+00:00', 'seeded': True}).encode()
+    with pytest.raises(RuntimeError, match=f'unreconciled:{other}/gh-8-1,{other}/gh-9-1 '):   # a seed supersedes nothing
+        release.cmd_rollout(args)()
+    store.files[f'{receipts.BUCKET}/{other}/current.json'] = json.dumps(
+        {'status': 'verified', 'verified_at': '2026-11-12T23:00:00+00:00'}).encode()
+    with pytest.raises(RuntimeError, match=f'unreconciled:{other}/gh-9-1 -- .*mode=reconcile sha=<sha> attempt=<attempt>'):
+        release.cmd_rollout(args)()
+    # A reconciliation receipt that is not 'reconciled' does not count.
+    store.files[f'{receipts.BUCKET}/{other}/gh-9-1/{receipts.RECONCILIATION}'] = json.dumps({'status': 'failed'}).encode()
+    assert receipts.unreconciled_anywhere(superseded_after='2026-11-12T23:00:00+00:00') == [f'{other}/gh-9-1']
+    store.files[f'{receipts.BUCKET}/{other}/gh-9-1/{receipts.RECONCILIATION}'] = json.dumps({'status': 'reconciled'}).encode()
+    assert receipts.unreconciled_anywhere(superseded_after='2026-11-12T23:00:00+00:00') == []
+    assert receipts.unreleased_modal(other)['attempt'] == 'gh-9-1'          # reconciling keeps PRIOR readable
+    # A store that cannot be listed refuses too (fail closed), never "nothing unreconciled".
+    monkeypatch.setattr(receipts, 'listing', lambda url: (_ for _ in ()).throw(RuntimeError('receipt_list_failed:' + url)))
+    with pytest.raises(RuntimeError, match='receipt_list_failed'):
+        release.cmd_rollout(args)()
+
+
+def reconcile_out(tmp_path, state=None):
+    out = tmp_path / 'out'
+    for name, value in (('rollout/controller-release.json', state or {**failed_receipt(), 'rollback_status': 'requires_reconciliation'}),
+                        ('rollout/rollback.json', live_rollback()), ('attempt.json', {'attempt': 'gh-9-1'})):
+        (out / name).parent.mkdir(parents=True, exist_ok=True)
+        (out / name).write_text(json.dumps(value))
+    return out
+
+
+def test_post_rollback_read_follows_the_attempts_jobs_when_the_inventory_changed():
+    # Reconcile runs on today's checkout: a job the attempt did not touch is a mismatch (never a
+    # read error that blocks every basis), and a job only the attempt held is still read.
+    grown = live_rollback()
+    del grown['jobs']['pipeline-v2']
+    post = rollout.live_source_state(live_gc(), grown)
+    assert post['read_errors'] == [] and post['mismatches'] == [
+        {'component': 'jobs/pipeline-v2', 'expected': 'not_in_rollback', 'actual': OLD}]
+    shrunk = live_rollback()
+    shrunk['jobs']['retired-job'] = {'source': {'STOCKVISION_SOURCE_SHA': OLD}}
+    post = rollout.live_source_state(live_gc(jobs={'retired-job': NEW}), shrunk)
+    assert post['mismatches'] == [{'component': 'jobs/retired-job', 'expected': OLD, 'actual': NEW}]
+
+
+def test_reconcile_records_an_attempt_only_once_live_agrees_again(tmp_path, monkeypatch):
+    store = use_store(monkeypatch, {f'{NEW}/gh-9-1/rollout/controller-release.json':
+                                    {**failed_receipt(), 'rollback_status': 'requires_reconciliation'}})
+
+    def publish_stage(sha, attempt, out, stage):
+        for path in receipts.published_files(out / stage):
+            store.files[receipts.prefix(sha, attempt) + '/' + path.relative_to(out).as_posix()] = path.read_bytes()
+    monkeypatch.setattr(receipts, 'publish_stage', publish_stage)
+    out = reconcile_out(tmp_path)
+    with pytest.raises(RuntimeError, match='reconcile_live_state_not_coherent:jobs/'):
+        release.reconcile_attempt(out, NEW, publish=True, gc=live_gc(jobs={'pipeline-v2': NEW}))
+    with pytest.raises(RuntimeError, match='reconcile_live_state_unreadable:jobs/verify-v2'):
+        release.reconcile_attempt(out, NEW, publish=True, gc=live_gc(broken=('verify-v2',)))
+    assert receipts.unreconciled_anywhere() == [f'{NEW}/gh-9-1']
+    result = release.reconcile_attempt(out, NEW, publish=True, gc=live_gc())
+    assert result == {'status': 'reconciled', 'sha': NEW, 'attempt': 'gh-9-1', 'basis': 'rollback_restored_every_component'}
+    assert receipts.unreconciled_anywhere() == []
+    # Everything on one later verified release reconciles too; one on an unverified sha does not.
+    out = reconcile_out(tmp_path / 'b')
+    every = {name: 'e' * 40 for name in rollout.JOBS}
+    with pytest.raises(RuntimeError, match='reconcile_live_state_not_coherent'):
+        release.reconcile_attempt(out, NEW, publish=False, gc=live_gc('e' * 40, 'e' * 40, every))
+    store.files[f'{receipts.BUCKET}/{"e" * 40}/current.json'] = json.dumps({'status': 'verified', 'seeded': True}).encode()
+    with pytest.raises(RuntimeError, match='reconcile_live_state_not_coherent'):     # seeded: Modal only
+        release.reconcile_attempt(out, NEW, publish=False, gc=live_gc('e' * 40, 'e' * 40, every))
+    store.files[f'{receipts.BUCKET}/{"e" * 40}/current.json'] = json.dumps({'status': 'verified'}).encode()
+    assert release.reconcile_attempt(out, NEW, publish=False, gc=live_gc('e' * 40, 'e' * 40, every))['basis'] == (
+        'all_on_verified_release:' + 'e' * 40)
+    verified = reconcile_out(tmp_path / 'c', {'status': 'verified'})
+    assert release.reconcile_attempt(verified, NEW, publish=False, gc=live_gc())['status'] == 'nothing_to_reconcile'
+    with pytest.raises(SystemExit):
+        release.main(['verify', '--reconcile', '--out', str(tmp_path / 'x')])
+
+
+def test_failed_cd_job_annotates_an_unreconciled_rollout(tmp_path, monkeypatch):
+    out = tmp_path / 'release'
+    assert release.rollout_alert(out) == []                              # no rollout in this run
+    post = rollout.live_source_state(live_gc(jobs={'screener-v2': NEW}, broken=('verify-v2',)), live_rollback())
+    state = {**failed_receipt(), 'error': 'private detail', 'rollback_status': 'requires_reconciliation',
+             'rollback_errors': [{'component': 'jobs/screener-v2', 'error_type': 'RuntimeError', 'reason': 'private'}],
+             'post_rollback_state': post}
+    out = reconcile_out(tmp_path, state)
+    summary = tmp_path / 'summary.md'
+    monkeypatch.setenv('GITHUB_STEP_SUMMARY', str(summary))
+    lines = release.rollout_alert(out)
+    assert all(line.startswith('::error::') for line in lines) and 'private' not in '\n'.join(lines)
+    assert f'mode=reconcile sha={NEW} attempt=gh-9-1' in lines[0]
+    assert any(f'live jobs/screener-v2 on {NEW}, rollback restores {OLD}' in line for line in lines)
+    assert any('jobs/verify-v2 unread after rollback' in line for line in lines)
+    assert release.cmd_alert(Namespace(out=out)) == 1 and 'needs reconciliation' in summary.read_text()
+    clean = reconcile_out(tmp_path / 'clean', {**failed_receipt(), 'rollback_status': 'verified',
+                                               'post_rollback_state': {'status': 'aligned'}})
+    assert release.rollout_alert(clean) == [] and release.cmd_alert(Namespace(out=clean)) == 0
+    killed = reconcile_out(tmp_path / 'killed', {'status': 'staging', 'source_sha': NEW})
+    assert 'status=staging' in release.rollout_alert(killed)[0]
+
+
+def test_deploy_controller_alerts_on_failure_and_reconciles_by_dispatch():
+    text = workflow('deploy-controller.yml')
+    controller = job_block(text, 'controller')
+    step = controller.split('- name: Alert on an unreconciled rollout', 1)[1]
+    assert controller.index('- name: Rollout') < controller.index('- name: Alert on an unreconciled rollout')
+    assert "if: (failure() || cancelled()) && steps.tip.outputs.current == 'true' && env.MODE == 'deploy'" in step
+    assert 'release.py alert --out "$RUNNER_TEMP/release"' in step and 'env:' not in step and 'secrets' not in step
+    plan = text.split('\n  plan:\n', 1)[1].split('\n  controller:\n')[0]
+    assert "inputs.mode == 'reconcile'" in plan.splitlines()[0]          # no build / deploy for reconcile
+    block = text.split('\n  reverify:\n', 1)[1]
+    assert "(inputs.mode == 'verify' || inputs.mode == 'reconcile')" in block
+    assert 'reconcile=(--reconcile)' in block and '"${reconcile[@]}"' in block

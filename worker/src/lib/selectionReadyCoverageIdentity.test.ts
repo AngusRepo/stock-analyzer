@@ -175,7 +175,11 @@ test('the identity JSON is expanded once, and the stored rows are reached by sig
       const joined = plan.join(' | ')
       assert.ok(!plan.some((detail) => /CORRELATED/.test(detail)), joined)
       assert.ok(plan.some((detail) => /^LIST SUBQUERY/.test(detail)), joined)
-      assert.ok(plan.some((detail) => /^SEARCH (m|r) USING .*\(signal_date=\?/.test(detail)), joined)
+      // Reference rows may also be reached by idx_selection_reference_v1_producer_run (learning
+      // 0067). Writers stamp one signal_date per producer; legacy cross-date rows only widen the
+      // bound to that producer's rows, so either lookup is bounded.
+      assert.ok(plan.some((detail) => /^SEARCH m USING .*\(signal_date=\?/.test(detail)
+        || /^SEARCH r USING .*\((signal_date|producer_run_id)=\?/.test(detail)), joined)
       assert.ok(!plan.some((detail) => /^SCAN (m|r)\b/.test(detail)), joined)
     }
   } finally {

@@ -4028,6 +4028,27 @@ def plan_adjusted_rebase_repair(
     return {"status": "checked", **repair}, statements
 
 
+def report_unverified_adjusted_rebase(run_id: str, end_date: str | None) -> str:
+    """Record a run that skipped the anchor check for lack of a sealed capture in ops system_logs; warn-only, never raises."""
+    message = (f"finlab adjusted rebase unverified for {end_date}: run {run_id} has no full vintage, "
+               "the run continued without the anchor check")
+    print(f"[finlab-adjusted-rebase] {message}", file=sys.stderr)
+    try:
+        result = ops_d1_batch_execute([(
+            "INSERT INTO system_logs (level, cron_name, message, meta, created_at) VALUES (?, ?, ?, ?, datetime('now'))",
+            ["warn", "finlab-adjusted-rebase", message,
+             json.dumps({"run_id": run_id, "end_date": end_date, "status": "unverified_no_full_vintage",
+                         "blocking": False}, sort_keys=True)],
+        )], timeout=60.0)
+        if int((result or {}).get("error_count") or 0):
+            print("[finlab-adjusted-rebase] alert_failed system_logs write errors", file=sys.stderr)
+            return "failed"
+        return "system_logs"
+    except Exception as exc:
+        print(f"[finlab-adjusted-rebase] alert_failed {type(exc).__name__}: {exc}", file=sys.stderr)
+        return "failed"
+
+
 def materialize_canonical_to_d1(
     manifest: dict[str, Any],
     *,
@@ -4138,6 +4159,8 @@ def materialize_canonical_to_d1(
         report_taxonomy_prune_skips(outputs.generated_at)
         if not dry_run and outputs.finlab_taxonomy_tags else []
     )
+    if not dry_run and adjusted_rebase.get("status") == "unverified_no_full_vintage":
+        adjusted_rebase["alert"] = report_unverified_adjusted_rebase(manifest["run_id"], end_date)
     # Publish metadata only after all data-domain writes have succeeded.
     if not dry_run and ops_statements:
         require_finlab_write_ack(apply_result, len(statements) + len(core_statements) + len(market_statements), phase="data")

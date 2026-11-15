@@ -1494,3 +1494,31 @@ def test_matching_anchor_writes_nothing_and_missing_capture_stays_unverified(mon
         query=lambda sql, params, domain: [{"stock_id": s, "date": "2026-09-29", "adj_close": 204.0} for s in ("2330", "2357")])
     assert receipt["status"] == "checked" and receipt["rebased"] == [] and statements == []
     assert receipt["checked"] == 2
+
+
+@pytest.mark.parametrize("alert_fails", [False, True])
+def test_missing_capture_continues_and_warns_in_system_logs(monkeypatch, tmp_path, alert_fails):
+    tool = _load_tool_module()
+    logs = []
+
+    def ack(statements, *args, **kwargs):
+        if any("INTO system_logs" in sql for sql, _ in statements):
+            logs.extend(statements)
+            if alert_fails:
+                raise RuntimeError("ops down")
+        n = len(statements)
+        return {"total": n, "success_count": n, "error_count": 0, "changes_total": n}
+
+    monkeypatch.setattr(tool, "market_domain_active", lambda: True)
+    monkeypatch.setattr(tool, "ops_d1_batch_execute", ack)
+    monkeypatch.setattr(tool, "d1_batch_execute", ack)
+    monkeypatch.setattr(tool, "controller_d1_batch_execute", ack)
+    result = tool.materialize_canonical_to_d1(
+        {"run_id": "finlab-v4-daily-20260930-1", "artifact_root": str(tmp_path), "generated_at": "2026-09-30T13:00:00Z"},
+        start_date="2026-09-30", end_date="2026-09-30", datasets=["canonical_market_daily"])
+    assert result["adjusted_rebase"] == {"status": "unverified_no_full_vintage",
+                                         "alert": "failed" if alert_fails else "system_logs"}
+    assert len(logs) == 1
+    sql, params = logs[0]
+    assert params[:2] == ["warn", "finlab-adjusted-rebase"] and "2026-09-30" in params[2]
+    assert json.loads(params[3])["blocking"] is False

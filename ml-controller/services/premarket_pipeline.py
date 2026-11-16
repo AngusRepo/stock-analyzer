@@ -35,6 +35,36 @@ def enabled():
     return os.environ.get('PIPELINE_DAILY_PLAN_OWNER') == OWNER
 def digest(value):
     return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False,ensure_ascii=False).encode()).hexdigest()
+# The Worker seals the morning context with JSON.stringify output. Python and
+# JavaScript disagree on number text (9.66e-06 vs 0.00000966, 1e-07 vs 1e-7)
+# and on key order outside the BMP, so verify with the Worker's own encoding.
+_JS_ESCAPES={'"':'\\"','\\':'\\\\','\b':'\\b','\f':'\\f','\n':'\\n','\r':'\\r','\t':'\\t'}
+def _js_number(value):
+    if isinstance(value,int):return str(value) if abs(value)<=2**53 else _js_number(float(value))
+    if value!=value or value in (float('inf'),float('-inf')):raise ValueError('premarket_context_number')
+    if value==0:return '0'
+    mantissa,_,exp=repr(abs(value)).partition('e')
+    whole,_,frac=mantissa.partition('.')
+    raw=whole+frac;digits=raw.lstrip('0').rstrip('0')
+    n=len(whole)+int(exp or 0)-(len(raw)-len(raw.lstrip('0')));k=len(digits)
+    if k<=n<=21:text=digits+'0'*(n-k)
+    elif 0<n<=21:text=digits[:n]+'.'+digits[n:]
+    elif -6<n<=0:text='0.'+'0'*-n+digits
+    else:text=digits[0]+('.'+digits[1:] if k>1 else '')+'e'+('+' if n>0 else '-')+str(abs(n-1))
+    return ('-' if value<0 else '')+text
+def _js_canonical(value):
+    if value is None:return 'null'
+    if isinstance(value,bool):return 'true' if value else 'false'
+    if isinstance(value,(int,float)):return _js_number(value)
+    if isinstance(value,str):
+        return '"'+''.join(_JS_ESCAPES.get(c) or ('\\u%04x'%ord(c) if ord(c)<0x20 or 0xD800<=ord(c)<=0xDFFF else c) for c in value)+'"'
+    if isinstance(value,list):return '['+','.join(_js_canonical(v) for v in value)+']'
+    if isinstance(value,dict):
+        keys=sorted(value,key=lambda k:k.encode('utf-16-be','surrogatepass'))
+        return '{'+','.join(_js_canonical(k)+':'+_js_canonical(value[k]) for k in keys)+'}'
+    raise ValueError('premarket_context_type')
+def worker_digest(value):
+    return hashlib.sha256(_js_canonical(value).encode()).hexdigest()
 def prefix(day, run_id):
     datetime.strptime(day,'%Y-%m-%d')
     if not run_id: raise ValueError('premarket_run_id_missing')
@@ -195,7 +225,7 @@ def validate_context(receipt, context, *, now=None):
     # Context can freeze at 06:45; the independent 08:45 cutoff remains strict.
     max_age_minutes = 105 if (paper_recovery or opening_recovery) else 120
     if now-cutoff>timedelta(minutes=max_age_minutes) and not (after_close_recovery or late_recovery):raise ValueError('premarket_context_stale')
-    if context['checksum']!=digest({k:v for k,v in context.items() if k!='checksum'}):raise ValueError('premarket_context_checksum')
+    if context['checksum']!=worker_digest({k:v for k,v in context.items() if k!='checksum'}):raise ValueError('premarket_context_checksum')
 
 def dispatch(receipt,context,*,jobs_client,client=None):
     validate_context(receipt,context)

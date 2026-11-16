@@ -4651,8 +4651,10 @@ def write_predictions_to_d1(
         })
         sanitized_count += replaced
         forecast_data = json.dumps(forecast_payload, ensure_ascii=False)
-        confidence, replaced = _sanitize_non_finite(data.get("confidence"))
-        sanitized_count += replaced
+        # data["confidence"] is the base-evidence placeholder (ml-service
+        # predict_stock_v2 / R33 serving inputs always send 0.0); the Active-8
+        # ensemble owns confidence in ensemble_v2. A placeholder is not a measured
+        # direction accuracy, so the ensemble row stores NULL (NEW-1030-16).
         entry_price, replaced = _sanitize_non_finite(data.get("entry_price"))
         sanitized_count += replaced
         stop_loss, replaced = _sanitize_non_finite(data.get("stop_loss"))
@@ -4681,7 +4683,7 @@ def write_predictions_to_d1(
                     stock_id,
                     run_date,
                     14,
-                    confidence,
+                    None,                   # direction_accuracy: not measured
                     forecast_data,
                     entry_price,
                     stop_loss,
@@ -5652,12 +5654,16 @@ def build_filtered_recommendation_update_statements(
             "allocator_ev_fusion_diagnostic": diagnostic,
             "rfs_shadow_challenger": rfs_evidence,
         }
+        # No usable formal inference is NO_SIGNAL, not a HOLD forecast, and has no
+        # confidence (NEW-1030-15). A non-NULL signal keeps the screener seed upsert
+        # from treating the row as untouched; NULL confidence keeps it out of the
+        # final-recommendation reads (signal/confidence IS NOT NULL).
         statements.append((
             """
             UPDATE daily_recommendations
                SET score = 0,
-                   signal = 'HOLD',
-                   confidence = 0,
+                   signal = 'NO_SIGNAL',
+                   confidence = NULL,
                    reason = 'Formal ML gate filtered this screener seed; not allocation eligible',
                    has_buy_signal = 0,
                    eligible_for_ml = 0,

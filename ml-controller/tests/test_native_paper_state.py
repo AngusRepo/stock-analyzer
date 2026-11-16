@@ -73,7 +73,8 @@ def test_empty_candidate_slate_cannot_inherit_incumbent_buy_from_source_seed():
     prepared = prepare_native_state(**args)
     with sqlite3.connect(':memory:') as db:
         db.executescript(prepared['state_sql'])
-        assert db.execute('SELECT signal,has_buy_signal,eligible_for_pending_buy FROM daily_recommendations').fetchone() == ('HOLD', 0, 0)
+        assert db.execute('SELECT signal,confidence,has_buy_signal,eligible_for_pending_buy FROM daily_recommendations'
+                          ).fetchone() == ('NO_SIGNAL', None, 0, 0)
         assert db.execute("SELECT json_extract(alpha_allocation,'$.selected') FROM daily_recommendations").fetchone()[0] == 0
         assert db.execute('SELECT cash FROM paper_accounts WHERE id=2').fetchone()[0] == 100000
     assert args == original

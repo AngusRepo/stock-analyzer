@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import { Miniflare } from 'miniflare'
 import { persistSelectionEvidenceV4 } from './selectionReferenceEvidence'
 import { STRATEGY_FORMAL_LABELER_VERSION } from './strategySpec'
+import { MATRIX_RUN_SUMMARY_VERSION } from './strategyLabelMatrixRunSummary'
 
 const schema = fs.readFileSync('domain-schemas/learning.sql', 'utf8').replace(/\r\n/g, '\n')
 
@@ -128,6 +129,24 @@ async function main(): Promise<void> {
     assert.equal(Number((await learning.prepare(
       'SELECT COUNT(*) count FROM strategy_label_matrix_v4 WHERE producer_run_id=?',
     ).bind(input.producerRunId).first<any>())?.count), 1)
+
+    // The promotion batch writes the run's count summary with its cells.
+    assert.deepEqual({ ...await learning.prepare(`
+      SELECT summary_version, summary_matrix_rows, summary_contract_rows, summary_evaluable_rows,
+             summary_matched_rows, summary_threshold_evidence_rows,
+             summary_challenger_projection_rows, summary_projected_threshold_rows
+        FROM strategy_label_matrix_runs_v4
+       WHERE producer_run_id=?
+    `).bind(input.producerRunId).first<any>() }, {
+      summary_version: MATRIX_RUN_SUMMARY_VERSION,
+      summary_matrix_rows: 1,
+      summary_contract_rows: 1,
+      summary_evaluable_rows: 1,
+      summary_matched_rows: 1,
+      summary_threshold_evidence_rows: 1,
+      summary_challenger_projection_rows: 0,
+      summary_projected_threshold_rows: 0,
+    })
 
     const immutableReceipt = JSON.stringify(ready)
     assert.deepEqual(await persistSelectionEvidenceV4(learning, input, identity), {

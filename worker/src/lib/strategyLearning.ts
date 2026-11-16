@@ -46,6 +46,17 @@ import {
 } from './strategyEvaluability'
 import { STRATEGY_EVIDENCE_V5_LIVE_FRONTIER_START_DATE } from './strategyEvidenceV5Contract'
 import { SELECTION_REFERENCE_MATURE_COMPATIBLE_CONTRACT_VERSIONS } from './selectionReferenceEvidence'
+import {
+  MATRIX_RUN_SUMMARY_CLEAR_SQL,
+  MATRIX_RUN_SUMMARY_SELECT,
+  MATRIX_RUN_SUMMARY_VERSION,
+  matrixRunSummaryCounts,
+  readMatrixRunSummary,
+  matrixRunSummaryRefreshBinds,
+  matrixRunSummaryRefreshSql,
+  matrixRunSummaryUsable,
+  matrixRunSummaryUsableInline,
+} from './strategyLabelMatrixRunSummary'
 
 export const STRATEGY_LEARNING_VERSION = 'strategy-learning-v5'
 export const STRATEGY_EVIDENCE_RECONSTRUCTION_LABELER_VERSION =
@@ -540,10 +551,6 @@ const SCHEMA_DDL = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_strategy_decision_log_date
     ON strategy_decision_log(date DESC, strategy_id, matched)`,
-  `CREATE INDEX IF NOT EXISTS idx_strategy_decision_log_symbol
-    ON strategy_decision_log(symbol, date DESC)`,
-  `CREATE INDEX IF NOT EXISTS idx_strategy_decision_log_status
-    ON strategy_decision_log(strategy_status, matched, date DESC)`,
   `CREATE TABLE IF NOT EXISTS strategy_learning_daily_stats (
     date TEXT NOT NULL,
     strategy_id TEXT NOT NULL,
@@ -4593,6 +4600,9 @@ export async function listHistoricalStrategyEvidenceV5Dates(
   // change only inside a rebuild of that date, between a pending and a final
   // ledger write. A migration or manual SQL that edits cells of a success date
   // must set its ledger back to pending, or this selector will not see it.
+  // Summarised runs answer the projection counts from the header (see
+  // strategyLabelMatrixRunSummary.ts); the version string is a code constant.
+  const SUMMARY_USABLE = matrixRunSummaryUsableInline('mr', 'strategy-threshold-margin-affinity-v2')
   const dateRows = await db.prepare(`
     WITH source_dates AS (
       SELECT mr.signal_date date, mr.producer_run_id
@@ -4637,7 +4647,7 @@ export async function listHistoricalStrategyEvidenceV5Dates(
          OR COALESCE(r.source_reference_contract_version, '') <> mr.reference_contract_version
        THEN 1
        WHEN julianday(mr.updated_at) <= julianday(r.updated_at) THEN 0
-       WHEN (
+       WHEN (CASE WHEN ${SUMMARY_USABLE} THEN mr.summary_challenger_projection_rows ELSE (
            SELECT COUNT(*)
              FROM strategy_label_matrix_v4 m
             WHERE m.signal_date=mr.signal_date
@@ -4646,21 +4656,21 @@ export async function listHistoricalStrategyEvidenceV5Dates(
               AND m.strategy_registry_checksum=mr.strategy_registry_checksum
               AND m.reference_contract_version=mr.reference_contract_version
               AND m.challenger_affinity_version='strategy-threshold-margin-affinity-v2'
-         )=mr.expected_cell_count
-         AND (
+         ) END)=mr.expected_cell_count
+         AND (CASE WHEN ${SUMMARY_USABLE} THEN mr.summary_threshold_evidence_rows ELSE (
            SELECT COUNT(*)
              FROM strategy_label_matrix_v4 m
             WHERE m.signal_date=mr.signal_date
               AND m.producer_run_id=mr.producer_run_id
               AND m.evaluable=1 AND m.strategy_hit=1 AND m.affinity_evidence_count>0
-         )=(
+         ) END)=(CASE WHEN ${SUMMARY_USABLE} THEN mr.summary_projected_threshold_rows ELSE (
            SELECT COUNT(*)
              FROM strategy_label_matrix_v4 m
             WHERE m.signal_date=mr.signal_date
               AND m.producer_run_id=mr.producer_run_id
               AND m.evaluable=1 AND m.strategy_hit=1 AND m.affinity_evidence_count>0
               AND m.challenger_affinity_version='strategy-threshold-margin-affinity-v2'
-         )
+         ) END)
          AND (
            SELECT COUNT(*)
              FROM selection_reference_snapshots_v1 sr
@@ -4979,7 +4989,29 @@ export async function rebuildHistoricalStrategyEvidenceV5(
       ))
       let projectedExistingMatrix = false
       if (decisionContractComplete) {
-        const projectionSource = await db.prepare(`
+        // A summarised run answers the matrix counts from its header; only the
+        // reference count is read. Unsummarised runs count the cells as before.
+        const projectionHeader = await db.prepare(`
+          SELECT mr.status, mr.reference_candidate_count, mr.strategy_count,
+                 mr.expected_cell_count, mr.persisted_cell_count,
+                 mr.labeler_version, mr.reference_contract_version,
+                 ${matrixRunSummaryUsable('mr')} AS summary_usable,${MATRIX_RUN_SUMMARY_SELECT},
+                 (SELECT COUNT(*) FROM selection_reference_snapshots_v1 sr
+                   WHERE sr.signal_date=mr.signal_date AND sr.producer_run_id=mr.producer_run_id
+                     AND sr.strategy_labeler_version=mr.labeler_version
+                     AND sr.strategy_registry_checksum=mr.strategy_registry_checksum
+                     AND sr.feature_contract_version=mr.reference_contract_version) AS reference_contract_rows
+            FROM strategy_label_matrix_runs_v4 mr
+           WHERE mr.producer_run_id=? AND mr.signal_date=?
+        `).bind(MATRIX_RUN_SUMMARY_VERSION, producerRunId, date).first<any>()
+        const projectionSummary = matrixRunSummaryCounts(projectionHeader)
+        const projectionSource = projectionSummary ? {
+          ...projectionHeader,
+          matrix_rows: projectionSummary.matrixRows,
+          contract_rows: projectionSummary.contractRows,
+          matched_rows: projectionSummary.matchedRows,
+          threshold_evidence_rows: projectionSummary.thresholdEvidenceRows,
+        } : await db.prepare(`
           SELECT mr.status, mr.reference_candidate_count, mr.strategy_count,
                  mr.expected_cell_count, mr.persisted_cell_count,
                  mr.labeler_version, mr.reference_contract_version,
@@ -5015,7 +5047,15 @@ export async function rebuildHistoricalStrategyEvidenceV5(
           && Number(projectionSource.matched_rows) > 0
           && Number(projectionSource.threshold_evidence_rows) === Number(projectionSource.matched_rows)
         if (projectionSourceReady && !artifactBackedV1Carrier) {
-          const frozenProjection = await db.prepare(`
+          const frozenProjection = projectionSummary ? {
+            matrix_rows: projectionSummary.challengerProjectionRows,
+            reference_rows: Number((await db.prepare(`
+              SELECT COUNT(*) reference_rows FROM selection_reference_snapshots_v1
+               WHERE signal_date=? AND producer_run_id=? AND hard_gate_passed=1
+                 AND strategy_challenger_affinity_version=?
+            `).bind(date, producerRunId, STRATEGY_AFFINITY_CHALLENGER_VERSION)
+              .first<{ reference_rows: number }>())?.reference_rows ?? 0),
+          } : await db.prepare(`
             SELECT
               (SELECT COUNT(*) FROM strategy_label_matrix_v4
                 WHERE signal_date=? AND producer_run_id=? AND challenger_affinity_version=?) matrix_rows,
@@ -5032,6 +5072,9 @@ export async function rebuildHistoricalStrategyEvidenceV5(
           if (!frozenProjectionComplete) {
           const regime = await options.resolveHistoricalRegime?.(date) ?? artifactEvidence?.regime ?? null
           if (!regime) throw new Error(`strategy_regime_pit_missing:${date}`)
+          // The projection rewrites challenger cells: drop the run's count
+          // summary first so a partial projection is never read as complete.
+          await db.prepare(MATRIX_RUN_SUMMARY_CLEAR_SQL).bind(producerRunId, date).run()
           const projectionUpdates: D1PreparedStatement[] = []
           for (const key of strategyKeys) {
             const spec = specByKey.get(key)
@@ -5064,6 +5107,8 @@ export async function rebuildHistoricalStrategyEvidenceV5(
                SET strategy_challenger_affinity_version=?
              WHERE signal_date=? AND producer_run_id=?
           `).bind(STRATEGY_AFFINITY_CHALLENGER_VERSION, date, producerRunId).run()
+          await db.prepare(matrixRunSummaryRefreshSql())
+            .bind(...matrixRunSummaryRefreshBinds(producerRunId, date)).run()
           }
           projectedExistingMatrix = true
         }
@@ -5211,7 +5256,22 @@ export async function rebuildHistoricalStrategyEvidenceV5(
           FROM strategy_label_matrix_runs_v4
          WHERE producer_run_id=?
       `).bind(producerRunId).first<any>()
-      const existingMatrixCoverage = existingMatrix
+      // The summary counts contract rows against the header's own reference
+      // contract; it stands in only when that equals the reference rows' one.
+      const existingMatrixSummary = existingMatrix
+        && cleanToken(existingMatrix.reference_contract_version) === sourceReferenceContractVersion
+        ? await readMatrixRunSummary(
+            db, cleanToken(existingMatrix.signal_date), producerRunId, STRATEGY_AFFINITY_CHALLENGER_VERSION,
+          )
+        : null
+      const existingMatrixCoverage = existingMatrixSummary ? {
+        count: existingMatrixSummary.matrixRows,
+        contract_rows: existingMatrixSummary.contractRows,
+        matched_rows: existingMatrixSummary.matchedRows,
+        threshold_evidence_rows: existingMatrixSummary.thresholdEvidenceRows,
+        challenger_projection_rows: existingMatrixSummary.challengerProjectionRows,
+        projected_threshold_rows: existingMatrixSummary.projectedThresholdRows,
+      } : existingMatrix
         ? await db.prepare(`
           SELECT COUNT(*) AS count,
                  SUM(CASE WHEN labeler_version=? AND strategy_registry_checksum=? AND reference_contract_version=? THEN 1 ELSE 0 END) AS contract_rows,
@@ -5348,7 +5408,13 @@ export async function rebuildHistoricalStrategyEvidenceV5(
         }, options.identityDb ?? db)
         matrixRows = persisted.matrixRows
       }
-      const marginCoverage = await db.prepare(`
+      const marginSummary = await readMatrixRunSummary(db, date, producerRunId, STRATEGY_AFFINITY_CHALLENGER_VERSION)
+      const marginCoverage = marginSummary ? {
+        matched_rows: marginSummary.matchedRows,
+        threshold_evidence_rows: marginSummary.thresholdEvidenceRows,
+        challenger_projection_rows: marginSummary.challengerProjectionRows,
+        projected_threshold_rows: marginSummary.projectedThresholdRows,
+      } : await db.prepare(`
         SELECT
           SUM(CASE WHEN evaluable=1 AND strategy_hit=1 THEN 1 ELSE 0 END) matched_rows,
           SUM(CASE WHEN evaluable=1 AND strategy_hit=1 AND affinity_evidence_count>0 THEN 1 ELSE 0 END) threshold_evidence_rows,

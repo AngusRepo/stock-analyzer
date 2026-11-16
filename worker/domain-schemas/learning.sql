@@ -1028,17 +1028,14 @@ CREATE TABLE IF NOT EXISTS strategy_label_matrix_v4 (
 CREATE INDEX IF NOT EXISTS idx_strategy_label_matrix_v4_evaluable
   ON strategy_label_matrix_v4(signal_date, strategy_id, evaluable, strategy_hit);
 
-CREATE INDEX IF NOT EXISTS idx_strategy_label_matrix_v4_regime_veto
-  ON strategy_label_matrix_v4(signal_date, strategy_id, pre_regime_setup_hit, regime_eligible);
-
 CREATE INDEX IF NOT EXISTS idx_strategy_label_matrix_v4_symbol
   ON strategy_label_matrix_v4(symbol, signal_date DESC);
 
-CREATE INDEX IF NOT EXISTS idx_strategy_label_matrix_challenger_v1
-  ON strategy_label_matrix_v4(signal_date, strategy_id, evaluable, challenger_affinity);
-
 CREATE INDEX IF NOT EXISTS idx_strategy_label_matrix_challenger_v2
   ON strategy_label_matrix_v4(signal_date, challenger_affinity_version, strategy_id, evaluable, challenger_affinity);
+
+CREATE INDEX IF NOT EXISTS idx_strategy_label_matrix_v4_profile_evidence
+  ON strategy_label_matrix_v4(strategy_id, strategy_version, strategy_hit, evaluable);
 
 -- Hit cells only, covering the mature OOF returns seek (learning migration 0069).
 CREATE INDEX IF NOT EXISTS idx_strategy_label_matrix_v4_oof_hits
@@ -1062,7 +1059,15 @@ CREATE TABLE IF NOT EXISTS strategy_label_matrix_runs_v4 (
   promotion_attempt_id TEXT,
   error_code TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  summary_version TEXT,
+  summary_matrix_rows INTEGER,
+  summary_contract_rows INTEGER,
+  summary_evaluable_rows INTEGER,
+  summary_matched_rows INTEGER,
+  summary_threshold_evidence_rows INTEGER,
+  summary_challenger_projection_rows INTEGER,
+  summary_projected_threshold_rows INTEGER
 );
 
 CREATE INDEX IF NOT EXISTS idx_strategy_label_matrix_runs_v4_date

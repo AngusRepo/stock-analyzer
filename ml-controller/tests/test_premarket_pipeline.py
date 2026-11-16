@@ -590,6 +590,23 @@ def test_authorized_after_close_recovery_retains_actual_capture(monkeypatch):
         m.validate_context(receipt,context,now=datetime(2026,10,12,11,0,tzinfo=timezone.utc))
 
 
+def test_context_checksum_matches_worker_json_stringify(monkeypatch):
+    # 2026-11-16: DXY moved 9.66e-06 over the weekend; Python wrote 9.664...e-06
+    # where JSON.stringify writes 0.000009664..., and allocate failed three times.
+    # Expected text and hash come from the Worker's stable() under node.
+    nums=[9.664932290878164e-06,1e-7,1.5e-7,0.000001,1e21,123456789012345680000,1e16,-0.0,3.0,-2.5e-5,0.1]
+    assert m._js_canonical(nums)==('[0.000009664932290878164,1e-7,1.5e-7,0.000001,1e+21,'
+        '123456789012345680000,10000000000000000,0,3,-0.000025,0.1]')
+    monkeypatch.setenv('PIPELINE_DAILY_PLAN_OWNER',m.OWNER)
+    context={'trade_date':'2026-10-12','cutoff':'2026-10-12T08:40:18.152Z',
+        'us':{'dxy_return':9.664932290878164e-06,'sector':'半導體','\U0001F600':1,'￿':2}}
+    assert m._js_canonical(context)==('{"cutoff":"2026-10-12T08:40:18.152Z","trade_date":"2026-10-12",'
+        '"us":{"dxy_return":0.000009664932290878164,"sector":"半導體","\U0001F600":1,"￿":2}}')
+    assert m.digest(context)!=m.worker_digest(context)
+    context['checksum']='6550053b52cac05593b1316507b3ac8e717a6328224d5d82f86abf406f0df200'
+    m.validate_context({'run_date':'2026-10-08'},context,now=datetime(2026,10,12,11,0,tzinfo=timezone.utc))
+
+
 @pytest.mark.parametrize('signal,trade,cutoff,owner,error',[
     ('2026-10-09','2026-10-12','2026-10-12T08:40:18Z',m.OWNER,'allocation_cutoff'),
     ('2026-10-08','2026-10-13','2026-10-13T08:40:18Z',m.OWNER,'allocation_cutoff'),

@@ -2,7 +2,7 @@
 
 Per model, ranks are re-ranked among the stocks available inside one day's
 attested pool and standardized; an unavailable model contributes z=0 and the
-denominator is always the roster size (four since 2026-11-07). A model with no dispersion among its available
+denominator is always the roster size (the object's model_order). A model with no dispersion among its available
 stocks carries no cross-sectional information that day and counts as
 unavailable. Calibration is a weighted PAVA step function of daily-centered
 excess on the score, every day weighing equally. Nothing here trains a model.
@@ -16,9 +16,9 @@ import math
 import numpy as np
 from scipy.stats import rankdata
 
-from services.alpha_model_roster import R33_MODELS
+from services.alpha_model_roster import R33_MODELS, is_r33_roster, validate_r33_roster
 
-MODELS = R33_MODELS  # the release roster; four families since 2026-11-07
+MODELS = R33_MODELS  # the trained roster; serving reads each object's own model_order
 SCHEMA = "r33-roster-isotonic-excess-v2"  # v1 named seven models
 # mean_z follows R33 literally; mean_z_restandardized rescales the composite to
 # unit cross-sectional dispersion each day (D9 compares the two on OOF).
@@ -33,19 +33,20 @@ def checksum(value) -> str:
     return hashlib.sha256(canonical_json(value).encode("utf-8")).hexdigest()
 
 
-def pool_scores(ranks, available, *, variant):
-    """Score one day's pool. Returns (score, z, uninformative_models)."""
+def pool_scores(ranks, available, *, variant, models=MODELS):
+    """Score one day's pool over `models` (columns). Returns (score, z, uninformative_models)."""
     if variant not in VARIANTS:
         raise ValueError("r33_score_variant_unknown:" + str(variant))
     ranks = np.asarray(ranks, dtype=float)
     available = np.asarray(available, dtype=bool)
-    if ranks.ndim != 2 or ranks.shape[1] != len(MODELS) or ranks.shape != available.shape or not len(ranks):
+    models = validate_r33_roster(models)
+    if ranks.ndim != 2 or ranks.shape[1] != len(models) or ranks.shape != available.shape or not len(ranks):
         raise ValueError("r33_pool_shape_invalid")
     if not np.isfinite(ranks[available]).all():
         raise ValueError("r33_available_rank_not_finite")
     z = np.zeros(ranks.shape)
     uninformative = []
-    for i, model in enumerate(MODELS):
+    for i, model in enumerate(models):
         mask = available[:, i]
         if not mask.any():
             continue
@@ -55,7 +56,7 @@ def pool_scores(ranks, available, *, variant):
             uninformative.append(model)
             continue
         z[mask, i] = (position - position.mean()) / spread
-    score = z.sum(axis=1) / len(MODELS)
+    score = z.sum(axis=1) / len(models)
     if variant == "mean_z_restandardized":
         spread = score.std()
         if not spread > 0:
@@ -119,7 +120,7 @@ def validate_payload(payload):
     body = {k: v for k, v in payload.items() if k != "payload_checksum"}
     if payload.get("schema_version") != SCHEMA or payload.get("payload_checksum") != checksum(body):
         raise ValueError("r33_calibration_payload_checksum_invalid")
-    if payload.get("variant") not in VARIANTS or tuple(payload.get("model_order") or ()) != MODELS:
+    if payload.get("variant") not in VARIANTS or not is_r33_roster(payload.get("model_order")):
         raise ValueError("r33_calibration_payload_contract_invalid")
     if not isinstance(payload.get("horizon_sessions"), int) or payload["horizon_sessions"] < 1:
         raise ValueError("r33_calibration_horizon_invalid")

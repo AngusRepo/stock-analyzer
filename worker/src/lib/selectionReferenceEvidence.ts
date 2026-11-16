@@ -13,6 +13,7 @@ import {
 } from './strategyEvaluability'
 import { sha256Text } from './datasetSnapshots'
 import { paperExecutionUUID } from './paperExecutionScope'
+import { matrixRunSummaryRefreshBinds, matrixRunSummaryRefreshSql } from './strategyLabelMatrixRunSummary'
 
 export const SELECTION_REFERENCE_CONTRACT_VERSION = 'selection-reference-snapshot-v4-regime-veto-evidence'
 export const SELECTION_REFERENCE_LEGACY_MATURE_CONTRACT_VERSION = 'selection-reference-snapshot-v3'
@@ -1343,6 +1344,11 @@ export async function persistSelectionEvidenceV4(
           updated_at=CURRENT_TIMESTAMP
         WHERE strategy_label_matrix_runs_v4.status <> 'ready'
       `).bind(attemptId, input.producerRunId, attemptId, payloadChecksum),
+      // Count summary of the cells just promoted, in the same transaction; a
+      // header that another attempt promoted keeps its own summary.
+      db.prepare(matrixRunSummaryRefreshSql(' AND mr.promotion_attempt_id=? AND mr.payload_checksum=?')).bind(
+        ...matrixRunSummaryRefreshBinds(input.producerRunId, input.signalDate), attemptId, payloadChecksum,
+      ),
       db.prepare(`
         UPDATE selection_evidence_staging_runs_v1 AS s
            SET status='promoted', updated_at=CURRENT_TIMESTAMP

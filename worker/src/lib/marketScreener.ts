@@ -757,23 +757,35 @@ export async function loadPreviousCanonicalL15Slate(
 }
 
 // Joining the matrix by signal_date alone read every cell of the 60 mature dates
-// (4.6M rows, 32 s per screener run on 2026-11-06) to keep the few hits. The
-// strategies of a date are enumerated with one index seek each (a recursive
-// MIN(strategy_id) walk over idx_strategy_label_matrix_v4_evaluable), and the
-// hits of each (date, strategy) are then an equality seek on that index, so
-// only hit cells are read.
-// That form still read 3.7M rows (2026-11-12 insights): every hit cell, of every
-// producer of the date, re-scanned the canonical run-id JSON (one entry per
-// screener date in history) in a correlated EXISTS, and mature_dates read every
-// label row of the newest ~65 dates for a DISTINCT. Now the JSON is expanded once
-// against the 60 mature dates (canonical_dates), each (date, strategy) seek carries
-// the canonical producer so other producers' hits stop at the matrix row, and the
-// mature dates are a recursive MAX(signal_date) walk on the primary key (one row per
-// mature date; an immature date is still walked to its end). Same rows, same
-// aggregates: a JSON.stringify'd object has unique keys, so joining the
-// (date, run id) pairs equals the former EXISTS. The unary + on outcome_known_date
-// keeps the walk on the primary key. Bind order: as-of date three times, the
-// canonical run-id JSON, the adjustment source, then the compatibility pairs.
+// (4.6M rows, 32 s per screener run on 2026-11-06). The strategies of a date are
+// enumerated with one index seek each (a recursive MIN(strategy_id) walk over
+// idx_strategy_label_matrix_v4_regime_veto), and the hits of each (date, strategy)
+// are then an equality seek, so only hit cells are read.
+// That form still read 3.7M rows (2026-11-12 insights): every hit cell re-scanned the
+// canonical run-id JSON in a correlated EXISTS, and mature_dates read every label row
+// of the newest ~65 dates for a DISTINCT. The JSON is expanded once against the 60
+// mature dates, and the mature dates are a recursive MAX(signal_date) walk on the
+// primary key (one row per mature date; an immature date is still walked to its end,
+// ~850 rows per date, which only a backfill with a past as-of date meets). The unary +
+// on outcome_known_date keeps the walk on the primary key.
+// That form still took 13.4 s and read 453,696 rows for as-of 2026-11-11 (2026-11-14,
+// D1 overloaded): ~2,300 canonical hits per date, each reading its index entry, a
+// random matrix table row (~450 B, so almost one cold page per hit), its label and its
+// matrix run header, plus a GROUP BY sorter row. The run header is now read once per
+// canonical date (canonical_runs): producer_run_id is its primary key, so the former
+// per-hit EXISTS matched at most that one row, and its compatibility, ready status and
+// equality with the cell's contract and labeler versions are the same test. The hit
+// seek then names the canonical producer, contract and labeler, and the partial
+// covering idx_strategy_label_matrix_v4_oof_hits (learning 0069) answers it without
+// touching the matrix table. counterfactual_production_effect is 0 in every row (CHECK): the
+// term changes no row, it only matches that index's WHERE, which no other query repeats
+// (local 22-date replica: 42,222 -> 5,105 distinct pages read
+// cold; prod without the index, as-of 2026-11-11 over 10 dates: 93,545 -> 70,818 rows read,
+// identical rows). Without that index the plan falls back to the former
+// idx_strategy_label_matrix_v4_evaluable seek. Same rows, same aggregates: a
+// JSON.stringify'd object has unique keys, so joining the (date, run id) pairs equals
+// the former EXISTS. Bind order: as-of date three times, the canonical run-id JSON,
+// the compatibility pairs, then the adjustment source.
 export function buildMatureStrategyOofReturnsSql(formalMatureCompatibility: { sql: string }): string {
   return `
     WITH RECURSIVE mature_dates(signal_date, n) AS (
@@ -791,19 +803,22 @@ export function buildMatureStrategyOofReturnsSql(formalMatureCompatibility: { sq
         FROM mature_dates d
        WHERE d.signal_date IS NOT NULL AND d.n < 60
     ),
-    canonical_dates(signal_date, producer_run_id) AS MATERIALIZED (
-      SELECT DISTINCT d.signal_date, h.value
+    canonical_runs(signal_date, producer_run_id, reference_contract_version, labeler_version) AS MATERIALIZED (
+      SELECT DISTINCT d.signal_date, mr.producer_run_id, mr.reference_contract_version, mr.labeler_version
         FROM mature_dates d
         JOIN json_each(?) h ON h.key=d.signal_date
+        JOIN strategy_label_matrix_runs_v4 mr ON mr.producer_run_id=h.value
        WHERE d.signal_date IS NOT NULL
+         AND mr.status='ready'
+         AND ${formalMatureCompatibility.sql}
     ),
-    strategies(signal_date, producer_run_id, strategy_id) AS (
-      SELECT c.signal_date, c.producer_run_id,
+    strategies(signal_date, producer_run_id, reference_contract_version, labeler_version, strategy_id) AS (
+      SELECT c.signal_date, c.producer_run_id, c.reference_contract_version, c.labeler_version,
              (SELECT MIN(m.strategy_id) FROM strategy_label_matrix_v4 m
                WHERE m.signal_date=c.signal_date)
-        FROM canonical_dates c
+        FROM canonical_runs c
       UNION ALL
-      SELECT s.signal_date, s.producer_run_id,
+      SELECT s.signal_date, s.producer_run_id, s.reference_contract_version, s.labeler_version,
              (SELECT MIN(m.strategy_id) FROM strategy_label_matrix_v4 m
                WHERE m.signal_date=s.signal_date AND m.strategy_id>s.strategy_id)
         FROM strategies s
@@ -819,6 +834,9 @@ export function buildMatureStrategyOofReturnsSql(formalMatureCompatibility: { sq
        AND m.evaluable=1
        AND m.strategy_hit=1
        AND m.producer_run_id=s.producer_run_id
+       AND m.reference_contract_version=s.reference_contract_version
+       AND m.labeler_version=s.labeler_version
+       AND m.counterfactual_production_effect=0
       CROSS JOIN canonical_selection_labels_v4 l
         ON l.signal_date=m.signal_date
        AND l.symbol=m.symbol
@@ -827,13 +845,6 @@ export function buildMatureStrategyOofReturnsSql(formalMatureCompatibility: { sq
        AND l.adjustment_source=?
        AND l.reference_contract_version=m.reference_contract_version
      WHERE s.strategy_id IS NOT NULL
-       AND EXISTS (
-         SELECT 1 FROM strategy_label_matrix_runs_v4 mr
-          WHERE mr.producer_run_id=m.producer_run_id AND mr.status='ready'
-            AND mr.reference_contract_version=m.reference_contract_version
-            AND ${formalMatureCompatibility.sql}
-            AND mr.labeler_version=m.labeler_version
-       )
      GROUP BY m.strategy_id, m.signal_date
     HAVING COUNT(*) >= 3
      ORDER BY m.strategy_id, m.signal_date
@@ -851,8 +862,8 @@ export async function loadMatureStrategyOofReturns(
     asOfDate,
     asOfDate,
     JSON.stringify(canonicalRunIds),
-    CANONICAL_SELECTION_ADJUSTMENT_SOURCE,
     ...formalMatureCompatibility.binds,
+    CANONICAL_SELECTION_ADJUSTMENT_SOURCE,
   ).all<{
     strategy_id: string
     signal_date: string

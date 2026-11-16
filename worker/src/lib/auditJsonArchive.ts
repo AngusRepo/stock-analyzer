@@ -56,6 +56,8 @@ type AuditJsonTargetConfig = {
   hotDays?: number
   /** Excluded from default target lists; runs only when named and the KV gate is open. */
   optIn?: boolean
+  /** Threshold baked into the partial index of the not-yet-archived rows (learning 0069). */
+  pendingIndexMinBlobBytes?: number
 }
 
 export type AuditJsonRefV2GateMode = 'manual' | 'scheduled'
@@ -149,6 +151,7 @@ const AUDIT_JSON_TARGETS: AuditJsonTargetConfig[] = [
       'created_at',
     ],
     blobColumns: ['context_json', 'evidence_json'],
+    pendingIndexMinBlobBytes: AUDIT_JSON_ARCHIVE_MIN_BLOB_BYTES,
   },
   {
     id: 'screener_funnel_items',
@@ -310,7 +313,7 @@ function blobLengthExpr(target: AuditJsonTargetConfig): string {
   return target.blobColumns.map((column) => `LENGTH(COALESCE(${column}, ''))`).join(' + ')
 }
 
-function archiveableWhere(target: AuditJsonTargetConfig): string {
+function archiveableWhere(target: AuditJsonTargetConfig, minBlobBytes: '?' | number = '?'): string {
   if (target.mode === 'ref_v2_move') {
     // A row is done once any column carries the ref-v2 marker: the other column
     // was left verbatim because compaction could not make it smaller. Rows with
@@ -325,10 +328,29 @@ function archiveableWhere(target: AuditJsonTargetConfig): string {
   }
   return target.blobColumns
     .map((column) => `(
-      LENGTH(COALESCE(${column}, '')) > ?
+      LENGTH(COALESCE(${column}, '')) > ${minBlobBytes}
       AND COALESCE(${column}, '') NOT LIKE '%"archived_to_r2":true%'
     )`)
     .join(' OR ')
+}
+
+// Every audit-json run used to find its strategy_decision_log rows by walking the date
+// index below the cutoff and reading each row's JSON: 40 runs a night on 2026-11-13,
+// 12.1 s and 1.32M rows each (plus a 4.1 s / 1.32M-row "pending" probe), and the ref-v2
+// target 9.8 s / 1.64M rows, all to find nothing once the backlog was drained (the cursor
+// resets at every completed cycle). Learning 0069 adds one partial index per predicate,
+// on (date, decision_id) and holding only rows that still satisfy it: a row enters it
+// whenever it becomes eligible (new rows, evidence migration, a rewrite that undoes the
+// compaction) and leaves it once compacted, so a page or probe reads only rows not yet
+// processed, in page order, and the cursor stays a pure accelerator. SQLite uses a
+// partial index only when the query repeats its WHERE verbatim, so the ref-v2 predicate
+// is used as is, and the archive predicate is repeated with the index's literal threshold
+// (implied by any min_blob_bytes at or above it; a smaller one falls back to the date walk).
+// Locked by src/lib/auditJsonPendingIndex.test.ts.
+function pendingIndexWhere(target: AuditJsonTargetConfig, minBlobBytes: number): string {
+  const threshold = target.pendingIndexMinBlobBytes
+  if (target.mode === 'ref_v2_move' || threshold == null || minBlobBytes < threshold) return ''
+  return `AND (${archiveableWhere(target, threshold)})`
 }
 
 function archiveableBinds(target: AuditJsonTargetConfig, minBlobBytes: number): unknown[] {
@@ -553,7 +575,8 @@ export function buildAuditJsonCandidateQuery(
       SELECT ${target.keyColumn} row_key, ${target.dateColumn} row_date
         FROM ${target.table}
        WHERE ${target.dateColumn} IS NOT NULL AND ${target.dateColumn}<?
-         AND (${retentionEligibilityWhere(target)}) AND (${archiveableWhere(target)}) ${keyset.sql}
+         AND (${retentionEligibilityWhere(target)}) AND (${archiveableWhere(target)})
+         ${pendingIndexWhere(target, minBlobBytes)} ${keyset.sql}
        ORDER BY ${target.dateColumn},${target.keyColumn} LIMIT ?
     ), candidates AS MATERIALIZED (
       SELECT k.row_key, k.row_date, (${rowBytes}) row_bytes
@@ -567,6 +590,20 @@ export function buildAuditJsonCandidateQuery(
   `, binds: [cutoffDate, ...archiveableBinds(target, minBlobBytes), ...keyset.binds, limit] }
 }
 
+/** "Anything left after this cursor?" probe of loadCandidateRows. */
+export function buildAuditJsonPendingProbe(
+  targetId: AuditJsonArchiveTargetId, cutoffDate: string, minBlobBytes: number, cursor: RetentionCursor | null,
+): { sql: string; binds: unknown[] } {
+  const target = TARGET_BY_ID.get(targetId)
+  if (!target) throw new Error('audit_json_target_invalid')
+  const tail = retentionCursorPredicate(target, cursor)
+  return { sql: `SELECT 1 pending FROM ${target.table}
+    WHERE ${target.dateColumn} IS NOT NULL AND ${target.dateColumn}<?
+      AND (${retentionEligibilityWhere(target)}) AND (${archiveableWhere(target)})
+      ${pendingIndexWhere(target, minBlobBytes)} ${tail.sql} LIMIT 1`,
+  binds: [cutoffDate, ...archiveableBinds(target, minBlobBytes), ...tail.binds] }
+}
+
 async function loadCandidateRows(
   db: D1Database, target: AuditJsonTargetConfig, cutoffDate: string,
   limit: number, minBlobBytes: number, cursor: RetentionCursor | null,
@@ -576,11 +613,8 @@ async function loadCandidateRows(
   const rows = results ?? []
   const last = rows.at(-1)
   const nextCursor = last ? { ...cursor, cursor_date: String(last[target.dateColumn]), cursor_key: String(last[target.keyColumn]) } as RetentionCursor : cursor
-  const tail = retentionCursorPredicate(target, nextCursor)
-  const more = await db.prepare(`SELECT 1 pending FROM ${target.table}
-    WHERE ${target.dateColumn} IS NOT NULL AND ${target.dateColumn}<?
-      AND (${retentionEligibilityWhere(target)}) AND (${archiveableWhere(target)}) ${tail.sql} LIMIT 1`)
-    .bind(cutoffDate, ...archiveableBinds(target, minBlobBytes), ...tail.binds).first()
+  const probe = buildAuditJsonPendingProbe(target.id, cutoffDate, minBlobBytes, nextCursor)
+  const more = await db.prepare(probe.sql).bind(...probe.binds).first()
   if (!rows.length && more) throw new Error(`audit_json_row_requires_large_object_path:${target.id}`)
   return { rows, hasMore: more != null }
 }

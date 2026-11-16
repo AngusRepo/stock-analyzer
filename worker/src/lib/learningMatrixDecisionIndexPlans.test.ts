@@ -5,9 +5,12 @@ import { test } from 'node:test'
 import { buildMatureStrategyOofReturnsSql } from './marketScreener'
 import { buildStrategyFormalMatureCompatibilitySql } from './selectionReferenceEvidence'
 
-// M2 index slimming (learning 0066): strategy_label_matrix_v4 keeps 5 indexes.
-// strategy_decision_log stays at 8 until runtimes that no longer re-create
-// _symbol/_status are live everywhere (follow-up 0067). A full EXPLAIN QUERY PLAN sweep of every
+// M2 index slimming (learning 0066): strategy_label_matrix_v4 keeps 5 full indexes, plus
+// 0069's partial oof_hits index for the mature OOF returns seek (hit cells only).
+// strategy_decision_log stays at 8 full indexes, plus 0069's two audit-json pending partial
+// indexes, until runtimes that no longer re-create
+// _symbol/_status are live everywhere (an M2 follow-up migration, 0070 or later:
+// main took 0067 and 0069, d1/m3 reserves 0068). A full EXPLAIN QUERY PLAN sweep of every
 // statement on both tables (audits/matrix-split-plan-20261112) found the dropped
 // ones unused, or used only as a tie for a signal_date=? lookup that another
 // index serves with the same columns. These plans lock the kept access paths.
@@ -15,15 +18,18 @@ const read = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf
 const MATRIX_INDEXES = [
   'idx_strategy_label_matrix_challenger_v2',
   'idx_strategy_label_matrix_v4_evaluable',
+  'idx_strategy_label_matrix_v4_oof_hits',
   'idx_strategy_label_matrix_v4_profile_evidence',
   'idx_strategy_label_matrix_v4_symbol',
   'sqlite_autoindex_strategy_label_matrix_v4_1',
 ]
 const DECISION_INDEXES = [
   'idx_strategy_decision_evaluability_status',
+  'idx_strategy_decision_log_audit_json_pending',
   'idx_strategy_decision_log_context',
   'idx_strategy_decision_log_date',
   'idx_strategy_decision_log_evaluability',
+  'idx_strategy_decision_log_ref_v2_pending',
   'idx_strategy_decision_log_status',
   'idx_strategy_decision_log_symbol',
   'sqlite_autoindex_strategy_decision_log_1',
@@ -51,7 +57,7 @@ const indexes = (db: DatabaseSync, table: string) => (db.prepare(
 const plan = (db: DatabaseSync, sql: string, ...binds: unknown[]) => (db.prepare(`EXPLAIN QUERY PLAN ${sql}`)
   .all(...binds as never[]) as Array<{ detail: string }>).map((row) => row.detail).join('\n')
 
-test('migrations and the domain schema leave matrix 5 and decision_log 8 indexes', () => {
+test('migrations and the domain schema leave matrix 5+1 and decision_log 8+2 indexes', () => {
   const db = replayed()
   assert.deepEqual(indexes(db, 'strategy_label_matrix_v4'), MATRIX_INDEXES)
   assert.deepEqual(indexes(db, 'strategy_decision_log'), DECISION_INDEXES)
@@ -80,11 +86,12 @@ test('matrix lookups keep their seeks without the dropped indexes', () => {
   const profile = plan(db, `SELECT m.rowid FROM strategy_label_matrix_v4 m INDEXED BY idx_strategy_label_matrix_v4_profile_evidence
     WHERE m.strategy_id=? AND m.strategy_version=? AND m.strategy_hit=1 AND m.evaluable=1`, 's', 'v')
   assert.match(profile, /USING (COVERING )?INDEX idx_strategy_label_matrix_v4_profile_evidence/, profile)
-  // The screener's mature OOF returns: one equality seek per (date, strategy) hit set.
+  // The screener's mature OOF returns: one covering seek per (date, strategy, producer) hit set
+  // on 0069's partial index (locked in detail by matureStrategyOofReturnsSeek.test.ts).
   const oof = plan(db, buildMatureStrategyOofReturnsSql(buildStrategyFormalMatureCompatibilitySql('mr')),
     '2026-11-12', '2026-11-12', '2026-11-12', '{}', 'adj',
     ...buildStrategyFormalMatureCompatibilitySql('mr').binds)
-  assert.match(oof, /SEARCH m USING INDEX idx_strategy_label_matrix_v4_evaluable \(signal_date=\? AND strategy_id=\? AND evaluable=\? AND strategy_hit=\?\)/, oof)
+  assert.match(oof, /SEARCH m USING COVERING INDEX idx_strategy_label_matrix_v4_oof_hits \(signal_date=\? AND strategy_id=\? AND producer_run_id=\?/, oof)
   for (const detail of [runCells, challenger, oof]) {
     assert.doesNotMatch(detail, /SCAN (m|strategy_label_matrix_v4)\b/, detail)
   }

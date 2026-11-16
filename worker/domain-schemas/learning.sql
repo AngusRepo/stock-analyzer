@@ -946,6 +946,10 @@ CREATE INDEX IF NOT EXISTS idx_selection_reference_v1_date_stock_identity
 CREATE INDEX IF NOT EXISTS idx_selection_reference_route_challenger_v1
   ON selection_reference_snapshots_v1(signal_date, strategy_challenger_route_version, strategy_challenger_route_score);
 
+-- Producer-wide lookups that must not be confined to one signal_date (learning migration 0067).
+CREATE INDEX IF NOT EXISTS idx_selection_reference_v1_producer_run
+  ON selection_reference_snapshots_v1(producer_run_id);
+
 CREATE TABLE IF NOT EXISTS selection_reference_repair_runs_v1 (
   signal_date TEXT NOT NULL,
   producer_run_id TEXT NOT NULL,
@@ -1032,6 +1036,12 @@ CREATE INDEX IF NOT EXISTS idx_strategy_label_matrix_challenger_v2
 
 CREATE INDEX IF NOT EXISTS idx_strategy_label_matrix_v4_profile_evidence
   ON strategy_label_matrix_v4(strategy_id, strategy_version, strategy_hit, evaluable);
+
+-- Hit cells only, covering the mature OOF returns seek (learning migration 0069).
+CREATE INDEX IF NOT EXISTS idx_strategy_label_matrix_v4_oof_hits
+  ON strategy_label_matrix_v4(signal_date, strategy_id, producer_run_id, reference_contract_version, labeler_version, symbol,
+    evaluable, strategy_hit, counterfactual_production_effect)
+  WHERE evaluable=1 AND strategy_hit=1 AND counterfactual_production_effect=0;
 
 CREATE TABLE IF NOT EXISTS strategy_label_matrix_runs_v4 (
   producer_run_id TEXT PRIMARY KEY,
@@ -2034,6 +2044,23 @@ CREATE INDEX IF NOT EXISTS idx_s12_formal_ev_decisions_symbol
   ON s12_formal_ev_decisions(symbol, observation_date DESC, created_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_strategy_decision_log_evaluability ON strategy_decision_log(date DESC, strategy_id, evaluable, matched);
+
+-- Rows audit-json retention still has to process, one index per target predicate (learning migration 0069).
+CREATE INDEX IF NOT EXISTS idx_strategy_decision_log_audit_json_pending
+  ON strategy_decision_log(date, decision_id)
+  WHERE context_id IS NOT NULL
+    AND evidence_artifact_id IS NOT NULL
+    AND ((LENGTH(COALESCE(context_json, '')) > 1024
+          AND COALESCE(context_json, '') NOT LIKE '%"archived_to_r2":true%')
+      OR (LENGTH(COALESCE(evidence_json, '')) > 1024
+          AND COALESCE(evidence_json, '') NOT LIKE '%"archived_to_r2":true%'));
+
+CREATE INDEX IF NOT EXISTS idx_strategy_decision_log_ref_v2_pending
+  ON strategy_decision_log(date, decision_id)
+  WHERE COALESCE(context_json, '') NOT LIKE '%"schema_version":"strategy-decision-json-ref-v2"%'
+    AND COALESCE(evidence_json, '') NOT LIKE '%"schema_version":"strategy-decision-json-ref-v2"%'
+    AND ((CASE WHEN json_valid(context_json) THEN json_type(context_json) END)='object'
+      OR (CASE WHEN json_valid(evidence_json) THEN json_type(evidence_json) END)='object');
 
 CREATE TABLE IF NOT EXISTS strategy_route_versioned_evidence_v1 (
   route_version TEXT NOT NULL,

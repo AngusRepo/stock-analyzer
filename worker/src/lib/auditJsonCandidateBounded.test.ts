@@ -75,7 +75,7 @@ test('tail page starts its index range at the cursor date instead of rescanning 
 
 test('decision-log pages keep a bounded date seek without idx_strategy_decision_log_date',()=>{
  // D1-RR plans to drop that index; another date-leading index (an idx_* or the UNIQUE(date, symbol, strategy_id,
- // strategy_version) autoindex once the M2 follow-up 0067 drops _evaluability) must take the range.
+ // strategy_version) autoindex once the M2 follow-up (0070 or later) drops _evaluability) must take the range.
  const schema=readFileSync('domain-schemas/learning.sql','utf8')
  const db=new DatabaseSync(':memory:')
  try{db.exec(schema.match(/CREATE TABLE IF NOT EXISTS strategy_decision_log \([\s\S]*?\n\);/)![0])

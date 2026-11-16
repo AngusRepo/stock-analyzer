@@ -941,6 +941,25 @@ async function handleSchedulerCallback(c: any) {
     }
   }
 
+  if (
+    body.task === 'dataset-snapshot-export'
+    && ['success', 'error'].includes(String(body.status))
+    && callbackRunDate
+    && callbackRunId
+  ) {
+    // The post-close job writes the PIT residual shadow before its export, so the
+    // funnel enrichment the 14:20 chain parked runs here (an export error can still
+    // carry the shadow). Best effort: its outcome is logged on its own task.
+    c.executionCtx.waitUntil((async () => {
+      try {
+        const { runPitResidualFunnelEnrichmentAfterSnapshot } = await import('../lib/pitResidualFunnelEnrichment')
+        await runPitResidualFunnelEnrichmentAfterSnapshot(c.env, { businessDate: callbackRunDate })
+      } catch (e) {
+        console.warn('[scheduler-callback] PIT residual funnel enrichment after snapshot failed:', e)
+      }
+    })())
+  }
+
   if (body.task === 'dataset-snapshot-export' && body.status === 'success') {
     if (!callbackRunDate || !callbackRunId) {
       return c.json({ error: 'dataset snapshot callback missing run_date or run_id' }, 400)

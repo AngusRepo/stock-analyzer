@@ -18,10 +18,10 @@ class Bucket:
         return Blob()
 
 
-def fixture():
+def fixture(**overrides):
     bucket=Bucket();root="capture/raw/daily_price_full_vintage";checksums={}
     values={"open":[100.,101.],"close":[101.,102.],"high":[102.,103.],"low":[99.,100.],
-            "volume":[1000.,1100.],"value":[101000.,112200.],"adj_close":[50.5,51.],"adj_open":[50.,50.5]}
+            "volume":[1000.,1100.],"value":[101000.,112200.],"adj_close":[50.5,51.],"adj_open":[50.,50.5],**overrides}
     for field in PRICE_FIELDS:
         frame=pl.DataFrame({"date":["2026-09-28","2026-09-29"],"3004":values[field]})
         buf=io.BytesIO();frame.write_parquet(buf);raw=buf.getvalue();bucket.data[f"{root}/{field}.parquet"]=raw
@@ -51,6 +51,17 @@ def test_actual_prices_replace_snapshot_values_and_missing_day():
     assert [r["close"] for r in prices[1]]==[101.,102.]
     assert indicators[1]==[] and proof["indicators_recomputed_symbols"]==["3004"]
     assert proof["rows"]==2 and len(proof["actual_price_values_sha256"])==64
+
+
+@pytest.mark.parametrize("volume,value,expected",[
+    ([1000.,1100.],[101000.,112200.],[101.,102.]),
+    ([0.,1100.],[101000.,None],[None,None]),
+    ([None,1100.],[101000.,float("nan")],[None,None])])
+def test_avg_price_is_value_over_volume_and_replaces_legacy_avg_price(volume,value,expected):
+    # NEW-82: the one avg_price owner; zero/NULL volume or NULL/NaN value stays NULL (no fallback here).
+    prior={1:[{"date":"2026-09-29","close":102.,"avg_price":999.}]}
+    prices,_,_=load(fixture(volume=volume,value=value),prior_prices=prior)
+    assert [r["avg_price"] for r in prices[1]]==expected
 
 
 def test_unchanged_raw_history_still_rejects_unsealed_stale_indicators():

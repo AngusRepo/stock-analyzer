@@ -249,10 +249,11 @@ def test_main_stops_before_a_date_that_reaches_an_avoid_window():
     assert result['dates'] == []
 
 
-def test_aud2_flag_needs_the_budget_to_be_spent():
+def test_aud2_flag_needs_the_budget_to_be_spent(monkeypatch):
     tool, runtime = _tool(), _runtime()
     clock = iter([0., 0.001, 10., 50.])
-    tool.time.perf_counter = lambda: next(clock)
+    # tool.time is the global time module; an unrestored patch kills the xdist worker.
+    monkeypatch.setattr(tool.time, 'perf_counter', lambda: next(clock))
 
     def refuse(**kwargs):
         raise ValueError(tool.NOT_CERTIFIED)

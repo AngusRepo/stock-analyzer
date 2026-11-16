@@ -19,12 +19,14 @@ export function predictionModelOrder(data: any): string[] {
   const declared = data?.ensemble_v2?.model_order ?? data?.active_model_contract
   return declared == null ? [...LEGACY_ALPHA_MODELS] : validateAlphaModelOrder(declared)
 }
+/** Structural D1 handle: the frontend type-checks this module (via l4ReleaseEvidence) without Workers types. */
+type RosterDb = { prepare(sql: string): { first<T>(): Promise<T | null> } }
 type PublishedPointerRow = {state:string;production_effect:number;payload_checksum:string;pointer_checksum:string}
 function checkedPublishedOrder(row: PublishedPointerRow, innerChecksum: unknown, modelOrder: unknown): string[] {
   if (row.state !== 'production' || row.production_effect !== 1 || row.payload_checksum !== row.pointer_checksum || innerChecksum !== row.payload_checksum) throw new Error('alpha_roster_published_pointer_invalid')
   return validateAlphaModelOrder(modelOrder)
 }
-export async function publishedAlphaModelOrder(db: D1Database): Promise<string[]> {
+export async function publishedAlphaModelOrder(db: RosterDb): Promise<string[]> {
   const row = await db.prepare(`SELECT a.payload_json, a.state, a.production_effect, a.payload_checksum, p.payload_checksum AS pointer_checksum FROM active8_ensemble_pointer_v1 p LEFT JOIN active8_ensemble_artifacts_v1 a ON a.artifact_id=p.artifact_id WHERE p.singleton_id=1`).first<PublishedPointerRow & {payload_json:string}>()
   if (!row) return [...LEGACY_ALPHA_MODELS]
   const payload = JSON.parse(row.payload_json)
@@ -34,7 +36,7 @@ export async function publishedAlphaModelOrder(db: D1Database): Promise<string[]
  *  whole ensemble payload: for polling readers such as /obs. `->` keeps both as JSON text (json_extract would
  *  unquote a string, so a string-encoded array would parse into an array the full read refuses). */
 export const PUBLISHED_ALPHA_MODEL_ORDER_PROJECTED_SQL = `SELECT a.payload_json -> '$.model_order' AS model_order_json, a.payload_json -> '$.payload_checksum' AS inner_payload_checksum_json, a.state, a.production_effect, a.payload_checksum, p.payload_checksum AS pointer_checksum FROM active8_ensemble_pointer_v1 p LEFT JOIN active8_ensemble_artifacts_v1 a ON a.artifact_id=p.artifact_id WHERE p.singleton_id=1`
-export async function publishedAlphaModelOrderProjected(db: D1Database): Promise<string[]> {
+export async function publishedAlphaModelOrderProjected(db: RosterDb): Promise<string[]> {
   const row = await db.prepare(PUBLISHED_ALPHA_MODEL_ORDER_PROJECTED_SQL)
     .first<PublishedPointerRow & {model_order_json:string|null;inner_payload_checksum_json:string|null}>()
   if (!row) return [...LEGACY_ALPHA_MODELS]

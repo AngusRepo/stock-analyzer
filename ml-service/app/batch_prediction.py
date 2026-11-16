@@ -573,12 +573,13 @@ def _build_gnn_similarity_context_record(req: Any) -> dict[str, Any]:
     runtime_options = _dict_or_empty(getattr(req, "runtime_options", None))
     stock_meta = _dict_or_empty(getattr(req, "stock_meta", None))
     market_env = _dict_or_empty(getattr(req, "market_env", None))
+    # market_segment is the listing venue, not a sector: the GraphSAGE training graph has no
+    # sector, so falling back to LISTED/OTC adds edges serving never trained on (KD-04).
     sector_key = (
         stock_meta.get("sector")
         or stock_meta.get("sector_name")
         or stock_meta.get("industry")
         or stock_meta.get("industry_name")
-        or stock_meta.get("market_segment")
     )
     return {
         "symbol": str(getattr(req, "symbol", "") or ""),

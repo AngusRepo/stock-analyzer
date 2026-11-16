@@ -410,6 +410,14 @@ def test_gnn_graphsage_batch_predict_uses_full_universe_context(monkeypatch):
     assert "shadow_edge_experiment" not in result["results"][0]["graph_context"]
 
 
+def test_gnn_sector_key_ignores_market_segment():
+    req = SimpleNamespace(symbol="2330", runtime_options={}, stock_meta={"market_segment": "LISTED"}, market_env={})
+
+    record = batch_prediction._build_gnn_similarity_context_record(req)
+
+    assert record["sector_factor"]["sector_key"] == ""
+
+
 def test_gnn_graphsage_batch_predict_reports_error_summary(monkeypatch):
     from app import gnn_batch_runtime
 

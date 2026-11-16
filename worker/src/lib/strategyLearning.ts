@@ -931,41 +931,57 @@ export function ensureStrategyLearningTables(db: D1Database): Promise<void> {
   return pending
 }
 
-async function createStrategyLearningTables(db: D1Database): Promise<void> {
-  for (const sql of SCHEMA_DDL) {
-    await db.prepare(sql).run()
-  }
-  try {
-    await db.prepare('ALTER TABLE strategy_reward_ledger ADD COLUMN refresh_run_id TEXT').run()
-  } catch (error) {
-    const message = String(error instanceof Error ? error.message : error).toLowerCase()
-    if (!message.includes('duplicate column') && !message.includes('already exists')) throw error
-  }
-  await db.prepare(`CREATE INDEX IF NOT EXISTS idx_strategy_reward_ledger_refresh
-    ON strategy_reward_ledger(refresh_run_id, date_end)`).run()
-  await ensureStrategyRegistryGovernanceColumns(db)
+const STRATEGY_REWARD_LEDGER_REFRESH_INDEX = `CREATE INDEX IF NOT EXISTS idx_strategy_reward_ledger_refresh
+    ON strategy_reward_ledger(refresh_run_id, date_end)`
+const STRATEGY_LEARNING_ADDED_COLUMNS = [
+  { table: 'strategy_reward_ledger', column: 'refresh_run_id', sql: 'ALTER TABLE strategy_reward_ledger ADD COLUMN refresh_run_id TEXT' },
+  { table: 'strategy_spec_registry', column: 'family_id', sql: `ALTER TABLE strategy_spec_registry ADD COLUMN family_id TEXT NOT NULL DEFAULT 'TREND_RECLAIM_CONTINUATION'` },
+  { table: 'strategy_spec_registry', column: 'variant_id', sql: `ALTER TABLE strategy_spec_registry ADD COLUMN variant_id TEXT NOT NULL DEFAULT ''` },
+  { table: 'strategy_spec_registry', column: 'owner_type', sql: `ALTER TABLE strategy_spec_registry ADD COLUMN owner_type TEXT NOT NULL DEFAULT 'strategy'` },
+  { table: 'strategy_spec_registry', column: 'promotion_status', sql: `ALTER TABLE strategy_spec_registry ADD COLUMN promotion_status TEXT NOT NULL DEFAULT 'production'` },
+  { table: 'strategy_spec_registry', column: 'candidate_policy_json', sql: `ALTER TABLE strategy_spec_registry ADD COLUMN candidate_policy_json TEXT NOT NULL DEFAULT '{}'` },
+] as const
+
+function ddlObjectName(sql: string): string | null {
+  return /^\s*CREATE\s+(?:UNIQUE\s+)?(?:TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\s+([A-Za-z0-9_]+)/i.exec(sql)?.[1] ?? null
 }
 
-async function ensureStrategyRegistryGovernanceColumns(db: D1Database): Promise<void> {
-  const ddl = [
-    `ALTER TABLE strategy_spec_registry ADD COLUMN family_id TEXT NOT NULL DEFAULT 'TREND_RECLAIM_CONTINUATION'`,
-    `ALTER TABLE strategy_spec_registry ADD COLUMN variant_id TEXT NOT NULL DEFAULT ''`,
-    `ALTER TABLE strategy_spec_registry ADD COLUMN owner_type TEXT NOT NULL DEFAULT 'strategy'`,
-    `ALTER TABLE strategy_spec_registry ADD COLUMN promotion_status TEXT NOT NULL DEFAULT 'production'`,
-    `ALTER TABLE strategy_spec_registry ADD COLUMN candidate_policy_json TEXT NOT NULL DEFAULT '{}'`,
-    `CREATE INDEX IF NOT EXISTS idx_strategy_spec_registry_family
-      ON strategy_spec_registry(family_id, status)`,
-  ]
-  for (const sql of ddl) {
+function isDuplicateSchemaError(error: unknown): boolean {
+  const message = String(error instanceof Error ? error.message : error).toLowerCase()
+  return message.includes('duplicate column') || message.includes('already exists')
+}
+
+// Read the schema once and issue only the DDL it is missing. On a current schema
+// this is two reads instead of 34 statements, six of them ALTERs that always failed.
+async function createStrategyLearningTables(db: D1Database): Promise<void> {
+  const creates = [...SCHEMA_DDL, STRATEGY_REWARD_LEDGER_REFRESH_INDEX]
+  const names = [...new Set(creates.map(ddlObjectName).filter((name): name is string => name != null))]
+  const { results: present } = await db.prepare(
+    `SELECT name FROM sqlite_master WHERE type IN ('table','index') AND name IN (${names.map(() => '?').join(',')})`,
+  ).bind(...names).all<{ name: string }>()
+  const existing = new Set((present ?? []).map((row) => String(row.name)))
+  const createMissing = async (sql: string) => {
+    const name = ddlObjectName(sql)
+    if (name && existing.has(name)) return
+    await db.prepare(sql).run()
+    if (name) existing.add(name)
+  }
+  for (const sql of SCHEMA_DDL) await createMissing(sql)
+  const tables = [...new Set(STRATEGY_LEARNING_ADDED_COLUMNS.map((entry) => entry.table))]
+  const { results: columnRows } = await db.prepare(
+    tables.map(() => 'SELECT ? AS table_name, name FROM pragma_table_info(?)').join(' UNION ALL '),
+  ).bind(...tables.flatMap((table) => [table, table])).all<{ table_name: string; name: string }>()
+  const columns = new Set((columnRows ?? []).map((row) => `${row.table_name}.${row.name}`))
+  for (const entry of STRATEGY_LEARNING_ADDED_COLUMNS) {
+    if (columns.has(`${entry.table}.${entry.column}`)) continue
     try {
-      await db.prepare(sql).run()
+      await db.prepare(entry.sql).run()
     } catch (error) {
-      const message = String(error instanceof Error ? error.message : error).toLowerCase()
-      if (!message.includes('duplicate column') && !message.includes('already exists')) {
-        throw error
-      }
+      // A concurrent isolate may add the column between the read and the ALTER.
+      if (!isDuplicateSchemaError(error)) throw error
     }
   }
+  await createMissing(STRATEGY_REWARD_LEDGER_REFRESH_INDEX)
 }
 
 export function strategySpecToRegistryRow(

@@ -22,6 +22,10 @@ class AtomicPolicyStatement {
     }
     return { meta: { changes: 0 } }
   }
+
+  async all(): Promise<{ results: unknown[] }> {
+    return { results: [] }
+  }
 }
 
 class AtomicPolicyDb {

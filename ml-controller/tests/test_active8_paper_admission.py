@@ -13,6 +13,8 @@ from services.strategy_ab import SCHEMA, RECIPES, FEE_TERMS
 from test_nav_l3_adoption import ready, prepared, environment, SESSIONS
 from test_l4_distribution import constant_model
 
+OVERRIDE={'reason':'SYNTHETIC TEST forced paper admission','approved_by':'Wei','approved_at':'2026-09-21'}
+
 
 @pytest.fixture
 def approved(ready, monkeypatch):
@@ -49,7 +51,9 @@ def approved(ready, monkeypatch):
     approval={'schema_version':paper.SCHEMA,'scope':'paper','approved':True,'efficacy_status':'unproven',
         'nav_gate_role':'performance_review_after_paper_admission','source_reference':'SYNTHETIC TEST ONLY',
         'approved_at':'2026-09-21T12:00:00Z','business_date':SESSIONS[-1],
-        'strategy_bundle':bundle,'configuration':deepcopy(current)}
+        'strategy_bundle':bundle,'configuration':deepcopy(current),
+        # The `ready` candidate fails ranking; Paper admission needs an explicit override.
+        'ranking_override':deepcopy(OVERRIDE)}
     approval['admission_checksum']=digest(approval)
     from services import kv_client, trading_config_loader
     from types import SimpleNamespace
@@ -173,3 +177,68 @@ def test_model_pool_reads_verified_paper_members_without_forging_nav(approved):
     blocked = registry.load_active8_ensemble_serving_bundle()
     assert blocked['production_effect'] is False
     assert blocked['status'] == 'invalid_bundle'
+
+
+def _resign(approval):
+    approval['admission_checksum']=digest({k:v for k,v in approval.items() if k!='admission_checksum'})
+
+
+def test_paper_ranking_fail_without_override_is_blocked(approved):
+    (client,row,*_),approval=approved
+    approval.pop('ranking_override');_resign(approval)
+    result=publish(approved)
+    assert result['status']=='blocked' and result['decision']=='active8_paper_ranking_not_pass'
+    assert result['can_promote'] is False and result['ranking']['decision']=='FAIL'
+    assert client.batches==0
+
+
+@pytest.mark.parametrize('override',[{},
+    {k:v for k,v in OVERRIDE.items() if k!='reason'},{**OVERRIDE,'approved_by':'  '},
+    {**OVERRIDE,'approved_at':'not-a-date'},{**OVERRIDE,'approved_at':20260921},'Wei'])
+def test_paper_ranking_partial_override_is_blocked(approved,override):
+    (client,row,*_),approval=approved
+    approval['ranking_override']=override;_resign(approval)
+    result=publish(approved)
+    assert result['status']=='blocked' and result['decision']=='active8_paper_ranking_override_invalid'
+    assert result['can_promote'] is False and client.batches==0
+
+
+def test_paper_ranking_fail_with_override_is_admitted_and_recorded(approved):
+    (client,row,*_),approval=approved
+    approval['ranking_override']={**OVERRIDE,'approved_at':'2026-09-21T11:00:00+08:00'};_resign(approval)
+    result=publish(approved)
+    assert result['readback_verified'] and result['promotion_scope']=='paper_experiment'
+    expected={'override':approval['ranking_override'],
+              'ranking':registry.assess_ensemble_qualifications(json.loads(row['payload_json']))['ranking']}
+    assert expected['ranking']['decision']=='FAIL' and result['paper_ranking_override']==expected
+    evidence=json.loads(client.query('SELECT promotion_evidence_json FROM active8_ensemble_pointer_v1')[0]['promotion_evidence_json'])
+    assert evidence['paper_ranking_override']==expected
+    assert evidence['paper_admission']['ranking_override']==approval['ranking_override']
+
+
+def test_paper_ranking_pass_needs_no_override(approved,monkeypatch):
+    (client,row,*_),approval=approved
+    approval.pop('ranking_override');_resign(approval)
+    real=registry.assess_ensemble_qualifications
+    monkeypatch.setattr(registry,'assess_ensemble_qualifications',
+        lambda payload:{**real(payload),'ranking':{'decision':'PASS','blockers':[]}})
+    preview=registry.run_active8_ensemble_bundle_promotion_controller(training_run_id=row['training_run_id'],
+        registry_rows=client.query('SELECT * FROM model_artifact_registry WHERE training_run_id=?',[row['training_run_id']]),
+        d1_pointers=client.query('SELECT * FROM model_champion_pointers'),
+        ensemble_artifact_id=row['artifact_id'],ensemble_payload_checksum=row['payload_checksum'],
+        evaluation_business_date=SESSIONS[-1],paper_admission=approval)
+    assert preview['status']=='dry_run' and preview['can_promote'] and 'paper_ranking_override' not in preview
+    result=publish(approved)
+    assert result['readback_verified'] and 'paper_ranking_override' not in result
+    evidence=json.loads(client.query('SELECT promotion_evidence_json FROM active8_ensemble_pointer_v1')[0]['promotion_evidence_json'])
+    assert 'paper_ranking_override' not in evidence
+
+
+def test_paper_ranking_override_must_be_in_kv_approved_admission(approved,monkeypatch):
+    (client,row,*_),approval=approved
+    kv_approved=deepcopy(approval);kv_approved.pop('ranking_override');_resign(kv_approved)
+    from services import kv_client
+    monkeypatch.setattr(kv_client,'get_json',lambda key,**kw:deepcopy(kv_approved) if key==paper.KEY else None)
+    with pytest.raises(RuntimeError,match='operator_approval_missing_changed_or_revoked'):
+        publish(approved)
+    assert client.batches==0

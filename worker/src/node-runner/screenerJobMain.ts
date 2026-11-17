@@ -1,7 +1,7 @@
 import type { Bindings } from '../types'
 import { databaseForDataDomain } from '../lib/dataDomainRegistry'
 import { runBottomUpScreener } from '../lib/marketScreener'
-import { historicalLearningLineageDecision } from '../lib/historicalLearningLineageGuard'
+import { screenerEvidenceMode } from './screenerEvidenceMode'
 import { assertAllocatorContractRunDate } from './allocatorContractGuard'
 import {
   RestD1Database,
@@ -121,11 +121,7 @@ async function main(): Promise<void> {
   const runId = args.runId || `screener-node-${Date.now()}`
   const env = buildBindings()
 
-  const historicalBoundary = runDate === observedTaipeiDate
-    ? null
-    : await historicalLearningLineageDecision(env.DB, env.KV, 'screener-v2', runDate)
-  const evidenceMode = runDate === observedTaipeiDate || historicalBoundary?.allowed
-    ? 'live_current' : 'historical_replay'
+  const evidenceMode = await screenerEvidenceMode(env, runDate, observedTaipeiDate)
   const startedAt = Date.now()
   const result = await runBottomUpScreener(env, runDate, { producerRunId: runId, evidenceMode })
   const funnel = await funnelRunByProducerId(env, runDate, runId)

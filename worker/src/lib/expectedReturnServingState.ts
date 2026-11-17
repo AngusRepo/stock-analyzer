@@ -1,4 +1,5 @@
 import { validL4FeatureSchema, l4ReleaseEvidenceError } from './l4ReleaseEvidence'
+import { l4OperatingModeError } from './paperStrategyMode'
 import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { hydrateExpectedReturnConfigFromPointers } from './expectedReturnServingRegistry'
@@ -304,7 +305,7 @@ async function readNewL4ServingState(env: ExpectedReturnServingEnv, config: Reco
     && validL4FeatureSchema(artifact) && artifact?.release?.decision==='PASS'
     && artifact?.release?.scope==='paper' && artifact?.release?.model_checksum===artifact?.model_checksum
     && /^[a-f0-9]{64}$/.test(artifact?.release?.validation_receipt_checksum ?? '')
-    && l4ReleaseEvidenceError(artifact)===null
+    && l4ReleaseEvidenceError(artifact)===null && l4OperatingModeError(config.l4Distribution)===null
     && pointer && ['artifact_id','cohort_id','payload_checksum','base_artifact_set_checksum'].every(k=>pointer[k]===identity?.[k])
   const result=resolveExpectedReturnServingState({}, {runDate})
   for (const owner of ['l4_alpha_ev','allocator_ev_fusion'] as const) {

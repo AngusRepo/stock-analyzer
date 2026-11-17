@@ -33,6 +33,7 @@ import {
   STRATEGY_FORMAL_LABELER_VERSIONS,
 } from './strategySpec'
 import { nextTwTradingDate } from './schedulerPolicy'
+import { matrixRunSummaryUsableInline } from './strategyLabelMatrixRunSummary'
 import {
   projectStrategyRouteMaturity,
   type StrategyRouteBackfillEligibility,
@@ -489,6 +490,10 @@ function servingPointerScope(
 }
 
 
+// Summarised matrix runs answer their counts from the run header (alias r);
+// older runs count their cells (strategyLabelMatrixRunSummary.ts).
+const MATURITY_SUMMARY_USABLE = matrixRunSummaryUsableInline('r', STRATEGY_ROUTE_AFFINITY_VERSION)
+
 export async function buildPipelineDecisionMaturityPacket(
   env: Bindings,
   requestedDate: string,
@@ -559,16 +564,20 @@ export async function buildPipelineDecisionMaturityPacket(
     safeQuery(() => head ? learningDb.prepare(`
       SELECT r.status, r.reference_candidate_count, r.strategy_count,
              r.expected_cell_count, r.persisted_cell_count, r.labeler_version,
+             CASE WHEN ${MATURITY_SUMMARY_USABLE} THEN r.summary_matched_rows ELSE
              (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
-               WHERE m.signal_date=r.signal_date AND m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.evaluable=1 AND m.strategy_hit=1) matched_rows,
+               WHERE m.signal_date=r.signal_date AND m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.evaluable=1 AND m.strategy_hit=1) END matched_rows,
+             CASE WHEN ${MATURITY_SUMMARY_USABLE} THEN r.summary_threshold_evidence_rows ELSE
              (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
                WHERE m.signal_date=r.signal_date AND m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.evaluable=1 AND m.strategy_hit=1
-                 AND m.affinity_evidence_count>0) raw_threshold_rows,
+                 AND m.affinity_evidence_count>0) END raw_threshold_rows,
+             CASE WHEN ${MATURITY_SUMMARY_USABLE} THEN r.summary_projected_threshold_rows ELSE
              (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
                WHERE m.signal_date=r.signal_date AND m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.evaluable=1 AND m.strategy_hit=1
-                 AND m.affinity_evidence_count>0 AND m.challenger_affinity_version=?) projected_threshold_rows,
+                 AND m.affinity_evidence_count>0 AND m.challenger_affinity_version=?) END projected_threshold_rows,
+             CASE WHEN ${MATURITY_SUMMARY_USABLE} THEN r.summary_challenger_projection_rows ELSE
              (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
-               WHERE m.signal_date=r.signal_date AND m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.challenger_affinity_version=?) challenger_projection_cells,
+               WHERE m.signal_date=r.signal_date AND m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.challenger_affinity_version=?) END challenger_projection_cells,
              r.updated_at
         FROM strategy_label_matrix_runs_v4 r
        WHERE r.signal_date=? AND r.producer_run_id=?
@@ -866,16 +875,20 @@ export async function buildPipelineDecisionMaturityPacket(
     const incumbentMatrix = await safeQuery(() => learningDb.prepare(`
       SELECT r.status, r.reference_candidate_count, r.strategy_count,
              r.expected_cell_count, r.persisted_cell_count, r.labeler_version,
+             CASE WHEN ${MATURITY_SUMMARY_USABLE} THEN r.summary_matched_rows ELSE
              (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
-               WHERE m.signal_date=r.signal_date AND m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.evaluable=1 AND m.strategy_hit=1) matched_rows,
+               WHERE m.signal_date=r.signal_date AND m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.evaluable=1 AND m.strategy_hit=1) END matched_rows,
+             CASE WHEN ${MATURITY_SUMMARY_USABLE} THEN r.summary_threshold_evidence_rows ELSE
              (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
                WHERE m.signal_date=r.signal_date AND m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.evaluable=1 AND m.strategy_hit=1
-                 AND m.affinity_evidence_count>0) raw_threshold_rows,
+                 AND m.affinity_evidence_count>0) END raw_threshold_rows,
+             CASE WHEN ${MATURITY_SUMMARY_USABLE} THEN r.summary_projected_threshold_rows ELSE
              (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
                WHERE m.signal_date=r.signal_date AND m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.evaluable=1 AND m.strategy_hit=1
-                 AND m.affinity_evidence_count>0 AND m.challenger_affinity_version=?) projected_threshold_rows,
+                 AND m.affinity_evidence_count>0 AND m.challenger_affinity_version=?) END projected_threshold_rows,
+             CASE WHEN ${MATURITY_SUMMARY_USABLE} THEN r.summary_challenger_projection_rows ELSE
              (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
-               WHERE m.signal_date=r.signal_date AND m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.challenger_affinity_version=?) challenger_projection_cells,
+               WHERE m.signal_date=r.signal_date AND m.producer_run_id=r.producer_run_id AND m.labeler_version=r.labeler_version AND m.challenger_affinity_version=?) END challenger_projection_cells,
              r.updated_at
         FROM strategy_label_matrix_runs_v4 r
        WHERE r.signal_date=? AND r.producer_run_id=?
@@ -1756,18 +1769,32 @@ export async function buildPipelineDecisionMaturityPacket(
          WHERE runs.status = 'ready'
            AND runs.labeler_version IN (${formalLabelerPlaceholders})
       )
+      -- One latest run per date: a summarised run answers from its header,
+      -- older runs count their cells within the run's signal_date (the matrix
+      -- key prefix; a producer_run_id-only join scanned the whole matrix). A
+      -- run without labeler cells yields no row, as the former inner join did.
       SELECT run.signal_date evidence_date,
-             SUM(CASE WHEN matrix.evaluable=1 AND matrix.strategy_hit=1
-                       AND matrix.affinity_evidence_count>0
-                       AND matrix.challenger_affinity_version=? THEN 1 ELSE 0 END) value,
-             SUM(CASE WHEN matrix.evaluable=1 AND matrix.strategy_hit=1 THEN 1 ELSE 0 END) target
+             CASE WHEN ${MATURITY_SUMMARY_USABLE} THEN r.summary_projected_threshold_rows ELSE (
+               SELECT COUNT(*) FROM strategy_label_matrix_v4 m
+                WHERE m.signal_date=run.signal_date AND m.producer_run_id=run.producer_run_id
+                  AND m.labeler_version=run.labeler_version
+                  AND m.evaluable=1 AND m.strategy_hit=1 AND m.affinity_evidence_count>0
+                  AND m.challenger_affinity_version=?
+             ) END value,
+             CASE WHEN ${MATURITY_SUMMARY_USABLE} THEN r.summary_matched_rows ELSE (
+               SELECT COUNT(*) FROM strategy_label_matrix_v4 m
+                WHERE m.signal_date=run.signal_date AND m.producer_run_id=run.producer_run_id
+                  AND m.labeler_version=run.labeler_version
+                  AND m.evaluable=1 AND m.strategy_hit=1
+             ) END target
         FROM ranked_runs run
-        JOIN strategy_label_matrix_v4 matrix
-          ON matrix.signal_date=run.signal_date
-         AND matrix.producer_run_id=run.producer_run_id
-         AND matrix.labeler_version=run.labeler_version
+        JOIN strategy_label_matrix_runs_v4 r ON r.producer_run_id=run.producer_run_id
        WHERE run.ordinal=1
-       GROUP BY run.signal_date
+         AND CASE WHEN ${MATURITY_SUMMARY_USABLE} THEN r.summary_matrix_rows>0 ELSE EXISTS (
+               SELECT 1 FROM strategy_label_matrix_v4 m
+                WHERE m.signal_date=run.signal_date AND m.producer_run_id=run.producer_run_id
+                  AND m.labeler_version=run.labeler_version
+             ) END
        ORDER BY run.signal_date DESC
        LIMIT 7
     `).bind(

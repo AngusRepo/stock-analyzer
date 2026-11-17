@@ -1,5 +1,6 @@
 import { rotationDecision } from './paperRotationAudit'
 import { swingExitEvaluator } from './paperSwingRuntime'
+import { swingExitRules } from './paperSwingPolicy'
 import { readSwingState, writeSwingState } from './paperSwingLifecycle'
 import { readL4ExecutionPlan as readL4PortfolioPlan } from './paperDailyPlanRuntime'
 import { resolvePositionExit, preparePositionTakeProfit, recordPositionTakeProfitFill } from './positionExitArbiter'
@@ -214,13 +215,19 @@ function s12TrailingSourceFromReason(reason: string): { source: string; method: 
   return { source: 's12_holding_defense', method: 's12_structure_trailing_stop_v1' }
 }
 
-function updateLifecycleS12TrailingStop(
+export function updateLifecycleS12TrailingStop(
   raw: unknown,
   nextTrailingStop: number | null,
   reason: string,
+  cfg: Parameters<typeof swingExitRules>[0],
 ): string | null {
   const swing = readSwingState(raw)
-  if (swing) return writeSwingState(raw, swing)
+  if (swing) {
+    // The swing stop follows its rules owner; a malformed R33 config leaves the lifecycle as stored.
+    let rules
+    try { rules = swingExitRules(cfg) } catch { return typeof raw === 'string' ? raw : JSON.stringify(raw) }
+    return writeSwingState(raw, swing, rules)
+  }
   const stop = positiveNumber(nextTrailingStop)
   if (stop == null) return typeof raw === 'string' ? raw : null
   const lifecycle = parseJsonObject(raw)
@@ -299,6 +306,7 @@ async function persistExitPositionUpdate(
   pos: any,
   decision: ExitDecision,
   source: string,
+  cfg: Parameters<typeof swingExitRules>[0],
 ): Promise<void> {
   const nextTrailingStop = decision.newTrailingStop ?? pos.trailing_stop
   const nextHighest = decision.newHighest ?? pos.highest_since_entry
@@ -307,6 +315,7 @@ async function persistExitPositionUpdate(
     pos.trade_lifecycle_json,
     positiveNumber(nextTrailingStop),
     decision.reason,
+    cfg,
   )
   const changed =
     nextTrailingStop !== pos.trailing_stop ||
@@ -1439,7 +1448,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
     eodToday,
   ).catch(() => null)
 
-  const evaluateSwingExit=swingExitEvaluator(env,exitPositions,eodToday)
+  const evaluateSwingExit=swingExitEvaluator(env,exitPositions,eodToday,cfg)
   for (const pos of exitPositions) {
     const quote = exitQuoteMap.get(pos.symbol)
     if (!quote) continue
@@ -1648,7 +1657,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
       const entryPx = pos.entry_price ?? pos.avg_cost
       const partialTrailingStop = resolveEffectiveS12PositionStop(pos, entryPx) ?? entryPx
       const tp1Fill = recordPositionTakeProfitFill(positionTakeProfit.progress, sellShares, pos.trade_lifecycle_json)
-      const partialLifecycleJson = updateLifecycleS12TrailingStop(tp1Fill.lifecycleJson, partialTrailingStop, decision.reason)
+      const partialLifecycleJson = updateLifecycleS12TrailingStop(tp1Fill.lifecycleJson, partialTrailingStop, decision.reason, cfg)
       const sellNote = buildSellOrderNote({
         reason: decision.reason,
         is_day_trade: dayTradeSell,
@@ -1692,7 +1701,7 @@ export async function runEODExit(env: Bindings): Promise<void> {
         formatTradeNotification('sell', pos.symbol, pos.name, sellShares, fillPrice, `TP1 已觸發，剩餘 ${remainingShares} 股`, tp1Pnl),
       )
     } else if (decision.action === 'hold') {
-      await persistExitPositionUpdate(env, eodToday, pos, decision, 'eod_exit_hold_update')
+      await persistExitPositionUpdate(env, eodToday, pos, decision, 'eod_exit_hold_update', cfg)
     }
   }
 
@@ -1879,7 +1888,7 @@ export async function pollIntradayStopLoss(
     })),
   )
 
-  const evaluateSwingExit=swingExitEvaluator(env,positions,intradayToday)
+  const evaluateSwingExit=swingExitEvaluator(env,positions,intradayToday,cfg)
   const previousMarketCloseSell = await loadPreviousMarketCloseBySymbols(env, symbols, intradayToday)
   const prevCloseMapSell = new Map([...previousMarketCloseSell].map(([symbol, row]) => [symbol, row.close]))
 
@@ -2139,7 +2148,7 @@ export async function pollIntradayStopLoss(
       const filledTrailingStop = satisfiedPositionTp1
         ? resolveEffectiveS12PositionStop(pos, entryPx) ?? entryPx : Number(pos.trailing_stop ?? 0)
       const filledLifecycleJson = satisfiedPositionTp1
-        ? updateLifecycleS12TrailingStop(tp1Fill.lifecycleJson, filledTrailingStop, decision.reason) : tp1Fill.lifecycleJson
+        ? updateLifecycleS12TrailingStop(tp1Fill.lifecycleJson, filledTrailingStop, decision.reason, cfg) : tp1Fill.lifecycleJson
       const orderId = await executePaperSellBatch(env,[
         remainingExitShares === 0
           ? paperDomainDatabase(env).prepare('DELETE FROM paper_positions WHERE account_id=? AND symbol=?').bind(paperAccountId(), pos.symbol)
@@ -2273,7 +2282,7 @@ export async function pollIntradayStopLoss(
       const partialTrailingStop = applyPositionLifecycle
         ? resolveEffectiveS12PositionStop(pos, entryPx) ?? entryPx : Number(pos.trailing_stop ?? 0)
       const partialLifecycleJson = applyPositionLifecycle
-        ? updateLifecycleS12TrailingStop(tp1Fill.lifecycleJson, partialTrailingStop, decision.reason) : tp1Fill.lifecycleJson
+        ? updateLifecycleS12TrailingStop(tp1Fill.lifecycleJson, partialTrailingStop, decision.reason, cfg) : tp1Fill.lifecycleJson
       const sellNote = buildSellOrderNote({
         execution_policy:readSwingState(pos.trade_lifecycle_json)?.policy ?? 'legacy',
         l4_rotation:rotationDecision(decision.reason,pos,currentPrice),
@@ -2340,7 +2349,7 @@ export async function pollIntradayStopLoss(
         formatTradeNotification('sell', pos.symbol, pos.name, sellShares, fillPrice, `${isL4Rebalance ? 'L4 目標減倉' : '盤中 TP1'}，剩餘 ${remainingShares} 股`, tp1IntradayPnl),
       )
     } else if (decision.action === 'hold') {
-      await persistExitPositionUpdate(env, intradayToday, pos, decision, 'intraday_exit_hold_update')
+      await persistExitPositionUpdate(env, intradayToday, pos, decision, 'intraday_exit_hold_update', cfg)
     }
   }
 

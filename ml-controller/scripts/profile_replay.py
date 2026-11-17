@@ -41,14 +41,17 @@ from services.backtest_engine import (  # noqa: E402
     ExitParams,
     FeeParams,
     AccountState,
+    position_risk_contract,
 )
 from services.stratified_subset import select_stratified_subset  # noqa: E402
+from services.position_risk_owner import with_formal_position_risk  # noqa: E402
 
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(message)s")
 
 
 def _default_params() -> dict:
-    return {
+    # The position-risk contract comes from KV `trading:risk_config` (C28-01).
+    return with_formal_position_risk({
         "sltp": {
             "slMultBase": 1.75, "tpMultBase": 2.5,
             "slMultLow": 0.75, "tpMultLow": 0.95,
@@ -61,7 +64,7 @@ def _default_params() -> dict:
             "trailMultDefault": 3.25, "trailMultAt3pct": 1.5, "trailMultAt8pct": 1.25,
             "tp1SellRatio": 0.7, "timeStopDays": 15, "hardStopPct": -0.08,
         },
-    }
+    })
 
 
 def instrumented_replay(dataset: BacktestDataset, start_date: str, end_date: str, params: dict):
@@ -110,6 +113,7 @@ def instrumented_replay(dataset: BacktestDataset, start_date: str, end_date: str
                 pos=pos_p,
                 sltp=sltp_p,
                 fees=fees_p,
+                position_risk_distribution_cfg=position_risk_contract(params),
             )
             timings["simulate_entries"] += time.perf_counter() - t0
             counters["entry_attempts"] += len(attempts)

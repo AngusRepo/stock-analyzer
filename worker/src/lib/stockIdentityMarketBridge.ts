@@ -86,6 +86,40 @@ export type MarketPriceBridgeRow = {
   volume: number | null
 }
 
+export type MarketPriceHistoryDateBound = 'before' | 'on_or_before' | 'none'
+
+/**
+ * Latest `LIMIT ?` stock_prices rows per id (binds: JSON array of ids, [cutoff], rows per id).
+ * The former per-stock ROW_NUMBER() rank (rn <= LIMIT) read every row of each stock up to the
+ * cutoff (its whole history without one) to keep a handful: ~57M reads over 7 days. Each id is
+ * now one backward seek on (stock_id, date) that stops after LIMIT rows, plus rowid lookups.
+ * UNIQUE(stock_id, date) leaves one row per date, so "the LIMIT newest dates" is the same set
+ * as rn <= LIMIT, and the outer ORDER BY only sorts the rows returned. Callers must pass
+ * distinct ids (IN de-duplicated them; json_each does not) and an integer LIMIT (LIMIT rejects
+ * NULL and fractions with a datatype mismatch, where rn <= ? did not), as the loader does.
+ */
+export function marketPriceHistorySql(bound: MarketPriceHistoryDateBound): string {
+  const dateClause = bound === 'before'
+    ? 'AND recent.date < ?'
+    : bound === 'on_or_before'
+      ? 'AND recent.date <= ?'
+      : ''
+  return `
+      SELECT sp.stock_id, sp.date, sp.open, sp.high, sp.low, sp.close, sp.avg_price, sp.volume
+        FROM json_each(?) AS ids
+        CROSS JOIN stock_prices AS sp
+       WHERE sp.rowid IN (
+               SELECT recent.rowid
+                 FROM stock_prices AS recent
+                WHERE recent.stock_id = ids.value
+                  ${dateClause}
+                ORDER BY recent.date DESC
+                LIMIT ?
+             )
+       ORDER BY sp.stock_id, sp.date DESC
+    `
+}
+
 export async function loadMarketPriceHistoryBySymbols(
   env: Pick<Bindings, 'DB'> & Partial<Bindings>,
   symbols: readonly string[],
@@ -96,31 +130,25 @@ export async function loadMarketPriceHistoryBySymbols(
   const ids = [...byId.keys()]
   const rows: MarketPriceBridgeRow[] = []
   const perSymbol = Math.max(1, Math.min(500, Math.floor(options.rowsPerSymbol ?? 120)))
+  // A NaN count matched no rank (rn <= NULL); LIMIT NULL would be a datatype error instead.
+  if (Number.isNaN(perSymbol)) return rows
+  const bound: MarketPriceHistoryDateBound = options.beforeDate
+    ? 'before'
+    : options.onOrBeforeDate
+      ? 'on_or_before'
+      : 'none'
+  const dateBinds = options.beforeDate
+    ? [options.beforeDate]
+    : options.onOrBeforeDate
+      ? [options.onOrBeforeDate]
+      : []
+  const sql = marketPriceHistorySql(bound)
+  // Chunks no longer guard the bind limit (one JSON bind); they keep each response at most
+  // 36 ids x perSymbol rows and the output order (each chunk sorted on its own) unchanged.
   for (let offset = 0; offset < ids.length; offset += D1_BIND_CHUNK_SIZE) {
     const chunk = ids.slice(offset, offset + D1_BIND_CHUNK_SIZE)
-    const marks = chunk.map(() => '?').join(',')
-    const dateClause = options.beforeDate
-      ? 'AND date < ?'
-      : options.onOrBeforeDate
-        ? 'AND date <= ?'
-        : ''
-    const dateBinds = options.beforeDate
-      ? [options.beforeDate]
-      : options.onOrBeforeDate
-        ? [options.onOrBeforeDate]
-        : []
-    const response = await databaseForDataDomain(env, 'market').prepare(`
-      SELECT stock_id, date, open, high, low, close, avg_price, volume
-        FROM (
-          SELECT stock_id, date, open, high, low, close, avg_price, volume,
-                 ROW_NUMBER() OVER (PARTITION BY stock_id ORDER BY date DESC) AS rn
-            FROM stock_prices
-           WHERE stock_id IN (${marks})
-             ${dateClause}
-        )
-       WHERE rn <= ?
-       ORDER BY stock_id, date DESC
-    `).bind(...chunk, ...dateBinds, perSymbol).all<Omit<MarketPriceBridgeRow, 'symbol'>>()
+    const response = await databaseForDataDomain(env, 'market').prepare(sql)
+      .bind(JSON.stringify(chunk), ...dateBinds, perSymbol).all<Omit<MarketPriceBridgeRow, 'symbol'>>()
     if (options.requireQuerySuccess && (!response.success || !Array.isArray(response.results))) {
       throw new Error('market_price_history_query_failed')
     }

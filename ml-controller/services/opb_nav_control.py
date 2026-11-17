@@ -68,10 +68,11 @@ def _same_json(actual, expected):
     """KV uses JS numbers (0.0 becomes 0); booleans must NOT become numbers."""
     if type(actual) in (int, float) and type(expected) in (int, float):
         return actual == expected
+    if isinstance(actual, dict) and isinstance(expected, dict):
+        # Cold snapshots decode objects as dict subclasses (streaming reader).
+        return actual.keys() == expected.keys() and all(_same_json(actual[k], v) for k, v in expected.items())
     if type(actual) is not type(expected):
         return False
-    if isinstance(expected, dict):
-        return actual.keys() == expected.keys() and all(_same_json(actual[k], v) for k, v in expected.items())
     if isinstance(expected, list):
         return len(actual) == len(expected) and all(_same_json(a, b) for a, b in zip(actual, expected))
     return actual == expected

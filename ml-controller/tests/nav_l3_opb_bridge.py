@@ -1,5 +1,6 @@
 """Test-only read adapter; original Python verifiers, private SQLite, no network."""
 import json
+import os
 import sqlite3
 import sys
 from contextlib import ExitStack
@@ -39,6 +40,13 @@ with sqlite3.connect('file:' + request['database'].replace('\\', '/') + '?mode=r
         scope.enter_context(patch.object(authority, 'current_execution_configuration', return_value=request['current']))
         scope.enter_context(patch.object(authority, 'datetime', Clock))
         scope.enter_context(patch.object(registry, 'd1_client', SimpleNamespace(query=query)))
+        if os.environ.get('NAV_COLD_OBJECTS_DIR'):
+            from pathlib import Path
+            from services import paired_nav_cold as cold
+            class Objects:  # Read-only copy of the fixture's cold objects.
+                def download(self, key, path):
+                    Path(path).write_bytes((Path(os.environ['NAV_COLD_OBJECTS_DIR']) / key).read_bytes())
+            scope.enter_context(patch.object(cold, 'production_store', return_value=Objects()))
         scope.enter_context(patch('socket.socket.connect', side_effect=AssertionError('private verifier cannot access network')))
         if request['mode'] == 'baseline':
             result = read_committed_nav_baseline(formal=request['formal'], query=query, now=clock)

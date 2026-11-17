@@ -1437,6 +1437,52 @@ def test_promotion_blockers_use_adaptive_pbo_policy():
 
     assert "pbo_threshold_missing" in codes
 
+    # EC-D (G2): a PASS label without an extractable PBO number fails closed.
+    for unextractable in ({"decision": "PASS", "method": "cscv_rank_logit"}, "PASS", {"pbo": "n/a"}, {"pbo": float("nan")}):
+        offline["pbo"] = unextractable
+        row = dict(base_row, offline_evidence_json=json.dumps(offline))
+        codes = {blocker["code"] for blocker in registry.artifact_promotion_blockers(row, champion_version="vOld")}
+        assert "pbo_threshold_missing" in codes, unextractable
+
+    offline["pbo"] = 0.2
+    row = dict(base_row, offline_evidence_json=json.dumps(offline))
+    codes = {blocker["code"] for blocker in registry.artifact_promotion_blockers(row, champion_version="vOld")}
+    assert "pbo_threshold_missing" not in codes
+
+
+@pytest.mark.parametrize("value, max_fail_value, expected", [
+    ({"decision": "FAIL", "score": 0.3}, None, False),
+    ({"status": "failed", "value": 1.2}, None, False),
+    ({"go_live_verdict": "PBO_FAIL", "pbo": 0.1}, 0.5, False),
+    ({"passed": False, "score": 0.9}, None, False),
+    ({"ok": "false", "decision": "PASS"}, None, False),
+    ({"decision": "PASS", "score": 0.3}, None, True),
+    ({"decision": "N/A", "score": 0.3}, None, True),
+    ({"pbo": 0.2}, 0.5, True),
+    ({"pbo": 0.7}, 0.5, False),
+    ({"value": float("nan")}, None, False),
+    ({"value": float("inf")}, None, False),
+    (float("-inf"), 0.5, False),
+    ("PASS", None, True),
+    ("FAIL", None, False),
+])
+def test_truthy_gate_value_explicit_fail_and_non_finite(value, max_fail_value, expected):
+    assert registry._truthy_gate_value(value, max_fail_value=max_fail_value) is expected
+
+
+def test_multi_evidence_status_no_longer_drops_promotion_blockers():
+    row = {
+        "artifact_id": "LightGBM:vNew:monthly_release",
+        "model_name": "LightGBM",
+        "candidate_type": "monthly_release",
+        "state": "live_gate_passed",
+        "offline_gate_decision": "STRONG_PASS",
+        "live_gate_status": "multi_evidence_passed",
+        "offline_evidence_json": json.dumps({"gate": {"decision": "STRONG_PASS"}}),
+    }
+    codes = {blocker["code"] for blocker in registry.artifact_promotion_blockers(row, champion_version="vOld")}
+    assert {"pbo_threshold_missing", "dsr_mc_missing"} <= codes
+
 
 def test_promotion_blockers_enforce_cpcv_policy_metrics():
     row = {

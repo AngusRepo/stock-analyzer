@@ -691,7 +691,11 @@ def test_r33_long_vintage_wins_and_daily_or_r25_length_fail_closed(official_cale
     assert evidence["required_price_sessions"] == 1532 and evidence["minimum_runnable_price_sessions"] == 464
     by_id = {c["capture_id"]: c for c in evidence["candidates"]}
     assert (by_id["finlab-v4-3y-r33full-20261030"]["price_start_date"], by_id["finlab-v4-3y-r33full-20261030"]["price_sessions"]) == ("2020-05-04", 1576)
-    # The non-R33 selector is untouched: newest created_at on the same date wins.
+    # The non-R33 selector ranks by created_at on the same date but never takes a 3y training run (KD-23).
+    assert lifecycle._latest_immutable_sequence(Bucket(store), "2026-11-01")[0].endswith("r25-like-20261030")
+    late = _seal_r33_sequence(store, "finlab-v4-3y-r33full-20261030b", date_max="2026-10-30", start="2020-05-04",
+                              sessions=1576, created="2026-10-31T08:00:00+00:00")
+    assert lifecycle._r33_sequence_selection(Bucket(store), "2026-11-01")[0] == late
     assert lifecycle._latest_immutable_sequence(Bucket(store), "2026-11-01")[0].endswith("r25-like-20261030")
 
 

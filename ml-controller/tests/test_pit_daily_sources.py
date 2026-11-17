@@ -381,7 +381,8 @@ def test_request_key_only_for_ready_sources_and_never_for_research():
 def test_trigger_accepts_variants_only_for_a_known_contract_on_an_inference_prep(change, error):
     from routers import retrain_trigger as rt
     result = asyncio.run(rt.trigger_universal_retrain(rt.UniversalRetrainTriggerRequest(**change), None))
-    assert result == {'status': 'rejected', 'error': error}
+    # A rejected spec carries the run_id its log line names.
+    assert {k: v for k, v in result.items() if k != 'run_id'} == {'status': 'rejected', 'error': error}
 
 
 def test_r33_profile_cannot_request_variants():

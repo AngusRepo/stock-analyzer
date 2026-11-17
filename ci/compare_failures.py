@@ -10,7 +10,8 @@ missing base artifact is treated as an empty baseline (strictest choice).
 P9 scope = what scripts/p9_gate.ps1 runs on Windows: the worker, frontend and hygiene
 suites, the worker tests that drive controller Python, and the controller test files the
 script names. There a failure blocks even when the base has it too. The script stays the
-owner of the controller file list; a list that cannot be read blocks the gate.
+owner of the controller file list; a list that cannot be read blocks the gate. The service
+(ml-service) suite is outside P9: only its new failures block.
 
 For a PR stacked on another PR's branch, main's cached lists (ci/base_cache.py layout,
 controller shards separate) add an informational "vs main" section: failures the head
@@ -22,7 +23,7 @@ import re
 import sys
 from pathlib import Path
 
-SUITES = ('worker', 'controller', 'frontend', 'hygiene')
+SUITES = ('worker', 'controller', 'frontend', 'hygiene', 'service')
 root = Path(sys.argv[1])
 p9_script = Path(sys.argv[2]) if len(sys.argv) > 2 else None
 p9_modules = set(re.findall(r'tests\\(test_\w+)\.py', p9_script.read_text(encoding='utf-8'))) \
@@ -31,12 +32,13 @@ main_dir, main_label = (Path(sys.argv[3]), sys.argv[4]) if len(sys.argv) > 4 els
 
 
 def in_p9_scope(suite, failure):
-    """Controller ids outside the P9 file list keep the head-vs-base rule; an id without a
-    test module (dependency install, missing report) is in scope."""
-    if suite != 'controller' or not failure.startswith('controller: '):
+    """Controller ids outside the P9 file list keep the head-vs-base rule, and so does every
+    service (ml-service) test, which P9 does not run; an id without a test module (dependency
+    install, missing report) is in scope."""
+    if suite not in ('controller', 'service') or not failure.startswith(f'{suite}: '):
         return True
     module = re.search(r'\btest_\w+', failure)
-    return module is None or module.group(0) in p9_modules
+    return module is None or (suite == 'controller' and module.group(0) in p9_modules)
 
 
 def read(suite, side):

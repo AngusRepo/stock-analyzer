@@ -294,7 +294,7 @@ def test_artifact_batch_incompatibility_does_not_fall_back_per_symbol(monkeypatc
     monkeypatch.setattr(
         batch_prediction,
         "_align_latest_features",
-        lambda ctx, _meta: ctx.x_latest,
+        lambda ctx, _meta, _model_name=None: ctx.x_latest,
     )
 
     batch_prediction._apply_artifact_batch_predictions(contexts, "XGBoost", model, {})
@@ -408,6 +408,14 @@ def test_gnn_graphsage_batch_predict_uses_full_universe_context(monkeypatch):
     assert result["results"][0]["graph_context"]["allowed_use"] == "production_gnn_edge_context"
     assert result["results"][0]["graph_context"]["selector"] is False
     assert "shadow_edge_experiment" not in result["results"][0]["graph_context"]
+
+
+def test_gnn_sector_key_ignores_market_segment():
+    req = SimpleNamespace(symbol="2330", runtime_options={}, stock_meta={"market_segment": "LISTED"}, market_env={})
+
+    record = batch_prediction._build_gnn_similarity_context_record(req)
+
+    assert record["sector_factor"]["sector_key"] == ""
 
 
 def test_gnn_graphsage_batch_predict_reports_error_summary(monkeypatch):

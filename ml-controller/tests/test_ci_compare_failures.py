@@ -7,7 +7,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / 'ci' / 'compare_failures.py'
 P9_SCRIPT = REPO / 'scripts' / 'p9_gate.ps1'
-SUITES = ('worker', 'controller', 'frontend', 'hygiene')
+SUITES = ('worker', 'controller', 'frontend', 'hygiene', 'service')
 P9_TEST = 'controller: tests.test_verify_pipeline_graph::test_fixture'
 OTHER_TEST = 'controller: tests.test_tabpack_core16::test_fixture'
 
@@ -62,6 +62,17 @@ def test_preexisting_controller_ids_without_a_test_module_block(tmp_path):
         root = tmp_path / str(n)
         root.mkdir()
         assert gate(root, head={'controller': [failure]}, base={'controller': [failure]}).returncode == 1, failure
+
+
+def test_service_failures_block_only_when_new_or_infrastructure(tmp_path):
+    # Same module name as a P9 controller file: service ids never enter the P9 scope.
+    test = 'service: tests.test_verify_pipeline_graph::test_fixture'
+    cases = (('preexisting', {'service': [test]}, {'service': [test]}, 0), ('new', {'service': [test]}, {}, 1),
+             ('install', {'service': ['service: dependency install']}, {'service': ['service: dependency install']}, 1))
+    for name, head, base, code in cases:
+        root = tmp_path / name
+        root.mkdir()
+        assert gate(root, head=head, base=base).returncode == code, name
 
 
 def test_new_failure_outside_p9_scope_still_blocks_unless_flaky(tmp_path):

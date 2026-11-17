@@ -31,7 +31,7 @@ jobs:
       fail-fast: false
       matrix:
         side: [base, head]
-        suite: [worker, controller-1, controller-2, controller-3, controller-4, controller-5, controller-6, frontend, hygiene]
+        suite: [worker, controller-1, controller-2, controller-3, controller-4, controller-5, controller-6, frontend, hygiene, service]
     steps:
       - name: Resolve commit
         id: ref
@@ -107,13 +107,14 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         if: steps.cached.outputs.hit != 'true'
         with:
-          # Same minor as the controller image (Dockerfile: Python 3.11.17).
-          python-version: '3.11'
-          # Only the controller suite installs pip packages; caching elsewhere fails the post step.
-          cache: ${{ startsWith(matrix.suite, 'controller') && 'pip' || '' }}
+          # Same minor as the controller image (Dockerfile: Python 3.11.17); service as ml-service/Dockerfile (3.12).
+          python-version: ${{ matrix.suite == 'service' && '3.12' || '3.11' }}
+          # Only the controller and service suites install pip packages; caching elsewhere fails the post step.
+          cache: ${{ (startsWith(matrix.suite, 'controller') || matrix.suite == 'service') && 'pip' || '' }}
           cache-dependency-path: |
             ml-controller/requirements.txt
             ml-controller/constraints.txt
+            ml-service/requirements.txt
 
       - name: Run suite
         if: steps.cached.outputs.hit != 'true'
@@ -281,6 +282,8 @@ jobs:
           python ci/compare_failures.py failures scripts/p9_gate.ps1 "${main[@]}"
       # main only, after a passing gate: keep the head lists as the base for later runs of
       # this commit. Lists with an infrastructure failure are not kept (ci/base_cache.py).
+      # service is not kept: its unpinned dependencies may resolve differently a few days later,
+      # and it has no rerun, so its base always runs in the same workflow run as the head.
       - name: Pack base lists
         id: pack
         if: github.event_name == 'push'

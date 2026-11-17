@@ -1,5 +1,6 @@
 /** Pure candidate policy. Activation requires the versioned account/runtime adapter. */
 import type { Or15Bar } from './or15VwapEntry'
+import { R33_ROSTER_ISOTONIC } from './paperStrategyMode'
 export const SWING_POLICY_VERSION = 'or15-5m-orl8-20-v1' as const
 export const SWING_LAST_ENTRY_MINUTE_FROM_OPEN = 260 // 13:20; final signal starts 13:15.
 const MIN = 60_000
@@ -111,38 +112,81 @@ export function assessSwingEntry(input: SwingEntryInput): SwingEntryDecision {
 export type SwingPositionState = {
   policy: typeof SWING_POLICY_VERSION; entryDate: string; entryPrice: number; entryOrLow: number;
   lastEvaluatedCloseDate?: string;
+  /** R33: the plan signal date whose E-hat was last checked for the decay exit. */
+  decayCheckedSignalDate?: string;
   priceAdjustments?: {effectiveDate:string;factor:number}[];
-  pendingExit?: {reason:'swing_daily_orl'|'swing_20_sessions'|'swing_hard_stop_8';notBeforeMs:number};
+  pendingExit?: {reason:'swing_daily_orl'|'swing_20_sessions'|'swing_hard_stop_8'|'swing_ehat_decay';notBeforeMs:number};
+}
+/** Exit rules. The ORL rules are the pre-R33 swing exit; under R33 the decay exit replaces the
+ * ORL and the stop and holding limit come from trading:config.exit.swingHardStopPct (NEW-H1d owner)
+ * and trading:config.exit.swingMaxHoldSessions. */
+export type SwingExitRules = {decay:boolean;hardStopMultiplier:number;maxHoldSessions:number}
+export const ORL_SWING_EXIT: SwingExitRules = {decay:false,hardStopMultiplier:.92,maxHoldSessions:20}
+export const SWING_DECAY_EXIT_POLICY = 'r33-ehat-decay-stop-age-v1' as const
+type SwingExitConfig={l4Distribution?:{operating_mode?:unknown}|null;exit?:{swingHardStopPct?:unknown;swingMaxHoldSessions?:unknown}|null}
+export function swingExitRules(cfg:SwingExitConfig):SwingExitRules {
+  if(cfg.l4Distribution?.operating_mode!==R33_ROSTER_ISOTONIC) return ORL_SWING_EXIT
+  const error=swingExitConfigError(cfg.exit)
+  if(error) throw new Error('swing_exit_rules_invalid:'+error)
+  const exit=cfg.exit as {swingHardStopPct:number;swingMaxHoldSessions:number}
+  return {decay:true,hardStopMultiplier:1+exit.swingHardStopPct,maxHoldSessions:exit.swingMaxHoldSessions}
+}
+export function swingExitConfigError(exit:SwingExitConfig['exit']):string|null {
+  const stop=exit?.swingHardStopPct, age=exit?.swingMaxHoldSessions
+  if(typeof stop!=='number' || !(stop>-1 && stop<0)) return 'swingHardStopPct'
+  if(!Number.isSafeInteger(age) || (age as number)<1) return 'swingMaxHoldSessions'
+  return null
+}
+export type SwingDecayEvidence = {ehat:number} | {skip:string}
+/** E-hat of a held name from the R33 plan for one signal date; a missing value is a skip, never a zero. */
+export function swingDecayEvidence(plan:{signal_date?:unknown;r33_projection?:unknown;targets?:Record<string,any>},symbol:string,signalDate:string):SwingDecayEvidence {
+  if(plan.signal_date!==signalDate) return {skip:'ehat_plan_signal_date_mismatch'}
+  if(!Object.hasOwn(plan,'r33_projection')) return {skip:'ehat_plan_not_r33'}
+  const target=plan.targets?.[symbol]
+  if(!target) return {skip:'ehat_target_missing'}
+  if(typeof target.ehat_missing_reason==='string' && target.ehat_missing_reason) return {skip:target.ehat_missing_reason}
+  const value=target.expected_return_gross
+  if(typeof value!=='number' || !Number.isFinite(value)) return {skip:'ehat_value_missing'}
+  return {ehat:value}
+}
+/** E-hat <= 0 (no expected return before costs) exits at the next session's open. */
+export function applySwingDecay(state:SwingPositionState,evidence:SwingDecayEvidence,input:{signalDate:string;openMs:number}):SwingPositionState {
+  const checked={...state,decayCheckedSignalDate:input.signalDate}
+  if(state.pendingExit || !('ehat' in evidence) || evidence.ehat>0) return checked
+  return {...checked,pendingExit:{reason:'swing_ehat_decay',notBeforeMs:input.openMs}}
 }
 function sessionAge(state:SwingPositionState,date:string,calendar:string[]) {
   if (calendar.some((d,i)=>i>0&&d<=calendar[i-1]) || !calendar.includes(state.entryDate) || !calendar.includes(date))
     throw new Error('swing_trading_calendar_incomplete')
   return calendar.indexOf(date)-calendar.indexOf(state.entryDate)
 }
-export function closeSwingSession(state:SwingPositionState,input:{date:string;close:number;observedAtMs:number;nextSession:string;calendar:string[]}):SwingPositionState {
+export function closeSwingSession(state:SwingPositionState,input:{date:string;close:number;observedAtMs:number;nextSession:string;calendar:string[]},rules:SwingExitRules=ORL_SWING_EXIT):SwingPositionState {
   if (!positive(input.close) || !Number.isFinite(input.observedAtMs) || input.observedAtMs<time(input.date,'13:30') || input.nextSession<=input.date)
     throw new Error('swing_daily_close_not_final')
   const age=sessionAge(state,input.date,input.calendar)
   if(age<0) throw new Error('swing_close_before_entry')
   if(state.pendingExit) return state
-  if(age>=20) return {...state,pendingExit:{reason:'swing_20_sessions',notBeforeMs:time(input.date,'13:24')}}
-  if(input.close<state.entryOrLow) return {...state,pendingExit:{reason:'swing_daily_orl',notBeforeMs:time(input.nextSession,'09:05')}}
+  if(age>=rules.maxHoldSessions) return {...state,pendingExit:{reason:'swing_20_sessions',notBeforeMs:time(input.date,'13:24')}}
+  if(!rules.decay && input.close<state.entryOrLow) return {...state,pendingExit:{reason:'swing_daily_orl',notBeforeMs:time(input.nextSession,'09:05')}}
   return state
 }
-export function assessSwingExit(state:SwingPositionState,input:{date:string;nowMs:number;price:number;calendar:string[]}) {
+const exitIntentKind=(reason:NonNullable<SwingPositionState['pendingExit']>['reason'])=>
+  reason==='swing_20_sessions' ? 'time_stop' as const : reason==='swing_ehat_decay' ? 'model_exit' as const : 'risk_stop' as const
+export function assessSwingExit(state:SwingPositionState,input:{date:string;nowMs:number;price:number;calendar:string[]},rules:SwingExitRules=ORL_SWING_EXIT) {
   if(state.policy!==SWING_POLICY_VERSION || !positive(state.entryPrice) || !positive(state.entryOrLow) || !positive(input.price))
     throw new Error('swing_position_invalid')
   // Hard protection never waits for calendar or daily-close evidence.
-  if(input.price<=state.entryPrice*.92) return {action:'full_sell' as const,reason:'swing_hard_stop_8',exitIntentKind:'risk_stop' as const}
+  if(input.price<=state.entryPrice*rules.hardStopMultiplier) return {action:'full_sell' as const,reason:'swing_hard_stop_8',exitIntentKind:'risk_stop' as const}
   // Scheduled expiry never submits during the closing auction. Keep its intent for the next session.
   const expiryWindow=input.nowMs>=time(input.date,'09:05') && input.nowMs<time(input.date,'13:25')
   if(state.pendingExit?.reason==='swing_20_sessions' && !expiryWindow)
     return {action:'hold' as const,reason:'swing_expiry_outside_continuous_session'}
   if(state.pendingExit && input.nowMs>=state.pendingExit.notBeforeMs) return {action:'full_sell' as const,
-    reason:state.pendingExit.reason,exitIntentKind:state.pendingExit.reason==='swing_20_sessions' ? 'time_stop' as const : 'risk_stop' as const}
+    reason:state.pendingExit.reason,exitIntentKind:exitIntentKind(state.pendingExit.reason)}
   if (!Number.isFinite(input.nowMs)) throw new Error('swing_exit_clock_invalid')
   const age=sessionAge(state,input.date,input.calendar)
   if(age<0) throw new Error('swing_exit_before_entry')
-  if(age>=20 && expiryWindow && (age>20 || input.nowMs>=time(input.date,'13:24'))) return {action:'full_sell' as const,reason:'swing_20_sessions',exitIntentKind:'time_stop' as const}
+  const max=rules.maxHoldSessions
+  if(age>=max && expiryWindow && (age>max || input.nowMs>=time(input.date,'13:24'))) return {action:'full_sell' as const,reason:'swing_20_sessions',exitIntentKind:'time_stop' as const}
   return {action:'hold' as const,reason:'swing_hold'}
 }

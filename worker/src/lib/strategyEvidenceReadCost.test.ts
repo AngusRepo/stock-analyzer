@@ -351,7 +351,12 @@ test('strategy learning DDL runs once per binding and is retried after a failed 
   let failAt = 3
   const binding = {
     prepare() {
-      return { async run() { statements += 1; if (statements === failAt) throw new Error('d1_overloaded') } }
+      const statement = {
+        bind() { return statement },
+        async all() { return { success: true, results: [] } },
+        async run() { statements += 1; if (statements === failAt) throw new Error('d1_overloaded') },
+      }
+      return statement
     },
   } as unknown as D1Database
   await assert.rejects(Promise.all([ensureStrategyLearningTables(binding), ensureStrategyLearningTables(binding)]), /d1_overloaded/)
@@ -365,6 +370,57 @@ test('strategy learning DDL runs once per binding and is retried after a failed 
   const other = { prepare: binding.prepare } as unknown as D1Database
   await ensureStrategyLearningTables(other)
   assert.equal(statements, 3 + 2 * onePass)
+})
+
+test('strategy learning ensure issues only missing DDL and none on a current schema', async () => {
+  const sqlite = new DatabaseSync(':memory:')
+  const counted = (log: string[]): D1Database => ({
+    prepare(sql: string) {
+      log.push(sql)
+      let params: unknown[] = []
+      const statement = {
+        bind(...values: unknown[]) { params = values; return statement },
+        async all() { return { success: true, results: sqlite.prepare(sql).all(...(params as never[])), meta: {} } },
+        async run() { sqlite.prepare(sql).run(...(params as never[])); return { success: true, meta: {} } },
+      }
+      return statement
+    },
+  } as unknown as D1Database)
+  const isDdl = (sql: string) => /^\s*(CREATE|ALTER)\b/i.test(sql)
+  try {
+    // A legacy registry without the governance columns gets exactly the missing ALTERs.
+    sqlite.exec(`CREATE TABLE strategy_spec_registry (
+      strategy_id TEXT NOT NULL, version TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL,
+      owner TEXT NOT NULL DEFAULT 'strategy', alpha_bucket TEXT NOT NULL, family_id TEXT NOT NULL DEFAULT 'x',
+      supported_regimes_json TEXT NOT NULL DEFAULT '[]', thesis TEXT NOT NULL,
+      thresholds_json TEXT NOT NULL DEFAULT '{}', risk_notes_json TEXT NOT NULL DEFAULT '[]',
+      source_refs_json TEXT NOT NULL DEFAULT '[]', created_by TEXT NOT NULL DEFAULT 'p5',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY(strategy_id, version))`)
+    const first: string[] = []
+    await ensureStrategyLearningTables(counted(first))
+    const alters = first.filter((sql) => /^\s*ALTER\b/i.test(sql))
+    assert.deepEqual(alters.map((sql) => /ADD COLUMN (\w+)/.exec(sql)?.[1]).sort(),
+      ['candidate_policy_json', 'owner_type', 'promotion_status', 'variant_id'])
+    assert.ok(!first.some((sql) => /CREATE TABLE IF NOT EXISTS strategy_spec_registry\b/.test(sql)))
+    const columns = (sqlite.prepare('SELECT name FROM pragma_table_info(?)').all('strategy_spec_registry') as Array<{ name: string }>)
+      .map((row) => row.name)
+    for (const column of ['family_id', 'variant_id', 'owner_type', 'promotion_status', 'candidate_policy_json']) {
+      assert.ok(columns.includes(column), column)
+    }
+    const ledger = (sqlite.prepare('SELECT name FROM pragma_table_info(?)').all('strategy_reward_ledger') as Array<{ name: string }>)
+    assert.ok(ledger.some((row) => row.name === 'refresh_run_id'))
+
+    // A new isolate on the now-current schema only reads it: no DDL at all.
+    const fresh: string[] = []
+    const binding = counted(fresh)
+    await ensureStrategyLearningTables(binding)
+    assert.equal(fresh.filter(isDdl).length, 0, fresh.filter(isDdl).join('\n'))
+    assert.equal(fresh.length, 2)
+    // The same isolate's second ensure issues nothing.
+    await ensureStrategyLearningTables(binding)
+    assert.equal(fresh.length, 2)
+  } finally { sqlite.close() }
 })
 
 test('no learning migration drops an index the evidence readers force with INDEXED BY', async () => {

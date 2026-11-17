@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { test } from 'node:test'
 import { SELECTION_REFERENCE_CONTRACT_VERSION } from './selectionReferenceEvidence'
+import { matrixRunSummaryUsableInline } from './strategyLabelMatrixRunSummary'
 import { STRATEGY_ROUTE_AFFINITY_VERSION } from './strategyRouteCalibration'
 import { STRATEGY_FORMAL_LABELER_VERSIONS, STRATEGY_FORMAL_RECONSTRUCTION_LABELER_VERSION } from './strategySpec'
 
@@ -60,7 +61,8 @@ const FORMER_TRACKING = `
 function currentMaturitySql(): string[] {
   const source = read('./pipelineDecisionMaturity.ts')
   const queries = [...source.matchAll(/learningDb\.prepare\(`(\s*SELECT r\.status, r\.reference_candidate_count[\s\S]*?)`\)/g)]
-    .map((match) => match[1].replaceAll('${formalLabelerPlaceholders}', PLACEHOLDERS))
+    .map((match) => match[1].replaceAll('${formalLabelerPlaceholders}', PLACEHOLDERS)
+      .replaceAll('${MATURITY_SUMMARY_USABLE}', matrixRunSummaryUsableInline('r', STRATEGY_ROUTE_AFFINITY_VERSION)))
   assert.equal(queries.length, 2)
   assert.ok(queries.every((sql) => !sql.includes('${')))
   return queries

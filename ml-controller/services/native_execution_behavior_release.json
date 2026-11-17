@@ -1,11 +1,14 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:ef3dab2509d6e66f1ee441ee2ac11e0c7ff7d6152fead63fe0d76bc0c3a7dfde",
+  "execution_owner_version": "native-paper-v1:2ab874abac6141442d1be048d6a6bf7f2389e14b8bb88cca899465da16e9fb17",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei 2026-11-12 20:38 TW in M1-c: 「今晚全上 (Recommended)」 - go for tonight's release from main, release id ldb-20261112: #168 (with re-pin) merge, admission, build, rollout (writes the new paper runtime grant to KV), verify, all with --publish; Worker deployed too",
+  "authorization": "同意，進度往下推（Wei，2026-11-16（一）08:14 TW，Slice A 11/16 盤後上線）",
   "review": "output/herdr-handoff-20261018/sys-cleanup-20261028/runbook_k20_repin_grant.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:ldb-20261112"
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:slicea-20261116",
+  "policy_runtime_admissions": [
+    "ml:active8:paper_runtime_approval:v1:slicea-20261116-p1"
+  ]
 }

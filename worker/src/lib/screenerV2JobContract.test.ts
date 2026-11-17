@@ -6,6 +6,7 @@ function assert(condition: unknown, message: string): void {
 
 const updateOrchestrator = fs.readFileSync('src/lib/updateOrchestrator.ts', 'utf8')
 const screenerJobMain = fs.readFileSync('src/node-runner/screenerJobMain.ts', 'utf8')
+const screenerEvidenceMode = fs.readFileSync('src/node-runner/screenerEvidenceMode.ts', 'utf8')
 const marketScreener = fs.readFileSync('src/lib/marketScreener.ts', 'utf8')
 const pipelineOrchestrator = fs.readFileSync('src/lib/pipelineOrchestrator.ts', 'utf8')
 const strategySpec = fs.readFileSync('src/lib/strategySpec.ts', 'utf8')
@@ -56,9 +57,11 @@ assert(
 
 assert(
   screenerJobMain.includes('const observedTaipeiDate = twToday()') &&
-    screenerJobMain.includes("historicalLearningLineageDecision(env.DB, env.KV, 'screener-v2', runDate)") &&
-    screenerJobMain.includes('runDate === observedTaipeiDate || historicalBoundary?.allowed') &&
-    screenerJobMain.includes("? 'live_current' : 'historical_replay'") &&
+    screenerJobMain.includes('const evidenceMode = await screenerEvidenceMode(env, runDate, observedTaipeiDate)') &&
+    !screenerJobMain.includes('historicalLearningLineageDecision(env.DB') &&
+    screenerEvidenceMode.includes("databaseForDataDomain(env, 'market'), env.KV, 'screener-v2', runDate, nowMs)") &&
+    !screenerEvidenceMode.includes('env.DB') &&
+    screenerEvidenceMode.includes("return boundary.allowed ? 'live_current' : 'historical_replay'") &&
     screenerJobMain.includes('runBottomUpScreener(env, runDate, { producerRunId: runId, evidenceMode })') &&
     screenerJobMain.includes('funnelRunByProducerId') &&
     screenerJobMain.includes('AND run_id = ?') &&

@@ -212,8 +212,9 @@ def load_committed_nav_serving_grant(*, query, now=None):
         from services.active8_paper_admission import verify_active_approval, verify_serving_configuration
         admission = receipt['paper_admission']
         approval = verify_active_approval(admission, now=clock)
-        current = verify_serving_configuration(admission, approval,
-            model_names=json.loads(publication.payload_json)['observation_artifacts'])
+        from services.r33_cutover import verify_serving
+        verify_serving(approval, admission, json.loads(publication.payload_json))
+        current = verify_serving_configuration(admission, approval)
         if (load_committed_publication(query=query, now=clock, allow_paper=True) != publication
                 or digest(current_execution_configuration()) != digest(current)):
             raise RuntimeError('active8_paper_serving_source_changed')
@@ -226,9 +227,12 @@ def load_committed_nav_serving_grant(*, query, now=None):
         signal_date=json.loads(publication.receipt_json)['nav_validation']['as_of_date'])
     current = current_execution_configuration()
     from services.opb_nav_control import _same_json, _without_prior, needs_nav_control, capture_nav_control
+    from services.active8_paper_admission import without_roster_echo
+    # The meta_layer roster echo is descriptive on the NAV path too (Q7 A).
+    granted, observed = without_roster_echo(configuration), without_roster_echo(current)
     if (not current.get('trading_config') or not current.get('risk_config')
-            or any(key not in configuration or not _same_json(configuration[key], value)
-                   for key, value in current.items() if key != 'trading_config')):
+            or any(key not in granted or not _same_json(granted[key], value)
+                   for key, value in observed.items() if key != 'trading_config')):
         raise RuntimeError('active8_nav_current_configuration_changed_or_unverified')
     if not _same_json(current['trading_config'], configuration['trading_config']):
         from services.ev_nav_config_transition import verified_ev_projection
@@ -277,9 +281,13 @@ def verify_current_configuration(configuration):
         configuration=publication_configuration(configuration,
             signal_date=configuration['strategy_bundle']['declared_signal_date'])
     current = current_execution_configuration()
+    # Exact per key, except the meta_layer roster echo (Q7 A): a grant frozen before T+1
+    # adaptive re-derived the echo from a new published order stays comparable.
+    from services.active8_paper_admission import without_roster_echo
+    granted, observed = without_roster_echo(configuration), without_roster_echo(current)
     if (not current.get('trading_config') or not current.get('risk_config')
-            or any(key not in configuration or digest(configuration[key]) != digest(value)
-                   for key, value in current.items())):
+            or any(key not in granted or digest(granted[key]) != digest(value)
+                   for key, value in observed.items())):
         raise RuntimeError('active8_nav_current_configuration_changed_or_unverified')
     return current
 

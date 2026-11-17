@@ -1,4 +1,5 @@
-import { validSingleBModel } from './paperStrategyMode'
+import { l4OperatingModeError, R33_ROSTER_ISOTONIC, validSingleBModel } from './paperStrategyMode'
+import { swingExitConfigError } from './paperSwingPolicy'
 import { validateR2Learning } from './l4R2LearningConfig'
 import { validL4FeatureSchema, l4ReleaseEvidenceError } from './l4ReleaseEvidence'
 import { evaluateBoundedLosses } from './riskChecks/p5Losses'
@@ -169,6 +170,9 @@ export interface TradingConfig {
     // S12 structural exits are primary; the fixed paper SL/TP cascade remains
     // the safety fallback. Dynamic priority is comparison-only and inert.
     dynamicExitPriorityEnabled: boolean
+    // Swing −8% stop (NEW-H1d owner) and R33 holding limit; no default, required under R33.
+    swingHardStopPct?: number
+    swingMaxHoldSessions?: number
   }
   position: {
     dailyBuyLimit: number        // 每日自動買入上限 NT$
@@ -260,6 +264,9 @@ export interface TradingConfig {
     // #16 Sector leader correlation bonus (2026-04-21, dannyquant_tw 啟發)
     sectorLeaderBonusPoints: number  // 加分點數（預設 5）
     sectorLeaderCorrThreshold: number // avg 60d corr 觸發門檻（預設 0.7）
+    // HL1-4#a DelistingMonitor：近 8 日成交 session 數 <= 此值即剔除（未設定時預設 2；長休市時由 holiday:* 自動下修）。
+    // 資料品質門檻，不是 alpha 參數 → 不屬於 Optuna search space。
+    delistingMonitorMaxRecentSessions?: number
   }
   rrg: {
     leadingBonus: number         // Leading 象限加分（預設 10）
@@ -1654,6 +1661,9 @@ export function validateTradingConfig(config: TradingConfig, privateResearch = f
           errors.push(`l4Distribution.sealedExecution requires measured ${checksum} and explicit sample minimum`)
     }
     if (policy.operating_mode != null && !validSingleBModel(policy)) errors.push('single B mode requires its matching complete Paper artifact')
+    if (l4OperatingModeError(policy)) errors.push('l4Distribution R33 feature schema and R33 operating_mode must appear together')
+    if (policy.operating_mode === R33_ROSTER_ISOTONIC && swingExitConfigError(config.exit))
+      errors.push('R33 operating_mode requires exit.swingHardStopPct (-1..0) and exit.swingMaxHoldSessions (integer >= 1)')
     if (policy.strategy_role != null && policy.operating_mode == null) errors.push('strategy_role requires an explicit operating_mode')
     const isolatedCandidate = privateResearch && policy.scope==='private_research'
     if ((!isolatedCandidate && policy.scope!=='paper') || a?.schema_version!=='l4-distribution-v1'
@@ -1969,5 +1979,9 @@ export function validateTradingConfig(config: TradingConfig, privateResearch = f
     )
       errors.push('alphaFramework.quality.minRegimeSamples must be <= minSamples')
   }
+  // HL1-4#a: data-quality threshold, not an alpha parameter (outside the Optuna search space).
+  const delistingMax = config.screener?.delistingMonitorMaxRecentSessions
+  if (delistingMax != null && (!Number.isInteger(delistingMax) || delistingMax < 0))
+    errors.push('screener.delistingMonitorMaxRecentSessions must be an integer >= 0')
   return errors
 }

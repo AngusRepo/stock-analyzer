@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import statistics
 import time
 from datetime import datetime, timedelta, timezone
@@ -18,6 +19,11 @@ from services.dataset_snapshots import latest_dataset_snapshot
 
 
 SEQUENCE_PREFIX = "universal/sequence_long/runs/"
+# Long-history training captures (FinLab finlab-v4-3y-*/-5y-* runs, e.g. the K15 R33 sequence) can share date_max
+# with the daily run and seal later. Only the R33 selector may take them; daily consumers must not (KD-23).
+# Relies on the Worker naming finlab-v4-{daily|<years>y}-YYYYMMDD-<ms> with years in {3,5}; a manual recovery of a
+# daily tail must run in daily mode, or the daily consumers wait on immutable_sequence_behind_compute_snapshot.
+TRAINING_SEQUENCE_RUN = re.compile(r"-(?:3y|5y)-")
 FEATURE_PREP_PREFIX = "universal/oof_forward_prep_v2"
 ADJUSTED_PREP_PREFIX = "universal/canonical_adjusted_v6"
 ADJUSTED_PREP_SCHEMA = "active8-canonical-adjusted-prep-v3"
@@ -67,10 +73,13 @@ def _latest_immutable_sequence(bucket: Any, cutoff: str) -> tuple[str, dict[str,
     if cutoff in registered:
         return _registered_sequence(bucket, cutoff, registered[cutoff])
     candidates: list[tuple[str, str, dict[str, Any]]] = []
-    started, scanned = time.monotonic(), 0
+    started, scanned, training = time.monotonic(), 0, 0
     for blob in bucket.list_blobs(prefix=SEQUENCE_PREFIX):
         path = str(blob.name)
         if not path.endswith("/prep/sequence_manifest.json"):
+            continue
+        if TRAINING_SEQUENCE_RUN.search(path.removeprefix(SEQUENCE_PREFIX).split("/", 1)[0]):
+            training += 1
             continue
         scanned += 1
         try:
@@ -94,8 +103,8 @@ def _latest_immutable_sequence(bucket: Any, cutoff: str) -> tuple[str, dict[str,
             candidates.append((date_max, str(manifest.get("created_at") or ""), manifest))
         except Exception:  # noqa: BLE001 - corrupt candidates are ignored, never selected.
             continue
-    logger.info("[active8_prep] sequence manifests scanned=%d candidates=%d seconds=%.1f",
-                scanned, len(candidates), time.monotonic() - started)
+    logger.info("[active8_prep] sequence manifests scanned=%d skipped_training=%d candidates=%d seconds=%.1f",
+                scanned, training, len(candidates), time.monotonic() - started)
     # The old selector downloaded every historical batch before choosing the
     # latest valid seal. Rank the already-verified manifests first, then verify
     # every byte of the candidate we will actually use. Corrupt/missing newest

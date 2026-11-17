@@ -86,7 +86,8 @@ def test_search_samples_only_legal_and_delivered_dimensions():
 def stub_dataset(monkeypatch, replay):
     from services.position_risk_owner import formal_position_risk
     default, formal = search._default_baseline_params, formal_position_risk({'position': {
-        'maxPerSector': 2, 'maxSingleNamePct': 0.25, 'correlationThreshold': 0.7, 'correlationWindow': 60}})
+        'maxPerSector': 2, 'maxSingleNamePct': 0.25, 'correlationThreshold': 0.7, 'correlationWindow': 60,
+        'minCorrelationOverlap': 20}})
     monkeypatch.setattr(search, '_default_baseline_params',
                         lambda: {**default(), 'positionRiskDistribution': formal})
     days = [(date(2026, 6, 6) + timedelta(days=i)).isoformat() for i in range(91)
@@ -174,10 +175,11 @@ def test_broken_baseline_stops_before_search(monkeypatch):
     ({'open': True, 'low': 99}, 1, 'no_fill', True),
     ({'open': 100, 'low': 101}, 1, 'no_fill', True),
 ])
-def test_entry_producer_marks_policy_and_data_separately(monkeypatch, bar, min_value, status, missing):
+def test_entry_producer_marks_policy_and_data_separately(monkeypatch, kv_position_risk, bar, min_value, status, missing):
     from services import backtest_engine as engine
     monkeypatch.setattr(engine, '_gap_pct_from_benchmark', lambda *a: 0)
     monkeypatch.setattr(engine, '_get_atr14', lambda *a: 2)
+    monkeypatch.setattr(engine, '_formal_position_correlation_skip', lambda **_: None)
     candidate = engine.Candidate(symbol='2330', date='2026-08-25', close=100,
         industry='semi', base_score=80, chip_score=30, tech_score=30, momentum_score=20,
         combined_score=80, has_buy_signal=1)
@@ -185,7 +187,8 @@ def test_entry_producer_marks_policy_and_data_separately(monkeypatch, bar, min_v
     attempts = engine.simulate_entries_for_date(
         SimpleNamespace(get_bar=lambda *a: bar), '2026-08-25', '2026-08-26',
         [candidate], account, engine.PositionSizeParams(min_position_value=min_value, max_pct_of_portfolio=0.25),
-        engine.SLTPParams(), engine.FeeParams())
+        engine.SLTPParams(), engine.FeeParams(),
+        position_risk_distribution_cfg=kv_position_risk)
     assert len(attempts) == 1
     assert attempts[0].status == status
     assert attempts[0].execution_data_missing == missing

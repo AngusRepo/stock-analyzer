@@ -1469,10 +1469,21 @@ def _deep_get(source: Any, keys: set[str]) -> Any:
     return None
 
 
+_GATE_VERDICT_KEYS = ("decision", "status", "verdict", "go_live_verdict", "result", "pass", "passed", "ok")
+_GATE_FAIL_TEXT = {"FAIL", "FAILED", "PBO_FAIL", "CPCV_FAIL", "FALSE"}
+
+
 def _truthy_gate_value(value: Any, *, max_fail_value: float | None = None) -> bool:
     if value in (None, ""):
         return False
     if isinstance(value, dict):
+        # An explicit FAIL verdict decides the gate; a passing score elsewhere cannot outvote it.
+        if any(
+            key in value and not isinstance(value.get(key), (dict, list))
+            and str(value.get(key)).strip().upper() in _GATE_FAIL_TEXT
+            for key in _GATE_VERDICT_KEYS
+        ):
+            return False
         for key in (
             "decision",
             "status",
@@ -1499,6 +1510,8 @@ def _truthy_gate_value(value: Any, *, max_fail_value: float | None = None) -> bo
     try:
         number = float(value)
     except (TypeError, ValueError):
+        return False
+    if not math.isfinite(number):
         return False
     if max_fail_value is not None:
         return number <= max_fail_value
@@ -1945,12 +1958,16 @@ def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | 
 
     pbo = _deep_get(offline, {"pbo", "pbo_score", "probability_of_backtest_overfitting"})
     pbo_value = _as_float(pbo.get("pbo") if isinstance(pbo, dict) else pbo)
+    if pbo_value is not None and not math.isfinite(pbo_value):
+        pbo_value = None
     pbo_method = str(pbo.get("method") if isinstance(pbo, dict) else "").lower()
     pbo_policy = policy_bundle["pbo"]
     pbo_required = bool(pbo_policy.get("required")) and not release_config_attested
     max_pbo = _as_float(pbo_policy.get("max_pbo"))
+    # Fail closed: a PASS label without an extractable PBO number cannot clear the gate.
     if pbo_required and (
-        not _truthy_gate_value(pbo, max_fail_value=max_pbo)
+        pbo_value is None
+        or not _truthy_gate_value(pbo, max_fail_value=max_pbo)
         or (pbo_value is not None and max_pbo is not None and pbo_value > max_pbo)
     ):
         add(
@@ -1984,12 +2001,6 @@ def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | 
             "Attach deflated Sharpe and Monte Carlo tail-risk evidence before promotion.",
         )
 
-    if live_status == "multi_evidence_passed":
-        return [
-            b
-            for b in blockers
-            if b["code"] in {"missing_current_champion", "model_not_active_production_artifact"}
-        ]
     return blockers
 
 

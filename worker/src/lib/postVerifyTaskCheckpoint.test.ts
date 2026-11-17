@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { DatabaseSync } from 'node:sqlite'
 import { readFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import test from 'node:test'
 import { createPostVerifyTaskCheckpoints, POST_VERIFY_RETRY_SAFE_TASKS, postVerifyOwnerAckEvidence, postVerifyAckDescriptor, type PostVerifyTaskResult } from './postVerifyTaskCheckpoint'
 import { POST_VERIFY_HEAVY_TASKS, POST_VERIFY_MAX_HOPS, runPostVerifyCallbackChain } from './postMarketChain'
@@ -725,7 +726,7 @@ test('NEW-1030-22 operator CAS closes a dead running receipt exactly like the le
   assert.equal(uncertain.statements.length,0);assert.match(String(uncertain.report[0].action),/uncertain/)
   assert.equal(uncertain.report[0].task,'strategy-multi-horizon-outcomes')
   // Counter: a running receipt of a task that is not retry-safe (legacy 'adapt', or flagged false) gets no statement.
-  for(const [task,flag] of [['adapt',undefined],['strategy-multi-horizon-outcomes',false]] as const){
+  for(const [task,flag] of [['adapt',undefined],['adapt',false]] as const){
     const g=fixture()
     await assert.rejects((await g.manager()).run(task,async()=>new Promise<PostVerifyTaskResult>(()=>{}),{timeoutMs:2}),/timeout_unsettled/)
     g.sqlite.prepare(flag===undefined?"UPDATE post_verify_task_receipts_v1 SET receipt_json=json_remove(receipt_json,'$.retrySafe')"
@@ -735,5 +736,116 @@ test('NEW-1030-22 operator CAS closes a dead running receipt exactly like the le
     assert.equal(out.statements.length,0,task);assert.match(String(out.report[0].action),/not retry-safe/)
     g.sqlite.close()
   }
+  f.sqlite.close()
+})
+
+const dumpRows=(f:ReturnType<typeof fixture>)=>f.sqlite.prepare(`SELECT receipt_key,state,business_date,receipt_json FROM post_verify_task_receipts_v1
+  WHERE state IN ('post_verify_task_v1:running','post_verify_task_v1:uncertain')`).all() as any[]
+const deadStage=[{business_date:date,status:'running',lease_owner:'lease-A',lease_live:0}]
+
+// EC-F: an uncertain receipt (HTTP 5xx from a non-retry-safe producer, 11/10 model-ic-rolling) or a dead running claim of a
+// task outside the retry-safe list stays blocked until the operator records a verdict.
+for(const origin of ['uncertain','running'] as const) test(`EC-F: operator verdicts settle a ${origin} non-retry-safe receipt`,async()=>{
+  for(const verdict of ['no-effect','keep-error'] as const){
+    const f=fixture();let calls=0
+    if(origin==='uncertain')await (await f.manager()).run('promotion',async()=>{calls++;return {...success('promotion'),status:'error',summary:'Controller HTTP 500: Internal Server Error'}})
+    else await assert.rejects((await f.manager()).run('promotion',async()=>{calls++;return new Promise<PostVerifyTaskResult>(()=>{})},{timeoutMs:2}),/timeout_unsettled/)
+    const rows=dumpRows(f)
+    assert.equal(rows.length,1);assert.equal(rows[0].state,`post_verify_task_v1:${origin}`)
+    const verdicts=[{receipt_key:rows[0].receipt_key,verdict,reason:'controller wrote no rows for 2026-10-16',
+      ...(origin==='running'&&verdict==='keep-error'?{critical:true}:{})}]
+    // Without a verdict the dump only reports it.
+    const plain=await reconcileStatements(rows,deadStage)
+    assert.equal(plain.statements.length,0);assert.match(String(plain.report[0].action),/verdict/)
+    // Counter: a live post-verify lease of the date gets no statement, and a stale dump's SQL changes nothing.
+    const live=await reconcileStatements(rows,[{...deadStage[0],lease_live:1}],verdicts,'20261115')
+    assert.equal(live.statements.length,0);assert.match(String(live.report[0].action),/lease is live/)
+    const stale=await reconcileStatements(rows,deadStage,verdicts,'20261115')
+    assert.equal(stale.statements.length,1)
+    assert.deepEqual(f.sqlite.prepare(stale.statements[0]).all(),[])
+    f.sqlite.prepare("UPDATE pipeline_stage_runs SET lease_expires_at='2000-01-01 00:00:00'").run()
+    assert.deepEqual(f.sqlite.prepare(stale.statements[0]).all().map((row:any)=>row.receipt_key),
+      [verdict==='no-effect'?stale.report[0].archive_key:rows[0].receipt_key])
+    // The CAS is exact: running it again changes nothing.
+    assert.deepEqual(f.sqlite.prepare(stale.statements[0]).all(),[])
+    const settled=f.sqlite.prepare('SELECT receipt_key,state,receipt_json FROM post_verify_task_receipts_v1').all() as any[]
+    assert.equal(settled.length,1);assert.equal(settled[0].state,'post_verify_task_v1:error')
+    assert.equal(settled[0].receipt_key===rows[0].receipt_key,verdict==='keep-error')
+    assert.match(JSON.parse(settled[0].receipt_json).result.summary,
+      new RegExp(`^post_verify_operator_settled_${verdict.replace('-','_')}:promotion:controller wrote no rows`))
+    // The settled receipt is valid for the checkpoint under the next lease.
+    const next=await takeover(f,'lease-B'), before=calls
+    const again=await next.run('promotion',async()=>{calls++;return success('promotion')})
+    if(verdict==='no-effect'){assert.equal(again.status,'success');assert.equal(calls,before+1)}
+    else{assert.equal(again.status,'error');assert.equal(calls,before);assert.match(again.summary,/operator_settled_keep_error/)}
+    // Either way the date is no longer blocked: the next task claims and runs.
+    assert.equal((await next.run('report',async()=>{calls++;return success('report')})).status,'success')
+    f.sqlite.close()
+  }
+})
+
+test('EC-F counter: an invalid verdict fails the whole batch instead of emitting partial SQL',async()=>{
+  const f=fixture()
+  await (await f.manager()).run('promotion',async()=>({...success('promotion'),status:'error',summary:'Controller HTTP 502: connection lost'}))
+  const g=fixture()
+  await assert.rejects((await g.manager()).run('strategy-multi-horizon-outcomes',async()=>new Promise<PostVerifyTaskResult>(()=>{}),
+    {retrySafe:true,timeoutMs:2}),/timeout_unsettled/)
+  const uncertain=dumpRows(f)[0], retrySafe=dumpRows(g)[0]
+  const ok={receipt_key:uncertain.receipt_key,verdict:'no-effect' as const,reason:'checked'}
+  for(const [verdicts,settledOn,error] of [
+    [[ok,{receipt_key:'post_verify_task_v1:missing',verdict:'no-effect',reason:'x'}],'20261115',/verdict_receipt_not_in_dump/],
+    [[{...ok,reason:'  '}],'20261115',/verdict_reason_missing/],
+    [[{...ok,verdict:'applied'}],'20261115',/verdict_unknown/],
+    [[ok,ok],'20261115',/verdict_duplicate/],
+    [[ok],'2026-11-15',/verdict_settled_date_invalid/],
+    // A retry-safe running claim is closed by the lease reclaim; it never takes a verdict.
+    [[ok,{receipt_key:retrySafe.receipt_key,verdict:'keep-error',reason:'x'}],'20261115',/verdict_receipt_needs_no_judgment/],
+    // The stored uncertain result already says critical:true; a verdict cannot flip it.
+    [[{...ok,verdict:'keep-error',critical:false}],'20261115',/verdict_critical_conflicts_with_receipt/],
+    [[{...ok,critical:'no'}],'20261115',/verdict_critical_invalid/],
+  ] as const) await assert.rejects(reconcileStatements([uncertain,retrySafe],deadStage,verdicts as any,settledOn),error)
+  f.sqlite.close();g.sqlite.close()
+})
+
+test('EC-F: the operator dump closes a listed task stored as retrySafe:false, matching the checkpoint reclaim',async()=>{
+  const f=fixture()
+  await assert.rejects((await f.manager()).run('strategy-evidence-current',async()=>new Promise<PostVerifyTaskResult>(()=>{}),{timeoutMs:2}),/timeout_unsettled/)
+  const rows=dumpRows(f)
+  assert.equal(JSON.parse(rows[0].receipt_json).retrySafe,false)
+  f.sqlite.prepare("UPDATE pipeline_stage_runs SET lease_expires_at='2000-01-01 00:00:00'").run()
+  const out=await reconcileStatements(rows,deadStage)
+  assert.match(String(out.report[0].action),/close as ERROR/)
+  assert.deepEqual(f.sqlite.prepare(out.statements[0]).all().map((row:any)=>row.receipt_key),[rows[0].receipt_key])
+  // It takes no verdict: the reclaim already settles it.
+  await assert.rejects(reconcileStatements(rows,deadStage,[{receipt_key:rows[0].receipt_key,verdict:'keep-error',reason:'x'}],'20261115'),
+    /verdict_receipt_needs_no_judgment/)
+  f.sqlite.close()
+})
+
+test('EC-F: keep-error on a dead optional claim needs critical:false so the date chain is not failed by it',async()=>{
+  const f=fixture()
+  await assert.rejects((await f.manager()).run('artifact-auto-promotion',async()=>new Promise<PostVerifyTaskResult>(()=>{}),{timeoutMs:2,critical:false}),/timeout_unsettled/)
+  const rows=dumpRows(f), base={receipt_key:rows[0].receipt_key,verdict:'keep-error' as const,reason:'promotion wrote nothing'}
+  // A running receipt has no result: without critical the chain would treat the kept error as critical.
+  await assert.rejects(reconcileStatements(rows,deadStage,[base],'20261115'),/verdict_critical_missing/)
+  await assert.rejects(reconcileStatements(rows,deadStage,[{...base,critical:'no' as any}],'20261115'),/verdict_critical_invalid/)
+  f.sqlite.prepare("UPDATE pipeline_stage_runs SET lease_expires_at='2000-01-01 00:00:00'").run()
+  const out=await reconcileStatements(rows,deadStage,[{...base,critical:false}],'20261115')
+  assert.equal(f.sqlite.prepare(out.statements[0]).all().length,1)
+  const result=(await (await takeover(f,'lease-B')).run('artifact-auto-promotion',async()=>{throw new Error('must not rerun')},{critical:false}))
+  assert.equal(result.status,'error');assert.equal(result.critical,false)
+  assert.equal((result.evidence as any).operator_verdict,'keep-error')
+  assert.equal((result.evidence as any).original_receipt_sha256,createHash('sha256').update(rows[0].receipt_json,'utf8').digest('hex'))
+  f.sqlite.close()
+})
+
+test('EC-F counter: a retry-safe task with a legacy uncertain receipt takes only no-effect',async()=>{
+  const f=fixture()
+  await (await f.manager()).run('strategy-evidence-current',async()=>({...success('strategy-evidence-current'),status:'error',summary:'HTTP 503 upstream'}))
+  const rows=dumpRows(f)
+  assert.equal(rows[0].state,'post_verify_task_v1:uncertain')
+  await assert.rejects(reconcileStatements(rows,deadStage,[{receipt_key:rows[0].receipt_key,verdict:'keep-error',reason:'x'}],'20261115'),
+    /verdict_keep_error_on_retry_safe_task/)
+  assert.equal((await reconcileStatements(rows,deadStage,[{receipt_key:rows[0].receipt_key,verdict:'no-effect',reason:'x'}],'20261115')).statements.length,1)
   f.sqlite.close()
 })

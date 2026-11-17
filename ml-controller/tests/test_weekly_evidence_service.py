@@ -97,6 +97,7 @@ def test_formal_position_risk_is_frozen_into_replay_config(monkeypatch):
             'maxSingleNamePct': 0.18,
             'correlationThreshold': 0.65,
             'correlationWindow': 60,
+            'minCorrelationOverlap': 30,
         },
     }
     monkeypatch.setattr(kv_client, 'get_json', lambda *_, **__: risk_config)
@@ -106,6 +107,7 @@ def test_formal_position_risk_is_frozen_into_replay_config(monkeypatch):
     assert formal['maxPerSector'] == 3
     assert formal['maxSingleNamePct'] == 0.18
     assert formal['correlationThreshold'] == 0.65
+    assert formal['minCorrelationOverlap'] == 30
     assert formal['sourceRiskConfigChecksum'] == service._stable_checksum(risk_config)
 
 

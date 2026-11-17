@@ -1,4 +1,5 @@
 import type { Bindings } from '../types'
+import { MATRIX_RUN_SUMMARY_CHALLENGER_VERSION, matrixRunSummaryUsableInline } from './strategyLabelMatrixRunSummary'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import {
   CANONICAL_SELECTION_ADJUSTMENT_SOURCE,
@@ -182,6 +183,9 @@ async function loadCanonicalHeads(
   ))
 }
 
+// Summarised matrix runs answer their cell count from the run header.
+const MATURE_SUMMARY_USABLE = matrixRunSummaryUsableInline('mr', MATRIX_RUN_SUMMARY_CHALLENGER_VERSION)
+
 async function loadCoverageRows(
   db: D1Database,
   heads: CanonicalHeadRow[],
@@ -200,7 +204,8 @@ async function loadCoverageRows(
       ),
       formal_runs AS MATERIALIZED (
         SELECT mr.producer_run_id, mr.signal_date, mr.expected_cell_count,
-               mr.persisted_cell_count, mr.labeler_version, mr.reference_contract_version
+               mr.persisted_cell_count, mr.labeler_version, mr.reference_contract_version,
+               ${MATURE_SUMMARY_USABLE} summary_usable, mr.summary_matrix_rows
           FROM strategy_label_matrix_runs_v4 mr
           JOIN target_heads t
             ON t.signal_date=mr.signal_date
@@ -243,12 +248,15 @@ async function loadCoverageRows(
         -- grouping every matrix row of the date sorted it through a temp b-tree,
         -- doubling the dominant read. A lineage without rows yields 0 where the
         -- grouped form yielded no row; the outer COALESCE(MAX(...),0) is the same.
+        -- A summarised run (strategyLabelMatrixRunSummary.ts) answers from its header.
         SELECT k.signal_date, k.producer_run_id, k.labeler_version, k.reference_contract_version,
+               CASE WHEN k.summary_usable=1 THEN k.summary_matrix_rows ELSE
                (SELECT COUNT(*) FROM strategy_label_matrix_v4 m
                  WHERE m.signal_date=k.signal_date AND m.producer_run_id=k.producer_run_id
                    AND m.labeler_version=k.labeler_version
-                   AND m.reference_contract_version=k.reference_contract_version) matrix_rows
-          FROM (SELECT DISTINCT signal_date, producer_run_id, labeler_version, reference_contract_version
+                   AND m.reference_contract_version=k.reference_contract_version) END matrix_rows
+          FROM (SELECT DISTINCT signal_date, producer_run_id, labeler_version, reference_contract_version,
+                       summary_usable, summary_matrix_rows
                   FROM formal_runs) k
       )
       SELECT r.signal_date, r.producer_run_id,

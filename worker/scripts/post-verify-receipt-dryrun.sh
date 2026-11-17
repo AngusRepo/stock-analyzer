@@ -2,7 +2,9 @@
 # NEW-1030-22: read-only dry run for post-verify receipts stuck in running (default dates 10/16 and 10/28).
 # Runs two SELECTs against the remote ops D1 and writes the guarded CAS UPDATEs to a file. It executes no write;
 # applying the SQL (wrangler d1 execute --remote --file) needs Wei go.
-#   cd worker && scripts/post-verify-receipt-dryrun.sh <out-dir> [date ...]
+#   cd worker && [VERDICTS=<verdicts.json>] scripts/post-verify-receipt-dryrun.sh <out-dir> [date ...]
+# VERDICTS (EC-F) settles receipts that need a manual judgment: a JSON array of
+# { receipt_key, verdict: "no-effect" | "keep-error", reason }; see scripts/postVerifyReceiptReconcile.ts.
 set -euo pipefail
 
 # The output directory is required and comes first, so a date is never taken for it.
@@ -26,6 +28,11 @@ npx wrangler d1 execute stockvision-ops-db --remote --json --command \
      FROM pipeline_stage_runs WHERE stage='post_verify_chain' AND business_date IN ($in_list)" \
   > "$out/stages.json"
 
-# Build the CAS statements (report on stderr); nothing is executed.
-npx tsx scripts/postVerifyReceiptReconcile.ts "$out/receipts.json" "$out/stages.json" > "$out/reconcile.sql"
+# Build the CAS statements (report on stderr); nothing is executed. Verdicts are stamped with today's Taiwan date.
+verdict_args=()
+if [ -n "${VERDICTS:-}" ]; then
+  [ -f "$VERDICTS" ] || { echo "VERDICTS file not found: $VERDICTS" >&2; exit 1; }
+  verdict_args=("$VERDICTS" "$(TZ=Asia/Taipei date +%Y%m%d)")
+fi
+npx tsx scripts/postVerifyReceiptReconcile.ts "$out/receipts.json" "$out/stages.json" ${verdict_args[@]+"${verdict_args[@]}"} > "$out/reconcile.sql"
 echo "dry run written: $out/receipts.json $out/stages.json $out/reconcile.sql (not applied)" >&2

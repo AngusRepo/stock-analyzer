@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { readdirSync, readFileSync } from 'node:fs'
-import { join, relative } from 'node:path'
+import { join, relative, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 
@@ -25,7 +25,7 @@ test('only the summary-refreshing writers touch strategy_label_matrix_v4 cells',
   const writers: string[] = []
   for (const top of ['worker/src', 'ml-controller', 'ml-service', 'tools']) {
     for (const path of sources(join(ROOT, top))) {
-      if (WRITE.test(readFileSync(path, 'utf8'))) writers.push(relative(ROOT, path))
+      if (WRITE.test(readFileSync(path, 'utf8'))) writers.push(relative(ROOT, path).split(sep).join('/'))
     }
   }
   assert.deepEqual(writers.sort(), ALLOWED)

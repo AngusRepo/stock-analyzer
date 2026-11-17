@@ -35,11 +35,16 @@ def validate_admission(admission, *, artifact, now=None):
         signal_date=admission['business_date'])
     tag=validate_tag(bundle.get('strategy_ab'))
     from services.paper_strategy_mode import single_b_policy
-    from services.strategy_ab import TABPACK_SCHEMA, MLP_MEDIAN_SCHEMA
-    from services.paper_strategy_mode import MODE, MLP_MODE, TABPACK_MEDIAN_MODE
+    from services.strategy_ab import TABPACK_SCHEMA, MLP_MEDIAN_SCHEMA, R33_SCHEMA
+    from services.paper_strategy_mode import MODE, MLP_MODE, TABPACK_MEDIAN_MODE, R33_MODE
+    from services.r33_ensemble import is_r33
     mode=single_b_policy(bundle['candidate_trading_config'],signal_date=admission['business_date'])
     matching_b=mode and tag['role']=='B' and ((mode['mode'] in (MODE,TABPACK_MEDIAN_MODE) and tag['schema_version']==TABPACK_SCHEMA)
-        or (mode['mode']==MLP_MODE and tag['schema_version']==MLP_MEDIAN_SCHEMA))
+        or (mode['mode']==MLP_MODE and tag['schema_version']==MLP_MEDIAN_SCHEMA)
+        or (mode['mode']==R33_MODE and tag['schema_version']==R33_SCHEMA))
+    # The R33 object, its mode and its tag occur together or not at all.
+    if is_r33(artifact) != bool(mode and mode['mode']==R33_MODE) or is_r33(artifact) != (tag['schema_version']==R33_SCHEMA):
+        raise ValueError('active8_paper_r33_identity_mismatch')
     if tag['role']!='A' and not matching_b:
         raise ValueError('active8_paper_primary_A_required')
     if mode and tag['role']!='B':raise ValueError('active8_paper_single_B_identity_required')
@@ -159,9 +164,29 @@ PERFORMANCE_SOURCE_CHANGE = {
 }
 
 
-def runtime_configuration_identity(configuration):
-    """Project only explicitly non-trading GA candidate diagnostics."""
+ROSTER_ECHO_FIELDS = ('alpha_vote_models', 'formal_layer3_slots')
+
+
+def without_roster_echo(configuration):
+    """Configuration without the adaptive meta_layer roster echo (Q7 A, Wei 2026-11-12).
+
+    T+1 adaptive copies the published model order into meta_layer.alpha_vote_models and
+    formal_layer3_slots; they describe what adaptive last computed with and carry no policy.
+    The roster's authority is the immutable published object (grant evidence, bundle
+    model_order), so every grant comparison drops these two fields and nothing else; every
+    other meta_layer field stays compared."""
     result = deepcopy(configuration)
+    adaptive = ((result.get('native_execution_policy') or {}).get('frozen_kv') or {}).get('ml:adaptive_params')
+    meta = adaptive.get('meta_layer') if isinstance(adaptive, dict) else None
+    if isinstance(meta, dict):
+        for key in ROSTER_ECHO_FIELDS:
+            meta.pop(key, None)
+    return result
+
+
+def runtime_configuration_identity(configuration):
+    """Project only explicitly non-trading GA candidate diagnostics and the roster echo."""
+    result = without_roster_echo(configuration)
     adaptive = result.get('native_execution_policy', {}).get('frozen_kv', {}).get('ml:adaptive_params')
     ga = ((adaptive or {}).get('bandit_context') or {}).get('ga_optimizer')
     if (isinstance(ga, dict) and ga.get('runtime_role') == 'shadow_learning_context'
@@ -182,7 +207,15 @@ def validate_runtime_approval(approval, admission, *, now=None):
             or not _timestamp(admission['approved_at']) <= _timestamp(approval['approved_at']) <= clock
             or approval.get('approval_checksum') != digest({k:v for k,v in approval.items() if k!='approval_checksum'})):
         raise RuntimeError('active8_paper_runtime_approval_invalid')
-    if approval.get('approved_strategy_nav_source_change') is not None:
+    if approval.get('approved_r33_cutover') is not None:
+        # The R33 L3+L4 cutover: evidence and the prior authority chain are checked
+        # here, then the ordinary exact-configuration comparison below still applies.
+        if any(k.startswith('approved_') and k not in ('approved_r33_cutover', 'approved_at') and approval[k] is not None
+               for k in approval):
+            raise RuntimeError('active8_paper_r33_cutover_must_be_exclusive')
+        from services.r33_cutover import validate_cutover
+        validate_cutover(approval, admission, now=clock)
+    elif approval.get('approved_strategy_nav_source_change') is not None:
         from services.strategy_nav_runtime_approval import validate_source_release
         return validate_source_release(approval, admission, now=clock)
     if approval.get('approved_capture_provenance_source_change') is not None:
@@ -207,11 +240,6 @@ def validate_runtime_approval(approval, admission, *, now=None):
         if (not isinstance(version, str) or not version.startswith('native-paper-v1:')
                 or len(version) != 80 or any(c not in '0123456789abcdef' for c in version[16:])):
             raise RuntimeError('active8_paper_runtime_execution_identity_invalid')
-        adaptive = policy.get('frozen_kv', {}).get('ml:adaptive_params')
-        if isinstance(adaptive, dict):
-            meta = adaptive.get('meta_layer') or {}
-            for key in ('alpha_vote_models', 'formal_layer3_slots'):
-                meta.pop(key, None)
         for flag in ('LIVE_EXECUTION_CLIENT_ENABLED', 'LIVE_EXECUTION_SUBMIT_GUARD_ENABLED'):
             if str(policy['variables'].get(flag, '')).lower() in {'1','true','yes','enabled','on'}:
                 raise RuntimeError('active8_paper_live_execution_forbidden')
@@ -375,8 +403,11 @@ def verify_active_approval(admission, *, now=None):
             target_policy = candidate.get('configuration', {}).get('trading_config', {}).get('l4Distribution')
             switched = target_policy is not None and digest(current_policy) == digest(target_policy)
             from services.l4_opb_selection import is_v2
-            if switched and is_v2(target_policy):
-                # v2 also moves risk-owned fields; both KV writes must have landed.
+            prior_risk = (candidate.get('prior_runtime_approval') or {}).get('configuration', {}).get('risk_config')
+            moves_risk = digest(prior_risk) != digest(candidate['configuration'].get('risk_config'))
+            if switched and (is_v2(target_policy) or moves_risk):
+                # v2 and risk-only activations move risk-owned fields (a risk-only grant keeps the
+                # policy of the grant before it); both KV writes must have landed.
                 risk = kv_client.get_json('trading:risk_config', default=None, strict=True)
                 switched = digest(risk) == digest(candidate['configuration'].get('risk_config'))
             if switched:
@@ -414,7 +445,10 @@ def verify_active_approval(admission, *, now=None):
     return validate_runtime_approval(runtime, admission, now=now)
 
 
-def verify_serving_configuration(admission, approval, *, model_names):
+def verify_serving_configuration(admission, approval):
+    """Current configuration against the grant. The roster is not compared here: the meta_layer
+    roster echo is descriptive (without_roster_echo), and the served roster is bound by the
+    immutable published object (r33_cutover.verify_serving / validate_admission checksums)."""
     from services.active8_nav_adoption import current_execution_configuration, verify_current_configuration
     if approval == admission:
         return verify_current_configuration(admission['configuration'])
@@ -422,11 +456,6 @@ def verify_serving_configuration(admission, approval, *, model_names):
     expected = approval['configuration']
     if digest(runtime_configuration_identity(current)) != digest(runtime_configuration_identity(expected)):
         raise RuntimeError('active8_nav_current_configuration_changed_or_unverified')
-    from services.alpha_model_roster import model_order
-    meta = current['native_execution_policy'].get('frozen_kv', {}).get('ml:adaptive_params', {}).get('meta_layer', {})
-    for key in ('alpha_vote_models', 'formal_layer3_slots'):
-        if meta.get(key) != list(model_order(model_names, complete=True)):
-            raise RuntimeError('active8_paper_runtime_roster_mismatch')
     return current
 
 
@@ -436,7 +465,10 @@ def prepare_paper_adoption(*, ensemble_row, admission, business_date, query):
     validate_admission(admission, artifact=artifact)
     if admission['business_date'] != business_date:
         raise ValueError('active8_paper_admission_date_mismatch')
-    verify_active_approval(admission)
+    approval = verify_active_approval(admission)
+    # An R33 object is published only under its cutover grant, never a plain one.
+    from services.r33_cutover import verify_serving
+    verify_serving(approval, admission, artifact)
     verify_current_configuration(admission['configuration'])
     pointers = query('SELECT * FROM active8_ensemble_pointer_v1 WHERE singleton_id=1', [])
     baseline = admission['strategy_bundle']['baseline_l3_identity']

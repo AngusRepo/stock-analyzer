@@ -126,6 +126,8 @@ const POLICY_CONFIGS: Record<RetentionArchiveOnlyPolicyId, PolicyConfig> = {
       archiveOnlyTableSource('learning', 's12_structure_snapshots', 'trade_date'),
       archiveOnlyTableSource('learning', 'dataset_snapshots', 'business_date'),
       archiveOnlyTableSource('learning', 'selection_reference_snapshots_v1', 'signal_date'),
+      // Archive-only: deleting cells would leave strategy_label_matrix_runs_v4.summary_* overcounted;
+      // a delete path must clear summary_version for the touched runs (strategyLabelMatrixWriters.test.ts).
       archiveOnlyTableSource('learning', 'strategy_label_matrix_v4', 'signal_date'),
       archiveOnlyTableSource('learning', 'canonical_selection_labels_v4', 'signal_date'),
       archiveOnlyTableSource('learning', 'canonical_selection_outcomes_v1', 'signal_date'),

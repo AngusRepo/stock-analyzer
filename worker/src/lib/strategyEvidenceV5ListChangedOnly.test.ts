@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { test } from 'node:test'
+import { MATRIX_RUN_SUMMARY_CLEAR_SQL, MATRIX_RUN_SUMMARY_VERSION, matrixRunSummaryRefreshBinds, matrixRunSummaryRefreshSql } from './strategyLabelMatrixRunSummary'
 import { STRATEGY_EVIDENCE_V5_LIVE_FRONTIER_START_DATE } from './strategyEvidenceV5Contract'
 import { drainHistoricalStrategyEvidenceV5, listHistoricalStrategyEvidenceV5Dates } from './strategyLearning'
 import {
@@ -292,6 +293,37 @@ test('changed-only selector matches the former valid_runs selector case by case'
     if (item.same) assert.deepEqual(got, was, `${item.name}: former ${JSON.stringify(was)}`)
     else assert.notDeepEqual(got, was, `${item.name} is the documented trusted-success case`)
   }
+})
+
+test('summarised runs select exactly the dates their cell counts select', async () => {
+  const db = schema()
+  const heads = seed(db, CASES)
+  const before = await Promise.all(CASES.map((item) => current(db, { [item.date]: heads[item.date] })))
+  const ready = db.prepare(`SELECT producer_run_id, signal_date FROM strategy_label_matrix_runs_v4 WHERE status='ready'`)
+    .all() as Array<{ producer_run_id: string; signal_date: string }>
+  for (const run of ready) {
+    db.prepare(matrixRunSummaryRefreshSql()).run(...matrixRunSummaryRefreshBinds(run.producer_run_id, run.signal_date))
+  }
+  const summarised = db.prepare(`SELECT COUNT(*) n FROM strategy_label_matrix_runs_v4 WHERE summary_version=?`)
+    .get(MATRIX_RUN_SUMMARY_VERSION) as { n: number }
+  assert.equal(Number(summarised.n), ready.length)
+  // A summary is answered from the header only when it stands for every cell.
+  const log: Recorded[] = []
+  const after = await Promise.all(CASES.map((item) => current(db, { [item.date]: heads[item.date] }, log)))
+  assert.deepEqual(after, before)
+  const changedValid = log.find((entry) => entry.sql.includes('WITH source_dates AS'))!
+  const plan = (db.prepare(`EXPLAIN QUERY PLAN ${changedValid.sql}`).all(...changedValid.params as never[]) as Array<{ detail: string }>)
+    .map((row) => row.detail).join('\n')
+  assert.doesNotMatch(plan, /SCAN (m|sr|strategy_label_matrix_v4|selection_reference_snapshots_v1)\b/, plan)
+  // The header answers for a usable summary: a cell rewritten without clearing
+  // the summary (which no writer does) is not seen until the summary is cleared.
+  const date = '2026-09-16'
+  const only = { [date]: heads[date] }
+  db.prepare(`UPDATE strategy_label_matrix_v4 SET challenger_affinity_version='legacy-affinity'
+               WHERE signal_date=? AND producer_run_id=? AND symbol='1101' AND strategy_id='s1'`).run(date, heads[date])
+  assert.deepEqual(await current(db, only), [])
+  db.prepare(MATRIX_RUN_SUMMARY_CLEAR_SQL).run(heads[date], date)
+  assert.deepEqual(await current(db, only), [date])
 })
 
 test('changed-only selector keeps order, limit, and the non-canonical run filter', async () => {

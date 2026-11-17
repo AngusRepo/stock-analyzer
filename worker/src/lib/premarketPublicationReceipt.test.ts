@@ -33,3 +33,49 @@ for(const fault of ['checksum','source','context','snapshot','plan','weight','ro
   if(fault==='closure'){input.publication.closure.incomplete_active_model_symbols=1;input.publication=signed(input.publication)}
   await assert.rejects(verifyPublicationReceipt(input),/premarket_serving_receipt/)
 })
+
+// R33: the seed closes with unscored names, and a held name outside the seed is a locked target with no row.
+function r33Fixture():any {
+  const input=fixture()
+  input.plan.r33_projection={}
+  input.plan.targets['2330']={weight:.2,current_weight:0,locked:false}
+  input.plan.targets['9999']={weight:.1,current_weight:.1,locked:true}
+  input.publication.target_count=2
+  Object.assign(input.publication.closure,{prediction_seed_symbols:3,prediction_symbols:2,
+    r33_unscored_missing_prediction_count:1,r33_held_outside_seed_prediction_symbols:1})
+  input.publication=signed(input.publication)
+  return input
+}
+test('R33 receipt closes the seed with unscored names and a locked held name outside it',async()=>{await verifyPublicationReceipt(r33Fixture())})
+test('R33 receipt closes without the optional R33 counts when they are zero',async()=>{
+  const input=r33Fixture()
+  delete input.plan.targets['9999'];input.publication.target_count=1
+  delete input.publication.closure.r33_unscored_missing_prediction_count
+  delete input.publication.closure.r33_held_outside_seed_prediction_symbols
+  input.publication.closure.prediction_seed_symbols=2
+  input.publication=signed(input.publication)
+  await verifyPublicationReceipt(input)
+})
+test('a non-R33 plan still rejects a held name outside the rows',async()=>{
+  const input=r33Fixture();delete input.plan.r33_projection
+  await assert.rejects(verifyPublicationReceipt(input),/premarket_serving_receipt_closure_mismatch/)
+})
+for(const fault of ['unscored','unscored_negative','held_negative','unlocked_outside','unheld_outside','held_count','target_count','seed_rows','duplicate_row'])
+  test('reject R33 closure mismatch: '+fault,async()=>{
+    const input=r33Fixture(), c=input.publication.closure
+    if(fault==='unscored')c.r33_unscored_missing_prediction_count=2
+    if(fault==='unscored_negative'){c.r33_unscored_missing_prediction_count=-1;c.prediction_symbols=4}
+    if(fault==='held_negative')c.r33_held_outside_seed_prediction_symbols=-1
+    if(fault==='unlocked_outside')input.plan.targets['9999'].locked=false
+    if(fault==='unheld_outside')input.plan.targets['9999'].current_weight=0
+      if(fault==='held_count')c.r33_held_outside_seed_prediction_symbols=2
+    if(fault==='target_count')input.publication.target_count=1
+    if(fault==='seed_rows')c.recommendation_seed_rows=2
+    if(fault==='duplicate_row'){input.rows.push(input.rows[0]);c.recommendation_seed_rows=2;c.recommendation_closed_rows=2}
+    input.publication=signed(input.publication)
+    await assert.rejects(verifyPublicationReceipt(input),/premarket_serving_receipt_closure_mismatch/)
+  })
+test('reject an R33 row with no plan target',async()=>{
+  const input=r33Fixture();input.rows[0].symbol='1101'
+  await assert.rejects(verifyPublicationReceipt(input),/premarket_serving_receipt/)
+})

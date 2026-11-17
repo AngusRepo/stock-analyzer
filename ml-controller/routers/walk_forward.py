@@ -2091,7 +2091,9 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
     from services.trading_config_loader import load_merged_trading_config_with_contract
     native_config=load_merged_trading_config_with_contract().config
     if native_config.get('l4Distribution') is not None:
-        from services.paper_strategy_mode import refresh_family
+        from services.paper_strategy_mode import refresh_family, r33_native_refresh_skip
+        if skipped := r33_native_refresh_skip(native_config, cohort_id=req.cohort_id, as_of=req.knowledge_cutoff_date):
+            return skipped
         from services.l4_oof_lifecycle import materialize_native_base
         from services.walk_forward_retrain import _get_bucket
         return await materialize_native_base(manifest_path=req.manifest_path or f'walk_forward/oof_cohorts/{req.cohort_id}/manifest.json',
@@ -2864,8 +2866,25 @@ OOF_FEATURE_SEMANTIC_VERSION = "formal137-pit-asof-source-quality-v3"
 OOF_FEATURE_IMPUTATION_SEMANTIC_VERSION = "prior_252_row_median_then_zero_v2"
 OOF_COHORT_ID_VERSION = "v9-feature-semantic-source-attested"
 # R33 cohorts carry their roster: the seven-model G5 #3 cohort of 2026-11-07 keeps its own
-# write-once OOF checks and fold artifacts, which a four-model cohort must never read back.
-R33_ROSTER_COHORT_TAG = "core4"
+# write-once OOF checks and fold artifacts, which a cohort of another roster must never read back.
+# The tag is derived from the roster (Q4, Wei 2026-11-12); the November four-model roster keeps
+# the "core4" name its 2026-11-09 cohort was written under.
+_R33_LEGACY_COHORT_TAGS = {("LightGBM", "ExtraTrees", "TabM", "GNN"): "core4"}
+
+
+def r33_roster_cohort_tag(roster) -> str:
+    import hashlib
+    from services.alpha_model_roster import validate_r33_roster
+    roster = validate_r33_roster(tuple(roster))
+    return _R33_LEGACY_COHORT_TAGS.get(roster) or "r" + hashlib.sha256(",".join(roster).encode()).hexdigest()[:8]
+
+
+def _r33_training_roster_tag() -> str:
+    from services.alpha_model_roster import R33_MODELS
+    return r33_roster_cohort_tag(R33_MODELS)
+
+
+R33_ROSTER_COHORT_TAG = _r33_training_roster_tag()
 OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v17-nav-inventory-native-frontier"
 
 
@@ -4189,7 +4208,9 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     from services.l4_oof_lifecycle import uses_native_l4
     if new_distribution or uses_native_l4(manifest):
         from services.l4_oof_lifecycle import materialize_native_base
-        from services.paper_strategy_mode import refresh_family
+        from services.paper_strategy_mode import refresh_family, r33_native_refresh_skip
+        if skipped := r33_native_refresh_skip(config, cohort_id=cohort_id, as_of=knowledge_cutoff_date, cadence=cadence):
+            return skipped
         if cadence == 'monthly':
             calendar_evidence['deferred_oof_dates'] = [d for d in dates if d > manifest['end_date']]
         return await materialize_native_base(manifest_path=manifest_path,cohort_id=cohort_id,

@@ -51,3 +51,20 @@ def test_changed_plan_and_corrupt_receipt_are_rejected(f):
 def test_old_checkpoint_does_not_invent_publication_receipt(f):
     storage,state,_=prepared(f);state['metrics'].pop('l4_plan_publication')
     assert publication.record(state,client=storage) is None
+
+def test_r33_closure_counts_are_carried_only_when_present(f):
+    storage,state,_=prepared(f)
+    assert set(publication.record(state,client=storage)['closure'])=={
+        'prediction_seed_symbols','prediction_symbols','predictions_written','prediction_symbol_closure_passed',
+        'incomplete_active_model_symbols','recommendation_seed_rows','recommendation_closed_rows',
+        'recommendation_row_closure_passed'}
+    storage,state,_=prepared(f)
+    state['producer_run_id']+='-r33'
+    owner.seal_l3(state,client=storage)
+    storage.blob(owner.prefix(state['run_date'],state['producer_run_id'])+'/phases/node_write_d1.json.gz'
+                 ).upload_from_string(b'fixture')
+    state['metrics'].update(prediction_seed_symbols=2,r33_unscored_missing_prediction_count=1,
+                            r33_held_outside_seed_prediction_symbols=0)
+    closure=publication.record(state,client=storage)['closure']
+    assert closure['r33_unscored_missing_prediction_count']==1
+    assert 'r33_held_outside_seed_prediction_symbols' not in closure

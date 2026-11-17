@@ -20,7 +20,10 @@ ORIGINAL_MATRIX_COUNTS='''matrix_counts AS (
 def test_indexed_coverage_matches_original_join_with_missing_and_duplicate_lineage():
     source=Path(__file__).resolve().parents[2].joinpath('worker/src/lib/matureSelectionEvidenceRecovery.ts').read_text(encoding='utf-8')
     start=source.index('WITH target_heads(signal_date, producer_run_id)')
-    sql=source[start:source.index('`).bind(',start)].replace('${targetRows}','(?, ?), (?, ?), (?, ?), (?, ?)')
+    sql=source[start:source.index('`).bind(',start)].replace('${targetRows}','(?, ?), (?, ?), (?, ?), (?, ?)').replace(
+        '${MATURE_SUMMARY_USABLE}',
+        "(mr.status='ready' AND mr.summary_version='matrix-run-summary-v1|strategy-threshold-margin-affinity-v2'"
+        " AND mr.summary_contract_rows=mr.summary_matrix_rows)")
     original=sql.replace('formal_runs AS MATERIALIZED (','formal_runs AS (').replace(
         'FROM target_heads t\n        CROSS JOIN selection_reference_snapshots_v1 r',
         'FROM selection_reference_snapshots_v1 r\n        JOIN target_heads t')
@@ -29,7 +32,7 @@ def test_indexed_coverage_matches_original_join_with_missing_and_duplicate_linea
     assert probes==1
     db=sqlite3.connect(':memory:')
     db.executescript("""
-      CREATE TABLE strategy_label_matrix_runs_v4(producer_run_id,signal_date,expected_cell_count,persisted_cell_count,labeler_version,reference_contract_version,status);
+      CREATE TABLE strategy_label_matrix_runs_v4(producer_run_id,signal_date,expected_cell_count,persisted_cell_count,labeler_version,reference_contract_version,status,summary_version,summary_matrix_rows,summary_contract_rows);
       CREATE TABLE price_horizon_labels_v1(price_date,stock_id,projection_version);
       CREATE TABLE price_horizon_label_rejections_v1(price_date,stock_id,projection_version);
       CREATE TABLE canonical_selection_labels_v4(signal_date,symbol,producer_run_id,reference_contract_version,label_schema_version,adjustment_source);
@@ -41,7 +44,7 @@ def test_indexed_coverage_matches_original_join_with_missing_and_duplicate_linea
     rng=random.Random(24)
     for date,producer in [('2026-09-01','a'),('2026-09-02','b'),('2026-09-03','outside'),('2026-09-01','noncanonical')]:
         for labeler,reference in [('label1','current'),('label2','current'),('legacy-label','legacy'),('wrong','current')]:
-            db.execute('INSERT INTO strategy_label_matrix_runs_v4 VALUES (?,?,?,?,?,?,?)',(producer,date,100,90,labeler,reference,'ready'))
+            db.execute('INSERT INTO strategy_label_matrix_runs_v4(producer_run_id,signal_date,expected_cell_count,persisted_cell_count,labeler_version,reference_contract_version,status) VALUES (?,?,?,?,?,?,?)',(producer,date,100,90,labeler,reference,'ready'))
             for stock in range(12):
                 symbol=str(stock)
                 db.execute('INSERT INTO selection_reference_snapshots_v1 VALUES (?,?,?,?,?,?,?)',
@@ -61,7 +64,7 @@ def test_indexed_coverage_matches_original_join_with_missing_and_duplicate_linea
     # no matrix rows for its formal lineage, 'd' has some; both also carry rows of
     # the same labeler under a non-formal reference contract.
     for date,producer,own_rows in [('2026-09-04','c',0),('2026-09-05','d',5)]:
-        db.execute('INSERT INTO strategy_label_matrix_runs_v4 VALUES (?,?,?,?,?,?,?)',(producer,date,100,90,'label1','current','ready'))
+        db.execute('INSERT INTO strategy_label_matrix_runs_v4(producer_run_id,signal_date,expected_cell_count,persisted_cell_count,labeler_version,reference_contract_version,status) VALUES (?,?,?,?,?,?,?)',(producer,date,100,90,'label1','current','ready'))
         for stock in range(6):
             db.execute('INSERT INTO selection_reference_snapshots_v1 VALUES (?,?,?,?,?,?,?)',(date,producer,stock,str(stock),'label1','current',1))
         for _ in range(own_rows):db.execute('INSERT INTO strategy_label_matrix_v4 VALUES (?,?,?,?)',(date,producer,'label1','current'))
@@ -80,6 +83,14 @@ def test_indexed_coverage_matches_original_join_with_missing_and_duplicate_linea
     for mutant in [sql.replace(probe_count,'(SELECT COUNT(*)+(COUNT(*)=0) FROM strategy_label_matrix_v4 m'),
                    sql.replace(contract,'')]:
         assert db.execute(mutant,params).fetchall()!=before
+    # A summarised run (learning 0065) answers its matrix count from the header.
+    version='matrix-run-summary-v1|strategy-threshold-margin-affinity-v2'
+    db.execute("UPDATE strategy_label_matrix_runs_v4 SET summary_version=?, summary_matrix_rows=5, summary_contract_rows=5 WHERE producer_run_id='d'",(version,))
+    assert db.execute(sql,params).fetchall()==before
+    db.execute("UPDATE strategy_label_matrix_runs_v4 SET summary_matrix_rows=7, summary_contract_rows=7 WHERE producer_run_id='d'")
+    assert {row[1]:row[7] for row in db.execute(sql,params)}['d']==7
+    db.execute("UPDATE strategy_label_matrix_runs_v4 SET summary_contract_rows=6 WHERE producer_run_id='d'")
+    assert db.execute(sql,params).fetchall()==before
     plans=[r[3] for r in db.execute('EXPLAIN QUERY PLAN '+sql,params)]
     assert any('SEARCH r USING INDEX refs_date' in row for row in plans)
     db.close()

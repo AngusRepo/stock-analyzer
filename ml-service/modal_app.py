@@ -1857,6 +1857,44 @@ def _pipeline_runtime_expected_symbols(
     ]
 
 
+def _assert_pipeline_bundle_rows(model_name: str, rows: object, *, expected: list[str], feature_models: list[str],
+                                 require_rank: bool, r33: bool) -> None:
+    """Every expected symbol exactly once. Outside R33 any row error or missing feature rank
+    fails the bundle; under R33 they are that symbol's coverage (z=0 / prediction_missing,
+    same as the controller closure), and only the structure fails closed."""
+    model_expected_set = set(expected)
+    if not expected or len(model_expected_set) != len(expected):
+        raise ValueError(f"pipeline_modal_{model_name.lower()}_expected_symbol_contract_invalid")
+    if not isinstance(rows, list):
+        raise ValueError(f"pipeline_modal_{model_name.lower()}_results_not_list")
+    observed: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError(f"pipeline_modal_{model_name.lower()}_row_invalid")
+        symbol = str(row.get("symbol") or row.get("stock_id") or "").strip()
+        if not symbol or (row.get("error") and not r33):
+            raise ValueError(f"pipeline_modal_{model_name.lower()}_row_error:{symbol or '<missing>'}")
+        observed.append(symbol)
+        if require_rank and not r33:
+            rank_scores = row.get("rank_scores")
+            for feature_model in feature_models:
+                value = rank_scores.get(feature_model) if isinstance(rank_scores, dict) else None
+                try:
+                    valid = value is not None and math.isfinite(float(value))
+                except (TypeError, ValueError):
+                    valid = False
+                if not valid:
+                    raise ValueError(
+                        f"pipeline_modal_feature_rank_missing:{symbol}:{feature_model}"
+                    )
+    if (
+        len(rows) != len(expected)
+        or len(set(observed)) != len(observed)
+        or set(observed) != model_expected_set
+    ):
+        raise ValueError(f"pipeline_modal_{model_name.lower()}_cardinality_mismatch")
+
+
 def _compute_pipeline_prediction_bundle(payload: dict) -> dict:
     """Same L3 engine without publication or callback side effects."""
     _setup_env()
@@ -1978,7 +2016,15 @@ def _compute_pipeline_prediction_bundle(payload: dict) -> dict:
             f"(required={contract.get('seq_len') or 'unknown'} usable=0)"
         )
 
+    from app.r33_prep_rows import stage_runner
+    from app.model_store import _get_bucket
+    # R33-NEW-11: the feature and GNN stages read the sealed prep rows, loaded once.
+    _with_r33_prep = stage_runner(frozen_pool, payload, payloads, bucket_factory=_get_bucket)
+
     def _feature() -> list[dict]:
+        return _with_r33_prep(_feature_rows)
+
+    def _feature_rows() -> list[dict]:
         raw_chunk_size = payload.get("predict_batch_v2_chunk_size")
         try:
             chunk_size = int(raw_chunk_size or len(payloads) or 1)
@@ -1995,7 +2041,7 @@ def _compute_pipeline_prediction_bundle(payload: dict) -> dict:
     def _gnn() -> dict:
         if not _is_active("GNN"):
             return _skip("GNN retired by model_pool")
-        return predict_gnn_graphsage_batch(payloads, pool_snapshot=frozen_pool)
+        return _with_r33_prep(lambda: predict_gnn_graphsage_batch(payloads, pool_snapshot=frozen_pool))
 
     from app.pipeline_prediction_stages import SCOPE, namespace
     stage_journal = SCOPE.get()
@@ -2153,6 +2199,9 @@ def _compute_pipeline_prediction_bundle(payload: dict) -> dict:
         if _is_active(name)
     ]
 
+    from app.active8_ensemble_runtime import R33_KIND
+    r33_bundle = (frozen_pool.get("active8_ensemble") or {}).get("kind") == R33_KIND
+
     def _assert_exact_rows(
         model_name: str,
         rows: object,
@@ -2160,39 +2209,8 @@ def _compute_pipeline_prediction_bundle(payload: dict) -> dict:
         expected: list[str] | None = None,
         require_rank: bool = False,
     ) -> None:
-        model_expected = expected_symbols if expected is None else expected
-        model_expected_set = set(model_expected)
-        if not model_expected or len(model_expected_set) != len(model_expected):
-            raise ValueError(f"pipeline_modal_{model_name.lower()}_expected_symbol_contract_invalid")
-        if not isinstance(rows, list):
-            raise ValueError(f"pipeline_modal_{model_name.lower()}_results_not_list")
-        observed: list[str] = []
-        for row in rows:
-            if not isinstance(row, dict):
-                raise ValueError(f"pipeline_modal_{model_name.lower()}_row_invalid")
-            symbol = str(row.get("symbol") or row.get("stock_id") or "").strip()
-            if not symbol or row.get("error"):
-                raise ValueError(f"pipeline_modal_{model_name.lower()}_row_error:{symbol or '<missing>'}")
-            observed.append(symbol)
-            if require_rank:
-                rank_scores = row.get("rank_scores")
-                for feature_model in feature_models:
-                    value = rank_scores.get(feature_model) if isinstance(rank_scores, dict) else None
-                    try:
-                        valid = value is not None and math.isfinite(float(value))
-                    except (TypeError, ValueError):
-                        valid = False
-                    if not valid:
-                        raise ValueError(
-                            f"pipeline_modal_feature_rank_missing:{symbol}:{feature_model}"
-                        )
-        if (
-            len(rows) != len(model_expected)
-            or len(observed) != len(model_expected)
-            or len(set(observed)) != len(observed)
-            or set(observed) != model_expected_set
-        ):
-            raise ValueError(f"pipeline_modal_{model_name.lower()}_cardinality_mismatch")
+        _assert_pipeline_bundle_rows(model_name, rows, expected=expected_symbols if expected is None else expected,
+                                     feature_models=feature_models, require_rank=require_rank, r33=r33_bundle)
 
     _assert_exact_rows("feature", feature_rows, require_rank=True)
     runtime_output_keys = {

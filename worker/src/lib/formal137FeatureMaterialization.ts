@@ -290,9 +290,15 @@ function sentimentDirection(score: number): 1 | -1 | 0 {
   return 0
 }
 
+// The screener publishes sector evidence under camelCase keys (marketScreener sector_flow patch); X-MEM-SECTORRS.
+const SECTOR_COMPONENT_ALIASES = {
+  sector_rs_ratio: 'sectorRsRatio',
+  sector_turnover_share_delta: 'sectorTurnoverShareDelta',
+} as const
+
 function exposureValue(raw: Formal137RawSignals, component: typeof EXPOSURE_COMPONENTS[number]): number | null {
   if (component === 'sector_rs_ratio' || component === 'sector_turnover_share_delta') {
-    return finiteNumber(raw.factorSignals?.[component])
+    return finiteNumber(raw.factorSignals?.[component]) ?? finiteNumber(raw.factorSignals?.[SECTOR_COMPONENT_ALIASES[component]])
   }
   if (component === 'KLOW2') {
     return finiteNumber(raw.technicalIndicators?.KLOW2 ?? raw.factorSignals?.KLOW2)

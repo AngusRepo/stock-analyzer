@@ -49,6 +49,7 @@ from services.active_model_policy import (
     gnn_return_history_lookback,
 )
 from services.ensemble_v2 import ENSEMBLE_V2_SEMANTIC_VERSION, build_formal_model_input_contract
+from services.r33_ensemble import RUNTIME_SCHEMA as R33_RUNTIME_SCHEMA
 from services.fundamental_quality import score_fundamental_quality
 from services.market_segment_policy import is_explicitly_enabled, normalize_segment, policy_for_segment
 from services.decision_owner_contract import resolve_decision_owner_contract
@@ -379,6 +380,8 @@ def _ml_threshold_policy_edge_seed30(ev2: dict[str, Any]) -> tuple[float | None,
     """
     if not isinstance(ev2, dict) or not ev2:
         return None, None
+    if ev2.get("schema_version") == R33_RUNTIME_SCHEMA:
+        return _r33_edge_seed30(ev2)
     probability = _finite_float_or_none(ev2.get("probability_positive_net_return"))
     validation = ev2.get("validation") if isinstance(ev2.get("validation"), dict) else {}
     checksum = str(ev2.get("artifact_checksum") or "").strip().lower()
@@ -411,6 +414,31 @@ def _ml_threshold_policy_edge_seed30(ev2: dict[str, Any]) -> tuple[float | None,
         "offline_diagnostic_decision": validation['decision'],
     }
 
+def _r33_edge_seed30(ev2: dict[str, Any]) -> tuple[float | None, dict[str, Any] | None]:
+    """R33 has no probability: show E-hat's position inside the serving table's value range.
+
+    Presentation only (the allocator reads E-hat itself). An unscored name has no score.
+    """
+    position = _finite_float_or_none(ev2.get("ehat_range_position"))
+    checksum = str(ev2.get("artifact_checksum") or "")
+    if position is None or not 0.0 <= position <= 1.0 or len(checksum) != 64:
+        return None, None
+    score = _round1(30.0 * position)
+    return score, {
+        "schema_version": "score-v2-ml-edge-r33-ehat-range-position-v1",
+        "source": "ensemble_v2.ehat_range_position",
+        "artifact_checksum": checksum, "cohort_id": ev2.get("cohort_id"),
+        "calibration_checksum": ev2.get("calibration_checksum"),
+        "signal": ev2.get("signal"), "unqualified_signal": ev2.get("unqualified_signal"),
+        "signal_status": ev2.get("signal_status"), "signal_blockers": [], "qualifications": None,
+        "expected_excess": ev2.get("forecast_pct"), "ehat_range_position": position,
+        "score_seed30": score, "status": "scored", "decision_owner": "allocator_opb_policy",
+        "signal_role": "advisory_only", "advisory_signal": ev2.get("advisory_signal"),
+        "scale_role": "presentation_only",
+        "offline_diagnostic_decision": (ev2.get("validation") or {}).get("decision"),
+    }
+
+
 def _ml_edge_policy_evidence(raw_prediction: dict | None) -> dict[str, Any] | None:
     ev2 = (raw_prediction or {}).get("ensemble_v2") or {}
     _score, evidence = _ml_threshold_policy_edge_seed30(ev2)
@@ -422,6 +450,8 @@ def _ml_edge_policy_evidence(raw_prediction: dict | None) -> dict[str, Any] | No
 def calculate_ml_score(prediction: dict, raw_prediction: dict | None = None) -> float:
     """Return the calibrated artifact probability on the existing 0-30 score scale."""
     ev2 = (raw_prediction or {}).get("ensemble_v2") or {}
+    if ev2.get("schema_version") == R33_RUNTIME_SCHEMA and ev2.get("signal") == "NO_SIGNAL":
+        return 0.0      # the rank pool did not score this name; same as a missing prediction
     score, evidence = _ml_threshold_policy_edge_seed30(ev2)
     if score is None or not isinstance(evidence, dict):
         raise ValueError("active8_ensemble_calibrated_probability_required")
@@ -4621,8 +4651,10 @@ def write_predictions_to_d1(
         })
         sanitized_count += replaced
         forecast_data = json.dumps(forecast_payload, ensure_ascii=False)
-        confidence, replaced = _sanitize_non_finite(data.get("confidence"))
-        sanitized_count += replaced
+        # data["confidence"] is the base-evidence placeholder (ml-service
+        # predict_stock_v2 / R33 serving inputs always send 0.0); the Active-8
+        # ensemble owns confidence in ensemble_v2. A placeholder is not a measured
+        # direction accuracy, so the ensemble row stores NULL (NEW-1030-16).
         entry_price, replaced = _sanitize_non_finite(data.get("entry_price"))
         sanitized_count += replaced
         stop_loss, replaced = _sanitize_non_finite(data.get("stop_loss"))
@@ -4651,7 +4683,7 @@ def write_predictions_to_d1(
                     stock_id,
                     run_date,
                     14,
-                    confidence,
+                    None,                   # direction_accuracy: not measured
                     forecast_data,
                     entry_price,
                     stop_loss,
@@ -4898,6 +4930,10 @@ def write_layer3_formal_gate_audit(
         for row in recommendations
         if row.get("symbol")
     }
+    # Under R33 a pool name with no prediction at all is coverage too (unscored), not an L3 drop.
+    r33_mode = any(isinstance(p, dict) and isinstance(p.get("ensemble_v2"), dict)
+                   and p["ensemble_v2"].get("schema_version") == R33_RUNTIME_SCHEMA
+                   for p in (predictions.values() if isinstance(predictions, dict) else []))
     statements: list[tuple[str, list[Any]]] = [
         (
             "DELETE FROM screener_funnel_items WHERE run_id = ? AND date = ? AND stage = ?",
@@ -4921,7 +4957,17 @@ def write_layer3_formal_gate_audit(
             else {}
         )
         active_family_count = int((vote or {}).get("active_family_count") or 0)
-        if not isinstance(pred, dict):
+        r33 = r33_mode and (not isinstance(pred, dict) or ev2.get("schema_version") == R33_RUNTIME_SCHEMA)
+        if r33:
+            # R4: under R33 the L3 gate is coverage telemetry. An unscored name stays a
+            # candidate and L4 marks it unavailable for the day with this reason.
+            contract = ev2.get("formal_model_input_contract") or {}
+            decision = "pass" if contract.get("r33_scored") else "unscored"
+            reason_code = ("r33_scored" if contract.get("r33_scored")
+                           else str(contract.get("r33_unscored_reason") or "r33_unscored:prediction_missing"))
+            if final_row is None:
+                reason_code += ":not_in_final_rows"
+        elif not isinstance(pred, dict):
             decision = "drop"
             reason_code = "formal_family_prediction_missing"
         elif eligibility.get("eligible") is False:
@@ -4961,6 +5007,10 @@ def write_layer3_formal_gate_audit(
             "contributing_models": ev2.get("contributing_models") if isinstance(ev2, dict) else [],
             "weights": ev2.get("weights") if isinstance(ev2, dict) else {},
         }
+        if r33:
+            evidence.update(schema_version="layer3_r33_coverage_audit_v1", r33=ev2.get("r33"),
+                            r33_signal=ev2.get("signal"), r33_calibration_checksum=ev2.get("calibration_checksum"),
+                            r33_artifact_checksum=ev2.get("artifact_checksum"))
         try:
             score_after = float((vote or {}).get("family_score"))
         except (TypeError, ValueError):
@@ -5604,12 +5654,16 @@ def build_filtered_recommendation_update_statements(
             "allocator_ev_fusion_diagnostic": diagnostic,
             "rfs_shadow_challenger": rfs_evidence,
         }
+        # No usable formal inference is NO_SIGNAL, not a HOLD forecast, and has no
+        # confidence (NEW-1030-15). A non-NULL signal keeps the screener seed upsert
+        # from treating the row as untouched; NULL confidence keeps it out of the
+        # final-recommendation reads (signal/confidence IS NOT NULL).
         statements.append((
             """
             UPDATE daily_recommendations
                SET score = 0,
-                   signal = 'HOLD',
-                   confidence = 0,
+                   signal = 'NO_SIGNAL',
+                   confidence = NULL,
                    reason = 'Formal ML gate filtered this screener seed; not allocation eligible',
                    has_buy_signal = 0,
                    eligible_for_ml = 0,

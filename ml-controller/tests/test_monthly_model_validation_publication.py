@@ -76,7 +76,9 @@ def test_model_midbatch_failure_rolls_back(model_bundle):
 def test_auto_promote_calls_model_bundle_and_reads_back(model_bundle, monkeypatch):
     db,rows,*_=model_bundle
     # Exercise the actual queue projection, including its cohort identity.
-    db.conn.execute("UPDATE model_artifact_registry SET live_gate_status='multi_evidence_passed' WHERE training_run_id='run-new' AND model_name!='PatchTST'")
+    # Gate content is covered in test_model_artifact_registry; here every row clears it.
+    monkeypatch.setattr(registry, 'artifact_promotion_blockers', lambda row, **kw: [])
+    db.conn.execute("UPDATE model_artifact_registry SET live_gate_status='passed' WHERE training_run_id='run-new' AND model_name!='PatchTST'")
     db.conn.commit()
     monkeypatch.setattr(model_pool.discord_alert,'alert_lifecycle',lambda *a,**kw:None)
     result=asyncio.run(model_pool.artifact_registry_auto_promote(model_pool.AutoPromotionRequest(confirm=True)))
@@ -96,10 +98,11 @@ def test_real_queue_preserves_exact_training_run_id():
 
 def test_real_queue_limit_cannot_hide_second_eligible_cohort(model_bundle, monkeypatch):
     db, rows, *_ = model_bundle
-    db.conn.execute("UPDATE model_artifact_registry SET live_gate_status='multi_evidence_passed' WHERE training_run_id='run-new' AND model_name!='PatchTST'")
+    monkeypatch.setattr(registry, 'artifact_promotion_blockers', lambda row, **kw: [])
+    db.conn.execute("UPDATE model_artifact_registry SET live_gate_status='passed' WHERE training_run_id='run-new' AND model_name!='PatchTST'")
     db.insert('model_artifact_registry', {**rows[0], 'artifact_id': 'other-cohort-model',
         'version': 'v-other', 'training_run_id': 'run-other',
-        'live_gate_status': 'multi_evidence_passed'})
+        'live_gate_status': 'passed'})
     db.conn.commit()
     before = state(db)
     monkeypatch.setattr(model_pool.discord_alert, 'alert_lifecycle', lambda *a, **kw: None)

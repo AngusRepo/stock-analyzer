@@ -367,6 +367,40 @@ def test_sequence_selection_rejects_future_and_corrupt_manifest(monkeypatch):
         lifecycle._latest_immutable_sequence(bucket, "2026-07-25")
 
 
+def _copy_sequence(bucket: _Bucket, template: dict, run_id: str, created_at: str) -> str:
+    prefix = lifecycle.SEQUENCE_PREFIX + run_id
+    batch_path = f"{prefix}/prep/batch_0.npz"
+    bucket.store[batch_path] = run_id.encode()
+    manifest = {**template, "output_gcs_prefix": prefix, "created_at": created_at,
+                "output_checksums": {batch_path: hashlib.sha256(run_id.encode()).hexdigest()}}
+    manifest["manifest_checksum"] = lifecycle._manifest_checksum(manifest)
+    bucket.store[f"{prefix}/prep/sequence_manifest.json"] = json.dumps(manifest).encode()
+    return prefix
+
+
+@pytest.mark.parametrize("run_id", ["finlab-v4-3y-r33full-20260724", "finlab-v4-3y-r33trial-20260724d", "finlab-v4-5y-20260724-1"])
+def test_non_r33_selection_skips_long_history_training_sequences(monkeypatch, run_id):
+    # KD-23: the K15 3y sequence had the daily run's date_max and a later seal, so the daily selector took it.
+    bucket = _Bucket()
+    daily, template = _seal_sequence(bucket)
+    _copy_sequence(bucket, template, run_id, "2026-07-24T23:00:00+00:00")
+    reads, original = [], _Blob.download_as_text
+    def read(self, *args, **kwargs):
+        reads.append(self.name)  # Recorded, not asserted here: the selector swallows exceptions per candidate.
+        return original(self, *args, **kwargs)
+    monkeypatch.setattr(_Blob, "download_as_text", read)
+    assert lifecycle._latest_immutable_sequence(bucket, "2026-07-25")[0] == daily
+    assert not [name for name in reads if run_id in name], "a training sequence manifest must not even be read"
+    # Counter: the run id, not a substring elsewhere in the path, decides; a daily run still wins on its own.
+    lookalike = _copy_sequence(bucket, template, "finlab-v4-daily-20260724-3y", "2026-07-24T23:30:00+00:00")
+    assert lifecycle._latest_immutable_sequence(bucket, "2026-07-25")[0] == lookalike
+    # Only training sequences left: fail closed instead of taking one.
+    for path in [key for key in bucket.store if "finlab-v4-daily-" in key]:
+        del bucket.store[path]
+    with pytest.raises(lifecycle.Active8PrepDependencyPending):
+        lifecycle._latest_immutable_sequence(bucket, "2026-07-25")
+
+
 @pytest.mark.parametrize("fault",["missing_entire_price_day","missing_independent_calendar","unconfirmed_price_day"])
 def test_independent_calendar_catches_globally_missing_day(fault):
     def query(sql,params):

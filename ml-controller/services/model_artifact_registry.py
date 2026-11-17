@@ -1469,10 +1469,21 @@ def _deep_get(source: Any, keys: set[str]) -> Any:
     return None
 
 
+_GATE_VERDICT_KEYS = ("decision", "status", "verdict", "go_live_verdict", "result", "pass", "passed", "ok")
+_GATE_FAIL_TEXT = {"FAIL", "FAILED", "PBO_FAIL", "CPCV_FAIL", "FALSE"}
+
+
 def _truthy_gate_value(value: Any, *, max_fail_value: float | None = None) -> bool:
     if value in (None, ""):
         return False
     if isinstance(value, dict):
+        # An explicit FAIL verdict decides the gate; a passing score elsewhere cannot outvote it.
+        if any(
+            key in value and not isinstance(value.get(key), (dict, list))
+            and str(value.get(key)).strip().upper() in _GATE_FAIL_TEXT
+            for key in _GATE_VERDICT_KEYS
+        ):
+            return False
         for key in (
             "decision",
             "status",
@@ -1499,6 +1510,8 @@ def _truthy_gate_value(value: Any, *, max_fail_value: float | None = None) -> bo
     try:
         number = float(value)
     except (TypeError, ValueError):
+        return False
+    if not math.isfinite(number):
         return False
     if max_fail_value is not None:
         return number <= max_fail_value
@@ -1945,12 +1958,16 @@ def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | 
 
     pbo = _deep_get(offline, {"pbo", "pbo_score", "probability_of_backtest_overfitting"})
     pbo_value = _as_float(pbo.get("pbo") if isinstance(pbo, dict) else pbo)
+    if pbo_value is not None and not math.isfinite(pbo_value):
+        pbo_value = None
     pbo_method = str(pbo.get("method") if isinstance(pbo, dict) else "").lower()
     pbo_policy = policy_bundle["pbo"]
     pbo_required = bool(pbo_policy.get("required")) and not release_config_attested
     max_pbo = _as_float(pbo_policy.get("max_pbo"))
+    # Fail closed: a PASS label without an extractable PBO number cannot clear the gate.
     if pbo_required and (
-        not _truthy_gate_value(pbo, max_fail_value=max_pbo)
+        pbo_value is None
+        or not _truthy_gate_value(pbo, max_fail_value=max_pbo)
         or (pbo_value is not None and max_pbo is not None and pbo_value > max_pbo)
     ):
         add(
@@ -1984,12 +2001,6 @@ def artifact_promotion_blockers(row: dict[str, Any], *, champion_version: str | 
             "Attach deflated Sharpe and Monte Carlo tail-risk evidence before promotion.",
         )
 
-    if live_status == "multi_evidence_passed":
-        return [
-            b
-            for b in blockers
-            if b["code"] in {"missing_current_champion", "model_not_active_production_artifact"}
-        ]
     return blockers
 
 
@@ -3373,6 +3384,20 @@ def _active8_base_artifact_blocker(
     return None if valid else f"base_artifact_contract:{model_name}"
 
 
+def _valid_paper_ranking_override(override: Any) -> bool:
+    """Operator-forced Paper admission despite ranking FAIL (Wei Q14 LV3)."""
+    if not isinstance(override, dict) or not all(
+        isinstance(override.get(key), str) and override[key].strip()
+        for key in ("reason", "approved_by", "approved_at")
+    ):
+        return False
+    try:
+        datetime.fromisoformat(override["approved_at"])
+    except ValueError:
+        return False
+    return True
+
+
 def run_active8_ensemble_bundle_promotion_controller(
     *,
     training_run_id: str,
@@ -3481,7 +3506,7 @@ def run_active8_ensemble_bundle_promotion_controller(
         )
     ]
     from services.active8_bundle_transaction import prepare_bundle_transaction
-    transaction, nav_adoption, paper_adoption = None, None, None
+    transaction, nav_adoption, paper_adoption, paper_ranking_override = None, None, None, None
     if not blockers and (evaluation_business_date is not None or require_existing_commit or (confirm and model_validation_publication)):
         transaction = prepare_bundle_transaction(query=d1_client.query, by_model=by_model,
             supplied_pointers=d1_pointers, ensemble_row=ensemble_row, selected_models=release_models)
@@ -3511,6 +3536,16 @@ def run_active8_ensemble_bundle_promotion_controller(
         }
     if transaction is not None:
         if not transaction['recovered_existing_commit'] and paper_admission is not None:
+            # New Paper admission requires ranking PASS; a FAIL is admitted only
+            # by an explicit override carried inside the checksummed admission.
+            ranking = assess_ensemble_qualifications(ensemble_payload)['ranking']
+            if ranking['decision'] != 'PASS':
+                override = paper_admission.get('ranking_override') if isinstance(paper_admission, dict) else None
+                if override is None or not _valid_paper_ranking_override(override):
+                    return {'status': 'blocked', 'decision': 'active8_paper_ranking_not_pass' if override is None
+                            else 'active8_paper_ranking_override_invalid', 'can_promote': False,
+                            'training_run_id': training_run_id, 'ranking': ranking}
+                paper_ranking_override = {'override': deepcopy(override), 'ranking': ranking}
             from services.active8_paper_admission import prepare_paper_adoption
             paper_adoption = prepare_paper_adoption(ensemble_row=ensemble_row, admission=paper_admission,
                 business_date=evaluation_business_date, query=d1_client.query)
@@ -3540,6 +3575,7 @@ def run_active8_ensemble_bundle_promotion_controller(
             "ensemble_artifact_id": ensemble_row.get("artifact_id"), "validation": ensemble_payload.get("validation"),
             **({'nav_validation': nav_adoption['nav_validation']} if nav_adoption else {}),
             **({'paper_admission': paper_adoption['admission'], 'efficacy_status': 'unproven'} if paper_adoption else {}),
+            **({'paper_ranking_override': paper_ranking_override} if paper_ranking_override else {}),
         }
 
     if transaction is None:
@@ -3588,6 +3624,8 @@ def run_active8_ensemble_bundle_promotion_controller(
         evidence['publication_basis'] = 'model_validation'
     if paper_adoption:
         evidence.update(paper_admission=paper_adoption['admission'], evaluation_business_date=evaluation_business_date)
+    if paper_ranking_override:
+        evidence['paper_ranking_override'] = paper_ranking_override
     if nav_adoption:
         evidence.update(nav_validation=nav_adoption['nav_validation'], nav_configuration=nav_adoption['configuration'],
                         evaluation_business_date=evaluation_business_date)
@@ -3740,4 +3778,5 @@ def run_active8_ensemble_bundle_promotion_controller(
         **({'nav_validation': nav_adoption['nav_validation'], 'serving_activation_verified': False} if nav_adoption else {}),
         **({'paper_admission': paper_adoption['admission'], 'efficacy_status': 'unproven',
             'serving_activation_verified': False} if paper_adoption else {}),
+        **({'paper_ranking_override': paper_ranking_override} if paper_ranking_override else {}),
     }

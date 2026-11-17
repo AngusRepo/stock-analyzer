@@ -114,7 +114,7 @@ export async function checkL4RotationGate(env:Bindings,input:{plan:L4PortfolioPl
     if(snapshot.status!=='ready')continue
     const rows=await loadMarketPriceHistoryBySymbols(env,[replacement,...after.map(p=>p.symbol)],{beforeDate:date,rowsPerSymbol:riskCfg.position.correlationWindow+1})
     if(assessPositionCorrelation({candidateSymbol:replacement,holdingSymbols:after.map(p=>p.symbol),
-      priceRows:rows.filter(r=>r.close!=null).map(r=>({symbol:r.symbol,date:r.date,close:Number(r.close)})),threshold:riskCfg.position.correlationThreshold}).status==='blocked')continue
+      priceRows:rows.filter(r=>r.close!=null).map(r=>({symbol:r.symbol,date:r.date,close:Number(r.close)})),threshold:riskCfg.position.correlationThreshold,minimumOverlappingReturns:riskCfg.position.minCorrelationOverlap}).status==='blocked')continue
     const avg=rows.filter(r=>r.symbol===replacement && r.volume!=null).sort((a,b)=>b.date.localeCompare(a.date)).slice(0,20)
     const prev=(await loadPreviousMarketCloseBySymbols(env,[replacement],date)).get(replacement)
     const validation=await validateOrder({symbol:replacement,side:'buy',shares:quantity,limitPrice,refClose:prev?.close??null,

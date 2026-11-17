@@ -78,6 +78,8 @@ function recordingEnv(log: Recorded[], mature: { date: string; producer: string 
     if (normalized.includes('SUM(CASE WHEN r.stock_id IS NOT NULL')) {
       return { reference_rows: 6, identity_rows: 6, artifact_rows: 6, reconciled_rows: 6, reference_projection_rows: 6 }
     }
+    // Run-header summary lookup: report "not summarised" so the cell-count reads run.
+    if (normalized.includes('AS summary_usable')) return null
     if (normalized.includes('FROM strategy_label_matrix_runs_v4 r ')) {
       log.push({ sql, params })
       return {

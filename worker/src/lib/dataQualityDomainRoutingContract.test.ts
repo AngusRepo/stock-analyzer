@@ -40,8 +40,8 @@ assert.match(
 )
 assert.match(
   monitor,
-  /for \(let offset = 0; offset < uniqueIds\.length; offset \+= 90\)/,
-  'as-of Market price hydration must remain below the D1 100-bind limit',
+  /\.bind\(JSON\.stringify\(uniqueIds\), cutoffDate\)/,
+  'as-of Market price hydration must bind its ids as one JSON array, below the D1 100-bind limit',
 )
 assert.match(
   monitor,

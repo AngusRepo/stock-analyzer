@@ -23,8 +23,9 @@ function rows<T>(file: string): T[] {
 const literal = (value: string) => `'${value.replace(/'/g, "''")}'`
 // Same rule as the checkpoint's lease reclaim: flagged retry-safe, or a task on the list whatever an earlier revision
 // stored (EC-F: the 11/2 strategy-evidence-current claim was stored as retrySafe:false).
-const reclaimable = (receipt: { task?: string; retrySafe?: boolean }) =>
-  receipt.retrySafe === true || POST_VERIFY_RETRY_SAFE_TASKS.includes(String(receipt.task))
+// An independent-effect claim (LIVE-AUTH-B) closes as an ERROR the non-retry-safe task never reruns, as in the checkpoint.
+const reclaimable = (receipt: { task?: string; retrySafe?: boolean; independentEffect?: boolean }) =>
+  receipt.retrySafe === true || receipt.independentEffect === true || POST_VERIFY_RETRY_SAFE_TASKS.includes(String(receipt.task))
 
 export type ReceiptRow = { receipt_key: string; state: string; business_date: string; receipt_json: string; updated_at?: string }
 export type StageRow = { business_date: string; status: string; lease_owner: string | null; lease_live: number }

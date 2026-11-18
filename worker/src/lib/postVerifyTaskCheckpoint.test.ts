@@ -100,8 +100,22 @@ test('LIVE-AUTH-B: the post-close window runs only the five live-effect tasks; p
     const authority=async()=>({...await f.authority(),allowed:false,runScope:'historical_replay' as const,
       reason:'next_executable_session_opened_use_snapshot_only_repair',liveEffectsAllowed:scope.liveEffectsAllowed,
       liveEffectsReason:scope.liveEffectsAllowed?'post_close_next_session_window':'post_close_window_closed'})
-    assert.equal(await runPostVerifyCallbackChain(f.env,f.ctx,{productionAuthority:authority,taskRunner}),'success')
+    const fetched:string[]=[], realFetch=globalThis.fetch
+    globalThis.fetch=(async(input:any)=>{fetched.push(String(input?.url??input));throw new Error('network_disabled_in_test')}) as any
+    try{assert.equal(await runPostVerifyCallbackChain(f.env,f.ctx,{productionAuthority:authority,taskRunner}),'success')}
+    finally{globalThis.fetch=realFetch}
     assert.deepEqual(calls,tasks.filter(task=>!scope.skipped.includes(task)))
+    // Design-disabled (Wei 11/18): no promotion call, so no serving pointer write, and the receipt says so.
+    assert.ok(!fetched.some(url=>url.includes('auto_promote')),fetched.join(','))
+    const promotion=await f.env.KV.get(`scheduler:run:artifact-auto-promotion:${date}`,'json')
+    assert.equal(promotion.status,'skipped')
+    assert.match(promotion.summary,/^disabled_by_design:r33_monthly_promotion_owner; artifact-auto-promotion does not run/)
+    assert.doesNotMatch(promotion.summary,/live-canonical only/,'must not read as a should-have-run skip')
+    const adapt=await f.env.KV.get(`scheduler:run:adapt:${date}`,'json')
+    assert.match(adapt.summary,/adapt is live-canonical only/,'other historical skips keep their attention summary')
+    const chainLog=await f.env.KV.get(`scheduler:run:post-verify-chain:${date}`,'json')
+    assert.match(chainLog.summary,/artifact-auto-promotion:disabled_by_design/)
+    assert.match(chainLog.summary,/adapt:skipped/)
     f.sqlite.close()
   }
 })

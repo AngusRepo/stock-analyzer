@@ -484,6 +484,90 @@ def test_fold_receipts_require_every_model_attestation():
     assert fold_receipts(manifest, Bucket(store)) == []  # train_end alone is not an attestation
 
 
+PIT = "9" * 64
+
+
+def _full_fit_metadata(**fit):
+    """The 11/9 full-fit metadata shape (no split_metadata; attestation in deployment_fit)."""
+    scope = {"signal_date_max": "2026-10-29", "label_known_at_max": "2026-11-05", "scope": "explicit_full_fit_samples",
+             "point_in_time_vintage_certified": True, "pit_contract_version": "pit-availability-contract-v1",
+             "pit_certification_sha256": PIT}
+    return {"model_name": "LightGBM", "deployment_fit": {
+        "method": "full_known_history_refit_after_validation", "label_known_date_max": "2026-11-05",
+        "knowledge_cutoff_date": "2026-11-05", "input_scope": scope, "performed": True, **fit}}
+
+
+def test_full_fit_label_attestation_reads_deployment_fit():
+    from services.r33_monthly_lifecycle import _artifact_train_label_known_max, full_fit_label_known_max
+    meta = _full_fit_metadata()
+    assert full_fit_label_known_max(meta, model_name="LightGBM", knowledge_cutoff_date="2026-11-05", pit_certification_sha256=PIT) == "2026-11-05"
+    assert full_fit_label_known_max(meta, model_name="LightGBM", knowledge_cutoff_date="2026-11-06", pit_certification_sha256=PIT) == "2026-11-05"
+    assert _artifact_train_label_known_max(meta) is None    # the fold reader keeps its own contract
+    only_trainer = _full_fit_metadata()
+    del only_trainer["deployment_fit"]["input_scope"]["label_known_at_max"]
+    assert full_fit_label_known_max(only_trainer, model_name="LightGBM", knowledge_cutoff_date="2026-11-05", pit_certification_sha256=PIT) == "2026-11-05"
+    only_scope = _full_fit_metadata(label_known_date_max=None)
+    assert full_fit_label_known_max(only_scope, model_name="LightGBM", knowledge_cutoff_date="2026-11-05", pit_certification_sha256=PIT) == "2026-11-05"
+
+
+def test_full_fit_trainer_labels_may_sit_below_the_scope_ceiling():
+    from services.r33_monthly_lifecycle import full_fit_label_known_max
+    below = _full_fit_metadata(label_known_date_max="2026-11-03")    # scope ceiling 2026-11-05
+    assert full_fit_label_known_max(below, model_name="LightGBM", knowledge_cutoff_date="2026-11-05", pit_certification_sha256=PIT) == "2026-11-03"
+    equal = _full_fit_metadata(label_known_date_max="2026-11-05")
+    assert full_fit_label_known_max(equal, model_name="LightGBM", knowledge_cutoff_date="2026-11-05", pit_certification_sha256=PIT) == "2026-11-05"
+
+
+def test_full_fit_label_attestation_binds_the_model_and_an_iso_cutoff():
+    from services.r33_monthly_lifecycle import full_fit_label_known_max
+    with pytest.raises(ValueError, match="full_fit_metadata_model_mismatch"):
+        full_fit_label_known_max(_full_fit_metadata(), model_name="TabM", knowledge_cutoff_date="2026-11-05", pit_certification_sha256=PIT)
+    for pit in ("8" * 64, "", None):
+        with pytest.raises(ValueError, match="full_fit_scope_pit_receipt_mismatch"):
+            full_fit_label_known_max(_full_fit_metadata(), model_name="LightGBM", knowledge_cutoff_date="2026-11-05",
+                                     pit_certification_sha256=pit)
+    for cutoff in ("2026-11-05T23:59", "9999", None):
+        with pytest.raises(ValueError, match="full_fit_knowledge_cutoff_not_a_date"):
+            full_fit_label_known_max(_full_fit_metadata(), model_name="LightGBM", knowledge_cutoff_date=cutoff, pit_certification_sha256=PIT)
+
+
+@pytest.mark.parametrize("mutate,reason", [
+    (lambda m: m["deployment_fit"].update(performed=False), "full_fit_not_performed"),
+    (lambda m: m["deployment_fit"].pop("performed"), "full_fit_not_performed"),
+    (lambda m: m["deployment_fit"].update(performed="true"), "full_fit_not_performed"),
+    (lambda m: m.pop("deployment_fit"), "full_fit_not_performed"),
+    (lambda m: m["deployment_fit"]["input_scope"].update(point_in_time_vintage_certified=False),
+     "full_fit_scope_not_pit_certified"),
+    (lambda m: m["deployment_fit"].pop("input_scope"), "full_fit_scope_not_pit_certified"),
+    (lambda m: (m["deployment_fit"].update(label_known_date_max=None),
+                m["deployment_fit"]["input_scope"].pop("label_known_at_max")), "full_fit_label_known_max_missing"),
+    # the trainer never saw a label the controller's scope did not hand it
+    (lambda m: m["deployment_fit"]["input_scope"].update(label_known_at_max="2026-11-04"),
+     "full_fit_label_known_max_exceeds_scope:2026-11-05>2026-11-04"),
+    # a scope ceiling past the cutoff blocks even when the trainer value is inside it
+    (lambda m: (m["deployment_fit"].update(label_known_date_max="2026-11-03"),
+                m["deployment_fit"]["input_scope"].update(label_known_at_max="2026-11-06")),
+     "full_fit_label_known_max_after_cutoff"),
+    (lambda m: m["deployment_fit"]["input_scope"].update(label_known_at_max="2026-11-05T09:00"),
+     "full_fit_label_known_max_not_a_date"),
+    (lambda m: m["deployment_fit"].update(label_known_date_max=20261105), "full_fit_label_known_max_not_a_date"),
+    (lambda m: (m["deployment_fit"].update(label_known_date_max="2026-11-06"),
+                m["deployment_fit"]["input_scope"].update(label_known_at_max="2026-11-06")),
+     "full_fit_label_known_max_after_cutoff"),
+    (lambda m: (m["deployment_fit"].update(label_known_date_max="2026-11-05T09:00"),
+                m["deployment_fit"]["input_scope"].update(label_known_at_max="2026-11-05T09:00")),
+     "full_fit_label_known_max_not_a_date"),
+])
+def test_full_fit_label_attestation_fails_closed(mutate, reason):
+    from services.r33_monthly_lifecycle import full_fit_label_known_max
+    meta = _full_fit_metadata()
+    mutate(meta)
+    with pytest.raises(ValueError, match=reason):
+        full_fit_label_known_max(meta, model_name="LightGBM", knowledge_cutoff_date="2026-11-05", pit_certification_sha256=PIT)
+    with pytest.raises(ValueError, match="full_fit_not_performed"):
+        full_fit_label_known_max(None, model_name="LightGBM", knowledge_cutoff_date="2026-11-05", pit_certification_sha256=PIT)
+
+
 def test_r33_routing_gates_in_walk_forward():
     import routers.walk_forward as wf
     from services.formal_feature_contract import EXO131_PROFILE, R33_PROFILE

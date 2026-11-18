@@ -2016,6 +2016,11 @@ async function runFinalizeContinuation(
   const matureStrategyEvidence = await refreshMatureStrategyEvidenceBeforeScreener(env, triggerTime, runId)
   console.log(`[Queue] Mature strategy evidence refreshed before screener: ${matureStrategyEvidence}`)
   await assertFinalizeLockRenewed(env, triggerTime, runId, leaseOwner)
+  // Needs same-date market_risk from the regime step; the screener reads sector_flow(D).
+  const { ensureSameSessionSectorFlow } = await import('./sectorFlowPreScreener')
+  const sectorFlowSummary = await ensureSameSessionSectorFlow(env, triggerTime, runId)
+  console.log(`[Queue] Same-session sector flow before screener: ${sectorFlowSummary}`)
+  await assertFinalizeLockRenewed(env, triggerTime, runId, leaseOwner)
 
   const runAsyncScreener = deps.runMarketScreenerAsync
   if (runAsyncScreener) {

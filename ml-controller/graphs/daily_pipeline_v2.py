@@ -107,7 +107,7 @@ from services.breeze2_reason_shadow import (
     build_breeze2_generation_shadow_for_canonical_payloads,
     build_breeze2_reason_shadow_for_canonical_payloads,
 )
-from services.sector_flow_service import run_sector_flow_pipeline
+from services.sector_flow_service import ensure_sector_flow_daily_closure
 from services.pit_residual_shadow_service import run_pit_residual_shadow
 from services.pit_sector_alpha import load_pit_sector_alpha_experts, unavailable_sector_alpha
 from services.persona_service import write_opinions as write_persona_opinions
@@ -2264,9 +2264,9 @@ async def node_compute_personas(state: PipelineStateV2) -> dict:
 
 async def node_compute_sector_flow(state: PipelineStateV2) -> dict:
     """
-    Compute RRG evidence after recommendation is persisted. The completed
-    snapshot is eligible only for the next decision session, so sector evidence
-    cannot alter the current strategy/ML slate or its diversity.
+    Close sector_flow(D) if the evening chain did not already do so before the
+    screener. The L4 sector expert still reads only a prior completed
+    generation, so this node cannot alter the current ML slate.
 
     Runs sync work in a thread to avoid blocking the event loop (d1_client is sync).
     """
@@ -2276,7 +2276,7 @@ async def node_compute_sector_flow(state: PipelineStateV2) -> dict:
     last_error: Exception | None = None
     for attempt in range(1, 4):
         try:
-            summary = await asyncio.to_thread(run_sector_flow_pipeline, run_date)
+            summary = await asyncio.to_thread(ensure_sector_flow_daily_closure, run_date)
             return {"sector_flow_summary": summary}
         except Exception as exc:
             last_error = exc

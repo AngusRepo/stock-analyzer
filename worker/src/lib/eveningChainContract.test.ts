@@ -342,7 +342,7 @@ assert(
   postMarketChain.includes('`verify_v2:${ctx.runDate}:${snapshotEvidenceKey}`'),
   'post-pipeline chain must trigger verify-v2 with a deterministic date-level idempotency key',
 )
-const rollingIcTask = postMarketChain.indexOf("'model-ic-rolling', env => runModelIcRollingRefresh")
+const rollingIcTask = postMarketChain.indexOf("'model-ic-rolling', (env, budget) => runModelIcRollingRefresh")
 assert(
   rollingIcTask >= 0 && rollingIcTask < postMarketChain.indexOf("'adapt', env => runAdaptiveUpdate"),
   'post-verify chain must refresh rolling IC before adaptive params',

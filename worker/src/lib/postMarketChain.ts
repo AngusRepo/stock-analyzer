@@ -764,6 +764,12 @@ export const POST_VERIFY_HEAVY_TASKS: readonly string[] = ['price-horizon-projec
 /** One hop per heavy task normally; a receipt that keeps failing its fresh proof (each rerun yields again) is
  * bounded here, after which the chain finishes in one invocation as it did before continuations. */
 export const POST_VERIFY_MAX_HOPS = POST_VERIFY_HEAVY_TASKS.length * 2
+/** LIVE-AUTH-B (Wei 11/16, plan B): tasks also run in the post-close live-effects window. adapt stays out (Wei
+ * chose C: retire; it would write ml:adaptive_params and may trip frozen_policy_identity), and so does
+ * ga-shadow-daily (its active challenger fails every day on the 9/10 corporate gap). No later task reads their
+ * effects, so an unknown remote outcome never leaves an UNCERTAIN receipt blocking strategy-learning. */
+export const POST_CLOSE_LIVE_EFFECT_TASKS: readonly string[] = ['paper-intraday-cache-clear', 'linucb-reward-ledger',
+  'daily-report', 'paper-active-postmarket', 'meta-learning-shadow']
 
 export async function runPostVerifyCallbackChain(
   env: Bindings,
@@ -792,6 +798,9 @@ export async function runPostVerifyCallbackChain(
     canonicalRunId: String(ctx.upstreamRunId ?? ''),
   })
   const productionEligible = productionAuthority.allowed
+  // LIVE-AUTH-B: only POST_CLOSE_LIVE_EFFECT_TASKS may also run in the post-close window; productionEligible
+  // keeps gating promotion, strategy-learning policy, adapt and GA.
+  const liveEffectsEligible = productionEligible || productionAuthority.liveEffectsAllowed === true
   ctx = { ...ctx, runScope: productionAuthority.runScope }
   if (!ctx.assertStageLease) throw new Error('post_verify_checkpoint_stage_guard_missing')
   const checkpoints = await createPostVerifyTaskCheckpoints(env, {
@@ -831,6 +840,7 @@ export async function runPostVerifyCallbackChain(
     }, { timeoutMs: dependencies.taskTimeoutMs ?? options.timeoutMs ?? 180_000,
       critical:options.critical,
       retrySafe: POST_VERIFY_RETRY_SAFE_TASKS.includes(task),
+      independentEffect: POST_CLOSE_LIVE_EFFECT_TASKS.includes(task),
       verifyResult:dependencies.taskRunner?undefined:async result=>{
         // Projection receipts are re-read from their status/run pointer rows first; outcomes always take the full capture.
         if(task==='price-horizon-projection')return verifyPostVerifyLabelEvidencePointer(env,result.evidence as any)
@@ -940,35 +950,31 @@ export async function runPostVerifyCallbackChain(
     timeoutMs: TASK_EXECUTION_TIMEOUT_MS,
   }))
 
-  if (productionEligible) {
-    results.push(await runTask('paper-intraday-cache-clear', env => clearOpenPositionIntradayPriceCache(env), { critical: false }))
-    results.push(await runTask('linucb-reward-ledger', env => runLinUcbRewardLedgerRefresh(env, ctx.runDate)))
-    results.push(await runTask('adapt', env => runAdaptiveUpdate(env, { refreshLedger: false })))
-    results.push(await runTask('daily-report', env => generateDailyReport(env)))
-    results.push(await runTask('paper-active-postmarket', env => runPaperActivePostmarketPromotion(env, ctx.runDate), { critical: false }))
-    results.push(await runTask('obsidian-sync', env => runObsidianDaily(env, ctx.runDate!), {
-      critical: false,
-      // Allow the inner 60s request to finish or abort before the chain records its result.
-      timeoutMs: 65_000,
-    }))
-    results.push(await runTask('meta-learning-shadow', env => enqueueMetaLearningShadowClosureTask(env, ctx, productionEligible), {
-      critical: false,
-      timeoutMs: TASK_EXECUTION_TIMEOUT_MS,
-    }))
-    results.push(await runTask('ga-shadow-daily', env => enqueueGaOptimizerShadowClosureTask(env, ctx, productionEligible), {
-      critical: false,
-      timeoutMs: TASK_EXECUTION_TIMEOUT_MS,
-    }))
-  } else {
-    results.push(await logSkippedHistoricalTask(env, ctx, 'linucb-reward-ledger'))
-    results.push(await logSkippedHistoricalTask(env, ctx, 'paper-intraday-cache-clear'))
-    results.push(await logSkippedHistoricalTask(env, ctx, 'adapt'))
-    results.push(await logSkippedHistoricalTask(env, ctx, 'daily-report'))
-    results.push(await logSkippedHistoricalTask(env, ctx, 'paper-active-postmarket'))
-    results.push(await logSkippedHistoricalTask(env, ctx, 'obsidian-sync'))
-    results.push(await logSkippedHistoricalTask(env, ctx, 'meta-learning-shadow'))
-    results.push(await logSkippedHistoricalTask(env, ctx, 'ga-shadow-daily'))
-  }
+  // Same order in every scope; each task runs only under its own authority.
+  const liveTask = async (task: string, fn: (scoped: Bindings) => Promise<unknown>,
+    options: { critical?: boolean; timeoutMs?: number } = {}) =>
+    (POST_CLOSE_LIVE_EFFECT_TASKS.includes(task) ? liveEffectsEligible : productionEligible)
+      ? runTask(task, fn, options)
+      : logSkippedHistoricalTask(env, ctx, task)
+  results.push(await liveTask('paper-intraday-cache-clear', env => clearOpenPositionIntradayPriceCache(env), { critical: false }))
+  results.push(await liveTask('linucb-reward-ledger', env => runLinUcbRewardLedgerRefresh(env, ctx.runDate)))
+  results.push(await liveTask('adapt', env => runAdaptiveUpdate(env, { refreshLedger: false })))
+  // No trading reader (flow-gap A §2.3): a failed report must not fail the post-verify chain.
+  results.push(await liveTask('daily-report', env => generateDailyReport(env, ctx.runDate), { critical: false }))
+  results.push(await liveTask('paper-active-postmarket', env => runPaperActivePostmarketPromotion(env, ctx.runDate), { critical: false }))
+  results.push(await liveTask('obsidian-sync', env => runObsidianDaily(env, ctx.runDate!), {
+    critical: false,
+    // Allow the inner 60s request to finish or abort before the chain records its result.
+    timeoutMs: 65_000,
+  }))
+  results.push(await liveTask('meta-learning-shadow', env => enqueueMetaLearningShadowClosureTask(env, ctx, productionEligible), {
+    critical: false,
+    timeoutMs: TASK_EXECUTION_TIMEOUT_MS,
+  }))
+  results.push(await liveTask('ga-shadow-daily', env => enqueueGaOptimizerShadowClosureTask(env, ctx, productionEligible), {
+    critical: false,
+    timeoutMs: TASK_EXECUTION_TIMEOUT_MS,
+  }))
 
   // Strategy learning is evidence materialization, not a live trading mutation.
   // Historical reruns need it so strategy_decision_log can explain family/variant

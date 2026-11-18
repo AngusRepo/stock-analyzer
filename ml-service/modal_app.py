@@ -10,6 +10,7 @@ Common local commands:
 """
 import math
 import os
+import time
 import modal
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +20,38 @@ from app.callback_security import (
     sanitize_callback_error,
     sanitize_callback_url,
 )
+
+def _now() -> float:
+    return time.time()
+
+
+# container_elapsed_s: the container time Python can observe for one input, a lower bound
+# of what Modal bills. It starts at this module's import (the container's Python-side cold
+# start) for the first input, or at the previous input's end on a warm container, and stops
+# when the input returns or raises. Not seen: boot before the import (scheduling, image,
+# GPU attach) and the idle scaledown after the last input. Queueing is not billed.
+_CONTAINER_STARTED_AT = _now()
+_container_idle_since: float | None = None
+
+
+def _input_billing_start() -> float:
+    return _container_idle_since or _CONTAINER_STARTED_AT
+
+
+def _container_elapsed_s(billing_start: float) -> float:
+    global _container_idle_since
+    _container_idle_since = _now()
+    return round(_container_idle_since - billing_start, 3)
+
+
+def _tag_container_time(exc: BaseException, billing_start: float) -> None:
+    """A raising input still ends its container time; the caller reads it off the exception."""
+    elapsed = _container_elapsed_s(billing_start)
+    try:
+        exc.container_elapsed_s = elapsed
+    except Exception:
+        pass
+
 
 # Local code mounted into the Modal image during deploy.
 _LOCAL_APP_DIR     = Path(__file__).parent / "app"
@@ -739,6 +772,10 @@ def retrain_orchestrator(payload: dict) -> dict:
     if journal is not None:
         candidate_version = journal.pin_version(payload, candidate_version)
 
+    def _lifecycle_spawn(model_name, function, train_payload):
+        # Early dispatch only: LifecycleDispatch never spawns without a journal.
+        return journal.spawn("lifecycle/" + model_name, function.spawn, train_payload)
+
     def _lifecycle_call(model_name, function, train_payload):
         if journal is not None:
             return journal.call("lifecycle/" + model_name, function.spawn, train_payload)
@@ -831,6 +868,61 @@ def retrain_orchestrator(payload: dict) -> dict:
         },
     }
     predict_only_models = dict(PREDICT_ONLY_MODEL_NOTES)
+
+    def _base_artifact_payload(model_name: str) -> dict:
+        return {
+            **(_release_model_payload(model_name) if is_release_train else {}),
+            "gcs_prefix": gcs_prefix,
+            "batch_count": batch_count,
+            "output_model_version": candidate_version,
+            "run_date": run_date,
+            "candidate_type": payload.get("candidate_type"),
+            "release_training_contract": release_training_contract,
+            "dataset_snapshot": payload.get("dataset_snapshot"),
+            "as_of_date": payload.get("as_of_date"),
+            "signal_date_max": payload.get("signal_date_max"),
+            "label_known_at_max": payload.get("label_known_at_max"),
+            **({"pit_certification": payload["pit_certification"]} if payload.get("pit_certification") is not None else {}),
+            **({"pit_contract_version": payload["pit_contract_version"]} if payload.get("pit_contract_version") is not None else {}),
+            "max_prep_stale_days": payload.get("max_prep_stale_days"),
+            "label_horizon_days": label_horizon_days,
+        }
+    def _sequence_seq_len_for_target(model_name: str) -> int:
+        key = f"{model_name.lower()}_seq_len"
+        if payload.get(key):
+            return int(payload[key])
+        if payload.get("sequence_seq_len"):
+            return int(payload["sequence_seq_len"])
+        from app.neuralforecast_sequence_runtime import default_seq_len_for_model
+        return default_seq_len_for_model(model_name)
+
+    # Only these start alongside the train groups, and only when the lifecycle is
+    # journal-backed (Wei, 2026-11-18). The sequence targets, and every target of a run
+    # without a journal, keep the serial call at their place in the lifecycle loop.
+    LIFECYCLE_EARLY_SPAWN = ("GNN", "TabM")
+
+    def _lifecycle_spec(target: str):
+        """Child-backed lifecycle targets: (model, function, payload). Others run in-process."""
+        if target == "GNN":
+            return target, train_gnn_graphsage_universal, _base_artifact_payload(target)
+        if target == "TabM":
+            return target, train_tabm_universal, _base_artifact_payload(target)
+        if target in ("PatchTST", "iTransformer"):
+            if not sequence_records:
+                raise RuntimeError("missing_sequence_records_artifact")
+            function = train_patchtst_universal if target == "PatchTST" else train_itransformer_universal
+            return target, function, {
+                **_base_artifact_payload(target),
+                "sequence_records": sequence_records,
+                "seq_len": _sequence_seq_len_for_target(target),
+                "device": payload.get("sequence_device") or "cuda",
+                "sequence_gcs_prefix": sequence_gcs_prefix,
+                "sequence_batch_count": sequence_batch_count,
+            }
+        return None
+
+    from app.lifecycle_dispatch import LifecycleDispatch
+    lifecycle_dispatch = LifecycleDispatch(_lifecycle_spawn, journal_backed=journal is not None)
     try:
         # Spawn requested training groups in parallel
         handles: dict[str, object] = {}
@@ -862,6 +954,13 @@ def retrain_orchestrator(payload: dict) -> dict:
                 "note": spec["note"],
             }
             print(f"[Orchestrator] Spawned group={group} models={spec['models']}")
+
+        # GNN/TabM are independent of the train groups' results; with a journal, start them
+        # now and still collect them below, in target order, after the groups.
+        lifecycle_dispatch.dispatch(
+            artifact_lifecycle_targets,
+            lambda target: _lifecycle_spec(target) if target in LIFECYCLE_EARLY_SPAWN else None,
+        )
 
         tree_result = {}
         aux_train = {}
@@ -968,34 +1067,9 @@ def retrain_orchestrator(payload: dict) -> dict:
         if artifact_lifecycle_targets:
             lifecycle_results: dict[str, dict] = {}
             lifecycle_errors: dict[str, str] = {}
+            # Stage time is the orchestrator's wait after the train groups (the critical-path
+            # cost of lifecycle); per-target times below carry each child's own duration.
             lifecycle_t0 = time.time()
-
-            def _base_artifact_payload(model_name: str) -> dict:
-                return {
-                    **(_release_model_payload(model_name) if is_release_train else {}),
-                    "gcs_prefix": gcs_prefix,
-                    "batch_count": batch_count,
-                    "output_model_version": candidate_version,
-                    "run_date": run_date,
-                    "candidate_type": payload.get("candidate_type"),
-                    "release_training_contract": release_training_contract,
-                    "dataset_snapshot": payload.get("dataset_snapshot"),
-                    "as_of_date": payload.get("as_of_date"),
-                    "signal_date_max": payload.get("signal_date_max"),
-                    "label_known_at_max": payload.get("label_known_at_max"),
-                    **({"pit_certification": payload["pit_certification"]} if payload.get("pit_certification") is not None else {}),
-                    **({"pit_contract_version": payload["pit_contract_version"]} if payload.get("pit_contract_version") is not None else {}),
-                    "max_prep_stale_days": payload.get("max_prep_stale_days"),
-                    "label_horizon_days": label_horizon_days,
-                }
-            def _sequence_seq_len_for_target(model_name: str) -> int:
-                key = f"{model_name.lower()}_seq_len"
-                if payload.get(key):
-                    return int(payload[key])
-                if payload.get("sequence_seq_len"):
-                    return int(payload["sequence_seq_len"])
-                from app.neuralforecast_sequence_runtime import default_seq_len_for_model
-                return default_seq_len_for_model(model_name)
 
             def _validate_timesfm_config() -> dict:
                 import hashlib
@@ -1122,37 +1196,18 @@ def retrain_orchestrator(payload: dict) -> dict:
                 if not target:
                     continue
                 target_t0 = time.time()
+                collected = None
+
+                def _target_timing(error=None) -> dict:
+                    if not lifecycle_dispatch.dispatched(target):
+                        return {"elapsed_s": round(time.time() - target_t0, 3)}
+                    return {"elapsed_s": lifecycle_dispatch.elapsed_s(target, collected, error),
+                            "wall_since_dispatch_s": lifecycle_dispatch.wall_since_dispatch_s(target)}
                 try:
-                    if target == "GNN":
-                        train_payload = _base_artifact_payload(target)
-                        lifecycle_results[target] = _lifecycle_call(target, train_gnn_graphsage_universal, train_payload)
-                    elif target == "TabM":
-                        train_payload = _base_artifact_payload(target)
-                        lifecycle_results[target] = _lifecycle_call(target, train_tabm_universal, train_payload)
-                    elif target == "PatchTST":
-                        if not sequence_records:
-                            raise RuntimeError("missing_sequence_records_artifact")
-                        train_payload = {
-                            **_base_artifact_payload(target),
-                            "sequence_records": sequence_records,
-                            "seq_len": _sequence_seq_len_for_target(target),
-                            "device": payload.get("sequence_device") or "cuda",
-                            "sequence_gcs_prefix": sequence_gcs_prefix,
-                            "sequence_batch_count": sequence_batch_count,
-                        }
-                        lifecycle_results[target] = _lifecycle_call(target, train_patchtst_universal, train_payload)
-                    elif target == "iTransformer":
-                        if not sequence_records:
-                            raise RuntimeError("missing_sequence_records_artifact")
-                        train_payload = {
-                            **_base_artifact_payload(target),
-                            "sequence_records": sequence_records,
-                            "seq_len": _sequence_seq_len_for_target(target),
-                            "device": payload.get("sequence_device") or "cuda",
-                            "sequence_gcs_prefix": sequence_gcs_prefix,
-                            "sequence_batch_count": sequence_batch_count,
-                        }
-                        lifecycle_results[target] = _lifecycle_call(target, train_itransformer_universal, train_payload)
+                    if lifecycle_dispatch.dispatched(target):
+                        collected = lifecycle_results[target] = lifecycle_dispatch.collect(target)
+                    elif target in ("GNN", "TabM", "PatchTST", "iTransformer"):
+                        lifecycle_results[target] = _lifecycle_call(*_lifecycle_spec(target))
                     elif target == "TimesFM":
                         lifecycle_results[target] = _validate_timesfm_config()
                     else:
@@ -1163,7 +1218,7 @@ def retrain_orchestrator(payload: dict) -> dict:
                         }
                     if isinstance(lifecycle_results.get(target), dict) and lifecycle_results[target].get("error"):
                         raise RuntimeError(str(lifecycle_results[target].get("error")))
-                    lifecycle_results[target]["elapsed_s"] = round(time.time() - target_t0, 3)
+                    lifecycle_results[target].update(_target_timing())
                     print(f"[Orchestrator] Artifact lifecycle ok target={target}")
                 except Exception as e:
                     lifecycle_errors[target] = str(e)
@@ -1171,7 +1226,7 @@ def retrain_orchestrator(payload: dict) -> dict:
                         "status": "error",
                         "model": target,
                         "error": str(e),
-                        "elapsed_s": round(time.time() - target_t0, 3),
+                        **_target_timing(e),
                     }
                     print(f"[Orchestrator] Artifact lifecycle failed target={target}: {e}")
 
@@ -1291,6 +1346,14 @@ def retrain_orchestrator(payload: dict) -> dict:
     except Exception as e:
         print(f"[Orchestrator] Train failed: {e}")
         result["stages"]["train"] = {"status": "error", "error": str(e)}
+        # The serial path never started lifecycle children on this failure; leave their
+        # stage as planned and adopt none of their results. Early children exist only with
+        # a journal, which keeps them recorded under this run_id (see abandon).
+        lifecycle_dispatch.abandon()
+    except BaseException:
+        # Input cancellation / interpreter exit: same rule, then let it propagate.
+        lifecycle_dispatch.abandon()
+        raise
 
     if is_release_train:
         try:
@@ -2464,12 +2527,18 @@ def gnn_graphsage_universal_predict(payload: dict) -> dict:
 )
 def train_gnn_graphsage_universal(payload: dict) -> dict:
     """Formal GraphSAGE artifact training and model_pool registration."""
-    _setup_env()
-    cache_receipt = _prepare_training_input_cache_for_payload(payload)
-    from app.gnn_training import train_graphsage_universal
+    billing_start = _input_billing_start()
+    try:
+        _setup_env()
+        cache_receipt = _prepare_training_input_cache_for_payload(payload)
+        from app.gnn_training import train_graphsage_universal
 
-    result = train_graphsage_universal(payload or {})
-    result["training_input_cache"] = cache_receipt
+        result = train_graphsage_universal(payload or {})
+        result["training_input_cache"] = cache_receipt
+        result["container_elapsed_s"] = _container_elapsed_s(billing_start)
+    except BaseException as exc:
+        _tag_container_time(exc, billing_start)  # still raised as before
+        raise
     return result
 
 
@@ -2484,17 +2553,24 @@ def train_gnn_graphsage_universal(payload: dict) -> dict:
 )
 def train_tabm_universal(payload: dict) -> dict:
     """Formal TabM torch artifact training and model_pool registration."""
-    _setup_env()
-    cache_receipt = _prepare_training_input_cache_for_payload(payload)
-    from app.tabm_training import train_tabm_universal as _train_tabm_universal
+    billing_start = _input_billing_start()
+    try:
+        _setup_env()
+        cache_receipt = _prepare_training_input_cache_for_payload(payload)
+        from app.tabm_training import train_tabm_universal as _train_tabm_universal
+    except BaseException as exc:
+        _tag_container_time(exc, billing_start)  # still raised as before
+        raise
 
     try:
         result = _train_tabm_universal(payload or {})
         result["training_input_cache"] = cache_receipt
+        result["container_elapsed_s"] = _container_elapsed_s(billing_start)
         return result
     except Exception as e:
         import traceback
-        return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "train_tabm_universal", "training_input_cache": cache_receipt}
+        return {"error": str(e), "trace": traceback.format_exc()[:2000], "type": "train_tabm_universal",
+                "training_input_cache": cache_receipt, "container_elapsed_s": _container_elapsed_s(billing_start)}
 
 
 @app.function(

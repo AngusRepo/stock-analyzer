@@ -382,8 +382,15 @@ def train_tabm_universal(payload: dict | None = None, *, research_device=None, e
                 print(f"[TabMTrain] epoch={_epoch + 1}/{epochs} loss={train_losses[-1]} device={device}", flush=True)
         return model, train_losses
 
+    # Wall-clock only: these reads never touch RNG state, inputs or the persisted artifact.
+    stage_timings: dict[str, float] = {"load_s": round(time.time() - t0, 3)}
+    print(f"[TabMTrain] stage=load rows={len(y)} elapsed_s={stage_timings['load_s']}", flush=True)
+    stage_t0 = time.time()
     model, train_losses = fit_model(x, train_fit_idx)
+    stage_timings["holdout_fit_s"] = round(time.time() - stage_t0, 3)
+    print(f"[TabMTrain] stage=holdout_fit rows={len(train_fit_idx)} elapsed_s={stage_timings['holdout_fit_s']}", flush=True)
 
+    stage_t0 = time.time()  # holdout_predict covers prediction plus its fold metrics / CPCV evidence
     pred = _predict_tabm_batches(model, x[test_idx], batch_size=eval_batch_size, device=device)
     y_test = y[test_idx]
     fold_metrics = _date_fold_metrics(dates[test_idx], pred, y_test)
@@ -403,15 +410,20 @@ def train_tabm_universal(payload: dict | None = None, *, research_device=None, e
         "loss_last": train_losses[-1] if train_losses else None,
         "model_cpcv_decision": model_cpcv.get("decision"),
     }
+    stage_timings["holdout_predict_s"] = round(time.time() - stage_t0, 3)
+    print(f"[TabMTrain] stage=holdout_predict rows={len(test_idx)} elapsed_s={stage_timings['holdout_predict_s']}", flush=True)
 
     fitted_rows = len(train_fit_idx)
     if deployment_fit is not None:
         # OOS predictions/metrics above remain exclusively from the validation model.
+        stage_t0 = time.time()
         configure_training_reproducibility(seed)
         x, medians, scales = _robust_standardize(x_raw, x_raw, clip_value=standardization_clip)
         model, deployment_losses = fit_model(x, np.arange(len(y)))
         fitted_rows = len(y)
         deployment_fit.update(performed=True, epochs=epochs, loss_history=deployment_losses)
+        stage_timings["full_refit_s"] = round(time.time() - stage_t0, 3)
+        print(f"[TabMTrain] stage=full_refit rows={len(y)} elapsed_s={stage_timings['full_refit_s']}", flush=True)
 
     trained_at = datetime.now(timezone.utc).isoformat()
     training_params = {
@@ -493,6 +505,7 @@ def train_tabm_universal(payload: dict | None = None, *, research_device=None, e
         "training_params": training_params,
         "market_lanes": sorted({str(value) for value in sectors.tolist()})[:20],
     }, prep_lineage)
+    stage_t0 = time.time()
     saved = _save_artifact(bucket=bucket, model=model.cpu(), version=version, metadata=metadata)
     oof_artifact = None
     if generation_mode == "purged_oof":
@@ -515,6 +528,8 @@ def train_tabm_universal(payload: dict | None = None, *, research_device=None, e
             split_metadata=({**split_meta, "market_conditioner": market_conditioner["receipt"]}
                             if market_conditioner is not None else split_meta),
         )
+    stage_timings["save_s"] = round(time.time() - stage_t0, 3)
+    print(f"[TabMTrain] stage=save path={saved['artifact_path']} elapsed_s={stage_timings['save_s']}", flush=True)
     return {
         "status": "ok",
         "model": MODEL_NAME,
@@ -540,6 +555,7 @@ def train_tabm_universal(payload: dict | None = None, *, research_device=None, e
         "feature_count": len(dataset.feature_names),
 
         "oof_artifact": oof_artifact,
+        "stage_timings": stage_timings,
         "elapsed_s": round(time.time() - t0, 3),
         **({"market_conditioner": market_conditioner["receipt"]} if market_conditioner is not None else {}),
     }

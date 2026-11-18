@@ -183,6 +183,7 @@ def _gdelt_failures(monkeypatch, error: BaseException) -> tuple[list[str], tuple
         raise error
 
     monkeypatch.setattr(module, "fetch_gdelt_doc_events", fail)
+    monkeypatch.setattr(module.time, "sleep", lambda _seconds: None)
     module.AS_OF_DATE = "2026-11-17"
     recommendations = [{"symbol": f"{2300 + n}", "name": f"name{n}"} for n in range(6)]
     return queries, module.build_gdelt_items(recommendations, {})
@@ -262,3 +263,29 @@ def test_external_batch_sql_is_sqlite_compatible_and_idempotent(monkeypatch) -> 
     module.upsert_external(rows)
 
     assert conn.execute("SELECT COUNT(*) FROM external_evidence_items").fetchone()[0] == 7
+
+
+def test_gdelt_queries_are_paced_to_the_rate_limit(monkeypatch) -> None:
+    module = load_materializer(monkeypatch)
+    clock = [1000.0]
+    sent_at: list[float] = []
+    sleeps: list[float] = []
+
+    def fetch(*, query: str, **_kwargs: Any) -> list[dict[str, Any]]:
+        sent_at.append(clock[0])
+        clock[0] += 1.5  # GDELT answer time
+        return []
+
+    def sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        clock[0] += seconds
+
+    monkeypatch.setattr(module, "fetch_gdelt_doc_events", fetch)
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(module.time, "sleep", sleep)
+    module.AS_OF_DATE = "2026-11-17"
+    recommendations = [{"symbol": f"{2300 + n}", "name": f"name{n}"} for n in range(6)]
+    module.build_gdelt_items(recommendations, {})
+    assert len(sent_at) == 9
+    assert all(later - earlier >= 5.0 for earlier, later in zip(sent_at, sent_at[1:]))
+    assert sleeps and all(abs(s - 3.5) < 1e-9 for s in sleeps)

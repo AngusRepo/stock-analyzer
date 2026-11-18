@@ -476,6 +476,10 @@ def build_gdelt_items(
     # often only after ~12-19 s; firing the remaining queries anyway cost
     # ~9 x 12 s per run (2026-11: fetch_failed every day, run 125-132 s).
     rate_limited = False
+    # GDELT DOC API allows one request every 5 s per client; pacing keeps the
+    # queries under it instead of tripping 429 on the second request.
+    interval_seconds = max(0.0, float(os.environ.get("GDELT_MIN_INTERVAL_SECONDS", "5")))
+    last_request_at: float | None = None
 
     def append_articles(
         *,
@@ -485,7 +489,12 @@ def build_gdelt_items(
         source_quality_score: float,
         entity_linking_confidence: float,
     ) -> None:
-        nonlocal failures, rate_limited
+        nonlocal failures, rate_limited, last_request_at
+        if last_request_at is not None:
+            wait = interval_seconds - (time.monotonic() - last_request_at)
+            if wait > 0:
+                time.sleep(wait)
+        last_request_at = time.monotonic()
         try:
             articles = fetch_gdelt_doc_events(
                 query=query,

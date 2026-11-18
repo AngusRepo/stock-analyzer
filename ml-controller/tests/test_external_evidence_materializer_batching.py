@@ -121,23 +121,89 @@ def test_source_quality_freshness_is_relative_to_as_of_date(monkeypatch) -> None
     assert params_seen[1][3] == "stale"
 
 
-def test_materialization_receipt_tracks_the_current_generated_batch(monkeypatch) -> None:
+def _receipt_database() -> sqlite3.Connection:
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE theme_signals (date TEXT NOT NULL, concept TEXT, source TEXT, score REAL, generated_at TEXT)")
+    conn.execute("CREATE INDEX idx_theme_signals_date_score ON theme_signals(date DESC, score DESC)")
+    conn.execute("CREATE TABLE stock_theme_features (date TEXT NOT NULL, symbol TEXT, concept TEXT, score REAL, generated_at TEXT)")
+    conn.execute("CREATE INDEX idx_stock_theme_features_date_score ON stock_theme_features(date DESC, score DESC)")
+    conn.execute("CREATE TABLE source_quality_metrics (source TEXT, dataset TEXT, as_of_date TEXT)")
+    conn.execute("CREATE INDEX idx_source_quality_metrics_source ON source_quality_metrics(source, dataset, as_of_date DESC)")
+    return conn
+
+
+def test_materialization_receipt_counts_this_run_by_date_index(monkeypatch) -> None:
     module = load_materializer(monkeypatch)
-    params_seen: list[Any] = []
+    conn = _receipt_database()
+    run, other = "2026-08-08T01:02:03.123456+00:00", "2026-08-07T01:02:03.123456+00:00"
+    theme_dates = ["2026-08-01", "2026-08-08", ""]
+    for n, day in enumerate(["2026-08-01", "2026-08-08", "2026-08-08", "", "2026-08-08"]):
+        conn.execute("INSERT INTO theme_signals VALUES (?, ?, 's', ?, ?)", (day, f"c{n}", n, run))
+    for n in range(4):
+        conn.execute("INSERT INTO theme_signals VALUES ('2026-08-08', ?, 's', 1, ?)", (f"old{n}", other))
+    for n in range(7):
+        conn.execute("INSERT INTO stock_theme_features VALUES ('2026-08-08', ?, 'c', 1, ?)", (f"{1000 + n}", run))
+        conn.execute("INSERT INTO stock_theme_features VALUES ('2026-08-07', ?, 'c', 1, ?)", (f"{1000 + n}", other))
+    for source in ("official_rss", "company_ir_rss", "gdelt_events"):
+        conn.execute("INSERT INTO source_quality_metrics VALUES (?, 'd', '2026-08-08')", (source,))
+    calls: list[tuple[str, list[Any]]] = []
 
-    def capture(_sql: str, params: list[Any] | None = None, **_kwargs: Any) -> list[dict[str, Any]]:
-        params_seen.extend(params or [])
-        return [{"theme_rows": 3, "feature_rows": 7, "quality_rows": 3}]
+    def query(sql: str, params: list[Any] | None = None, **_kwargs: Any) -> list[dict[str, Any]]:
+        calls.append((sql, list(params or [])))
+        cur = conn.execute(sql, params or [])
+        return [dict(zip([c[0] for c in cur.description], row)) for row in cur.fetchall()]
 
-    monkeypatch.setattr(module, "d1", capture)
-    module.TARGET_DATE = "2026-08-08"
-    module.AS_OF_DATE = "2026-08-08"
-    module.GENERATED_AT = "2026-08-08T01:02:03Z"
+    monkeypatch.setattr(module, "d1", query)
+    module.TARGET_DATE = module.AS_OF_DATE = "2026-08-08"
+    module.GENERATED_AT = run
+    old_theme = conn.execute("SELECT COUNT(*) FROM theme_signals WHERE generated_at=?", (run,)).fetchone()[0]
+    old_features = conn.execute("SELECT COUNT(*) FROM stock_theme_features WHERE generated_at=?", (run,)).fetchone()[0]
 
-    receipt = module.build_materialization_receipt(3, 7)
+    receipt = module.build_materialization_receipt(5, 7, theme_dates=theme_dates, feature_dates=["2026-08-08"])
 
-    assert receipt["status"] == "ready"
-    assert params_seen == [module.GENERATED_AT, module.GENERATED_AT, module.AS_OF_DATE]
+    assert (receipt["actual_theme_rows"], receipt["actual_feature_rows"]) == (old_theme, old_features) == (5, 7)
+    assert receipt["status"] == "ready" and receipt["source_quality_rows"] == 3
+    for sql, params in calls:
+        plan = " ".join(row[3] for row in conn.execute("EXPLAIN QUERY PLAN " + sql, params))
+        assert "SCAN" not in plan, (sql, plan)
+
+    module.D1_MAX_BOUND_PARAMS = 3
+    calls.clear()
+    assert module.count_generated_rows("theme_signals", theme_dates) == 5
+    assert [len(params) for _, params in calls] == [3, 2]
+    assert module.count_generated_rows("theme_signals", []) == 0
+
+
+def _gdelt_failures(monkeypatch, error: BaseException) -> tuple[list[str], tuple[list[Any], str]]:
+    module = load_materializer(monkeypatch)
+    queries: list[str] = []
+
+    def fail(*, query: str, **_kwargs: Any) -> list[dict[str, Any]]:
+        queries.append(query)
+        raise error
+
+    monkeypatch.setattr(module, "fetch_gdelt_doc_events", fail)
+    module.AS_OF_DATE = "2026-11-17"
+    recommendations = [{"symbol": f"{2300 + n}", "name": f"name{n}"} for n in range(6)]
+    return queries, module.build_gdelt_items(recommendations, {})
+
+
+def test_gdelt_stops_after_rate_limit_or_timeout(monkeypatch) -> None:
+    import socket
+
+    rate_limited = urllib.error.HTTPError("https://api.gdeltproject.org", 429, "Too Many Requests", {}, None)
+    for error in (rate_limited, TimeoutError("read timed out"), socket.timeout("timed out"),
+                  urllib.error.URLError(TimeoutError("connect timed out"))):
+        queries, (items, status) = _gdelt_failures(monkeypatch, error)
+        assert len(queries) == 1, error
+        assert (items, status) == ([], "fetch_failed")
+
+
+def test_gdelt_other_failures_still_try_every_query(monkeypatch) -> None:
+    for error in (ValueError("not json"), urllib.error.HTTPError("https://api.gdeltproject.org", 500, "err", {}, None)):
+        queries, (items, status) = _gdelt_failures(monkeypatch, error)
+        assert len(queries) == 9
+        assert (items, status) == ([], "fetch_failed")
 
 
 def test_external_batch_sql_is_sqlite_compatible_and_idempotent(monkeypatch) -> None:

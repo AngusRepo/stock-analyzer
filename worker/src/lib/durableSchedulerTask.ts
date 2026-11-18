@@ -10,6 +10,7 @@ import {
 } from './maintenanceLease'
 import { classifySchedulerSummary, logSchedulerResult } from './schedulerRunLogger'
 import {
+  readSchedulerExecutionTicket,
   schedulerTicketStatusForRunLog,
   updateSchedulerExecutionTicket,
   type SchedulerExecutionTicketStatus,
@@ -441,7 +442,20 @@ export async function processDurableSchedulerTask(
   }
 
   try {
-    await updateTicket('running', 'durable queue consumer started')
+    try {
+      await updateTicket('running', 'durable queue consumer started')
+    } catch (error) {
+      // A queue redelivery after this run's ticket was settled (the consumer rethrows its
+      // terminal error): the ticket guard forbids re-running it, so ACK instead of logging
+      // a second failure over the real one and retrying into the DLQ.
+      const settled = msg.schedulerTicketId
+        ? await readSchedulerExecutionTicket(ticketDb, msg.schedulerTicketId).catch(() => null) : null
+      if (settled?.run_id === runId && ['success', 'error', 'skipped', 'blocked'].includes(settled.status)) {
+        console.warn(`[durable-scheduler] ${task} run=${runId} redelivered after terminal ${settled.status}; acknowledged`)
+        return
+      }
+      throw error
+    }
     const taskResult = await (options.runTask ?? runDurableTask)(task, env, runDate)
     if (isMaintenanceLeaseBusy(taskResult)) {
       const opsDb = databaseForDataDomain(env, 'ops')

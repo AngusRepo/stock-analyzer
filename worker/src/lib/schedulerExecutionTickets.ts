@@ -178,6 +178,10 @@ function ticketAttemptId(ticketId: string, attemptCount: number): string {
   return `${ticketId}:attempt:${attemptCount}`
 }
 
+export async function readSchedulerExecutionTicket(db: D1Database, ticketId: string): Promise<SchedulerExecutionTicketRow> {
+  return readTicket(db, ticketId)
+}
+
 async function readTicket(db: D1Database, ticketId: string): Promise<SchedulerExecutionTicketRow> {
   const row = await db.prepare(`
     SELECT * FROM scheduler_execution_tickets_v1 WHERE ticket_id=?

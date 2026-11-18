@@ -4,6 +4,7 @@ import type { Bindings } from '../types'
 import type { RetentionClass } from './evidenceArtifactContract'
 import { writeEvidenceArtifact } from './artifactLifecycle'
 import { databaseForDataDomain, type DataDomain } from './dataDomainRegistry'
+import { optionalLegacyDatabase, requireLegacyDatabase } from './legacyDatabase'
 import {
   beginRetentionRun,
   checkpointRetentionItem,
@@ -25,6 +26,10 @@ export const RETENTION_ARCHIVE_ONLY_POLICY_IDS = [
 
 export type RetentionArchiveOnlyPolicyId = typeof RETENTION_ARCHIVE_ONLY_POLICY_IDS[number]
 export type ArchiveSourceDomain = DataDomain | 'legacy'
+
+/** Query value that runs the one-time archive of the frozen legacy source to cycle_complete. */
+export const LEGACY_FINAL_ARCHIVE_CONFIRM_PHRASE = 'ARCHIVE-FROZEN-LEGACY-TO-CYCLE-COMPLETE'
+const LEGACY_FINAL_ARCHIVE_CUTOFF = '9999-12-31'
 
 export type RetentionArchiveSource = {
   datasetId: string
@@ -262,7 +267,9 @@ function cleanPart(value: unknown): string {
 }
 
 function sourceDatabase(env: Bindings, domain: ArchiveSourceDomain): D1Database {
-  return domain === 'legacy' ? env.DB : databaseForDataDomain(env, domain)
+  return domain === 'legacy'
+    ? requireLegacyDatabase(env, 'retention_archive_legacy_source')
+    : databaseForDataDomain(env, domain)
 }
 
 export function retentionSourceDatabase(
@@ -447,6 +454,7 @@ async function runR2Policy(
   config: R2PolicyConfig,
   businessDate: string,
   limit: number,
+  legacyFinalArchive = false,
 ): Promise<ArchivePolicyResult> {
   if (!env.ARTIFACTS) throw new Error('retention_archive_r2_binding_missing')
   const runId = `retention-archive-only:${policyId}:${businessDate}:${Date.now().toString(36)}`
@@ -460,16 +468,46 @@ async function runR2Policy(
   await beginRetentionRun(opsDb, { runId, policyId, businessDate })
 
   for (const configured of config.sources) {
-    const source = retentionSourceAtCutoff(configured, cutoffDate)
-    const cursor = await loadRetentionCursor(opsDb, policyId, source.datasetId)
+    const cursor = await loadRetentionCursor(opsDb, policyId, configured.datasetId)
+    let sourceCutoff = cutoffDate
+    let finalArchive = false
+    let frozen = false
     try {
-      // Read the cutover state before the rows: once cut over, no write can
-      // change a row this page judges.
-      const frozen = source.sourceDomain === 'legacy'
-        && await (legacyFrozen ??= legacyWritersCutOver(env.DB))
-      const rows = await loadRows(sourceDatabase(env, source.sourceDomain), source, cutoffDate, limit, cursor)
+      if (configured.sourceDomain === 'legacy') {
+        // Read the cutover state before the rows: once cut over, no write can
+        // change a row this page judges.
+        const legacyDb = optionalLegacyDatabase(env)
+        frozen = legacyDb != null && await (legacyFrozen ??= legacyWritersCutOver(legacyDb))
+        // Legacy rows exist only in the legacy DB, so a skip never touches the
+        // cursor: deletion readiness requires every legacy dataset to reach
+        // cycle_complete, which only the one-time final archive sets. Once it
+        // has, the reset cursor would make any run rescan the table from its
+        // head, so cycle_complete is final on its own: a failed cutover read
+        // (frozen=false) must not reopen it. A rollback that reopens legacy
+        // writers re-arms the cursor by hand.
+        const finalComplete = cursor?.status === 'cycle_complete'
+        const reason = !legacyDb ? 'legacy_db_binding_retired'
+          : finalComplete ? 'legacy_final_archive_complete'
+          : legacyFinalArchive && !frozen ? 'legacy_final_archive_requires_frozen_source'
+          : null
+        if (reason === 'legacy_final_archive_requires_frozen_source') throw new Error(reason)
+        if (reason) {
+          await checkpointRetentionItem(opsDb, {
+            runId, policyId, datasetId: configured.datasetId, status: 'skipped', deletedRows: 0,
+            backlogRemaining: false, preserveCursor: true,
+            evidence: { archive_only: true, archive_store: 'r2', cutoff_date: cutoffDate, reason,
+              legacy_final_archive_complete: finalComplete },
+          })
+          continue
+        }
+        // The frozen source gets no new rows, so the final archive ignores the hot window.
+        finalArchive = legacyFinalArchive
+        if (finalArchive) sourceCutoff = LEGACY_FINAL_ARCHIVE_CUTOFF
+      }
+      const source = retentionSourceAtCutoff(configured, sourceCutoff)
+      const rows = await loadRows(sourceDatabase(env, source.sourceDomain), source, sourceCutoff, limit, cursor)
       scannedRows += rows.length
-      const watermark = frozen && rows.length < limit
+      const watermark = frozen && !finalArchive && rows.length < limit
         ? frozenSourceWatermark(cursor, cutoffDate)
         : null
       if (!rows.length) {
@@ -478,9 +516,11 @@ async function runR2Policy(
           cursorDate: watermark?.cursor_date ?? cursor?.cursor_date ?? null,
           cursorKey: watermark?.cursor_key ?? cursor?.cursor_key ?? null,
           backlogRemaining: false,
+          cycleComplete: finalArchive,
           evidence: {
-            archive_only: true, archive_store: 'r2', cutoff_date: cutoffDate, reason: 'no_new_eligible_rows',
+            archive_only: true, archive_store: 'r2', cutoff_date: sourceCutoff, reason: 'no_new_eligible_rows',
             ...(watermark ? { frozen_source_watermark: true } : {}),
+            ...(finalArchive ? { legacy_final_archive: true } : {}),
           },
         })
         continue
@@ -506,7 +546,7 @@ async function runR2Policy(
           deleted_rows: 0,
           hot_retention_days: Number(policy.hot_retention_days),
           cold_retention_days: policy.cold_retention_days == null ? null : Number(policy.cold_retention_days),
-          cutoff_date: cutoffDate,
+          cutoff_date: sourceCutoff,
           coverage_start: first.__archive_date,
           coverage_end: last.__archive_date,
           rows,
@@ -532,6 +572,7 @@ async function runR2Policy(
         cursorDate: watermark?.cursor_date ?? (String(last.__archive_date ?? '') || null),
         cursorKey: watermark?.cursor_key ?? (String(last.__cursor_key ?? '') || null),
         backlogRemaining: sourceBacklog,
+        cycleComplete: finalArchive && !sourceBacklog,
         evidence: {
           archive_only: true,
           archive_store: 'r2',
@@ -541,16 +582,19 @@ async function runR2Policy(
           checksum: artifact.checksum,
           checksum_verified_at: artifact.checksum_verified_at,
           deleted_rows: 0,
-          cutoff_date: cutoffDate,
+          cutoff_date: sourceCutoff,
+          ...(finalArchive ? { legacy_final_archive: true } : {}),
         },
       })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      errors.push(`${source.datasetId}:${message}`)
+      errors.push(`${configured.datasetId}:${message}`)
       backlogRemaining = true
       await checkpointRetentionItem(opsDb, {
-        runId, policyId, datasetId: source.datasetId, status: 'error', deletedRows: 0,
+        runId, policyId, datasetId: configured.datasetId, status: 'error', deletedRows: 0,
         cursorDate: cursor?.cursor_date ?? null, cursorKey: cursor?.cursor_key ?? null,
+        // A legacy dataset's cursor (and its cycle_complete) is the deletion-readiness evidence.
+        preserveCursor: configured.sourceDomain === 'legacy',
         backlogRemaining: true, error: message,
         evidence: { archive_only: true, archive_store: 'r2', deleted_rows: 0 },
       })
@@ -646,6 +690,8 @@ export async function runRetentionArchiveOnly(
     businessDate?: string | null
     policyIds?: readonly RetentionArchiveOnlyPolicyId[]
     limitPerDataset?: number
+    /** One-time archive of the frozen legacy source to cycle_complete (Wei go; see LEGACY_FINAL_ARCHIVE_CONFIRM_PHRASE). */
+    legacyFinalArchive?: boolean
   } = {},
 ) {
   const businessDate = normalizeBusinessDate(options.businessDate)
@@ -660,7 +706,7 @@ export async function runRetentionArchiveOnly(
     const policy = await loadPolicy(opsDb, policyId)
     const config = POLICY_CONFIGS[policyId]
     results.push(config.store === 'r2'
-      ? await runR2Policy(env, opsDb, policyId, policy, config, businessDate, limit)
+      ? await runR2Policy(env, opsDb, policyId, policy, config, businessDate, limit, options.legacyFinalArchive === true)
       : await runGcsPreflightPolicy(env, opsDb, policyId, policy, config, businessDate))
   }
   const failed = results.filter((result) => result.status === 'error')

@@ -43,37 +43,31 @@ export async function writeDailyExecutionPaperClosureArtifacts(
   const activeDomains = [...activeDataDomains(env)].sort()
   const canonicalPaperDb = databaseForDataDomain(env, 'paper')
   const [
-    legacyBrokerIntents,
-    legacyBrokerEvents,
     splitBrokerIntents,
     splitBrokerEvents,
-    legacyPaperOrders,
-    legacyPaperEvents,
     splitPaperOrders,
     splitPaperEvents,
     snapshot,
   ] = await Promise.all([
-    countRows(env.DB, 'SELECT COUNT(*) count FROM broker_execution_intents WHERE trade_date=?', businessDate),
-    countRows(env.DB, `
-      SELECT COUNT(*) count
-        FROM broker_execution_events
-       WHERE date(event_time)=date(?) OR date(received_at)=date(?)
-    `, businessDate, businessDate),
     countRows(env.EXECUTION_DB, 'SELECT COUNT(*) count FROM broker_execution_intents WHERE trade_date=?', businessDate),
     countRows(env.EXECUTION_DB, `
       SELECT COUNT(*) count
         FROM broker_execution_events
        WHERE date(event_time)=date(?) OR date(received_at)=date(?)
     `, businessDate, businessDate),
-    countRows(env.DB, 'SELECT COUNT(*) count FROM paper_orders WHERE date(created_at)=date(?)', businessDate),
-    countRows(env.DB, 'SELECT COUNT(*) count FROM paper_execution_events WHERE trade_date=?', businessDate),
     countRows(env.PAPER_DB, 'SELECT COUNT(*) count FROM paper_orders WHERE date(created_at)=date(?)', businessDate),
     countRows(env.PAPER_DB, 'SELECT COUNT(*) count FROM paper_execution_events WHERE trade_date=?', businessDate),
     paperSnapshot(canonicalPaperDb, businessDate),
   ])
+  // The legacy DB is a frozen rollback copy that receives no post-cutover
+  // writes; its counts are no longer read and stay null in the payload.
+  const legacyBrokerIntents = null
+  const legacyBrokerEvents = null
+  const legacyPaperOrders = null
+  const legacyPaperEvents = null
 
-  const executionRows = (legacyBrokerIntents ?? 0) + (legacyBrokerEvents ?? 0)
-  const paperRows = (legacyPaperOrders ?? 0) + (legacyPaperEvents ?? 0)
+  const executionRows = (splitBrokerIntents ?? 0) + (splitBrokerEvents ?? 0)
+  const paperRows = (splitPaperOrders ?? 0) + (splitPaperEvents ?? 0)
   const activityStatus = executionRows + paperRows > 0 ? 'activity' : 'no_activity'
   const routing = {
     active_domains: activeDomains,
@@ -138,7 +132,8 @@ export async function ensureDailyExecutionPaperClosureArtifacts(
   `).bind(businessDate, paperAccountId()).first<CountResult>()
   if (Number(snapshot?.count ?? 0) < 1) throw new Error(`daily_paper_snapshot_not_ready:${businessDate}`)
 
-  const existing = await env.DB.prepare(`
+  // run_artifacts is Ops-owned; writeEvidenceArtifact writes the closures there.
+  const existing = await databaseForDataDomain(env, 'ops').prepare(`
     SELECT domain, status, checksum_verified_at,
            ROW_NUMBER() OVER (PARTITION BY domain ORDER BY created_at DESC, artifact_id DESC) ordinal
       FROM run_artifacts

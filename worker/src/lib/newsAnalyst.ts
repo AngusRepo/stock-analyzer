@@ -34,7 +34,7 @@ export interface NewsAnalystReport {
 }
 
 export interface NewsAnalystEnv {
-  DB: D1Database
+  DB?: D1Database
   KV: KVNamespace
   ML_CONTROLLER_URL?: string
   ML_CONTROLLER_SECRET?: string

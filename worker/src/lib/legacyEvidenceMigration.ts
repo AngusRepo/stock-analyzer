@@ -2,6 +2,10 @@ import type { Bindings } from '../types'
 import { activeDataDomains } from './dataDomainRegistry'
 import { retainArtifactHardReference, writeEvidenceArtifact } from './artifactLifecycle'
 import { checkpointLegacyMigration, loadLegacyMigrationCursor } from './legacyMigrationCursor'
+import { requireLegacyShadowSource } from './legacyDatabase'
+
+// Migration-era tool: reads the frozen legacy source; retired once the control plane moved to Ops.
+const legacyShadowSource = (env: Parameters<typeof requireLegacyShadowSource>[0]) => requireLegacyShadowSource(env, 'legacy_evidence_migration')
 
 type LegacyScreenerEvidenceRow = {
   id: number
@@ -37,12 +41,12 @@ export async function runLegacyEvidenceMigration(
   if (!env.ARTIFACTS) throw new Error('artifact_r2_binding_missing')
   const limit = Math.max(1, Math.min(Math.floor(options.limit ?? 200), 500))
   const taskName = 'legacy_screener_evidence_v2'
-  const cursor = await loadLegacyMigrationCursor(env.DB, taskName)
+  const cursor = await loadLegacyMigrationCursor(legacyShadowSource(env), taskName)
   if (cursor?.status === 'complete') {
     return { candidates: 0, artifacts: 0, queued_scrubs: 0, backlog_remaining: false }
   }
   const cursorId = Math.max(0, Number.parseInt(cursor?.cursor_key ?? '0', 10) || 0)
-  const { results } = await env.DB.prepare(`
+  const { results } = await legacyShadowSource(env).prepare(`
     SELECT sfi.id, sfi.run_id, sfi.date, sfi.symbol, sfi.stage, sfi.evidence
       FROM screener_funnel_items sfi
       JOIN screener_funnel_runs sfr ON sfr.run_id = sfi.run_id
@@ -79,7 +83,7 @@ export async function runLegacyEvidenceMigration(
 
   const rows = results ?? []
   if (!rows.length) {
-    await checkpointLegacyMigration(env.DB, { taskName, status: 'complete' })
+    await checkpointLegacyMigration(legacyShadowSource(env), { taskName, status: 'complete' })
     return { candidates: 0, artifacts: 0, queued_scrubs: 0, backlog_remaining: false }
   }
   const grouped = new Map<string, LegacyScreenerEvidenceRow[]>()
@@ -111,12 +115,12 @@ export async function runLegacyEvidenceMigration(
       metadata: { migration: 'legacy_noncanonical_screener' },
     })
     artifacts += 1
-    await retainArtifactHardReference(env.DB, {
+    await retainArtifactHardReference(legacyShadowSource(env), {
       artifactId: artifact.artifact_id,
       ownerType: 'legacy_screener_run',
       ownerId: runId,
     })
-    const statements = runRows.map((row) => env.DB.prepare(`
+    const statements = runRows.map((row) => legacyShadowSource(env).prepare(`
       INSERT OR IGNORE INTO artifact_d1_scrub_queue (
         scrub_id, artifact_id, target_table, target_pk_column, target_pk_value,
         target_column, replacement_json, status, created_at, updated_at
@@ -128,13 +132,13 @@ export async function runLegacyEvidenceMigration(
       pointerJson(artifact, row.id),
     ))
     for (let i = 0; i < statements.length; i += 50) {
-      await env.DB.batch(statements.slice(i, i + 50))
+      await legacyShadowSource(env).batch(statements.slice(i, i + 50))
     }
     queuedScrubs += runRows.length
   }
   const lastRow = rows[rows.length - 1]
   const backlogRemaining = rows.length === limit
-  await checkpointLegacyMigration(env.DB, {
+  await checkpointLegacyMigration(legacyShadowSource(env), {
     taskName,
     status: backlogRemaining ? 'running' : 'complete',
     cursorDate: lastRow.date,

@@ -357,12 +357,14 @@ export async function loadTradingRestrictionSet(
   const sourceCounts: Record<string, number> = {}
   const evidenceMode = options.evidenceMode ?? 'live_current'
 
-  const canonicalResult = await loadCanonicalRestrictions(env.DB, tradeDate, evidenceMode)
+  // Both restriction tables are Market-owned (same owner as the hard-block reads below).
+  const marketDb = databaseForDataDomain(env, 'market')
+  const canonicalResult = await loadCanonicalRestrictions(marketDb, tradeDate, evidenceMode)
   const canonical = canonicalResult.value
   for (const symbol of canonical.symbols) target.add(symbol)
   for (const [source, count] of Object.entries(canonical.sourceCounts)) addSourceCount(sourceCounts, source, count)
 
-  const governanceResult = await loadGovernanceRestrictions(env.DB, tradeDate, evidenceMode)
+  const governanceResult = await loadGovernanceRestrictions(marketDb, tradeDate, evidenceMode)
   const governance = governanceResult.value
   for (const symbol of governance) target.add(symbol)
   if (governance.length) addSourceCount(sourceCounts, 'stock_trading_restrictions', governance.length)

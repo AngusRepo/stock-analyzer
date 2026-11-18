@@ -2,6 +2,7 @@ import { inspectL4DistributionClosure } from './l4DistributionClosure'
 import { inspectPostPipelineActionAuthority } from './postPipelineActionAuthority'
 import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
+import { optionalLegacyDatabase } from './legacyDatabase'
 import { runAdaptiveUpdate, runLinUcbRewardLedgerRefresh } from './adaptiveEngine'
 import { expectedVerifyProducerRunId, runArtifactAutoPromotion, runModelIcRollingRefresh, runObsidianDaily, runPaperActivePostmarketPromotion, runVerifyV2 } from './controllerWorkflows'
 import { generateDailyReport } from './dailyReport'
@@ -339,7 +340,13 @@ async function enqueueS12ReplayBackfillTask(env: Bindings, ctx: ChainContext): P
   const leaseOwner = String(ctx.stageLeaseOwner ?? '').trim()
   if (!canonicalRunId || !leaseOwner) throw new Error('post_verify_stage_authority_missing')
   const { loadReplayReadySignalDates } = await import('./s12ReplayTradeOutcome')
-  const signalDates = await loadReplayReadySignalDates(env.DB, runDate, 5)
+  // Retired Fusion path: its cross-domain query (selection refs x run heads x
+  // market daily x replay outcomes) only exists in the frozen legacy source, which
+  // cannot mature new signal dates. Without that binding there is nothing to
+  // backfill, so the stage records a skip instead of failing the chain.
+  const legacySource = optionalLegacyDatabase(env)
+  if (!legacySource) return 'skipped retired_fusion_maturity_backfill_legacy_source_retired'
+  const signalDates = await loadReplayReadySignalDates(legacySource, runDate, 5)
   for (const signalDate of signalDates) {
     const lifecycle = await readAllocatorEvLifecycle(databaseForDataDomain(env, 'learning'), signalDate)
     const lifecycleRunId = String(lifecycle?.upstream_run_id ?? '').trim()
@@ -467,7 +474,7 @@ export async function runPostPipelineCallbackChain(
   await assertChainStageAuthority(ctx, 'post-pipeline:before_snapshot_inspection')
   const distributionConfig=await env.KV.get('trading:config','json') as {l4Distribution?:unknown}|null
   const newDistribution=distributionConfig?.l4Distribution != null
-  let snapshotClosure = newDistribution ? await inspectL4DistributionClosure(env,ctx.runDate) : await inspectAllocatorSnapshotClosure(env.DB, ctx.runDate, {
+  let snapshotClosure = newDistribution ? await inspectL4DistributionClosure(env,ctx.runDate) : await inspectAllocatorSnapshotClosure(databaseForDataDomain(env, 'learning'), ctx.runDate, {
     // This stage owns the explicit PIT backfill. Reconstruction may close the
     // operational evidence chain, while Fusion promotion remains native-only.
     learningDb: databaseForDataDomain(env, 'learning'),
@@ -582,7 +589,7 @@ export async function runPostPipelineCallbackChain(
   }
   if (!snapshotUnavailableInEvidenceOnlyMode) {
     await assertChainStageAuthority(ctx, 'post-pipeline:before_snapshot_readback')
-    snapshotClosure = newDistribution ? await inspectL4DistributionClosure(env,ctx.runDate) : await inspectAllocatorSnapshotClosure(env.DB, ctx.runDate, {
+    snapshotClosure = newDistribution ? await inspectL4DistributionClosure(env,ctx.runDate) : await inspectAllocatorSnapshotClosure(databaseForDataDomain(env, 'learning'), ctx.runDate, {
       allowPointInTimeReconstruction: true,
       learningDb: databaseForDataDomain(env, 'learning'),
       opsDb: databaseForDataDomain(env, 'ops'),

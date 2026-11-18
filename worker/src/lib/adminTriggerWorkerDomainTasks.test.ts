@@ -106,7 +106,7 @@ assert.match(source, /requestedAuditTargets[\s\S]*target !== 'paper_execution_ev
 assert.match(source, /target === 'superseded_pending_events'[\s\S]*paper_shadow_parity_protected/)
 assert.match(source, /CUTOVER_PROBE_DOMAINS = new Set<DataDomain>\(DATA_DOMAINS\)/)
 assert.match(source, /shadowDatabaseForDataDomain\(c\.env, requestedDomain\)/)
-assert.match(source, /installDataDomainWriterEpochTriggers\(c\.env\.DB, requestedDomain\)/)
+assert.match(source, /installDataDomainWriterEpochTriggers\(requireLegacyShadowSource\(c\.env, 'data_domain_writer_epoch_trigger_install'\), requestedDomain\)/)
 assert.match(source, /'s12-research-recovery': async/)
 assert.match(source, /delaySeconds > 43_200/)
 assert.match(source, /type: 's12_research_recovery'/)

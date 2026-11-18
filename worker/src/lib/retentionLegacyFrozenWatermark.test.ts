@@ -221,3 +221,41 @@ for (const [label, notCutOver] of [
     } finally { legacy.close(); ops.close() }
   })
 }
+
+test('the final archive resumes from the watermark, closes every legacy dataset, and normal runs then stop reading legacy rows', async () => {
+  const legacy = new DatabaseSync(':memory:')
+  const ops = new DatabaseSync(':memory:')
+  try {
+    legacy.exec(LEGACY_DDL)
+    ops.exec(OPS_DDL)
+    seedScreener(legacy, '2026-05-01', [
+      { id: 'obsolete', status: 'success', created: '2026-05-01 09:00', items: 3 },
+      { id: 'latest', status: 'success', created: '2026-05-01 10:00', items: 4 },
+    ])
+    // Inside the hot window of the 2026-06-01 run: the watermark leaves it for later.
+    seedScreener(legacy, '2026-05-20', [
+      { id: 'hot-obsolete', status: 'success', created: '2026-05-20 09:00', items: 2 },
+      { id: 'hot-latest', status: 'success', created: '2026-05-20 10:00', items: 4 },
+    ])
+    await runLegacy(legacy, ops, '2026-06-01', [])
+    assert.deepEqual(cursorOf(ops, 'obsolete_screener_items'), { cursor_date: '2026-05-02', cursor_key: '0' })
+
+    const r2 = memoryR2()
+    const final = await runRetentionArchiveOnly({
+      DB: d1(legacy), OPS_DB: d1(ops), MULTI_D1_ACTIVE_DOMAINS: 'ops', ARTIFACTS: r2,
+    } as any, { businessDate: '2026-06-01', policyIds: ['legacy_hot_r2_v1'], limitPerDataset: 100, legacyFinalArchive: true })
+    assert.equal(final.status, 'success')
+    const archived = [...r2.objects.values()].map((body) => JSON.parse(body).payload.rows.map((r: any) => r.run_id)).flat()
+    assert.deepEqual(archived, ['hot-obsolete', 'hot-obsolete'])
+    const statuses = ops.prepare(`SELECT dataset_id, status FROM data_retention_cursors WHERE policy_id='legacy_hot_r2_v1'`).all()
+    assert.equal(statuses.length, 7)
+    assert.ok(statuses.every((row) => row.status === 'cycle_complete'), JSON.stringify(statuses))
+
+    // cycle_complete nulls the cursor position; a normal run must skip instead of rescanning from the head.
+    const log: Executed[] = []
+    const after = await runLegacy(legacy, ops, '2026-06-02', log)
+    assert.equal(after.result.status, 'success')
+    assert.equal(after.result.policies[0].scanned_rows, 0)
+    assert.deepEqual(log.map((entry) => entry.sql.includes('data_domain_writer_epochs')), [true])
+  } finally { legacy.close(); ops.close() }
+})

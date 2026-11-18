@@ -2,14 +2,18 @@ import type { Bindings } from '../types'
 import { activeDataDomains } from './dataDomainRegistry'
 import { inspectDataDomainCutoverReadiness } from './dataDomainCutoverReadiness'
 import { inspectLatestEveningChainClosure } from './dataDomainShadowBackfillDrain'
+import { requireLegacyShadowSource } from './legacyDatabase'
+
+// Migration-era tool: reads the frozen legacy source; retired once the control plane moved to Ops.
+const legacyShadowSource = (env: Parameters<typeof requireLegacyShadowSource>[0]) => requireLegacyShadowSource(env, 'data_domain_cutover_completion')
 
 export const LEARNING_CUTOVER_CONFIRMATION = 'complete:learning' as const
 
 export async function inspectLearningDataDomainCompletion(
   env: Pick<Bindings, 'DB' | 'KV' | 'LEARNING_DB'> & Partial<Bindings>,
 ) {
-  const latestEveningChain = await inspectLatestEveningChainClosure(env.KV, env.DB)
-  const readiness = await inspectDataDomainCutoverReadiness(env.DB, 'learning', {
+  const latestEveningChain = await inspectLatestEveningChainClosure(env.KV, env)
+  const readiness = await inspectDataDomainCutoverReadiness(legacyShadowSource(env), 'learning', {
     upstreamTerminalReady: latestEveningChain.terminalSuccess,
     parityNotBefore: latestEveningChain.timestamp,
     learningTargetDb: env.LEARNING_DB,
@@ -73,8 +77,8 @@ export async function completeLearningDataDomainCutover(
     throw new Error('learning_data_domain_completion_precondition_invalid')
   }
 
-  const results = await env.DB.batch([
-    env.DB.prepare(`
+  const results = await legacyShadowSource(env).batch([
+    legacyShadowSource(env).prepare(`
       SELECT json(CASE WHEN
         EXISTS (
           SELECT 1 FROM data_domain_cutovers
@@ -93,12 +97,12 @@ export async function completeLearningDataDomainCutover(
         )
         THEN '{}' ELSE 'learning_cutover_completion_guard_failed' END) AS guard
     `).bind(expectedStatus, parityCheckedAt, expectedEpoch, expectedEpoch, parityCheckedAt),
-    env.DB.prepare(`
+    legacyShadowSource(env).prepare(`
       UPDATE data_domain_writer_epochs
          SET writer_state='cutover', updated_at=CURRENT_TIMESTAMP
        WHERE domain='learning' AND writer_state='open' AND epoch=?
     `).bind(expectedEpoch),
-    env.DB.prepare(`
+    legacyShadowSource(env).prepare(`
       UPDATE data_domain_cutovers
          SET status='complete', updated_at=CURRENT_TIMESTAMP
        WHERE domain='learning' AND status=? AND parity_checked_at=?
@@ -110,11 +114,11 @@ export async function completeLearningDataDomainCutover(
   ) throw new Error('learning_data_domain_completion_cas_failed')
 
   const [cutover, writer] = await Promise.all([
-    env.DB.prepare(`
+    legacyShadowSource(env).prepare(`
       SELECT status, parity_checked_at, updated_at
         FROM data_domain_cutovers WHERE domain='learning'
     `).first<{ status?: string; parity_checked_at?: string; updated_at?: string }>(),
-    env.DB.prepare(`
+    legacyShadowSource(env).prepare(`
       SELECT epoch, writer_state, updated_at
         FROM data_domain_writer_epochs WHERE domain='learning'
     `).first<{ epoch?: number | string; writer_state?: string; updated_at?: string }>(),

@@ -121,7 +121,9 @@ PAPER_D1_CLIENT = client_proxy_for_domain(D1DataDomain.PAPER)
 
 
 DEFAULT_TIMESFM_SEQUENCE_CONTRACT_POINTS = daily_sequence_target_points()
-from services.alpha_model_roster import model_order, validate_order, is_complete_roster, SUPPORTED_MODELS
+from services.alpha_model_roster import (
+    model_order, validate_order, is_complete_roster, R33_MODELS, SUPPORTED_MODELS,
+)
 
 ACTIVE_ALPHA_MODEL_SET = set(SUPPORTED_MODELS)
 MODEL_POOL_REQUIRED_MODEL_SET = set(SUPPORTED_MODELS)
@@ -1918,13 +1920,23 @@ def _load_model_pool_versions() -> tuple[dict[str, str], dict[str, str], dict[st
         raise RuntimeError(f"model_pool version load failed: {e}") from e
 
 
+def _pool_roster(models: dict) -> tuple[str, ...]:
+    """Slot order the pool must hold: the R33 roster (LightGBM/ExtraTrees/TabM/GNN, the set
+    is_complete_roster accepts besides the eight-model sets) as it is, else the eight names.
+    model_order() alone expands the R33 roster to the legacy eight."""
+    if set(models) & SUPPORTED_MODELS == set(R33_MODELS):
+        return R33_MODELS
+    return model_order(models)
+
+
 def _require_model_pool_required_contract(pool: dict, stage: str) -> None:
     models = pool.get("models") if isinstance(pool, dict) else None
     if not isinstance(models, dict):
         raise RuntimeError(f"model_pool_contract:{stage}:models must be an object")
+    roster = _pool_roster(models)
     missing = [
         name
-        for name in model_order(models)
+        for name in roster
         if not isinstance(models.get(name), dict)
     ]
     sidecars = pool.get("l2_feature_sidecars") if isinstance(pool.get("l2_feature_sidecars"), dict) else {}
@@ -1939,7 +1951,7 @@ def _require_model_pool_required_contract(pool: dict, stage: str) -> None:
         )
     invalid = [
         f"{name}={models[name].get('status')}"
-        for name in model_order(models)
+        for name in roster
         if str(models[name].get("status") or "").strip() not in MODEL_POOL_ALLOWED_STATUSES
     ]
     invalid.extend(

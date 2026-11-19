@@ -1009,7 +1009,8 @@ def _build_feature_model_batch_runtime_overrides(
     pool = pool_snapshot if pool_snapshot is not None else _load_model_pool()
     model_status = _model_pool_status(pool)
     for model_name in _FEATURE_MODEL_NAMES_V2:
-        if model_name == "GNN":
+        # Outside the R33 roster (e.g. XGBoost); _model_pool_status already holds every roster model.
+        if model_name == "GNN" or model_name not in model_status:
             continue
         if model_name == "TabM":
             _apply_tabm_torch_batch_predictions(contexts, pool, model_status)
@@ -1247,6 +1248,8 @@ def preload_batch_artifacts(
         name
         for name in _FEATURE_MODEL_NAMES_V2
         if name not in {"GNN", "TabM"}
+        # Outside the R33 roster (e.g. XGBoost); _model_pool_status already holds every roster model.
+        and name in model_status
         and _require_model_status(model_status, name) not in {"retired", "challenger"}
     ]
     errors: list[str] = []

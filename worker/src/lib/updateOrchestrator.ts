@@ -1,4 +1,5 @@
 import { closeHandedOffIndicatorRun } from './indicatorQueueDispatch'
+import { R33_MONTHLY_PROMOTION_DESIGN_DISABLED } from './designDisabledSteps'
 import { readOfficialRestrictionReadiness } from './tradingRestrictionReadiness'
 import { withIndicatorFinalizeLease } from './indicatorFinalizeLease'
 import { indicatorQueueDurationMs } from './indicatorQueueTiming'
@@ -2020,6 +2021,11 @@ async function runFinalizeContinuation(
   await assertFinalizeLockRenewed(env, triggerTime, runId, leaseOwner)
   const matureStrategyEvidence = await refreshMatureStrategyEvidenceBeforeScreener(env, triggerTime, runId)
   console.log(`[Queue] Mature strategy evidence refreshed before screener: ${matureStrategyEvidence}`)
+  await assertFinalizeLockRenewed(env, triggerTime, runId, leaseOwner)
+  // Needs same-date market_risk from the regime step; the screener reads sector_flow(D).
+  const { ensureSameSessionSectorFlow } = await import('./sectorFlowPreScreener')
+  const sectorFlowSummary = await ensureSameSessionSectorFlow(env, triggerTime, runId)
+  console.log(`[Queue] Same-session sector flow before screener: ${sectorFlowSummary}`)
   await assertFinalizeLockRenewed(env, triggerTime, runId, leaseOwner)
 
   const runAsyncScreener = deps.runMarketScreenerAsync
@@ -4913,8 +4919,8 @@ export async function processUpdateBatch(
       `route_backfill_pending=${routeBackfillEligibility.filter((row) => row.status === 'pending_maturity').length}`,
       `reward_source_rows=${rewards.source_rows}`,
       `reward_rows=${rewards.persisted_rows}`,
-      `policy=${policy ? policy.policy_state.status : 'skipped_historical'}`,
-      `production_policy=${productionPolicy ? productionPolicy.state.status : 'skipped_historical'}`,
+      `policy=${policy ? policy.policy_state.status : R33_MONTHLY_PROMOTION_DESIGN_DISABLED}`,
+      `production_policy=${productionPolicy ? productionPolicy.state.status : R33_MONTHLY_PROMOTION_DESIGN_DISABLED}`,
       `evidence_closure=${closureSummary}`,
       `run_scope=${runScope}`,
       `production_authority=${authorityReason}`,

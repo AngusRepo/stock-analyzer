@@ -2551,6 +2551,7 @@ def materialize_specs(
     if sealed_source is not None:
         write_json(run_dir / "sealed-raw-source.json", sealed_source.binding)
 
+    from tools.finlab_capture_guard import check_deadline
     for spec in specs:
         t0 = time.time()
         print(f"[finlab-backfill] start lane={spec.lane} kind={spec.kind}", file=sys.stderr, flush=True)
@@ -2558,6 +2559,7 @@ def materialize_specs(
         spec_keys = spec_keys_for_scope(spec, key_scope)
         if key_scope and spec.lane not in key_scope:
             continue
+        check_deadline("lane:" + spec.lane)
         special_scoped_fields = key_scope.get(spec.lane, set()) - set(spec.keys)
         supports_special_scoped_fields = spec.lane == "regime_context" and bool(
             special_scoped_fields & {"official_twse_index", "official_tpex_index"}
@@ -2944,26 +2946,17 @@ def materialize_specs(
                 })
         elif spec.kind == "broker_aggregate":
             api_key_name = "broker_transactions"
-            broker_error: Exception | None = None
             try:
                 frame = pd.DataFrame(data.get(api_key_name))
             except Exception as exc:
-                broker_error = exc
-                status = source_key_status_for_exception(exc)
-                source_key_reports.append(source_key_report_row(
-                    run_id=run_dir.name,
-                    generated_at=generated_at,
-                    target_date=target_date,
-                    lane=spec.lane,
-                    field=api_key_name,
-                    api_key=api_key_name,
-                    status=status,
-                    error=exc,
-                    metadata={"kind": spec.kind},
-                ))
-                if status == "quota_blocked":
-                    raise
-                frame = pd.DataFrame()
+                # The daily composition needs this capture. Fail here with the fetch error, not later
+                # as a FileNotFoundError on broker.json (11/16); a transport error stays resendable.
+                print(f"[finlab-backfill] broker_fetch_failed lane={spec.lane} "
+                      f"status={source_key_status_for_exception(exc)} error_type={type(exc).__name__}",
+                      file=sys.stderr, flush=True)
+                raise
+            if frame.empty and daily_refresh:
+                raise ValueError("finlab_broker_source_empty:broker_transactions")
             if not frame.empty:
                 from services.training_long_sources import write_broker_capture
                 write_broker_capture(frame,run_dir=run_dir,
@@ -3015,25 +3008,24 @@ def materialize_specs(
             artifacts.append({"field": "broker_rank_daily", "api_key": "broker_transactions", "path": str(rank_path), "shape": list(rank_rows.shape)})
             target_rows = int(len(filter_rows_date_range(grouped, start_date=target_date, end_date=target_date))) if "date" in grouped.columns else finlab_rows
             status = source_key_status(rows=finlab_rows, target_rows=target_rows, target_date=target_date)
-            if broker_error is None:
-                source_key_reports.append(source_key_report_row(
-                    run_id=run_dir.name,
-                    generated_at=generated_at,
-                    target_date=target_date,
-                    lane=spec.lane,
-                    field=api_key_name,
-                    api_key=api_key_name,
-                    status=status,
-                    rows=finlab_rows,
-                    target_rows=target_rows,
-                    latest_date=latest,
-                    path=path,
-                    run_dir=run_dir,
-                    gcs_bucket=gcs_bucket,
-                    gcs_prefix=gcs_prefix,
-                    metadata={"kind": spec.kind, "rank_path": str(rank_path), "rank_shape": list(rank_rows.shape),
-                              "source_observation": source_observation},
-                ))
+            source_key_reports.append(source_key_report_row(
+                run_id=run_dir.name,
+                generated_at=generated_at,
+                target_date=target_date,
+                lane=spec.lane,
+                field=api_key_name,
+                api_key=api_key_name,
+                status=status,
+                rows=finlab_rows,
+                target_rows=target_rows,
+                latest_date=latest,
+                path=path,
+                run_dir=run_dir,
+                gcs_bucket=gcs_bucket,
+                gcs_prefix=gcs_prefix,
+                metadata={"kind": spec.kind, "rank_path": str(rank_path), "rank_shape": list(rank_rows.shape),
+                          "source_observation": source_observation},
+            ))
         elif spec.kind == "rotc_broker_aggregate":
             api_key_name = "rotc_broker_transactions"
             rotc_error: Exception | None = None

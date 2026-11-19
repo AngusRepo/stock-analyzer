@@ -1,4 +1,5 @@
 import { loadS12ReplayRewardDates } from './s12ReplayRewardHistory'
+import { R33_MONTHLY_PROMOTION_DESIGN_DISABLED } from './designDisabledSteps'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { mergeArchivedS12Evidence, type S12ArchiveEnv } from './retentionS12StructureReader'
 import navReviewPolicy from '../../../ml-controller/services/paired_nav_review_policy.json'
@@ -5825,7 +5826,7 @@ export async function runStrategyLearningClosure(
     `learning_head_rows=${rewards.head_rows}`,
     `reward_stale_retired=${rewards.stale_rows_retired}`,
     `daily_reward_stale_cleared=${rewards.stale_daily_rewards_cleared}`,
-    `policy=${policy ? policy.policy_state.status : 'skipped_historical'}`,
+    `policy=${policy ? policy.policy_state.status : R33_MONTHLY_PROMOTION_DESIGN_DISABLED}`,
     `policy_eligible=${policy ? policy.policy_state.evidence.eligible_strategy_count : 'n/a'}`,
   ].join(' ')
 }

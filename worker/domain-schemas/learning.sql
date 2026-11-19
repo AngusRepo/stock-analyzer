@@ -2017,6 +2017,10 @@ CREATE INDEX IF NOT EXISTS idx_meta_reward_ledger_policy
 
 CREATE INDEX IF NOT EXISTS idx_meta_shadow_decisions_policy_date
   ON meta_shadow_decisions(policy_id, business_date DESC, created_at DESC);
+-- Pending reward hydration seeks unresolved decisions by business_date (learning migration 0070).
+CREATE INDEX IF NOT EXISTS idx_meta_shadow_decisions_pending
+  ON meta_shadow_decisions(business_date, decision_id)
+  WHERE counterfactual_reward IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_strategy_threshold_artifacts_latest
   ON strategy_threshold_calibration_artifacts(strategy_id, strategy_version, target_key, status, approved_at DESC);

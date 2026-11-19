@@ -2439,17 +2439,21 @@ def update_live_gate_from_ic(
     *,
     min_samples: int,
     limit: int = 500,
+    registry_rows: list[dict[str, Any]] | None = None,
+    champion_pointers: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Persist live shadow evidence for selected registry candidates.
 
     Registry owns artifact state. IC tracker owns verified IC calculation. This
     bridge keeps the ownership clean: it only updates artifacts selected by the
     release-train policy, and it writes evidence; it does not promote champions.
+    A caller that already read the registry snapshot the IC was computed against
+    passes it in, so the selection written here is the one that was evaluated.
     """
-    rows = list_artifact_registry(limit=limit)
+    rows = list_artifact_registry(limit=limit) if registry_rows is None else registry_rows
     selection = build_live_shadow_candidate_selection(
         rows,
-        champion_pointers=list_champion_pointers(),
+        champion_pointers=list_champion_pointers() if champion_pointers is None else champion_pointers,
     )
     selected: dict[str, dict[str, Any]] = {
         str(candidate["artifact_id"]): candidate

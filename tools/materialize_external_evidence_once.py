@@ -438,6 +438,14 @@ def gdelt_start_timestamp(day: str, lookback_days: int = 10) -> str:
     return parsed.strftime("%Y%m%d%H%M%S")
 
 
+def _gdelt_backoff_failure(exc: BaseException) -> bool:
+    """HTTP 429 or a timeout: further queries this run would fail the same way."""
+    if isinstance(exc, urllib.error.HTTPError):
+        return exc.code == 429
+    reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+    return isinstance(reason, TimeoutError)
+
+
 def build_gdelt_items(
     recommendations: list[dict[str, Any]],
     tags_by_symbol: dict[str, list[str]],
@@ -464,6 +472,14 @@ def build_gdelt_items(
     items: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
     failures = 0
+    # GDELT answers a burst with HTTP 429 ("one request every 5 seconds"),
+    # often only after ~12-19 s; firing the remaining queries anyway cost
+    # ~9 x 12 s per run (2026-11: fetch_failed every day, run 125-132 s).
+    rate_limited = False
+    # GDELT DOC API allows one request every 5 s per client; pacing keeps the
+    # queries under it instead of tripping 429 on the second request.
+    interval_seconds = max(0.0, float(os.environ.get("GDELT_MIN_INTERVAL_SECONDS", "5")))
+    last_request_at: float | None = None
 
     def append_articles(
         *,
@@ -473,7 +489,12 @@ def build_gdelt_items(
         source_quality_score: float,
         entity_linking_confidence: float,
     ) -> None:
-        nonlocal failures
+        nonlocal failures, rate_limited, last_request_at
+        if last_request_at is not None:
+            wait = interval_seconds - (time.monotonic() - last_request_at)
+            if wait > 0:
+                time.sleep(wait)
+        last_request_at = time.monotonic()
         try:
             articles = fetch_gdelt_doc_events(
                 query=query,
@@ -482,8 +503,9 @@ def build_gdelt_items(
                 max_records=3,
                 fetcher=bounded_fetcher,
             )
-        except Exception:
+        except Exception as exc:
             failures += 1
+            rate_limited = rate_limited or _gdelt_backoff_failure(exc)
             return
         for article in articles:
             url = str(article.get("url") or article.get("source_url") or "").strip()
@@ -503,6 +525,8 @@ def build_gdelt_items(
             items.append(item)
 
     for row in recommendations[:max_symbols]:
+        if rate_limited:
+            break
         symbol = str(row.get("symbol") or "").strip()
         name = str(row.get("name") or "").strip()
         if not symbol or not name:
@@ -528,6 +552,8 @@ def build_gdelt_items(
         '"global market risk" OR "US dollar" OR VIX',
     ]
     for query in fallback_queries:
+        if rate_limited:
+            break
         append_articles(
             query=query,
             symbols=[],
@@ -822,25 +848,42 @@ def upsert_quality(
     )
 
 
+def count_generated_rows(table: str, dates: list[str]) -> int:
+    """Rows this run wrote, via the date index: generated_at is unique to the run
+    and every row it wrote has one of these dates (generated_at alone is unindexed
+    and scanned ~1.09M rows per run)."""
+    total = 0
+    batch = D1_MAX_BOUND_PARAMS - 1
+    for index in range(0, len(dates), batch):
+        chunk = dates[index:index + batch]
+        rows = d1(
+            f"SELECT COUNT(*) AS n FROM {table} WHERE date IN ({', '.join(['?'] * len(chunk))}) AND generated_at=?",
+            [*chunk, GENERATED_AT],
+            domain="market",
+        )
+        total += int((rows[0] if rows else {}).get("n") or 0)
+    return total
+
+
 def build_materialization_receipt(
     expected_theme_rows: int,
     expected_feature_rows: int,
+    *,
+    theme_dates: list[str],
+    feature_dates: list[str],
 ) -> dict[str, Any]:
     rows = d1(
         """
-        SELECT
-          (SELECT COUNT(*) FROM theme_signals WHERE generated_at=?) AS theme_rows,
-          (SELECT COUNT(*) FROM stock_theme_features WHERE generated_at=?) AS feature_rows,
-          (SELECT COUNT(*) FROM source_quality_metrics
-            WHERE as_of_date=?
-              AND source IN ('official_rss','company_ir_rss','gdelt_events')) AS quality_rows
+        SELECT COUNT(*) AS quality_rows FROM source_quality_metrics
+         WHERE as_of_date=?
+           AND source IN ('official_rss','company_ir_rss','gdelt_events')
         """,
-        [GENERATED_AT, GENERATED_AT, AS_OF_DATE],
+        [AS_OF_DATE],
         domain="market",
     )
     actual = rows[0] if rows else {}
-    actual_theme = int(actual.get("theme_rows") or 0)
-    actual_features = int(actual.get("feature_rows") or 0)
+    actual_theme = count_generated_rows("theme_signals", theme_dates)
+    actual_features = count_generated_rows("stock_theme_features", feature_dates)
     quality_rows = int(actual.get("quality_rows") or 0)
     ready = (
         actual_theme == expected_theme_rows
@@ -936,7 +979,12 @@ def main() -> dict[str, Any]:
 
     expected_theme_rows = len(dedupe_rows(theme_rows, ("date", "concept", "source")))
     expected_feature_rows = len(dedupe_rows(feature_rows, ("date", "symbol", "concept")))
-    materialization_receipt = build_materialization_receipt(expected_theme_rows, expected_feature_rows)
+    materialization_receipt = build_materialization_receipt(
+        expected_theme_rows,
+        expected_feature_rows,
+        theme_dates=sorted({str(row.get("date")) for row in theme_rows}),
+        feature_dates=sorted({str(row.get("date")) for row in feature_rows}),
+    )
     if materialization_receipt["status"] != "ready":
         raise RuntimeError(
             "external evidence materialization incomplete: "

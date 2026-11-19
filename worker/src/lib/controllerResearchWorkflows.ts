@@ -1892,7 +1892,10 @@ async function awaitExternalEvidenceMaterializationReceipt(
 ): Promise<Record<string, unknown> | null> {
   for (const delayMs of [2_000, 5_000, 10_000, 15_000]) {
     await new Promise((resolve) => setTimeout(resolve, delayMs))
-    const receipt = await readExternalEvidenceMaterializationReceipt(env, targetDate, notBefore).catch(() => null)
+    const receipt = await readExternalEvidenceMaterializationReceipt(env, targetDate, notBefore).catch((error) => {
+      console.warn(`[external-evidence] 524 readback ${targetDate} failed: ${error instanceof Error ? error.message : String(error)}`)
+      return null
+    })
     if (receipt) return receipt
   }
   return null

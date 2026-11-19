@@ -213,7 +213,7 @@ assert(
   'post-pipeline chain must not be the primary regime producer; pipeline already consumed market_regime_state by then',
 )
 assert(
-  postMarketChain.includes('runModelIcRollingRefresh(env, ctx.runDate)'),
+  postMarketChain.includes('runModelIcRollingRefresh(env, ctx.runDate, budget)'),
   'rolling IC refresh must receive the callback business date',
 )
 assert(
@@ -237,7 +237,7 @@ assert(
   'post-pipeline and post-verify chains must stay separate owners',
 )
 assert(
-  postMarketChain.indexOf("'model-ic-rolling', env => runModelIcRollingRefresh") <
+  postMarketChain.indexOf("'model-ic-rolling', (env, budget) => runModelIcRollingRefresh") <
     postMarketChain.indexOf("'s12-replay-backfill', env => enqueueS12ReplayBackfillTask") &&
     postMarketChain.indexOf("'s12-replay-backfill', env => enqueueS12ReplayBackfillTask") <
     postMarketChain.indexOf("'paper-intraday-cache-clear', env => clearOpenPositionIntradayPriceCache"),

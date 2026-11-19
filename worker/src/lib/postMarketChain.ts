@@ -818,12 +818,15 @@ export async function runPostVerifyCallbackChain(
     leaseOwner: String(ctx.stageLeaseOwner ?? ''), productionEligible,
     assertStageLease: ctx.assertStageLease,
   })
-  const runTask = async (task: string, fn: (scoped: Bindings) => Promise<unknown>,
+  const runTask = async (task: string, fn: (scoped: Bindings, budget: { deadlineAt: number }) => Promise<unknown>,
     options: { critical?: boolean; timeoutMs?: number } = {}) => {
     const taskStarted = Date.now()
+    const taskTimeoutMs = dependencies.taskTimeoutMs ?? options.timeoutMs ?? 180_000
     let producerRan = false
     const result = await checkpoints.run(task, async scoped => {
       producerRan = true
+      // The checkpoint observer starts its timer as the producer starts; callees size their fetches to fit inside it.
+      const budget = { deadlineAt: Date.now() + taskTimeoutMs }
       if (dependencies.taskRunner) return { ...await dependencies.taskRunner(task, scoped), critical: options.critical !== false }
       // Capture the original producer terminal return before observability or
       // a later lease check. A timeout is not cancellation; a late original
@@ -831,7 +834,7 @@ export async function runPostVerifyCallbackChain(
       try {
         const adaptiveTask=task==='linucb-reward-ledger'||task==='adapt'
         if(adaptiveTask)enablePostVerifyAdaptiveEvidence(scoped,task)
-        const raw=await fn(scoped)
+        const raw=await fn(scoped,budget)
         const structured=raw&&typeof raw==='object'&&'summary' in raw&&'evidence' in raw?raw as {summary:string;evidence:Record<string,unknown>}:null
         const summary = structured?.summary??normalizeSummary(raw)
         const result:PostVerifyTaskResult={ task, summary, status: classifySchedulerSummary(summary), critical: options.critical !== false }
@@ -847,7 +850,7 @@ export async function runPostVerifyCallbackChain(
         return { task, summary: error instanceof Error ? error.message : String(error),
           status: 'error', critical: options.critical !== false }
       }
-    }, { timeoutMs: dependencies.taskTimeoutMs ?? options.timeoutMs ?? 180_000,
+    }, { timeoutMs: taskTimeoutMs,
       critical:options.critical,
       retrySafe: POST_VERIFY_RETRY_SAFE_TASKS.includes(task),
       independentEffect: POST_CLOSE_LIVE_EFFECT_TASKS.includes(task),
@@ -950,7 +953,7 @@ export async function runPostVerifyCallbackChain(
   }, { critical: false, timeoutMs: 180_000 }))
   if (yieldToContinuation()) return 'continue'
 
-  results.push(await runTask('model-ic-rolling', env => runModelIcRollingRefresh(env, ctx.runDate)))
+  results.push(await runTask('model-ic-rolling', (env, budget) => runModelIcRollingRefresh(env, ctx.runDate, budget)))
   if (productionEligible) {
     results.push(await runTask('artifact-auto-promotion', env => runArtifactAutoPromotion(env), { critical: false }))
   } else {

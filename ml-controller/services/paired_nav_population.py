@@ -31,7 +31,7 @@ def _manifest_rows(query, business_date, kind, page_size, *, reader=read_snapsho
 
 
 def read_candidate_population(*, business_date, query, series, page_size=50, now=None,
-        _snapshot_ids=None, _capture_snapshot_ids=None, _observed_at=None):
+        _snapshot_ids=None, _capture_snapshot_ids=None, _observed_at=None, _verified_comparisons=None):
     """Read-only denominator consumed by the same verified nightly evidence.
 
 Series remain separate per pair: no cross-version/date averaging. Legacy seals
@@ -245,6 +245,8 @@ Use the immutable execution packet's close; do not invent another calendar.
             from services.strategy_nav_retired_source import validate_unavailable_execution
             validate_unavailable_execution(saved, unavailable_allocations[parent_id])
             comparison = pairs[packet['pair_id']]['comparison']
+        elif _verified_comparisons and m['snapshot_id'] in _verified_comparisons:
+            comparison = _verified_comparisons[m['snapshot_id']]
         else:
             comparison = resolve_comparison(query=query, execution=saved)
         pair_id, session = packet['pair_id'], packet['session_date']

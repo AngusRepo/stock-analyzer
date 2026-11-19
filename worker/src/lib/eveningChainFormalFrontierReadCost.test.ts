@@ -4,6 +4,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { test } from 'node:test'
 import { auditFormalStrategyEvidenceFrontier, buildFormalFrontierClosureSql } from './eveningChainEvidenceClosure'
 import { STRATEGY_ROUTE_AFFINITY_VERSION } from './strategyRouteCalibration'
+import { matrixRunSummaryRefreshBinds, matrixRunSummaryRefreshSql, matrixRunSummaryUsableInline } from './strategyLabelMatrixRunSummary'
 
 // The formal frontier audit runs on every evening-chain closure over every canonical head since
 // 2026-08-18. Its five correlated matrix COUNTs each re-read all producers' cells of the head date
@@ -163,4 +164,21 @@ test('auditFormalStrategyEvidenceFrontier issues the single-pass closure SQL', a
   const closurePlan = (learning.prepare(`EXPLAIN QUERY PLAN ${closure}`).all(...binds) as Array<{ detail: string }>)
     .map((row) => row.detail)
   assert.equal(closurePlan.filter((row) => /^(SEARCH|SCAN) m\b/.test(row)).length, 1, closurePlan.join('\n'))
+})
+
+test('summarised heads answer from the header and never join their cells', () => {
+  const db = learningDb()
+  seed(db)
+  // A summary is usable only when every cell is on the header's contract: drop the stale-labeler cell.
+  db.prepare(`UPDATE strategy_label_matrix_v4 SET labeler_version='lab' WHERE producer_run_id='run-a'`).run()
+  const former = db.prepare(formerSql(values)).all(...binds)
+  db.prepare(matrixRunSummaryRefreshSql()).run(...matrixRunSummaryRefreshBinds('run-a', '2026-09-01'))
+  assert.equal(db.prepare(`SELECT ${matrixRunSummaryUsableInline('mr', AFF)} usable
+    FROM strategy_label_matrix_runs_v4 mr WHERE producer_run_id='run-a'`).get()?.usable, 1)
+  // With run-a's cells gone the result is unchanged: the summarised head is filtered out before the
+  // cell join, and the unsummarised heads keep the former single-statement counts.
+  db.prepare(`DELETE FROM strategy_label_matrix_v4 WHERE producer_run_id='run-a'`).run()
+  assert.deepEqual(db.prepare(buildFormalFrontierClosureSql(values)).all(...binds), former)
+  const currentPlan = plan(db, buildFormalFrontierClosureSql(values))
+  assert.match(currentPlan.join('\n'), /MATERIALIZE cell_heads/, currentPlan.join('\n'))
 })

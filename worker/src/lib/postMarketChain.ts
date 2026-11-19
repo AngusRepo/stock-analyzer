@@ -11,6 +11,7 @@ import { hydrateMatureMetaShadowDecisionRewards } from './metaLearningShadowDeci
 import { listLinUcbRewardSourceRowsAcrossDomains } from './metaLearningRewardLedger'
 import { clearOpenPositionIntradayPriceCache } from './paperIntradayPriceCache'
 import { classifySchedulerSummary, logSchedulerResult, type SchedulerRunStatus } from './schedulerRunLogger'
+import { R33_MONTHLY_PROMOTION_DESIGN_DISABLED } from './designDisabledSteps'
 import { recordWorkerTaskComputeProfile } from './computeProfileEvents'
 import { runAllocatorEvFeatureSnapshotBackfill } from './controllerResearchWorkflows'
 import {
@@ -69,6 +70,8 @@ type ChainedTask = {
   summary: string
   status: SchedulerRunStatus
   critical?: boolean
+  /** Shown in the chain summary in place of `skipped` for a step that is off by design. */
+  designDisabled?: true
 }
 
 const TASK_OBSERVABILITY_TIMEOUT_MS = 5_000
@@ -190,9 +193,14 @@ export async function logChainedTask(
   }
 }
 
-async function logSkippedHistoricalTask(env: Bindings, ctx: ChainContext, task: string): Promise<ChainedTask> {
+async function logSkippedHistoricalTask(env: Bindings, ctx: ChainContext, task: string,
+  designDisabled = false): Promise<ChainedTask> {
   await assertChainStageAuthority(ctx, `${task}:before_skipped_log`)
-  const summary = `skipped non-production-authoritative callback run_date=${ctx.runDate ?? 'unknown'}; ${task} is live-canonical only`
+  // Same skip either way; a design-disabled step must not match the live-canonical attention summary.
+  const summary = designDisabled
+    ? `${R33_MONTHLY_PROMOTION_DESIGN_DISABLED}; ${task} does not run in the post-close chain`
+      + ` (no serving pointer write); run_date=${ctx.runDate ?? 'unknown'} run_scope=${ctx.runScope ?? 'unknown'}`
+    : `skipped non-production-authoritative callback run_date=${ctx.runDate ?? 'unknown'}; ${task} is live-canonical only`
   await logSchedulerResult(env.KV, task, {
     status: 'skipped',
     summary,
@@ -202,7 +210,7 @@ async function logSkippedHistoricalTask(env: Bindings, ctx: ChainContext, task: 
     run_date: ctx.runDate,
     run_scope: ctx.runScope,
   }, env)
-  return { task, summary, status: 'skipped' }
+  return designDisabled ? { task, summary, status: 'skipped', designDisabled: true } : { task, summary, status: 'skipped' }
 }
 
 export async function runMetaLearningShadowClosure(env: Bindings, ctx: ChainContext): Promise<string> {
@@ -227,6 +235,7 @@ export async function runMetaLearningShadowClosure(env: Bindings, ctx: ChainCont
   if (decisionRows.length === 0) {
     return [
       `reward_hydrated=${hydration.hydrated_decisions}`,
+      `reward_unseekable_pending=${hydration.unseekable_pending_decisions}`,
       'decision_contexts=0',
       `registry_created=${registry.created.length}`,
       `registry_total=${registry.total}`,
@@ -264,6 +273,7 @@ export async function runMetaLearningShadowClosure(env: Bindings, ctx: ChainCont
   ])
   return [
     `reward_hydrated=${hydration.hydrated_decisions}`,
+    `reward_unseekable_pending=${hydration.unseekable_pending_decisions}`,
     `decision_contexts=${decisionRows.length}`,
     `registry_created=${registry.created.length}`,
     `registry_total=${registry.total}`,
@@ -400,7 +410,7 @@ async function logChainSummary(
   const hasError = results.some((row) => row.critical !== false && row.status === 'error')
   const waitingForQueuedStrategyLearning = task === 'post-verify-chain'
     && results.some((row) => row.task === 'strategy-learning' && row.status === 'triggered')
-  const summary = results.map((row) => `${row.task}:${row.status}`).join(' ')
+  const summary = results.map((row) => `${row.task}:${row.designDisabled ? 'disabled_by_design' : row.status}`).join(' ')
   const status = hasError ? 'error' : waitingForQueuedStrategyLearning ? 'running' : 'success'
   await logSchedulerResult(env.KV, task, {
     status,
@@ -944,7 +954,7 @@ export async function runPostVerifyCallbackChain(
   if (productionEligible) {
     results.push(await runTask('artifact-auto-promotion', env => runArtifactAutoPromotion(env), { critical: false }))
   } else {
-    results.push(await logSkippedHistoricalTask(env, ctx, 'artifact-auto-promotion'))
+    results.push(await logSkippedHistoricalTask(env, ctx, 'artifact-auto-promotion', true))
   }
   results.push(await runTask('s12-replay-backfill', env => enqueueS12ReplayBackfillTask(env, ctx), {
     timeoutMs: TASK_EXECUTION_TIMEOUT_MS,

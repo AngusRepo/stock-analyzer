@@ -158,6 +158,8 @@ export interface MetaShadowRewardHydrationReport {
   eligible_decisions: number
   hydrated_decisions: number
   unmatched_decisions: number
+  /** Pending decisions the seekable join cannot match (non-canonical business_date or symbol). */
+  unseekable_pending_decisions: number
   end_date: string
 }
 
@@ -195,6 +197,32 @@ export async function hydrateMatureMetaShadowDecisionRewards(
 ): Promise<MetaShadowRewardHydrationReport> {
   const limit = Math.max(1, Math.min(options.limit ?? 20000, 50000))
   const nowIso = options.nowIso ?? new Date().toISOString()
+  // Each pending decision seeks its (prediction_date, stock_id) predictions. The former
+  // CAST(p.stock_id AS TEXT)=d.symbol AND date(p.prediction_date)=date(d.business_date) join
+  // could not seek: it walked every verified prediction (7.14M rows, 7.7 s on 2026-11-18). The
+  // seek terms only narrow the old predicates, which stay as residual filters: stock_id is an
+  // INTEGER column, so CAST(p.stock_id AS TEXT)=d.symbol implies p.stock_id=CAST(d.symbol AS INTEGER);
+  // date(x)=date(y) equals x=y for the canonical YYYY-MM-DD both writers store (prod 2026-11-18:
+  // no predictions.prediction_date or meta_shadow_decisions.business_date of another shape).
+  // d.business_date<=date(?) is the same bound and lets idx_meta_shadow_decisions_pending (learning
+  // 0070) seek when it exists. Locked by metaLearningShadowHydrationReadCost.test.ts.
+  // The equivalence rests on those canonical shapes, so pending decisions outside them are counted
+  // (reward_unseekable_pending in the summary) instead of silently never hydrating. The count reads
+  // the pending rows only (idx_meta_shadow_decisions_pending; no raw date bound, so a suffixed
+  // business_date is counted too).
+  const unseekable = await db.prepare(`
+    SELECT COUNT(*) n
+      FROM meta_shadow_decisions d
+     WHERE d.counterfactual_reward IS NULL
+       AND date(d.business_date) <= date(?)
+       AND (d.business_date IS NOT date(d.business_date)
+            OR d.symbol IS NOT CAST(CAST(d.symbol AS INTEGER) AS TEXT))
+  `).bind(options.endDate).first<{ n: number }>()
+  const unseekablePending = Number(unseekable?.n ?? 0)
+  if (unseekablePending > 0) {
+    console.warn(`[meta-shadow] ${unseekablePending} pending decisions have a non-canonical business_date or symbol`
+      + ` and cannot hydrate through the seekable join (end_date=${options.endDate})`)
+  }
   const { results } = await db.prepare(`
     SELECT d.decision_id,
            d.business_date,
@@ -206,16 +234,19 @@ export async function hydrateMatureMetaShadowDecisionRewards(
            p.trade_pnl_pct,
            p.actual_return_pct
       FROM meta_shadow_decisions d
-      JOIN predictions p
-        ON CAST(p.stock_id AS TEXT) = d.symbol
+      JOIN predictions p INDEXED BY idx_pred_date_stock_model_generated
+        ON p.prediction_date = d.business_date
+       AND p.stock_id = CAST(d.symbol AS INTEGER)
+       AND CAST(p.stock_id AS TEXT) = d.symbol
        AND date(p.prediction_date) = date(d.business_date)
      WHERE d.counterfactual_reward IS NULL
+       AND d.business_date <= date(?)
        AND date(d.business_date) <= date(?)
        AND p.verified_at IS NOT NULL
        AND (p.direction_correct IS NOT NULL OR p.trade_pnl_pct IS NOT NULL OR p.actual_return_pct IS NOT NULL)
      ORDER BY date(d.business_date) ASC, d.decision_id ASC, p.model_name ASC
      LIMIT ?
-  `).bind(options.endDate, limit).all<HydrationSourceRow>()
+  `).bind(options.endDate, options.endDate, limit).all<HydrationSourceRow>()
 
   const buckets = new Map<string, {
     row: HydrationSourceRow
@@ -263,6 +294,7 @@ export async function hydrateMatureMetaShadowDecisionRewards(
     eligible_decisions: buckets.size,
     hydrated_decisions: hydrated,
     unmatched_decisions: Math.max(0, buckets.size - hydrated),
+    unseekable_pending_decisions: unseekablePending,
     end_date: options.endDate,
   }
 }

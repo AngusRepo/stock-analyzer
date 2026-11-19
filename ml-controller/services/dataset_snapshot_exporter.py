@@ -46,6 +46,9 @@ def _empty_frame(columns: list[str]) -> pl.DataFrame:
     return pl.DataFrame(schema={column: pl.Utf8 for column in columns})
 
 
+FUNDAMENTALS_CHUNK_DAYS = 30
+
+
 def _snapshot_query_workers() -> int:
     return int(os.environ.get("DATASET_SNAPSHOT_QUERY_WORKERS", "4"))
 
@@ -443,6 +446,30 @@ def _query_monthly_revenue(start_date: str, end_date: str) -> pl.DataFrame:
     ))
 
 
+def _query_canonical_fundamentals_hot(sql: str, end_date: str) -> list[dict]:
+    # The whole hot history in one response passes D1's 50 MB limit (7500) as daily_valuation
+    # grows ~2k rows a day; read the same predicate in available_date windows instead.
+    first = MARKET_D1_CLIENT.query(
+        "SELECT MIN(available_date) AS d FROM canonical_fundamental_features", [], timeout=120.0)
+    start = first[0].get('d') if first else None
+    if not start or start > end_date:
+        return []
+    window_sql = sql.replace("WHERE available_date <= ?", "WHERE available_date >= ? AND available_date <= ?", 1)
+    if window_sql == sql:
+        raise ValueError('canonical_fundamentals_window_sql_invalid')
+    chunks = _date_chunks(start, end_date, FUNDAMENTALS_CHUNK_DAYS)
+
+    def read(chunk: tuple[str, str]) -> list[dict]:
+        return MARKET_D1_CLIENT.query(window_sql, [chunk[0], chunk[1], end_date], timeout=120.0)
+
+    from services.verified_read_observation import observation_active
+    workers = 1 if observation_active() else max(1, min(_snapshot_query_workers(), len(chunks)))
+    if workers == 1:
+        return [row for part in map(read, chunks) for row in part]
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return [row for part in pool.map(read, chunks) for row in part]
+
+
 def _query_canonical_fundamentals(end_date: str) -> pl.DataFrame:
     from services.retention_market_history import archived_market_projection
     sql = """
@@ -454,7 +481,7 @@ def _query_canonical_fundamentals(end_date: str) -> pl.DataFrame:
           AND source IN ('finlab.fundamental_factor_diversity', 'finlab.daily_valuation')
         ORDER BY stock_id, available_date, period
         """
-    rows = MARKET_D1_CLIENT.query(sql, [end_date, end_date], timeout=120.0)
+    rows = _query_canonical_fundamentals_hot(sql, end_date)
     rows.extend(archived_market_projection('canonical_fundamental_features', sql, [end_date, end_date],
         '0001-01-01', end_date, query_hot=MARKET_D1_CLIENT.query))
     rows.sort(key=lambda r: (str(r['stock_id']), r['available_date'], r['period']))

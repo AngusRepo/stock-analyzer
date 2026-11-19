@@ -66,6 +66,7 @@ const JOB_DEF_METADATA: JobDef[] = [
   { id: 'regime-compute', name: 'HMM Regime', schedule: 'After indicators, before screener', cron: '', group: 'pipeline_chain', chainIndex: 6 },
   { id: 'hmm-maintenance', name: 'HMM Model Maintenance', schedule: 'Daily 14:00 / 20:00', cron: '0 6,12 * * *', group: 'pipeline_chain' },
   { id: 'strategy-learning-mature-evidence', name: 'Strategy Maturity Evidence', schedule: 'After same-date HMM, before screener', cron: '', group: 'pipeline_chain', chainIndex: 6.5 },
+  { id: 'sector-flow-pre-screener', name: 'Sector Flow', schedule: 'After maturity evidence, before screener', cron: '', group: 'pipeline_chain', chainIndex: 6.6 },
   { id: 'screener', name: 'Screener', schedule: 'After same-date HMM regime', cron: '', group: 'pipeline_chain', chainIndex: 7 },
   { id: 'screener-v2-watchdog', name: 'Screener Callback Watchdog', schedule: manifestRepeatingWindow('screener-v2-watchdog').label, cron: manifestRepeatingWindow('screener-v2-watchdog').cron, group: 'pipeline_chain', chainIndex: 7 },
   { id: 'strategy-learning-watchdog', name: 'Strategy Learning Recovery Watchdog', schedule: 'Inside Screener Callback Watchdog', cron: '', group: 'pipeline_chain', chainIndex: 24 },

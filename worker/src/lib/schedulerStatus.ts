@@ -1,4 +1,5 @@
 import { pipelineProgressForDisplay } from './pipelineProgress'
+import { isDesignDisabledSummary } from './designDisabledSteps'
 import { loadPipelineInputWork } from './pipelineInputWork'
 import { finlabProgressForDisplay } from './finlabStageProgress'
 /**
@@ -776,6 +777,8 @@ export function resolveSchedulerLogStatus(
 /** A skip that stands in for work which should have run for real; never a neutral no-op. */
 export function schedulerSkipAttentionReason(log?: CronLogEntry): string | null {
   const summary = log?.summary ?? ''
+  // Off by design (R33 monthly promotion owns it): the intended no-op, not missing work.
+  if (isDesignDisabledSummary(summary)) return null
   const replay = /non-production-authoritative callback run_date=(\d{4}-\d{2}-\d{2}); \S+ is live-canonical only/.exec(summary)
   if (replay) return `live-canonical task did not run: run_date=${replay[1]} only reached it as a historical replay`
   if (log?.task === 'strategy-learning-watchdog' && summary.includes('recoverable_run_missing')) {

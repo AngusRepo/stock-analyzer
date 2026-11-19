@@ -91,6 +91,7 @@ const JOB_DEF_METADATA: JobDef[] = [
   { id: 'strategy-learning', name: 'Strategy Learning', schedule: 'After meta shadow / historical reruns', cron: '', group: 'pipeline_chain', chainIndex: 24 },
 
   { id: 'us-leading', name: 'US Leading', schedule: 'Mon-Fri 06:30', cron: '30 22 * * SUN-THU', group: 'daily' },
+  { id: 'kv-config-drift', name: 'KV Config Drift', schedule: 'Daily 06:00', cron: '0 22 * * *', group: 'daily' },
   { id: 'news-analyst', name: 'News Analyst', schedule: 'Mon-Fri 06:45', cron: '45 22 * * SUN-THU', group: 'daily' },
   { id: 'morning-setup', name: 'Morning Setup / Debate', schedule: 'Mon-Fri 07:15', cron: '15 23 * * SUN-THU', group: 'daily' },
   { id: 'premarket-evidence-watchdog', name: 'Premarket Evidence Recovery', schedule: 'Mon-Fri 07:00-08:50', cron: '*/10 7-8 * * 1-5', timeZone: 'Asia/Taipei', group: 'daily' },

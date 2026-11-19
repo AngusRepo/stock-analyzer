@@ -158,6 +158,17 @@ export const SCHEDULER_DEPENDENCY_MAP: Record<string, SchedulerDependencySpec> =
     operatorRisk: 'high',
     recommendation: 'Keep inside the existing post-market watchdog cadence until the durable queue can self-resume after DLQ exhaustion.',
   },
+  'kv-config-drift': {
+    task: 'kv-config-drift',
+    owner: 'gcp_scheduler',
+    consolidationClass: 'keep_scheduler',
+    currentFunction: 'Read-only nightly digest of trading:config and trading:risk_config against config/kv/manifest.json (E-7); reports match or drift, never writes KV.',
+    upstream: [],
+    downstream: [],
+    requiredBeforeDisable: ['another owner reports KV config drift against the manifest every day'],
+    operatorRisk: 'low',
+    recommendation: 'Keep as an independent daily maintenance root; an expected drift (Optuna, cutover) is closed by uploading the value to GCS and pinning the manifest by PR.',
+  },
   'audit-json-retention': {
     task: 'audit-json-retention',
     owner: 'gcp_scheduler',

@@ -6,8 +6,10 @@ import {
   closeEveningChainRootAndLog,
   closeEveningChainRootIfComplete,
   runEveningChainRootDeadlineSweepOnce,
+  settleExpiredPremarketWaitingExecutions,
   sweepExpiredEveningChainRoots,
 } from './eveningChainRootClosure'
+import { expirePremarketWaitingExecution } from './pipelineStageLease'
 import {
   admitSchedulerChildTicket,
   admitSchedulerExecutionTicket,
@@ -216,6 +218,7 @@ async function closureFixture() {
   await db.prepare(`CREATE TABLE pipeline_stage_runs (
     business_date TEXT NOT NULL, stage TEXT NOT NULL, canonical_run_id TEXT NOT NULL,
     status TEXT NOT NULL, cursor_key TEXT, lease_owner TEXT, lease_expires_at TEXT,
+    last_error TEXT, completed_at TEXT, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (business_date, stage))`).run()
   await db.prepare(`CREATE TABLE strategy_learning_runs (
     business_date TEXT PRIMARY KEY, canonical_run_id TEXT NOT NULL, producer_run_id TEXT, status TEXT NOT NULL,
@@ -415,4 +418,234 @@ test('terminal stage errors close the durable root, a retried throw does not; te
   const gcpTasks = fs.readFileSync('src/lib/adminTriggerGcpTasks.ts', 'utf8')
   const watchdog = gcpTasks.slice(gcpTasks.indexOf("'allocator-ev-lifecycle-watchdog': async () => {"), gcpTasks.indexOf("'paper-active-postmarket'"))
   assert.ok(watchdog.indexOf('runEveningChainRootDeadlineSweepOnce(') < watchdog.indexOf('runAllocatorEvLifecycleWatchdog(c.env'))
+})
+
+// TW 21:00 on `today`, when the nightly sweep runs.
+const twNight = (today: string) => Date.parse(`${today}T13:00:00Z`)
+
+async function parkPremarketWait(db: D1Database, businessDate: string, runId: string): Promise<void> {
+  await db.prepare(`INSERT INTO pipeline_stage_runs (business_date,stage,canonical_run_id,status,last_error,lease_owner,lease_expires_at)
+    VALUES (?,'pipeline_execution',?,'waiting','awaiting_premarket',?,datetime('now','-1 days'))`).bind(businessDate, runId, runId).run()
+  await db.prepare(`INSERT INTO pipeline_stage_runs (business_date,stage,canonical_run_id,status) VALUES (?,'pipeline_progress',?,'running')`)
+    .bind(businessDate, runId).run()
+}
+
+async function stageRow(db: D1Database, businessDate: string, stage: string) {
+  return db.prepare(`SELECT canonical_run_id,status,last_error,lease_owner,completed_at FROM pipeline_stage_runs WHERE business_date=? AND stage=?`)
+    .bind(businessDate, stage).first<{ canonical_run_id: string; status: string; last_error: string | null; lease_owner: string | null; completed_at: string | null }>()
+}
+
+test('an expired premarket wait closes the execution, its child rows and its root with an alert; a repeat is a no-op', async () => {
+  const f = await closureFixture()
+  const realFetch = globalThis.fetch
+  const alerts: string[] = []
+  globalThis.fetch = (async (_url: unknown, init?: { body?: unknown }) => {
+    alerts.push(String(init?.body ?? ''))
+    return new Response('ok')
+  }) as typeof fetch
+  try {
+    const kv = new MapKv()
+    const day = '2026-11-13' // Friday: only Monday 11-16's premarket could resume it.
+    await f.admitRoot(day)
+    await parkPremarketWait(f.db, day, 'run-1113')
+    const summary = await runEveningChainRootDeadlineSweepOnce(kv as unknown as KVNamespace, f.db, '2026-11-17', {
+      nowMs: twNight('2026-11-17'), alertEnv: { DISCORD_WEBHOOK_URL: 'https://alerts.invalid/hook' },
+    })
+    assert.match(summary, /premarket_wait_settled=1 waits=2026-11-13:execution_closed:root_closed_error/)
+    const execution = await stageRow(f.db, day, 'pipeline_execution')
+    assert.equal(execution?.status, 'error')
+    assert.equal(execution?.last_error, 'premarket_resume_window_expired:resume_trade_date=2026-11-16')
+    assert.equal(execution?.lease_owner, null)
+    assert.ok(execution?.completed_at)
+    assert.equal((await stageRow(f.db, day, 'pipeline_progress'))?.status, 'error')
+    const root = await f.rootOf(day)
+    assert.equal(root?.status, 'error')
+    assert.match(String(root?.last_summary), /blockers=pipeline_execution:error.* reason=premarket_resume_window_expired:resume_trade_date=2026-11-16$/)
+    assert.equal(kv.receipt(day)?.status, 'error')
+    assert.match(String(kv.receipt(day)?.summary), /reason=premarket_resume_window_expired/)
+    assert.equal(alerts.length, 1)
+    assert.match(alerts[0], /premarket_resume_window_expired/)
+
+    assert.deepEqual(await settleExpiredPremarketWaitingExecutions(kv as unknown as KVNamespace, f.db, '2026-11-18', {
+      nowMs: twNight('2026-11-18'),
+    }), [], 'idempotent: nothing left to settle')
+    assert.equal(alerts.length, 1)
+  } finally {
+    globalThis.fetch = realFetch
+    await f.mf.dispose()
+  }
+})
+
+test('a wait whose resume session is today, later, or unconfirmed is never closed', async () => {
+  const f = await closureFixture()
+  try {
+    const kv = new MapKv()
+    const settle = (today: string) => settleExpiredPremarketWaitingExecutions(kv as unknown as KVNamespace, f.db, today, { nowMs: twNight(today) })
+    await f.admitRoot('2026-11-13')
+    await parkPremarketWait(f.db, '2026-11-13', 'run-1113')
+    assert.deepEqual(await settle('2026-11-14'), [], 'Saturday: Monday\'s premarket is still ahead')
+    assert.deepEqual(await settle('2026-11-16'), [], 'the resume session is today: not selected even after its cutoff')
+    // A closure on the resume session moves the window to the next session.
+    kv.values.set('holiday:2026-11-16', '1')
+    assert.deepEqual(await settle('2026-11-17'), [])
+    assert.equal((await stageRow(f.db, '2026-11-13', 'pipeline_execution'))?.status, 'waiting')
+    assert.equal((await f.rootOf('2026-11-13'))?.status, 'triggered')
+    // Waiting for today's evening run, another wait reason, and a date with a live lease are left alone.
+    await parkPremarketWait(f.db, '2026-11-18', 'run-1118')
+    await f.db.prepare(`INSERT INTO pipeline_stage_runs (business_date,stage,canonical_run_id,status) VALUES ('2026-11-10','pipeline_execution','run-1110','waiting')`).run()
+    await parkPremarketWait(f.db, '2026-11-11', 'run-1111')
+    await f.db.prepare(`INSERT INTO pipeline_stage_runs (business_date,stage,canonical_run_id,status,lease_owner,lease_expires_at)
+      VALUES ('2026-11-11','post_verify_chain','run-1111','running','owner',datetime('now','+5 minutes'))`).run()
+    const settled = await settle('2026-11-18')
+    assert.deepEqual(settled.map((row) => [row.business_date, row.resume_trade_date, row.execution]), [['2026-11-13', '2026-11-17', 'closed']])
+    for (const [day, status] of [['2026-11-18', 'waiting'], ['2026-11-10', 'waiting'], ['2026-11-11', 'waiting']]) {
+      assert.equal((await stageRow(f.db, day, 'pipeline_execution'))?.status, status, day)
+    }
+  } finally { await f.mf.dispose() }
+})
+
+test('the expiry is fenced by canonical run and parked state', async () => {
+  const f = await closureFixture()
+  try {
+    const day = '2026-11-13'
+    await parkPremarketWait(f.db, day, 'run-1113')
+    const error = 'premarket_resume_window_expired:resume_trade_date=2026-11-16'
+    assert.equal(await expirePremarketWaitingExecution(f.db, { businessDate: day, canonicalRunId: 'run-stale', error }), false)
+    assert.equal((await stageRow(f.db, day, 'pipeline_execution'))?.status, 'waiting')
+    assert.equal((await stageRow(f.db, day, 'pipeline_progress'))?.status, 'running', 'children follow only their own run')
+    await f.db.prepare(`UPDATE pipeline_stage_runs SET status='running',last_error=NULL WHERE business_date=? AND stage='pipeline_execution'`).bind(day).run()
+    assert.equal(await expirePremarketWaitingExecution(f.db, { businessDate: day, canonicalRunId: 'run-1113', error }), false, 'a resumed run is not parked')
+    await f.db.prepare(`UPDATE pipeline_stage_runs SET status='waiting',last_error='awaiting_premarket' WHERE business_date=? AND stage='pipeline_execution'`).bind(day).run()
+    assert.equal(await expirePremarketWaitingExecution(f.db, { businessDate: day, canonicalRunId: 'run-1113', error }), true)
+    assert.equal(await expirePremarketWaitingExecution(f.db, { businessDate: day, canonicalRunId: 'run-1113', error }), false, 'idempotent')
+  } finally { await f.mf.dispose() }
+})
+
+test('an interrupted root closure is retried root-only; a root that already failed keeps its own error', async () => {
+  const f = await closureFixture()
+  try {
+    const kv = new MapKv()
+    await f.admitRoot('2026-11-12')
+    await parkPremarketWait(f.db, '2026-11-12', 'run-1112')
+    // The execution closed but the root closure never ran (worker restart between the two writes).
+    assert.equal(await expirePremarketWaitingExecution(f.db, {
+      businessDate: '2026-11-12', canonicalRunId: 'run-1112', error: 'premarket_resume_window_expired:resume_trade_date=2026-11-13',
+    }), true)
+    const failed = await f.admitRoot('2026-11-11')
+    await updateSchedulerExecutionTicket(f.db, {
+      ticketId: failed.ticket_id, runId: failed.run_id, status: 'error', authority: 'scheduler_http',
+      summary: 'dispatch timeout', error: 'TimeoutError',
+    })
+    await parkPremarketWait(f.db, '2026-11-11', 'run-1111')
+    const settled = await settleExpiredPremarketWaitingExecutions(kv as unknown as KVNamespace, f.db, '2026-11-17', { nowMs: twNight('2026-11-17') })
+    assert.deepEqual(settled.map((row) => [row.business_date, row.execution, row.root?.status ?? null]),
+      [['2026-11-11', 'closed', null], ['2026-11-12', 'root_retry', 'closed_error']])
+    assert.equal((await stageRow(f.db, '2026-11-11', 'pipeline_execution'))?.status, 'error')
+    assert.equal((await f.rootOf('2026-11-11'))?.last_error, 'TimeoutError')
+    assert.equal(kv.receipt('2026-11-11'), null, 'no second receipt for an already-failed root')
+    assert.equal((await f.rootOf('2026-11-12'))?.status, 'error')
+    assert.match(String((await f.rootOf('2026-11-12'))?.last_summary), /reason=premarket_resume_window_expired$/)
+    assert.deepEqual(await settleExpiredPremarketWaitingExecutions(kv as unknown as KVNamespace, f.db, '2026-11-18', { nowMs: twNight('2026-11-18') }), [])
+  } finally { await f.mf.dispose() }
+})
+
+test('a past resume session counts only with its market-DB session evidence', async () => {
+  const f = await closureFixture()
+  const market = new Miniflare({ modules: true, script: 'export default { fetch() { return new Response("ok") } }', d1Databases: ['MARKET'] })
+  try {
+    const kv = new MapKv()
+    const marketDb = await market.getD1Database('MARKET')
+    await marketDb.prepare(`CREATE TABLE canonical_market_daily (stock_id TEXT, source TEXT, date TEXT, PRIMARY KEY (stock_id, source, date))`).run()
+    await f.admitRoot('2026-11-13')
+    await parkPremarketWait(f.db, '2026-11-13', 'run-1113')
+    const settle = () => settleExpiredPremarketWaitingExecutions(kv as unknown as KVNamespace, f.db, '2026-11-17', { nowMs: twNight('2026-11-17'), marketDb })
+    assert.deepEqual(await settle(), [], 'no 0050 bar for 11-16: the resume session moves to 11-17 (today)')
+    assert.equal((await stageRow(f.db, '2026-11-13', 'pipeline_execution'))?.status, 'waiting')
+    await marketDb.prepare(`INSERT INTO canonical_market_daily VALUES ('0050','finlab.price','2026-11-16')`).run()
+    assert.deepEqual((await settle()).map((row) => [row.resume_trade_date, row.execution]), [['2026-11-16', 'closed']])
+  } finally {
+    await market.dispose()
+    await f.mf.dispose()
+  }
+})
+
+test('a premarket that did resume the run keeps it waiting and alerts once: a lost completion callback is not an expired window', async () => {
+  const f = await closureFixture()
+  const realFetch = globalThis.fetch
+  const alerts: string[] = []
+  globalThis.fetch = (async (_url: unknown, init?: { body?: unknown }) => {
+    alerts.push(String(init?.body ?? ''))
+    return new Response('ok')
+  }) as typeof fetch
+  try {
+    const kv = new MapKv()
+    const alertEnv = { DISCORD_WEBHOOK_URL: 'https://alerts.invalid/hook' }
+    const settle = (premarketPublished?: () => Promise<boolean>) => settleExpiredPremarketWaitingExecutions(
+      kv as unknown as KVNamespace, f.db, '2026-11-17', { nowMs: twNight('2026-11-17'), premarketPublished, alertEnv })
+    const waitReceipt = () => JSON.parse(kv.values.get('scheduler:run:evening-chain-premarket-wait:2026-11-13') ?? 'null')
+    await f.admitRoot('2026-11-13')
+    await parkPremarketWait(f.db, '2026-11-13', 'run-1113')
+    // Monday's publish stage succeeded for this exact run.
+    await f.db.prepare(`INSERT INTO pipeline_stage_runs (business_date,stage,canonical_run_id,status,cursor_key)
+      VALUES ('2026-11-16','premarket_v3:publish:0','2026-11-16:premarket-v3','success',?)`)
+      .bind(JSON.stringify({ input: { signal_date: '2026-11-13', l3_receipt: { run_id: 'run-1113' } }, output: { ready: true } })).run()
+    assert.deepEqual((await settle()).map((row) => row.execution), ['kept_resumed'])
+    assert.equal(alerts.length, 1)
+    assert.match(alerts[0], /premarket_resumed_completion_callback_missing:resume_trade_date=2026-11-16/)
+    assert.equal(waitReceipt()?.status, 'error')
+    assert.equal(waitReceipt()?.run_id, 'run-1113')
+    assert.equal(kv.receipt('2026-11-13'), null, 'the evening-chain receipt is not written while its root stays open')
+    // The next nights repeat nothing, even after the logger's 24h dedup key expires.
+    kv.values.delete('cron:alert:evening-chain-premarket-wait:2026-11-13')
+    assert.deepEqual((await settle()).map((row) => row.execution), ['kept_resumed'])
+    assert.equal(alerts.length, 1)
+
+    await f.db.prepare(`UPDATE pipeline_stage_runs SET cursor_key='{"input":{"l3_receipt":{"run_id":"run-other"}}}' WHERE business_date='2026-11-16'`).run()
+    // No D1 evidence: the controller publication decides.
+    assert.deepEqual((await settle(async () => true)).map((row) => row.execution), ['kept_resumed'])
+    assert.equal(alerts.length, 1, 'same reason, same run: no repeat')
+    // An unreadable probe keeps the run with its own reason.
+    kv.values.delete('cron:alert:evening-chain-premarket-wait:2026-11-13')
+    assert.deepEqual((await settle(async () => { throw new Error('controller_down') })).map((row) => row.execution), ['kept_resumed'])
+    assert.equal(alerts.length, 2)
+    assert.match(alerts[1], /premarket_publication_unreadable:resume_trade_date=2026-11-16/)
+    assert.equal((await stageRow(f.db, '2026-11-13', 'pipeline_execution'))?.status, 'waiting')
+    assert.equal((await f.rootOf('2026-11-13'))?.status, 'triggered')
+    assert.deepEqual((await settle(async () => false)).map((row) => row.execution), ['closed'])
+    assert.equal((await stageRow(f.db, '2026-11-13', 'pipeline_execution'))?.status, 'error')
+  } finally {
+    globalThis.fetch = realFetch
+    await f.mf.dispose()
+  }
+})
+
+test('a failed settlement still runs the root sweep but writes no marker; an unresolved calendar keeps the run', async () => {
+  const f = await closureFixture()
+  try {
+    const kv = new MapKv()
+    await f.admitRoot('2026-11-02')
+    await f.admitRoot('2026-11-13')
+    await parkPremarketWait(f.db, '2026-11-13', 'run-1113')
+    const failingBatch = new Proxy(f.db, {
+      get(target, key) {
+        if (key === 'batch') return async () => { throw new Error('d1_batch_down') }
+        const value = Reflect.get(target, key)
+        return typeof value === 'function' ? value.bind(target) : value
+      },
+    }) as D1Database
+    await assert.rejects(runEveningChainRootDeadlineSweepOnce(kv as unknown as KVNamespace, failingBatch, '2026-11-17', {
+      nowMs: twNight('2026-11-17'),
+    }), /premarket_waiting_settlement_failed:2026-11-13:d1_batch_down/)
+    assert.equal((await f.rootOf('2026-11-02'))?.status, 'error', 'the root deadline sweep still ran')
+    assert.equal(kv.values.get('evening-chain:root-deadline-sweep:2026-11-17'), undefined, 'next tick retries')
+    assert.equal((await stageRow(f.db, '2026-11-13', 'pipeline_execution'))?.status, 'waiting')
+
+    const marketDown = { prepare() { throw new Error('market_db_down') } } as unknown as D1Database
+    assert.deepEqual(await settleExpiredPremarketWaitingExecutions(kv as unknown as KVNamespace, f.db, '2026-11-17', {
+      nowMs: twNight('2026-11-17'), marketDb: marketDown,
+    }), [])
+    assert.equal((await stageRow(f.db, '2026-11-13', 'pipeline_execution'))?.status, 'waiting', 'unresolved calendar: kept waiting')
+    assert.match(await runEveningChainRootDeadlineSweepOnce(kv as unknown as KVNamespace, f.db, '2026-11-17', { nowMs: twNight('2026-11-17') }),
+      /premarket_wait_settled=1 waits=2026-11-13:execution_closed:root_closed_error/)
+  } finally { await f.mf.dispose() }
 })

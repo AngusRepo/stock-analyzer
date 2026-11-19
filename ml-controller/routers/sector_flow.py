@@ -123,6 +123,10 @@ class SectorFlowResponse(BaseModel):
     stock_count: int
     sector_count: int
 
+class SectorFlowDailyClosureRequest(BaseModel):
+    date: str
+
+
 class TpexProxyRequest(BaseModel):
     date: str | None = None
 
@@ -247,6 +251,32 @@ async def backfill_rrg(req: RrgBackfillRequest):
             results.append({"as_of_date": d, "error": str(e)})
 
     return {"backfilled": len(results), "results": results}
+
+
+@router.post("/sector-flow/daily-closure")
+async def sector_flow_daily_closure(req: SectorFlowDailyClosureRequest):
+    """Close sector_flow(D) before the screener reads it; a closed date is not recomputed."""
+    from services.sector_flow_service import SectorFlowClosureInProgress, ensure_sector_flow_daily_closure
+
+    today = _today_tw()
+    try:
+        valid = datetime.strptime(req.date, "%Y-%m-%d").strftime("%Y-%m-%d") == req.date
+    except ValueError:
+        valid = False
+    # Native closure only: today's session, or yesterday's when the chain runs past midnight.
+    earliest = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=1)).strftime("%Y-%m-%d")
+    if not valid or not earliest <= req.date <= today:
+        raise HTTPException(status_code=422, detail=f"sector_flow_daily_closure_date_invalid:{req.date}")
+    try:
+        return await asyncio.to_thread(
+            ensure_sector_flow_daily_closure, req.date,
+            producer_position="pre_screener_same_session",
+        )
+    except SectorFlowClosureInProgress as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except Exception as exc:
+        logger.error(f"sector_flow daily closure failed for {req.date}: {exc}")
+        raise HTTPException(status_code=500, detail=f"sector_flow_daily_closure_failed:{exc}"[:500])
 
 
 # ─── TPEX Proxy: Worker 無法直接呼叫 TPEX（被擋），透過 Controller 代理 ────────

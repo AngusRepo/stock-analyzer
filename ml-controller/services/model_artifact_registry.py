@@ -3458,6 +3458,16 @@ def run_active8_ensemble_bundle_promotion_controller(
         if isinstance(ensemble_payload.get("observation_artifacts"), dict)
         else {}
     )
+    from services.r33_ensemble import is_r33
+    if is_r33(ensemble_payload) and paper_admission is None:
+        # R33 is published only under its Paper cutover admission; there is no R33 NAV adoption.
+        return {"status": "blocked", "decision": "r33_requires_paper_admission", "can_promote": False,
+                "training_run_id": training_run_id}
+    if is_r33(ensemble_payload):
+        # An R33 object binds artifact_id/version/checksum only (r33_ensemble._ARTIFACT); its
+        # sealed bundle is full-fit releases, the only candidate_type base_rows admits below.
+        expected_observation = {name: {**(item if isinstance(item, dict) else {}), "candidate_type": "oof_full_fit_release"}
+                                for name, item in expected_observation.items()}
     expected_models = set(model_order(expected_observation, complete=True))
     base_rows = [
         row for row in registry_rows
@@ -3542,8 +3552,10 @@ def run_active8_ensemble_bundle_promotion_controller(
         if not transaction['recovered_existing_commit'] and paper_admission is not None:
             # New Paper admission requires ranking PASS; a FAIL is admitted only
             # by an explicit override carried inside the checksummed admission.
-            ranking = assess_ensemble_qualifications(ensemble_payload)['ranking']
-            if ranking['decision'] != 'PASS':
+            # R33 has no active8 ranking stats: its gate is the sealed OOF checks, which
+            # prepare_paper_adoption requires through the cutover evidence (verify_serving).
+            ranking = None if is_r33(ensemble_payload) else assess_ensemble_qualifications(ensemble_payload)['ranking']
+            if ranking is not None and ranking['decision'] != 'PASS':
                 override = paper_admission.get('ranking_override') if isinstance(paper_admission, dict) else None
                 if override is None or not _valid_paper_ranking_override(override):
                     return {'status': 'blocked', 'decision': 'active8_paper_ranking_not_pass' if override is None

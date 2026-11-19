@@ -176,9 +176,9 @@ assert(
 assert(
   updateOrchestrator.includes('retriablePartialFailure') &&
     updateOrchestrator.includes('/partial_failed/i') &&
-    updateOrchestrator.includes('const retriableFailure = retriablePartialFailure || lateLaneNotReady') &&
+    updateOrchestrator.includes('const retriableFailure = retriablePartialFailure || lateLaneNotReady || transientFailure') &&
     updateOrchestrator.includes('allowFetchedLaneRefetch: retriablePartialFailure || lateLane') &&
-    updateOrchestrator.includes("retriablePartialFailure ? 'partial failure' : 'pending dispatch'"),
+    updateOrchestrator.includes("retriablePartialFailure ? 'partial failure' : transientFailure ? 'transient failure' : 'pending dispatch'"),
   'FinLab watchdog must retry source-key-scoped partial failures, including incomplete keys inside a fetched lane',
 )
 assert(

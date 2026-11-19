@@ -129,6 +129,10 @@ assert(
   'post-verify critical tasks must throw into durable stage last_error and can never finalize an error return as success',
 )
 assert(
+  postMarketChain.includes("'daily-report', env => generateDailyReport(env, ctx.runDate)"),
+  'LIVE-AUTH-B: the post-close daily report must close the business date its evidence reads back, not the wall-clock day',
+)
+assert(
   postMarketChain.includes('const productionEligible = productionAuthority.allowed'),
   'production-only tasks must use resolved canonical authority so historical reruns cannot dirty current reports',
 )

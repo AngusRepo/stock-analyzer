@@ -207,6 +207,28 @@ export async function failPipelineExecutionDispatch(
   return Boolean(closed?.results?.[0])
 }
 
+/**
+ * An execution parked by acceptPipelineL3Seal can only resume inside its premarket window. Once the caller
+ * has decided that window is over, the exact parked run closes as error; any other state or run is left alone.
+ */
+export async function expirePremarketWaitingExecution(
+  db: D1Database,
+  input: { businessDate: string; canonicalRunId: string; error: string },
+): Promise<boolean> {
+  const [closed] = await db.batch<{ status: PipelineStageStatus }>([
+    db.prepare(`
+    UPDATE pipeline_stage_runs
+       SET status='error', last_error=?, lease_owner=NULL, lease_expires_at=NULL,
+           completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+     WHERE business_date=? AND stage='pipeline_execution'
+       AND canonical_run_id=? AND status='waiting' AND last_error='awaiting_premarket'
+    RETURNING status
+  `).bind(input.error.slice(0, 1000), input.businessDate, input.canonicalRunId),
+    closePipelineExecutionChildRows(db, { businessDate: input.businessDate, canonicalRunId: input.canonicalRunId, status: 'error' }),
+  ])
+  return Boolean(closed?.results?.[0])
+}
+
 export async function acceptPipelineExecutionCallback(
   db: D1Database,
   input: {

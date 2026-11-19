@@ -4742,17 +4742,34 @@ def finlab_v4_backfill(payload: dict) -> dict:
     import contextlib
     import io
     import json
+    import shutil
     import sys
     import time
     import traceback
+    import uuid
+    from pathlib import Path
 
     for path in ("/root", "/root/tools"):
         if path not in sys.path:
             sys.path.insert(0, path)
+    from tools.finlab_capture_guard import callback_error, clear_deadline, install_deadline, redact
 
     started = time.time()
     run_id = str(payload.get("run_id") or "auto")
     dispatch_attempt = int(payload.get("dispatch_attempt") or 1)
+    # Daily captures took 20-30 min (11/11-11/17). A fetch still running after the budget stops and
+    # reports, instead of Modal killing the call at timeout=7200 without any callback.
+    daily_capture = bool(payload.get("daily_refresh") or payload.get("continue_evening_chain"))
+    deadline_seconds = 3600.0 if daily_capture else 6600.0
+    try:
+        deadline_seconds = float(payload.get("capture_deadline_seconds") or deadline_seconds)
+    except (TypeError, ValueError):
+        pass
+    install_deadline(min(max(deadline_seconds, 60.0), 6600.0))
+    # Each call writes its own directory. The run dir must stay named <run_id> (it is the capture_id),
+    # so a resend of the same run_id that lands on this warm container cannot find the previous
+    # attempt's output (daily_composition_output_already_exists).
+    output_root = Path(str(payload.get("output_dir") or "/tmp/finlab_remote_backfill")) / f"attempt-{dispatch_attempt}-{uuid.uuid4().hex[:12]}"
     controller_env = {
         "FINLAB_CONTROLLER_D1_QUERY_URL": payload.get("controller_d1_query_url"),
         "FINLAB_CONTROLLER_D1_BATCH_URL": payload.get("controller_d1_batch_url"),
@@ -4783,7 +4800,7 @@ def finlab_v4_backfill(payload: dict) -> dict:
         "finlab_v4_remote_backfill.py",
         "--years", str(int(payload.get("years") or 3)),
         "--run-id", run_id,
-        "--output-dir", str(payload.get("output_dir") or "/tmp/finlab_remote_backfill"),
+        "--output-dir", str(output_root),
         "--gcs-prefix", str(payload.get("gcs_prefix") or "finlab/v4/backfill"),
         "--canonical-window-days", str(int(payload.get("canonical_window_days") or 7)),
         "--canonical-d1-chunk-size", str(int(payload.get("canonical_d1_chunk_size") or 250)),
@@ -4916,25 +4933,33 @@ def finlab_v4_backfill(payload: dict) -> dict:
         return result
     except (Exception, SystemExit) as exc:
         duration_ms = int((time.time() - started) * 1000)
-        error = f"{type(exc).__name__}: {exc}"
+        # The summary keeps the `<type>: <message>` head the Worker classifier reads; the error adds
+        # the innermost frames so the run log shows where it failed.
+        error, error_detail = callback_error(exc)
+        trace = redact(traceback.format_exc())[-4000:]
+        print(f"[finlab_v4_backfill] error run_id={run_id} dispatch_attempt={dispatch_attempt} "
+              f"{error_detail}\n{trace}", file=sys.stderr, flush=True)
         result = {
             "status": "error",
             "run_id": run_id,
-            "error": error,
-            "trace": traceback.format_exc()[-4000:],
+            "error": error_detail,
+            "trace": trace,
             "stdout_tail": stdout.getvalue()[-4000:],
             "continue_evening_chain": bool(payload.get("continue_evening_chain")),
             "duration_ms": duration_ms,
             "dispatch_attempt": dispatch_attempt,
             "start_callback": start_callback,
         }
-        result["callback"] = _post_worker_scheduler_callback(payload, result, "error", error, duration_ms, error=error)
+        result["callback"] = _post_worker_scheduler_callback(payload, result, "error", error, duration_ms, error=error_detail)
         stage_progress.finish('failed')
         result['stage_progress'] = stage_progress.snapshot()
         return result
     finally:
         reset(stage_token)
+        clear_deadline()
         sys.argv = old_argv
+        # Only this call's directory. Artifacts are in GCS, where a later attempt's reuse finds them.
+        shutil.rmtree(output_root, ignore_errors=True)
 
 
 # Sealed R33 training capture (K15). Separate from finlab_v4_backfill so the

@@ -998,6 +998,7 @@ def run_sector_flow_pipeline(
     as_of_date: str,
     *,
     reconstruction_mode: Literal["native", "historical_reconstruction"] = "native",
+    producer_position: str = "post_recommendation_for_next_decision_session",
 ) -> dict:
     """
     Full pipeline: compute industry_theme + subindustry + industry,
@@ -1018,7 +1019,7 @@ def run_sector_flow_pipeline(
     summary: dict = {
         "as_of_date": as_of_date,
         "pit_lineage_version": SECTOR_FLOW_PIT_LINEAGE_VERSION,
-        "producer_position": "post_recommendation_for_next_decision_session",
+        "producer_position": producer_position,
         "reconstruction_mode": reconstruction_mode,
         "same_signal_date_consumption_allowed": False,
         "rebuild_run_id": run_id,
@@ -1162,3 +1163,111 @@ def run_sector_flow_pipeline(
 
     logger.info(f"[sector_flow] Pipeline complete: {summary}")
     return summary
+
+
+def completed_sector_flow_closure(as_of_date: str) -> dict | None:
+    """Return the date's latest rebuild when it passed and its PIT generation is published."""
+    runs = OPS_D1_CLIENT.query(
+        """
+        SELECT run_id, status, reconstruction_mode, rows_written, completed_at
+          FROM sector_flow_pit_rebuild_runs_v1
+         WHERE signal_date = ? AND status <> 'running'
+         ORDER BY started_at DESC, completed_at DESC, run_id DESC
+         LIMIT 1
+        """,
+        [as_of_date],
+    )
+    latest = runs[0] if runs else None
+    # A later failed rebuild has already replaced rows, so an older pass no longer closes the date.
+    if not latest or latest.get("status") != "pass":
+        return None
+    generations = MARKET_D1_CLIENT.query(
+        """
+        SELECT generation_id, available_at, row_count
+          FROM sector_flow_pit_generations_v1
+         WHERE generation_id = ? AND signal_date = ?
+        """,
+        [latest["run_id"], as_of_date],
+    )
+    if not generations:
+        return None
+    return {
+        "rebuild_run_id": latest["run_id"],
+        "reconstruction_mode": latest.get("reconstruction_mode"),
+        "rows_written": latest.get("rows_written"),
+        "completed_at": latest.get("completed_at"),
+        "pit_generation_available_at": generations[0].get("available_at"),
+    }
+
+
+class SectorFlowClosureInProgress(RuntimeError):
+    pass
+
+
+# Longer than a measured run (about 70 s), so a killed run cannot block the date for long.
+SECTOR_FLOW_CLAIM_MINUTES = 15
+
+
+def _claim_sector_flow_closure(as_of_date: str) -> str | None:
+    """Claim the date in one statement; None while another fresh run holds it."""
+    claim_id = (
+        f"sector-flow-claim:{as_of_date}:"
+        f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}"
+    )
+    result = OPS_D1_CLIENT.execute(
+        """
+        INSERT INTO sector_flow_pit_rebuild_runs_v1 (
+          run_id, signal_date, status, reconstruction_mode,
+          taxonomy_snapshot_ids_json, membership_checksums_json
+        )
+        SELECT ?, ?, 'running', 'native', '{}', '{}'
+         WHERE NOT EXISTS (
+           SELECT 1 FROM sector_flow_pit_rebuild_runs_v1
+            WHERE signal_date = ? AND status = 'running'
+              AND started_at > datetime('now', ?)
+         )
+        """,
+        [claim_id, as_of_date, as_of_date, f"-{SECTOR_FLOW_CLAIM_MINUTES} minutes"],
+    )
+    return claim_id if int((result.get("meta") or {}).get("changes") or 0) > 0 else None
+
+
+def _closed_summary(as_of_date: str, completed: dict) -> dict:
+    return {
+        "as_of_date": as_of_date,
+        "status": "already_complete",
+        "pit_lineage_version": SECTOR_FLOW_PIT_LINEAGE_VERSION,
+        **completed,
+        "closure": {"status": "complete", "failures": []},
+    }
+
+
+def ensure_sector_flow_daily_closure(
+    as_of_date: str,
+    *,
+    producer_position: str = "post_recommendation_for_next_decision_session",
+) -> dict:
+    """Compute sector_flow(D) once.
+
+    The evening chain closes the date before the screener reads it as
+    same-session L1 evidence; the pipeline tail only fills a date that step
+    missed, so one published generation serves both readers.
+    """
+    completed = completed_sector_flow_closure(as_of_date)
+    if completed is not None:
+        return _closed_summary(as_of_date, completed)
+    claim_id = _claim_sector_flow_closure(as_of_date)
+    if claim_id is None:
+        raise SectorFlowClosureInProgress(f"sector_flow_closure_in_progress:{as_of_date}")
+    try:
+        # A run that finished between the first check and the claim already closed the date.
+        completed = completed_sector_flow_closure(as_of_date)
+        if completed is not None:
+            return _closed_summary(as_of_date, completed)
+        summary = run_sector_flow_pipeline(as_of_date, producer_position=producer_position)
+        return {**summary, "status": "computed"}
+    finally:
+        OPS_D1_CLIENT.execute(
+            "DELETE FROM sector_flow_pit_rebuild_runs_v1 WHERE run_id = ? AND status = 'running'",
+            [claim_id],
+        )

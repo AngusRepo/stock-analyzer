@@ -74,8 +74,8 @@ function directionLabel(direction: string | undefined): string {
   return '中性'
 }
 
-export async function generateDailyReport(env: Bindings): Promise<string> {
-  const reportDate = twDateToday()
+/** reportDate: the business date being closed; the post-close post-verify of D runs on D+1. */
+export async function generateDailyReport(env: Bindings, reportDate = twDateToday()): Promise<string> {
   const learningDb = databaseForDataDomain(env, 'learning')
   const coreDb = databaseForDataDomain(env, 'core')
   const attachStockIdentity = async (rows: any[]): Promise<any[]> => {
@@ -94,10 +94,14 @@ export async function generateDailyReport(env: Bindings): Promise<string> {
     'SELECT risk_level, risk_score, risk_summary FROM market_risk WHERE date=?',
   ).bind(reportDate).first<any>().catch(() => null)
     ?? await coreDb.prepare(
-      'SELECT risk_level, risk_score, risk_summary FROM market_risk ORDER BY date DESC LIMIT 1',
-    ).first<any>()
+      'SELECT risk_level, risk_score, risk_summary FROM market_risk WHERE date<=? ORDER BY date DESC LIMIT 1',
+    ).bind(reportDate).first<any>()
 
+  // The KV copy lives 24h, so a report for D written on D+1 may only find the D1 row.
   const us = await env.KV.get(`us:leading:${reportDate}`, 'json') as any
+    ?? await databaseForDataDomain(env, 'market').prepare(
+      'SELECT sox_return, gspc_return, vix_close, dxy_return, sentiment FROM us_market_signals WHERE date=?',
+    ).bind(reportDate).first<any>().catch(() => null)
   const level = String(risk?.risk_level ?? 'medium')
   const usLine = us
     ? `SOX ${fmtPct(us.sox_return)} | S&P ${fmtPct(us.gspc_return)} | VIX ${fmtNumber(us.vix_close)} | DXY ${fmtPct(us.dxy_return)} | ${us.sentiment ?? 'N/A'}`

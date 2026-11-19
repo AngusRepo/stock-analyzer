@@ -848,6 +848,8 @@ CREATE INDEX IF NOT EXISTS idx_monthly_revenue_stock_date ON monthly_revenue(sto
 CREATE INDEX IF NOT EXISTS idx_margin_data_stock_date ON margin_data(stock_id, date);
 
 CREATE INDEX IF NOT EXISTS idx_shareholding_stock_date ON shareholding(stock_id, date);
+-- Dataset snapshot export seeks its date ranges (market migration 0011).
+CREATE INDEX IF NOT EXISTS idx_shareholding_date ON shareholding(date);
 
 CREATE INDEX IF NOT EXISTS idx_stock_profiles_symbol ON stock_profiles(symbol);
 

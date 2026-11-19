@@ -59,6 +59,21 @@ export function finLabLateRetryCutoffPassed(runDate: string, nowMs: number = Dat
   return nowMs >= cutoffMs
 }
 
+// The Modal job reports an uncaught exception as `<type>: <message>`. A network or storage-transport failure says
+// nothing about the data, so a fresh capture may succeed; a quota refusal will not.
+const FINLAB_TRANSIENT_EXCEPTION = new RegExp('^\\s*(?:ConnectionError|ConnectionResetError|ConnectionAbortedError|ConnectionRefusedError|'
+  + 'BrokenPipeError|ConnectTimeout|ReadTimeout|ChunkedEncodingError|ProtocolError|SSLError|IncompleteRead|TimeoutError|'
+  + 'RemoteDisconnected|URLError|TransportError|RetryError|InternalServerError|BadGateway|ServiceUnavailable|'
+  + 'GatewayTimeout|DeadlineExceeded):')
+// Same quota markers as tools/finlab_v4_remote_backfill.py is_finlab_quota_error.
+const FINLAB_QUOTA = /Usage exceed|quota|VIP program|5000\s*MB\/day/i
+
+/** A FinLab capture that died on a transient transport failure (11/16: GCS upload `write operation timed out`). */
+export function classifyFinLabTransientFailure(summary: string | null | undefined): boolean {
+  const text = String(summary ?? '')
+  return FINLAB_TRANSIENT_EXCEPTION.test(text) && !FINLAB_QUOTA.test(text)
+}
+
 // A capture that failed only because a late-published field is not out yet for the target date.
 export function classifyFinLabLateLaneNotReady(summary: string | null | undefined): boolean {
   const text = String(summary ?? '')

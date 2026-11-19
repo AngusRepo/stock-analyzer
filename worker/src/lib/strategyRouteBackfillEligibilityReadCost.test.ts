@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { test } from 'node:test'
 import { buildStrategyFormalMatureCompatibilitySql } from './selectionReferenceEvidence'
-import { auditStrategyRouteBackfillEligibility } from './strategyRouteBackfillEligibility'
+import { ROUTE_ELIGIBILITY_HEADS_PER_STATEMENT, auditStrategyRouteBackfillEligibility } from './strategyRouteBackfillEligibility'
 import { STRATEGY_ROUTE_AFFINITY_VERSION, STRATEGY_ROUTE_CHALLENGER_VERSION } from './strategyRouteCalibration'
 
 // The eligibility audit must return exactly the rows the former SQL returned
@@ -251,12 +251,18 @@ function scenario(): { seeds: Seed[]; heads: Record<string, string> } {
   return { seeds, heads }
 }
 
-async function capture(db: DatabaseSync, heads: Record<string, string>, startDate = START): Promise<Recorded> {
+// The eligibility statements of one call (one per head page), plus the params of a single statement
+// over every head: the shape the former SQL ran in.
+async function capture(db: DatabaseSync, heads: Record<string, string>, startDate = START)
+  : Promise<Recorded & { pages: Recorded[] }> {
   const log: Recorded[] = []
   await auditStrategyRouteBackfillEligibility(d1(db, log), AS_OF, { startDate, persist: false, canonicalRunIds: heads })
-  const query = log.find((entry) => entry.sql.includes('WITH canonical_heads AS'))
-  assert(query, 'eligibility query not issued')
-  return query
+  const pages = log.filter((entry) => entry.sql.includes('WITH canonical_heads AS'))
+  assert(pages.length > 0, 'eligibility query not issued')
+  assert(pages.every((page) => page.sql === pages[0].sql))
+  const allHeads = Object.assign({}, ...pages.map((page) => JSON.parse(String(page.params[0]))))
+  assert(pages.every((page) => Object.keys(JSON.parse(String(page.params[0]))).length <= ROUTE_ELIGIBILITY_HEADS_PER_STATEMENT))
+  return { sql: pages[0].sql, params: [JSON.stringify(allHeads), ...pages[0].params.slice(1)], pages }
 }
 
 test('eligibility rows are identical to the former correlated-COUNT SQL', async () => {
@@ -267,7 +273,8 @@ test('eligibility rows are identical to the former correlated-COUNT SQL', async 
     const query = await capture(db, heads, startDate)
     const values = query.params as never[]
     const expected = db.prepare(FORMER_SQL).all(...values)
-    const actual = db.prepare(query.sql).all(...values)
+    const actual = query.pages.flatMap((page) => db.prepare(page.sql).all(...page.params as never[]))
+    assert.ok(query.pages.length > 1, 'the scenario spans more than one head page')
     assert.ok(expected.length >= 9)
     assert.deepEqual(actual, expected)
   }

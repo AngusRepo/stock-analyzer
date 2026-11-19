@@ -213,6 +213,16 @@ export function buildFormalFrontierClosureSql(values: string): string {
   const SUMMARY_USABLE = matrixRunSummaryUsableInline('mr', STRATEGY_ROUTE_AFFINITY_VERSION)
   return `
       WITH target(signal_date, producer_run_id) AS (VALUES ${values}),
+      -- Summarised heads leave before the cell join. Filtering them after it
+      -- still read every cell of each date (831k rows, 12.6 s per 16-head page
+      -- on 2026-11-18).
+      cell_heads AS MATERIALIZED (
+        SELECT DISTINCT t.signal_date, t.producer_run_id
+          FROM target t
+          LEFT JOIN strategy_label_matrix_runs_v4 mr
+            ON mr.signal_date=t.signal_date AND mr.producer_run_id=t.producer_run_id
+         WHERE NOT COALESCE(${SUMMARY_USABLE}, 0)
+      ),
       matrix_counts AS MATERIALIZED (
         SELECT t.signal_date, t.producer_run_id,
                SUM(CASE WHEN m.labeler_version=mr.labeler_version
@@ -226,12 +236,11 @@ export function buildFormalFrontierClosureSql(values: string): string {
                SUM(CASE WHEN m.evaluable=1 AND m.strategy_hit=1 AND m.affinity_evidence_count>0
                          AND m.challenger_affinity_version=?
                         THEN 1 ELSE 0 END) projected_threshold_rows
-          FROM (SELECT DISTINCT signal_date, producer_run_id FROM target) t
+          FROM cell_heads t
           JOIN strategy_label_matrix_v4 m
             ON m.signal_date=t.signal_date AND m.producer_run_id=t.producer_run_id
           LEFT JOIN strategy_label_matrix_runs_v4 mr
             ON mr.signal_date=t.signal_date AND mr.producer_run_id=t.producer_run_id
-         WHERE NOT COALESCE(${SUMMARY_USABLE}, 0)
          GROUP BY t.signal_date, t.producer_run_id
       )
       SELECT t.signal_date, t.producer_run_id,

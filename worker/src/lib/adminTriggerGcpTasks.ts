@@ -87,13 +87,23 @@ export function buildAdminGcpTriggerTaskMap(
       return runDailyAllocatorEvReadiness(c.env, requestedRunDate() || twToday())
     },
     'allocator-ev-lifecycle-watchdog': async () => {
-      // The nightly first tick also closes evening-chain roots past their deadline. Isolated: a sweep
-      // failure is logged and retried next tick, never failing the lifecycle watchdog itself.
+      // The nightly first tick also closes evening-chain roots past their deadline and executions whose
+      // premarket resume window has passed. Isolated: a sweep failure is logged and retried next tick,
+      // never failing the lifecycle watchdog itself.
       try {
         const { runEveningChainRootDeadlineSweepOnce } = await import('./eveningChainRootClosure')
         const { databaseForDataDomain } = await import('./dataDomainRegistry')
+        const { controllerJson } = await import('./controllerClient')
         console.log(`[allocator-ev-lifecycle-watchdog] ${await runEveningChainRootDeadlineSweepOnce(
-          c.env.KV, databaseForDataDomain(c.env, 'ops'), twToday())}`)
+          c.env.KV, databaseForDataDomain(c.env, 'ops'), twToday(), {
+            marketDb: databaseForDataDomain(c.env, 'market'),
+            alertEnv: c.env,
+            // A published L4 serving plan means the premarket resumed this run (only its callback is missing).
+            premarketPublished: async ({ businessDate, canonicalRunId }) => Boolean((await controllerJson<{ publication?: unknown }>(
+              c.env, '/pipeline/v2/premarket-state?' + new URLSearchParams({ date: businessDate, run_id: canonicalRunId }),
+              { timeoutMs: 15_000 },
+            )).publication),
+          })}`)
       } catch (error) {
         console.warn('[allocator-ev-lifecycle-watchdog] evening-chain root deadline sweep failed:', error)
       }

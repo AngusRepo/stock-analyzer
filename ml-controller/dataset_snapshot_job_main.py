@@ -109,6 +109,14 @@ async def _run() -> int:
             if work["signal_date"] != run_date or work["run_id"] != parent_run_id:
                 raise ValueError("postclose_job_identity_mismatch")
             postclose_result = await run_pipeline_v2_postclose(work["input_gcs_uri"])
+            deadline = os.environ.get("DATASET_SNAPSHOT_EXPORT_QUIET_DEADLINE", "").strip()
+            if deadline and not _truthy_env("DATASET_SNAPSHOT_SKIP_EXPORT", "0"):
+                from services.premarket_postclose import wait_for_export_window
+                waited = time.time()
+                export_window = await asyncio.to_thread(
+                    wait_for_export_window, work["signal_date"], work["run_id"], deadline)
+                logger.info("[DatasetSnapshotJob] export_window=%s waited_s=%d", export_window,
+                            int(time.time() - waited))
         elif premarket_input_uri:
             from services.premarket_postwrite import run_premarket_postwrite
             await run_premarket_postwrite(premarket_input_uri)

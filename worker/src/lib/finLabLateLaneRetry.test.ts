@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   classifyFinLabLateLaneNotReady,
+  classifyFinLabTransientFailure,
   finLabLatePublicationFields,
   finLabLateRetryCutoffPassed,
   finLabLateRetryCutoffTw,
@@ -458,4 +459,102 @@ test('C28-25: a failing ops log or KV never fails the watchdog and still warns',
   assert.equal(h.log('evening-chain').status, 'error')
   assert.equal(h.lateLaneLogs().length, 0)
   assert.ok(h.warns.includes(`[FinLab] ${failed}; ops log failed: data_domain_binding_missing:ops`))
+})
+
+// 11/16 shape: the Modal job's uncaught GCS upload timeout, reported as `<type>: <message>` without dispatch_attempt.
+const TRANSIENT = "ConnectionError: ('Connection aborted.', TimeoutError('The write operation timed out'))"
+
+test('FinLab PR1: only a transport exception at the head of the report is transient', () => {
+  for (const summary of [
+    TRANSIENT,
+    `${TRANSIENT} dispatch_attempt=2 function_call_id=fc-2`,
+    ` ${TRANSIENT}`,
+    'ReadTimeout: HTTPSConnectionPool(host=\'storage.googleapis.com\', port=443): Read timed out. (read timeout=60)',
+    'ServiceUnavailable: 503 GET https://storage.googleapis.com/download/storage/v1/b/x/o/y',
+    'TimeoutError: The read operation timed out',
+    'URLError: <urlopen error [Errno 104] Connection reset by peer>',
+    'RetryError: Deadline of 120.0s exceeded while calling target function',
+  ]) assert.equal(classifyFinLabTransientFailure(summary), true, summary)
+  for (const summary of [
+    'Exception: FinLab quota exceeded: daily limit reached',
+    'ConnectionError: FinLab quota exceeded',
+    // Same quota markers as the Python job's is_finlab_quota_error.
+    'ConnectionError: Usage exceed 5000 MB/day, join the VIP program',
+    'ValueError: daily_composition_market_dates_missing:pe dispatch_attempt=1',
+    'ValueError: upload verification timed out',
+    'partial_failed lanes=chip_diversity ConnectionError: x',
+    'FinLab V4 backfill status=partial_failed source_key_blockers=1',
+    '',
+    null,
+  ]) assert.equal(classifyFinLabTransientFailure(summary), false, String(summary))
+})
+
+const transient = (f: ReturnType<typeof fixture>, clock: string, suffix = '') => f.setLog('finlab-v4-backfill', {
+  status: 'error', timestamp: new Date(at(clock)).toISOString(), summary: `${TRANSIENT}${suffix}`, error: TRANSIENT,
+})
+
+test('FinLab PR1: a transient failure is resent as one full capture after 5 minutes; a second one is not resent', async (t) => {
+  const f = fixture(t)
+  transient(f, '21:59')
+  // Inside the Modal scaledown window the same run_id would land on the warm container's leftover output.
+  assert.match(await f.watchdogAt('22:00'), /^skipped: FinLab transient failure age=60s below watchdog threshold/)
+  assert.equal(f.dispatches.length, 0)
+  assert.equal(f.store.has(`finlab:transient-retry:${date}`), false)
+  // Not held back by the 15-minute stale threshold: the next watchdog run sends it.
+  assert.match(await f.watchdogAt('22:10'), /^triggered finlab-v4-backfill/)
+  assert.equal(f.dispatches.length, 1)
+  const sent = f.dispatches[0]
+  assert.equal(sent.run_id, runId)
+  assert.equal(sent.dispatch_attempt, 2)
+  assert.equal(sent.reuse_successful_artifacts, false)
+  assert.ok(String(sent.lanes).split(',').includes('daily_price'), sent.lanes)
+  assert.match(f.log('finlab-v4-backfill').summary, /watchdog_retriggered_from_attempt=1 full_capture_retry=1/)
+  assert.match(f.log('evening-chain').summary, /^FinLab watchdog retriggered transient failure run_id=.* dispatch_attempt=2/)
+  assert.ok(f.store.has(`finlab:transient-retry:${date}`))
+  // The composition-driven full capture keeps its own single claim.
+  assert.equal(f.store.has(`finlab:full-capture-retry:${date}`), false)
+
+  transient(f, '22:30', ' dispatch_attempt=2 function_call_id=fc-2')
+  assert.match(await f.watchdogAt('22:40'), /^skipped: no pending FinLab trigger/)
+  assert.equal(f.dispatches.length, 1)
+  assert.equal(f.alerts.length, 0)
+})
+
+test('FinLab PR1: no transient resend from the 23:00 cutoff', async (t) => {
+  const f = fixture(t)
+  transient(f, '22:58')
+  assert.match(await f.watchdogAt('23:00'), /^skipped: no pending FinLab trigger/)
+  assert.equal(f.dispatches.length, 0)
+  assert.equal(f.store.has(`finlab:transient-retry:${date}`), false)
+})
+
+test('FinLab PR1: a refused transient resend closes the chain at once instead of leaving it triggered', async (t) => {
+  const f = fixture(t)
+  f.controller.appError = true
+  transient(f, '21:54')
+  await f.watchdogAt('22:00')
+  assert.equal(f.dispatches.length, 1)
+  assert.match(f.log('evening-chain').summary, /^failed: FinLab watchdog transient failure resend failed run_id=\S+ dispatch_attempt=2; /)
+  assert.equal(f.log('evening-chain').status, 'error')
+  assert.match(f.log('update').summary, /^status=blocked blocked_by=finlab-v4-backfill executed=false; failed: FinLab watchdog transient failure resend failed /)
+  assert.deepEqual(f.syslogs.filter((entry) => entry.meta?.reason === 'transient_resend_failed').length, 1)
+  // Nothing is left to resend or to wait for.
+  assert.match(await f.watchdogAt('22:20'), /^skipped: no pending FinLab trigger/)
+  assert.equal(f.dispatches.length, 1)
+})
+
+test('FinLab PR1: a transient failure at the attempt cap keeps its own error as the record', async (t) => {
+  const f = fixture(t)
+  transient(f, '22:00', ' dispatch_attempt=3 function_call_id=fc-3')
+  assert.match(await f.watchdogAt('22:20'), /^skipped: no pending FinLab trigger/)
+  assert.equal(f.dispatches.length, 0)
+  assert.equal(f.log('finlab-v4-backfill').summary, `${TRANSIENT} dispatch_attempt=3 function_call_id=fc-3`)
+})
+
+test('FinLab PR1 counter: a non-transient error keeps the old path', async (t) => {
+  const f = fixture(t)
+  f.setLog('finlab-v4-backfill', { status: 'error', timestamp: new Date(at('21:56')).toISOString(),
+    summary: 'Exception: FinLab quota exceeded: daily limit reached' })
+  assert.match(await f.watchdogAt('22:20'), /^skipped: no pending FinLab trigger/)
+  assert.equal(f.dispatches.length, 0)
 })

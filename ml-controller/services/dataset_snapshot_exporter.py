@@ -46,8 +46,39 @@ def _empty_frame(columns: list[str]) -> pl.DataFrame:
     return pl.DataFrame(schema={column: pl.Utf8 for column in columns})
 
 
+FUNDAMENTALS_CHUNK_DAYS = 30
+
+
 def _snapshot_query_workers() -> int:
     return int(os.environ.get("DATASET_SNAPSHOT_QUERY_WORKERS", "4"))
+
+
+# Narrow market tables: one D1 read covers this many export chunks. A trading day of the
+# widest one (technical_indicators) is ~0.6 MB of values on 2026-11-17, so five days stay far
+# below D1's 50 MB response limit, while the export issues a fifth of the reads. Ensemble
+# signals (~13 MB a day of forecast_data) keep one read per chunk.
+MARKET_READ_CHUNK_DAYS = 5
+
+
+def _read_chunk_days(chunk_days: int, read_chunk_days: int | None) -> int:
+    if not read_chunk_days or read_chunk_days <= chunk_days:
+        return chunk_days
+    return chunk_days * -(-read_chunk_days // chunk_days)
+
+
+def _in_export_chunk_order(frame: pl.DataFrame, chunk_starts: list[str]) -> pl.DataFrame:
+    """Reorder a multi-chunk read to the row order the per-chunk reads concatenate to.
+
+    Each read returns its rows in the SQL ORDER BY; a stable sort on the export chunk that
+    holds each row's date keeps that order inside every chunk.
+    """
+    if frame.is_empty() or "date" not in frame.columns or len(chunk_starts) < 2:
+        return frame
+    starts = pl.Series(chunk_starts, dtype=pl.Utf8)
+    position = starts.search_sorted(frame.get_column("date").cast(pl.Utf8), side="right")
+    return (frame.with_columns((position.cast(pl.Int64) - 1).alias("__export_chunk"))
+            .sort("__export_chunk", maintain_order=True)
+            .drop("__export_chunk"))
 
 
 def _query_date_range(
@@ -57,13 +88,28 @@ def _query_date_range(
     chunk_days: int,
     *,
     query_client: Any,
+    read_chunk_days: int | None = None,
+    bind_shape: tuple[str, ...] = ("start", "end"),
 ) -> tuple[pl.DataFrame, int]:
+    """Read [start_date, end_date] in date chunks; returns the rows and the D1 query count.
+
+    The result rows equal the concatenation of one read per `chunk_days` chunk, in order.
+    `read_chunk_days` lets one D1 read cover several of those chunks (fewer queries);
+    `bind_shape` lists the chunk bound each SQL placeholder takes.
+    """
     from services.verified_read_observation import observation_active
-    chunks = _date_chunks(start_date, end_date, chunk_days)
+    export_chunks = _date_chunks(start_date, end_date, chunk_days)
+    read_days = _read_chunk_days(chunk_days, read_chunk_days)
+    chunks = export_chunks if read_days == chunk_days else _date_chunks(start_date, end_date, read_days)
+    chunk_starts = [chunk[0] for chunk in export_chunks]
 
     def read(chunk: tuple[str, str]) -> pl.DataFrame | None:
-        rows = query_client.query(sql, list(chunk), timeout=120.0)
-        return _frame(rows) if rows else None
+        bounds = {"start": chunk[0], "end": chunk[1]}
+        rows = query_client.query(sql, [bounds[name] for name in bind_shape], timeout=120.0)
+        if not rows:
+            return None
+        frame = _frame(rows)
+        return frame if read_days == chunk_days else _in_export_chunk_order(frame, chunk_starts)
 
     # Chunks are independent reads; map keeps date order so the concat is unchanged.
     # d1_client already backs off on 429/overload. UI observation scopes (a ContextVar
@@ -343,6 +389,7 @@ def _query_prices(start_date: str, end_date: str, chunk_days: int) -> tuple[pl.D
         end_date,
         chunk_days,
         query_client=MARKET_D1_CLIENT,
+        read_chunk_days=MARKET_READ_CHUNK_DAYS,
     )
 
 
@@ -359,20 +406,30 @@ def _query_market_risk(start_date: str, end_date: str) -> pl.DataFrame:
     ))
 
 
-def _query_sentiment_scores(start_date: str, end_date: str, chunk_days: int) -> tuple[pl.DataFrame, int]:
-    return _query_date_range(
-        """
+# date(published_at) alone cannot seek, so every chunk scanned news (2026-11-18: ~2,700 scans a
+# day). The raw range is a superset of the date() range for ISO text with a UTC offset under a day
+# (its first ten characters are its local date, at most one day from date()); date() stays as the
+# exact filter. Binds: chunk start, end, start, end.
+SENTIMENT_SCORES_SQL = """
         SELECT stock_id, date(published_at) as date,
                AVG(CASE sentiment WHEN 'positive' THEN 1 WHEN 'negative' THEN -1 ELSE 0 END) as score
         FROM news
-        WHERE date(published_at) >= ? AND date(published_at) <= ?
+        WHERE published_at >= date(?, '-1 day') AND published_at < date(?, '+2 day')
+          AND date(published_at) >= ? AND date(published_at) <= ?
         GROUP BY stock_id, date(published_at)
         ORDER BY stock_id, date
-        """,
+        """
+
+
+def _query_sentiment_scores(start_date: str, end_date: str, chunk_days: int) -> tuple[pl.DataFrame, int]:
+    return _query_date_range(
+        SENTIMENT_SCORES_SQL,
         start_date,
         end_date,
         chunk_days,
         query_client=MARKET_D1_CLIENT,
+        read_chunk_days=MARKET_READ_CHUNK_DAYS,
+        bind_shape=("start", "end", "start", "end"),
     )
 
 
@@ -389,6 +446,30 @@ def _query_monthly_revenue(start_date: str, end_date: str) -> pl.DataFrame:
     ))
 
 
+def _query_canonical_fundamentals_hot(sql: str, end_date: str) -> list[dict]:
+    # The whole hot history in one response passes D1's 50 MB limit (7500) as daily_valuation
+    # grows ~2k rows a day; read the same predicate in available_date windows instead.
+    first = MARKET_D1_CLIENT.query(
+        "SELECT MIN(available_date) AS d FROM canonical_fundamental_features", [], timeout=120.0)
+    start = first[0].get('d') if first else None
+    if not start or start > end_date:
+        return []
+    window_sql = sql.replace("WHERE available_date <= ?", "WHERE available_date >= ? AND available_date <= ?", 1)
+    if window_sql == sql:
+        raise ValueError('canonical_fundamentals_window_sql_invalid')
+    chunks = _date_chunks(start, end_date, FUNDAMENTALS_CHUNK_DAYS)
+
+    def read(chunk: tuple[str, str]) -> list[dict]:
+        return MARKET_D1_CLIENT.query(window_sql, [chunk[0], chunk[1], end_date], timeout=120.0)
+
+    from services.verified_read_observation import observation_active
+    workers = 1 if observation_active() else max(1, min(_snapshot_query_workers(), len(chunks)))
+    if workers == 1:
+        return [row for part in map(read, chunks) for row in part]
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return [row for part in pool.map(read, chunks) for row in part]
+
+
 def _query_canonical_fundamentals(end_date: str) -> pl.DataFrame:
     from services.retention_market_history import archived_market_projection
     sql = """
@@ -400,7 +481,7 @@ def _query_canonical_fundamentals(end_date: str) -> pl.DataFrame:
           AND source IN ('finlab.fundamental_factor_diversity', 'finlab.daily_valuation')
         ORDER BY stock_id, available_date, period
         """
-    rows = MARKET_D1_CLIENT.query(sql, [end_date, end_date], timeout=120.0)
+    rows = _query_canonical_fundamentals_hot(sql, end_date)
     rows.extend(archived_market_projection('canonical_fundamental_features', sql, [end_date, end_date],
         '0001-01-01', end_date, query_hot=MARKET_D1_CLIENT.query))
     rows.sort(key=lambda r: (str(r['stock_id']), r['available_date'], r['period']))
@@ -420,22 +501,32 @@ def _query_margin_data(start_date: str, end_date: str, chunk_days: int) -> tuple
         end_date,
         chunk_days,
         query_client=MARKET_D1_CLIENT,
+        read_chunk_days=MARKET_READ_CHUNK_DAYS,
     )
+
+
+# shareholding.date holds both YYYY-MM-DD and TDCC's YYYYMMDD. replace() made every chunk scan the
+# table; the two raw ranges (dashed, compact) can seek idx_shareholding_date (market 0011) and the
+# replace() comparison stays as the exact filter.
+SHAREHOLDING_SQL = """
+        SELECT stock_id, CASE WHEN length(date)=8 THEN substr(date,1,4)||'-'||substr(date,5,2)||'-'||substr(date,7,2) ELSE date END AS date, total_shares, holder_count, retail_shares,
+               retail_pct, large_holder_shares, large_holder_pct, created_at
+        FROM shareholding
+        WHERE ((date >= ? AND date <= ?) OR (date >= replace(?, '-', '') AND date <= replace(?, '-', '')))
+          AND replace(date, '-', '') >= replace(?, '-', '') AND replace(date, '-', '') <= replace(?, '-', '')
+        ORDER BY stock_id, date
+        """
 
 
 def _query_shareholding(start_date: str, end_date: str, chunk_days: int) -> tuple[pl.DataFrame, int]:
     return _query_date_range(
-        """
-        SELECT stock_id, CASE WHEN length(date)=8 THEN substr(date,1,4)||'-'||substr(date,5,2)||'-'||substr(date,7,2) ELSE date END AS date, total_shares, holder_count, retail_shares,
-               retail_pct, large_holder_shares, large_holder_pct, created_at
-        FROM shareholding
-        WHERE replace(date, '-', '') >= replace(?, '-', '') AND replace(date, '-', '') <= replace(?, '-', '')
-        ORDER BY stock_id, date
-        """,
+        SHAREHOLDING_SQL,
         start_date,
         end_date,
         chunk_days,
         query_client=MARKET_D1_CLIENT,
+        read_chunk_days=MARKET_READ_CHUNK_DAYS,
+        bind_shape=("start", "end", "start", "end", "start", "end"),
     )
 
 
@@ -598,6 +689,7 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
         req.end_date,
         chunk_days,
         query_client=MARKET_D1_CLIENT,
+        read_chunk_days=MARKET_READ_CHUNK_DAYS,
     )
     chips, chip_queries = _query_date_range(
         """
@@ -612,6 +704,7 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
         req.end_date,
         chunk_days,
         query_client=MARKET_D1_CLIENT,
+        read_chunk_days=MARKET_READ_CHUNK_DAYS,
     )
     broker_flows, broker_queries = _query_date_range(
         """
@@ -622,6 +715,7 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
          ORDER BY stock_id, date
         """, req.start_date, req.end_date, chunk_days,
         query_client=MARKET_D1_CLIENT,
+        read_chunk_days=MARKET_READ_CHUNK_DAYS,
     )
     if broker_flows.is_empty():
         broker_flows = _empty_frame(["symbol", "date", "net_shares", "estimated_amount", "concentration", "as_of_date"])

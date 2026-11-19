@@ -1,4 +1,5 @@
 import { closeHandedOffIndicatorRun } from './indicatorQueueDispatch'
+import { R33_MONTHLY_PROMOTION_DESIGN_DISABLED } from './designDisabledSteps'
 import { readOfficialRestrictionReadiness } from './tradingRestrictionReadiness'
 import { withIndicatorFinalizeLease } from './indicatorFinalizeLease'
 import { indicatorQueueDurationMs } from './indicatorQueueTiming'
@@ -52,6 +53,7 @@ import {
   finLabRequiredFieldsForLane,
   finLabSentinelFieldForLane,
   classifyFinLabLateLaneNotReady,
+  classifyFinLabTransientFailure,
   finLabLatePublicationFields,
   finLabLateRetryCutoffPassed,
   finLabLateRetryCutoffTw,
@@ -82,6 +84,10 @@ const SOURCE_READINESS_RETRY_DELAY_SECONDS = 10 * 60
 const SOURCE_READINESS_RETRY_MAX_ATTEMPTS = 9
 const SOURCE_READINESS_FINLAB_REFRESH_COOLDOWN_SECONDS = 45 * 60
 const FINLAB_PENDING_WATCHDOG_STALE_MS = 15 * 60_000
+// The FinLab Modal function keeps its container warm for scaledown_window=60s and works in /tmp/<run_id>; a resend
+// of the same run_id landing there finds the previous attempt's output and fails with output_already_exists.
+// Worst case after the record is written: three 30s callback POSTs with backoff, a progress POST, then 60s idle ≈ 160s.
+const FINLAB_TRANSIENT_RESEND_MIN_AGE_MS = 5 * 60_000
 const FINLAB_POST_CANONICAL_WATCHDOG_STALE_MS = 2 * 60_000
 const FINLAB_PENDING_WATCHDOG_MAX_ATTEMPTS = 3
 /**
@@ -2778,10 +2784,11 @@ async function finLabCanonicalCutoffTerminal(
  */
 async function logFinLabLateLaneFailureOnce(
   env: Bindings, twDate: string, kind: 'cutoff' | 'resend_failed', summary: string, runId: string,
+  source: 'late_lane' | 'transient' = 'late_lane',
 ): Promise<void> {
   let dedupError: string | null = null
   try {
-    const loggedKey = `finlab:late-lane-${kind}-logged:${twDate}`
+    const loggedKey = `finlab:${source === 'late_lane' ? 'late-lane' : source}-${kind}-logged:${twDate}`
     if (await env.KV.get(loggedKey)) return
     await env.KV.put(loggedKey, new Date().toISOString(), { expirationTtl: 2 * 86400 })
   } catch (error) {
@@ -2791,7 +2798,7 @@ async function logFinLabLateLaneFailureOnce(
   console.warn(`[FinLab] ${logged}`)
   try {
     await writeSystemLog(databaseForDataDomain(env, 'ops'), 'error', 'evening-chain', logged, {
-      run_date: twDate, run_id: runId, reason: `late_lane_${kind}`,
+      run_date: twDate, run_id: runId, reason: `${source}_${kind}`,
       ...(dedupError == null ? {} : { dedup_unavailable: dedupError }),
     })
   } catch (error) {
@@ -3204,13 +3211,20 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
   // A full capture still pending (dispatch_unconfirmed or no callback) is resent as a full capture.
   const fullCapturePending = finlabLog?.status === 'triggered'
     && /(?:^|\s)full_capture_retry=1(?:$|[\s;])/.test(finlabLog.summary ?? '')
-  const fullCaptureDispatch = fullCapture || fullCapturePending
   const lateLaneNotReady = finlabLog?.status === 'error' && !retriablePartialFailure
     && classifyFinLabLateLaneNotReady(`${finlabLog.summary ?? ''} ${finlabLog.error ?? ''}`)
+  // A capture that died on a transport failure is sent again at once as a full capture, once per date and only
+  // before the cutoff. Its own claim leaves the composition-driven full capture available.
+  const transientFailure = finlabLog?.status === 'error' && !retriablePartialFailure && !lateLaneNotReady
+    && classifyFinLabTransientFailure(`${finlabLog.summary ?? ''} ${finlabLog.error ?? ''}`)
+    // At the attempt cap the callback's own error stays the record instead of becoming "watchdog exhausted".
+    && Number.parseInt(schedulerSummaryField(finlabLog, 'dispatch_attempt') ?? '1', 10) < FINLAB_PENDING_WATCHDOG_MAX_ATTEMPTS
+    && !finLabLateRetryCutoffPassed(twDate) && !(await env.KV.get(finLabTransientRetryKey(twDate)))
+  const fullCaptureDispatch = fullCapture || fullCapturePending || transientFailure
   const lateLaneRetryPending = finlabLog?.status === 'triggered'
     && /(?:^|\s)late_lane_retry=1(?:$|[\s;])/.test(finlabLog.summary ?? '')
   const lateLane = lateLaneNotReady || lateLaneRetryPending
-  const retriableFailure = retriablePartialFailure || lateLaneNotReady
+  const retriableFailure = retriablePartialFailure || lateLaneNotReady || transientFailure
   // Past the cutoff the watchdog sends no FinLab (late lanes keep their own cutoff path) for a date closed at
   // the cutoff, a date whose one post-cutoff refetch is out, or a dispatch sent after 22:55 TW still pending
   // without a callback (one sent at or before 22:55 keeps its rescue resend).
@@ -3283,8 +3297,8 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
 
   const triggeredAt = Date.parse(finlabLog.timestamp)
   const ageMs = Number.isFinite(triggeredAt) ? Date.now() - triggeredAt : Number.POSITIVE_INFINITY
-  if (ageMs < FINLAB_PENDING_WATCHDOG_STALE_MS) {
-    return `skipped: FinLab ${lateLaneNotReady ? 'late lane not ready' : retriablePartialFailure ? 'partial failure' : 'trigger'} age=${Math.max(0, Math.floor(ageMs / 1000))}s below watchdog threshold`
+  if (ageMs < (transientFailure ? FINLAB_TRANSIENT_RESEND_MIN_AGE_MS : FINLAB_PENDING_WATCHDOG_STALE_MS)) {
+    return `skipped: FinLab ${lateLaneNotReady ? 'late lane not ready' : retriablePartialFailure ? 'partial failure' : transientFailure ? 'transient failure' : 'trigger'} age=${Math.max(0, Math.floor(ageMs / 1000))}s below watchdog threshold`
   }
   if (lateLaneRetryPending && finLabLateRetryCutoffPassed(twDate)) return lateLaneCutoffFailure()
 
@@ -3319,6 +3333,7 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
   }
   await env.KV.put(retryKey, new Date().toISOString(), { expirationTtl: 3600 })
   if (fullCapture) await claimFinLabFullCapture(env, twDate)
+  if (transientFailure) await env.KV.put(finLabTransientRetryKey(twDate), new Date().toISOString(), { expirationTtl: 2 * 86400 })
 
   try {
     // Scope first: a run with nothing to refetch leaves the pending record and its attempt number as they are.
@@ -3333,6 +3348,7 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
     if (head?.status !== finlabLog.status || head?.timestamp !== finlabLog.timestamp) {
       await env.KV.delete(retryKey)
       if (fullCapture) await env.KV.delete(finLabFullCaptureKey(twDate))
+      if (transientFailure) await env.KV.delete(finLabTransientRetryKey(twDate))
       return `skipped: FinLab record changed during the watchdog readiness check run_id=${runId} status=${head?.status ?? 'missing'}`
     }
     // Reserve the attempt before cancellation/spawn so a late callback from the
@@ -3359,6 +3375,7 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
     }))
     const status = classifySchedulerSummary(summary)
     if (fullCapture && status !== 'triggered' && status !== 'success') await env.KV.delete(finLabFullCaptureKey(twDate))
+    if (transientFailure && status !== 'triggered' && status !== 'success') await env.KV.delete(finLabTransientRetryKey(twDate))
     // A start heartbeat that arrived during an unconfirmed (HTML 5xx) dispatch is newer than this outcome.
     const startObserved = await finLabTriggeredOutcomeSuperseded(env, twDate, runId, summary)
     if (!startObserved) await logSchedulerResult(env.KV, 'finlab-v4-backfill', {
@@ -3368,9 +3385,9 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
       run_id: runId,
       run_date: twDate,
     })
-    if (lateLane && status === 'error') {
+    if ((lateLane || transientFailure) && status === 'error') {
       // A definite resend failure leaves no callback to wait for: alert now instead of waiting for the cutoff.
-      const failed = `failed: FinLab watchdog late lane resend failed run_id=${runId} dispatch_attempt=${nextAttempt}; ${summary}`
+      const failed = `failed: FinLab watchdog ${lateLane ? 'late lane' : 'transient failure'} resend failed run_id=${runId} dispatch_attempt=${nextAttempt}; ${summary}`
       await logSchedulerResult(env.KV, 'evening-chain', {
         status: 'error',
         summary: failed,
@@ -3384,12 +3401,12 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
         status: 'blocked', summary: `status=blocked blocked_by=finlab-v4-backfill executed=false; ${failed}`,
         duration_ms: 0, run_id: runId, run_date: twDate,
       })
-      await logFinLabLateLaneFailureOnce(env, twDate, 'resend_failed', failed, runId)
+      await logFinLabLateLaneFailureOnce(env, twDate, 'resend_failed', failed, runId, lateLane ? 'late_lane' : 'transient')
       return summary
     }
     await logSchedulerResult(env.KV, 'evening-chain', {
       status: 'triggered',
-      summary: `FinLab watchdog retriggered ${lateLane ? 'late lane not ready' : retriablePartialFailure ? 'partial failure' : 'pending dispatch'} run_id=${runId} dispatch_attempt=${nextAttempt}; awaiting callback`,
+      summary: `FinLab watchdog retriggered ${lateLane ? 'late lane not ready' : retriablePartialFailure ? 'partial failure' : transientFailure ? 'transient failure' : 'pending dispatch'} run_id=${runId} dispatch_attempt=${nextAttempt}; awaiting callback`,
       duration_ms: 0,
       run_id: runId,
       run_date: twDate,
@@ -3399,6 +3416,7 @@ export async function runFinLabBackfillWatchdog(env: Bindings, runDate?: string)
   } catch (error) {
     await env.KV.delete(retryKey)
     if (fullCapture) await env.KV.delete(finLabFullCaptureKey(twDate))
+    if (transientFailure) await env.KV.delete(finLabTransientRetryKey(twDate))
     throw error
   }
 }
@@ -3412,6 +3430,10 @@ export function finLabRequiresFullCapture(text: string | null | undefined): bool
 
 function finLabFullCaptureKey(twDate: string): string {
   return `finlab:full-capture-retry:${twDate}`
+}
+
+function finLabTransientRetryKey(twDate: string): string {
+  return `finlab:transient-retry:${twDate}`
 }
 
 /** Claims the date's single Worker-initiated full capture; false when it was already used. */
@@ -4897,8 +4919,8 @@ export async function processUpdateBatch(
       `route_backfill_pending=${routeBackfillEligibility.filter((row) => row.status === 'pending_maturity').length}`,
       `reward_source_rows=${rewards.source_rows}`,
       `reward_rows=${rewards.persisted_rows}`,
-      `policy=${policy ? policy.policy_state.status : 'skipped_historical'}`,
-      `production_policy=${productionPolicy ? productionPolicy.state.status : 'skipped_historical'}`,
+      `policy=${policy ? policy.policy_state.status : R33_MONTHLY_PROMOTION_DESIGN_DISABLED}`,
+      `production_policy=${productionPolicy ? productionPolicy.state.status : R33_MONTHLY_PROMOTION_DESIGN_DISABLED}`,
       `evidence_closure=${closureSummary}`,
       `run_scope=${runScope}`,
       `production_authority=${authorityReason}`,

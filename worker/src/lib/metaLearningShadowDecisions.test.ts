@@ -96,6 +96,10 @@ void (async () => {
               assert(sql.includes('d.counterfactual_reward IS NULL'), 'hydration should only read unresolved decisions')
               return { results: sourceRows }
             },
+            async first() {
+              assert(sql.includes('d.counterfactual_reward IS NULL'), 'the unseekable guard reads pending decisions only')
+              return { n: 0 }
+            },
             async run() {
               assert(sql.includes('AND counterfactual_reward IS NULL'), 'hydration update must be compare-and-set')
               updates.push(args)

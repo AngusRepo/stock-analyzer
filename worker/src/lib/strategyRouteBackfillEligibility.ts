@@ -67,6 +67,8 @@ function shiftUtcDate(date: string, days: number): string {
 
 // Summarised matrix runs answer their counts from the run header.
 const ELIGIBILITY_SUMMARY_USABLE = matrixRunSummaryUsableInline('mr', MATRIX_RUN_SUMMARY_CHALLENGER_VERSION)
+// Canonical heads per eligibility statement; see auditStrategyRouteBackfillEligibility.
+export const ROUTE_ELIGIBILITY_HEADS_PER_STATEMENT = 4
 
 export async function projectStrategyRouteMaturity(
   rows: StrategyRouteBackfillEligibility[],
@@ -195,7 +197,12 @@ export async function auditStrategyRouteBackfillEligibility(
   // matrix_counts reads each head date's matrix cells once. Four correlated
   // COUNTs re-read every cell of the date once each (6.1M rows per call on
   // 2026-11-12). A formal run is unique per producer, so it has one row per head.
-  const result = await db.prepare(`
+  // Every head's row depends on that head alone, so the heads are read in pages:
+  // one statement over all 83 heads took 11.6 s (420,574 rows) on 2026-11-18,
+  // past D1's 10 s window. A summarised head costs ~70 ms; the 20 heads of
+  // 2026-07-15..08-17, promoted before learning 0065, count their cells at
+  // ~0.45 s each (8 of them: 3.6 s), so a page holds 4 heads (<= ~1.8 s).
+  const sql = `
     WITH canonical_heads AS (
       SELECT h.key signal_date, CAST(h.value AS TEXT) producer_run_id
         FROM json_each(?) h
@@ -278,19 +285,26 @@ export async function auditStrategyRouteBackfillEligibility(
        AND e.producer_run_id=r.producer_run_id AND e.route_version=?
      GROUP BY h.signal_date, h.producer_run_id
      ORDER BY h.signal_date
-  `).bind(
-    canonicalRunIdsJson,
-    startDate,
-    asOfDate,
-    ...formalMatureCompatibility.binds,
-    CANONICAL_SELECTION_LABEL_SCHEMA_VERSION,
-    asOfDate,
-    STRATEGY_ROUTE_AFFINITY_VERSION,
-    STRATEGY_ROUTE_CHALLENGER_VERSION,
-    STRATEGY_ROUTE_CHALLENGER_VERSION,
-  ).all<EligibilityRow>()
+  `
+  const heads = Object.entries(canonicalRunIds)
+  const rows: EligibilityRow[] = []
+  for (let offset = 0; offset < heads.length; offset += ROUTE_ELIGIBILITY_HEADS_PER_STATEMENT) {
+    const page = Object.fromEntries(heads.slice(offset, offset + ROUTE_ELIGIBILITY_HEADS_PER_STATEMENT))
+    const result = await db.prepare(sql).bind(
+      JSON.stringify(page),
+      startDate,
+      asOfDate,
+      ...formalMatureCompatibility.binds,
+      CANONICAL_SELECTION_LABEL_SCHEMA_VERSION,
+      asOfDate,
+      STRATEGY_ROUTE_AFFINITY_VERSION,
+      STRATEGY_ROUTE_CHALLENGER_VERSION,
+      STRATEGY_ROUTE_CHALLENGER_VERSION,
+    ).all<EligibilityRow>()
+    rows.push(...(result.results ?? []))
+  }
 
-  const output = (result.results ?? []).map((row): StrategyRouteBackfillEligibility => {
+  const output = rows.map((row): StrategyRouteBackfillEligibility => {
     const referenceRows = count(row.reference_rows)
     const matureLabelRows = count(row.mature_label_rows)
     const rejectedLabelRows = count(row.rejected_label_rows)

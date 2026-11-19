@@ -3,7 +3,7 @@
 This module never runs allocation, changes its clock, or grants NAV credit.
 Unknown Cloud Run dispatch outcomes require reconciliation, not another launch.
 """
-from datetime import datetime, timezone, date
+from datetime import datetime, timedelta, timezone, date
 import json
 import os
 from google.api_core.exceptions import PreconditionFailed
@@ -11,6 +11,17 @@ from services import premarket_pipeline as owner
 from services.premarket_publication import read as read_publication
 
 ROOT = 'pipeline-v2/postclose/'
+# The after-close export shares the 14:20 window with the post-verify chain, whose strategy-learning
+# finalizer is the heaviest Learning D1 reader of the day. The job runs research first, then waits
+# until that chain is quiet or the deadline, whichever comes first, and reads with fewer threads.
+# A failed or stuck chain only delays the export to the deadline; it never skips it. The deadline
+# is 14:50 TW, at most EXPORT_QUIET_MAX_WAIT_SECONDS after research ends, so research + wait +
+# export (~13 min at two threads) stay inside the job's 3600 s task timeout.
+EXPORT_QUIET_DEADLINE_TW = '14:50'
+EXPORT_QUIET_MAX_WAIT_SECONDS = 25 * 60
+EXPORT_QUERY_WORKERS = 2
+EXPORT_QUIET_POLL_SECONDS = 30
+EXPORT_QUIET_READ_TIMEOUT_SECONDS = 10.0
 
 def _now(now=None):
     result=now or datetime.now(timezone.utc)
@@ -111,7 +122,9 @@ def dispatch_one(uri, *, jobs_client, client=None, now=None):
          'DATASET_SNAPSHOT_RUN_DATE':work['signal_date'],
          'DATASET_SNAPSHOT_PARENT_RUN_ID':work['run_id'],
          'DATASET_SNAPSHOT_PRODUCER_RUN_ID':work['run_id']+':postclose',
-         'DATASET_SNAPSHOT_INPUT_ONLY':'0','PIPELINE_PREMARKET_POSTWRITE_INPUT_GCS_URI':''}
+         'DATASET_SNAPSHOT_INPUT_ONLY':'0','PIPELINE_PREMARKET_POSTWRITE_INPUT_GCS_URI':'',
+         'DATASET_SNAPSHOT_QUERY_WORKERS':str(EXPORT_QUERY_WORKERS),
+         'DATASET_SNAPSHOT_EXPORT_QUIET_DEADLINE':export_quiet_deadline(work['trade_date'])}
     execution=jobs_client.run_job(env_overrides=env,reject_if_running=False,expected_source_sha=source)
     result={**identity,'status':'dispatched','execution_name':execution.execution_name}
     claim.reload();claim.upload_from_string(owner.json_bytes(result),if_generation_match=claim.generation)
@@ -132,3 +145,48 @@ def dispatch_day(trade_date, *, jobs_client, client=None, now=None):
     return {'trade_date':trade_date,'status':'error' if any(r['status']=='error' for r in results) else
             'reconciliation_required' if any(r['status']=='reconciliation_required' for r in results) else
             'dispatched' if results else 'no_published_work','results':results}
+
+
+def export_quiet_deadline(trade_date):
+    if date.fromisoformat(trade_date).isoformat()!=trade_date: raise ValueError('postclose_date_invalid')
+    return f'{trade_date}T{EXPORT_QUIET_DEADLINE_TW}:00+08:00'
+
+def post_verify_quiet(signal_date, run_id, *, query):
+    """True once the post-verify chain of this run, and the strategy-learning it queued, stopped."""
+    stage=query("SELECT status, canonical_run_id FROM pipeline_stage_runs WHERE business_date=? AND stage='post_verify_chain'",
+                [signal_date])
+    row=stage[0] if stage else None
+    if not row or row.get('canonical_run_id')!=run_id: return False
+    if row.get('status') in ('success','error'): return True
+    if row.get('status')!='waiting': return False
+    learning=query('SELECT status, canonical_run_id FROM strategy_learning_runs WHERE business_date=?',[signal_date])
+    return bool(learning) and learning[0].get('canonical_run_id')==run_id and learning[0].get('status') in ('success','error')
+
+def wait_for_export_window(signal_date, run_id, deadline, *, query=None, now=None, sleep=None):
+    """Hold the export until the post-verify chain is quiet or the deadline passes.
+
+    Returns 'quiet', 'deadline' or 'deadline_invalid'. A read error counts as not quiet.
+    """
+    import time
+    try:
+        end=datetime.fromisoformat(deadline)
+        if end.tzinfo is None: raise ValueError
+    except (TypeError, ValueError):
+        return 'deadline_invalid'
+    if query is None:
+        # The proxy resolves the Ops database on each read, so a routing error is a read error too.
+        from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
+        ops=client_proxy_for_domain(D1DataDomain.OPS)
+        # Short per-read timeout: a slow poll must not carry the wait far past its deadline.
+        query=lambda sql, params: ops.query(sql, params, timeout=EXPORT_QUIET_READ_TIMEOUT_SECONDS)
+    clock=now or (lambda: datetime.now(timezone.utc))
+    pause=sleep or time.sleep
+    end=min(end, clock()+timedelta(seconds=EXPORT_QUIET_MAX_WAIT_SECONDS))
+    while True:
+        remaining=(end-clock()).total_seconds()
+        if remaining<=0: return 'deadline'
+        try:
+            if post_verify_quiet(signal_date, run_id, query=query): return 'quiet'
+        except Exception:  # noqa: BLE001 - an unreadable state waits for the deadline
+            pass
+        pause(min(EXPORT_QUIET_POLL_SECONDS, remaining))

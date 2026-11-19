@@ -5,6 +5,8 @@ import {
 } from './schedulerExecutionTickets'
 import { logSchedulerResult } from './schedulerRunLogger'
 import { nextTwTradingDate } from './schedulerPolicy'
+import { expirePremarketWaitingExecution } from './pipelineStageLease'
+import { premarketPublicationCutoff } from './premarketPublicationWindow'
 
 const REQUIRED_STAGES = [
   'pipeline_execution',
@@ -112,6 +114,8 @@ export type EveningChainRootClosureInput = {
   /** Past the closure deadline: missing or pending work is final, so the root closes as error. */
   deadlineExceeded?: boolean
   runScope?: 'live_canonical' | 'historical_replay' | 'derived'
+  /** Appended to a failed closure's summary, so the receipt and its alert name why the DAG ended. */
+  closureReason?: string
 }
 
 export async function closeEveningChainRootIfComplete(
@@ -303,6 +307,7 @@ export async function closeEveningChainRootIfComplete(
   const summary = blockers.length === 0
     ? `evening-chain durable DAG complete date=${businessDate} run_id=${canonicalRunId} stages=${REQUIRED_STAGES.length} strategy_learning=success dataset_snapshot=success active8_oof_daily=success ${historicalExclusion}${scope}`
     : `evening-chain durable DAG failed date=${businessDate} run_id=${canonicalRunId} blockers=${blockers.join(',')}${scope}`
+      + (input.closureReason ? ` reason=${input.closureReason}` : '')
   await updateSchedulerExecutionTicket(db, {
     ticketId: root.ticket_id,
     runId: root.run_id,
@@ -435,17 +440,242 @@ export async function sweepExpiredEveningChainRoots(
   return outcomes
 }
 
-/** Runs the sweep at most once per TW day; a failed sweep is retried by the next caller tick. */
+export const PREMARKET_RESUME_WINDOW_EXPIRED = 'premarket_resume_window_expired'
+
+export type PremarketWaitingSettlement = {
+  business_date: string
+  canonical_run_id: string
+  /** The session whose premarket was the only one allowed to resume this execution; null for a root-only retry. */
+  resume_trade_date: string | null
+  /**
+   * closed: execution closed as error. kept_resumed: that premarket did resume (or its evidence is
+   * unreadable), so a lost completion callback is not relabelled as an expired window. root_retry: the
+   * execution was closed earlier and only its root was still open.
+   */
+  execution: 'closed' | 'kept_resumed' | 'root_retry'
+  root: EveningChainRootClosureOutcome | null
+}
+
+export type PremarketWaitingSettlementOptions = {
+  /** Market-domain DB: a past resume session counts only with its own FinLab 0050 bar. */
+  marketDb?: D1Database
+  nowMs?: number
+  alertEnv?: { DISCORD_WEBHOOK_URL?: string }
+  /**
+   * Controller publication probe (premarket-state): true when the L4 serving publication of this exact
+   * run exists. A throw keeps the execution waiting.
+   */
+  premarketPublished?: (input: { businessDate: string; canonicalRunId: string }) => Promise<boolean>
+}
+
+const TERMINAL_TICKET_STATUSES = ['success', 'error', 'skipped', 'blocked']
+
+export const PREMARKET_RESUMED_CALLBACK_MISSING = 'premarket_resumed_completion_callback_missing'
+export const PREMARKET_PUBLICATION_UNREADABLE = 'premarket_publication_unreadable'
+/** Own task id: a kept wait is alerted without writing the evening-chain receipt as error while its root stays open. */
+export const PREMARKET_WAIT_ALERT_TASK = 'evening-chain-premarket-wait'
+
+/**
+ * A kept wait still needs a human. Alerted through the scheduler receipt of its own task for the
+ * execution's business date; an identical error receipt already there (7-day TTL) suppresses the nightly
+ * repeat on top of the logger's 24h cron:alert dedup.
+ */
+async function alertKeptPremarketWait(
+  kv: KVNamespace,
+  row: { business_date: string; canonical_run_id: string },
+  resumeTradeDate: string,
+  reason: string,
+  alertEnv?: { DISCORD_WEBHOOK_URL?: string },
+): Promise<void> {
+  const error = `${reason}:resume_trade_date=${resumeTradeDate}`
+  const previous = await kv.get(`scheduler:run:${PREMARKET_WAIT_ALERT_TASK}:${row.business_date}`, 'json')
+    .catch(() => null) as { status?: string; error?: string; run_id?: string } | null
+  if (previous?.status === 'error' && previous.error === error && previous.run_id === row.canonical_run_id) return
+  await logSchedulerResult(kv, PREMARKET_WAIT_ALERT_TASK, {
+    status: 'error',
+    summary: `pipeline_execution kept waiting date=${row.business_date} run_id=${row.canonical_run_id} reason=${error}; `
+      + 'premarket window passed, execution not closed, manual reconciliation required',
+    error,
+    duration_ms: 0,
+    run_id: row.canonical_run_id,
+    run_date: row.business_date,
+    strict: false,
+  }, alertEnv)
+}
+
+/** Any successful allocate/publish stage of that session that names this run means the resume happened. */
+async function premarketResumeObserved(
+  db: D1Database,
+  resumeTradeDate: string,
+  canonicalRunId: string,
+): Promise<boolean> {
+  const row = await db.prepare(`
+    SELECT 1 AS resumed
+      FROM pipeline_stage_runs
+     WHERE business_date=? AND canonical_run_id=?
+       AND (stage='premarket_v3:allocate' OR stage LIKE 'premarket_v3:publish:%')
+       AND status='success' AND instr(COALESCE(cursor_key,''), ?)>0
+     LIMIT 1
+  `).bind(resumeTradeDate, `${resumeTradeDate}:premarket-v3`, canonicalRunId).first<{ resumed?: number }>()
+  return Number(row?.resumed ?? 0) === 1
+}
+
+/**
+ * A pipeline execution parked as waiting/awaiting_premarket resumes only from the premarket of the next
+ * TW session (premarket context reads the previous trading day; the controller refuses a resume after the
+ * publication cutoff). Once that session has ended without resuming it, nothing can: close the exact
+ * parked run as error, then its latest non-terminal physical root, whose receipt carries the scheduler alert.
+ * Fail-safe: the resume session must be strictly before `today` (past sessions are confirmed by the market
+ * DB), so an execution waiting for today's or a later premarket is never selected; a date with a live stage
+ * lease is left alone; a resumed run whose completion callback is missing is kept, not relabelled.
+ * Each date settles independently; failures are collected and thrown after the loop.
+ */
+export async function settleExpiredPremarketWaitingExecutions(
+  kv: KVNamespace,
+  db: D1Database,
+  today: string,
+  options: PremarketWaitingSettlementOptions = {},
+): Promise<PremarketWaitingSettlement[]> {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(today)) throw new Error(`premarket_waiting_settlement_date_invalid:${today}`)
+  const nowMs = options.nowMs ?? Date.now()
+  const { results } = await db.prepare(`
+    SELECT e.business_date, e.canonical_run_id, e.status
+      FROM pipeline_stage_runs e
+     WHERE e.stage='pipeline_execution'
+       AND e.business_date BETWEEN ? AND ?
+       AND ((e.status='waiting' AND e.last_error='awaiting_premarket')
+         OR (e.status='error' AND e.last_error LIKE '${PREMARKET_RESUME_WINDOW_EXPIRED}%'
+           AND EXISTS (
+             SELECT 1 FROM scheduler_execution_tickets_v1 t
+              WHERE t.scheduler_job_id='evening-chain' AND t.business_date=e.business_date
+                AND t.ticket_kind='physical_root'
+                AND t.status NOT IN ('success','error','skipped','blocked')
+                AND NOT EXISTS (
+                  SELECT 1 FROM scheduler_execution_tickets_v1 n
+                   WHERE n.scheduler_job_id=t.scheduler_job_id AND n.business_date=t.business_date
+                     AND n.ticket_kind='physical_root'
+                     AND (n.updated_at>t.updated_at OR (n.updated_at=t.updated_at AND n.ticket_id>t.ticket_id))))))
+       AND NOT EXISTS (
+         SELECT 1 FROM pipeline_stage_runs s
+          WHERE s.business_date=e.business_date
+            AND s.lease_owner IS NOT NULL AND s.lease_expires_at>=CURRENT_TIMESTAMP)
+     ORDER BY e.business_date
+     LIMIT ?
+  `).bind(
+    calendarDaysBefore(today, EVENING_CHAIN_ROOT_SWEEP_LOOKBACK_DAYS),
+    calendarDaysBefore(today, 1),
+    EVENING_CHAIN_ROOT_SWEEP_LIMIT,
+  ).all<{ business_date: string; canonical_run_id: string; status: string }>()
+  const settlements: PremarketWaitingSettlement[] = []
+  const failures: string[] = []
+  for (const row of results ?? []) {
+    try {
+      const settlement = await settlePremarketWaitingRow(kv, db, today, nowMs, row, options)
+      if (settlement) settlements.push(settlement)
+    } catch (error) {
+      failures.push(`${row.business_date}:${error instanceof Error ? error.message : String(error)}`.slice(0, 300))
+    }
+  }
+  if (failures.length) throw new Error(`premarket_waiting_settlement_failed:${failures.join(';')}`)
+  return settlements
+}
+
+async function settlePremarketWaitingRow(
+  kv: KVNamespace,
+  db: D1Database,
+  today: string,
+  nowMs: number,
+  row: { business_date: string; canonical_run_id: string; status: string },
+  options: PremarketWaitingSettlementOptions,
+): Promise<PremarketWaitingSettlement | null> {
+  const identity = { businessDate: row.business_date, canonicalRunId: row.canonical_run_id }
+  let resumeTradeDate: string | null = null
+  if (row.status === 'waiting') {
+    try {
+      resumeTradeDate = await nextTwTradingDate(kv, row.business_date, options.marketDb, { nowMs })
+    } catch (error) {
+      console.warn(`[eveningChainRootClosure] premarket resume session unresolved after ${row.business_date}; execution kept waiting:`, error)
+      return null
+    }
+    if (!(resumeTradeDate < today && nowMs > premarketPublicationCutoff(resumeTradeDate))) return null
+    let keptReason: string | null = await premarketResumeObserved(db, resumeTradeDate, row.canonical_run_id)
+      ? PREMARKET_RESUMED_CALLBACK_MISSING
+      : null
+    if (!keptReason && options.premarketPublished) {
+      try {
+        if (await options.premarketPublished(identity)) keptReason = PREMARKET_RESUMED_CALLBACK_MISSING
+      } catch (error) {
+        console.warn(`[eveningChainRootClosure] premarket publication unreadable date=${row.business_date}; execution kept waiting:`, error)
+        keptReason = PREMARKET_PUBLICATION_UNREADABLE
+      }
+    }
+    if (keptReason) {
+      await alertKeptPremarketWait(kv, row, resumeTradeDate, keptReason, options.alertEnv)
+      return { business_date: row.business_date, canonical_run_id: row.canonical_run_id, resume_trade_date: resumeTradeDate, execution: 'kept_resumed', root: null }
+    }
+    const closed = await expirePremarketWaitingExecution(db, {
+      ...identity,
+      error: `${PREMARKET_RESUME_WINDOW_EXPIRED}:resume_trade_date=${resumeTradeDate}`,
+    })
+    if (!closed) return null
+  }
+  const root = await loadLatestSchedulerRootTicket(db, { schedulerJobId: 'evening-chain', businessDate: row.business_date })
+  const rootOpen = Boolean(root) && !TERMINAL_TICKET_STATUSES.includes(String(root?.status))
+  if (!resumeTradeDate && !rootOpen) return null
+  return {
+    business_date: row.business_date,
+    canonical_run_id: row.canonical_run_id,
+    resume_trade_date: resumeTradeDate,
+    execution: resumeTradeDate ? 'closed' : 'root_retry',
+    // Non-strict: the execution is already terminal, so a KV failure is logged, not rethrown. A terminal
+    // root (an earlier dispatch failure) keeps its own error and receipt.
+    root: rootOpen
+      ? await closeEveningChainRootAndLog(kv, db, {
+        ...identity,
+        closureReason: resumeTradeDate
+          ? `${PREMARKET_RESUME_WINDOW_EXPIRED}:resume_trade_date=${resumeTradeDate}`
+          : PREMARKET_RESUME_WINDOW_EXPIRED,
+        strict: false,
+        alertEnv: options.alertEnv,
+      })
+      : null,
+  }
+}
+
+/**
+ * Runs the sweep at most once per TW day; a failed sweep is retried by the next caller tick. Expired
+ * premarket waits settle first, so their roots close with that reason instead of the generic deadline.
+ */
 export async function runEveningChainRootDeadlineSweepOnce(
   kv: KVNamespace,
   db: D1Database,
   today: string,
+  options: PremarketWaitingSettlementOptions = {},
 ): Promise<string> {
   const markerKey = `evening-chain:root-deadline-sweep:${today}`
   if (await kv.get(markerKey)) return `skipped: evening-chain root deadline sweep already ran date=${today}`
-  const outcomes = await sweepExpiredEveningChainRoots(kv, db, today)
+  let settlementError: unknown = null
+  let settlements: PremarketWaitingSettlement[] = []
+  try {
+    settlements = await settleExpiredPremarketWaitingExecutions(kv, db, today, options)
+  } catch (error) {
+    settlementError = error
+  }
+  let outcomes: EveningChainRootClosureOutcome[]
+  try {
+    outcomes = await sweepExpiredEveningChainRoots(kv, db, today)
+  } catch (error) {
+    if (settlementError) console.warn('[eveningChainRootClosure] premarket waiting settlement failed:', settlementError)
+    throw error
+  }
+  // No marker after a failed settlement: the next tick retries it (the root sweep is idempotent).
+  if (settlementError) throw settlementError
   const summary = `evening-chain root deadline sweep date=${today} closed=${outcomes.length}`
     + (outcomes.length ? ` dates=${outcomes.map((row) => `${row.business_date}:${row.status}`).join(',')}` : '')
+    + ` premarket_wait_settled=${settlements.length}`
+    + (settlements.length
+      ? ` waits=${settlements.map((row) => `${row.business_date}:execution_${row.execution}:root_${row.root?.status ?? 'untouched'}`).join(',')}`
+      : '')
   await kv.put(markerKey, summary, { expirationTtl: EVENING_CHAIN_ROOT_SWEEP_MARKER_TTL_SECONDS })
   return summary
 }

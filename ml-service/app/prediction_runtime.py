@@ -247,9 +247,14 @@ class ModelPoolContractError(RuntimeError):
 
 
 def _pool_model_order(pool_models: dict) -> tuple[str, ...]:
-    from .alpha_model_roster import model_order, SUPPORTED_MODELS
+    # The controller sends the R33 roster (LightGBM/ExtraTrees/TabM/GNN) or an eight-model set
+    # (is_complete_roster); model_order() alone would expand the R33 roster to the legacy eight.
+    from .alpha_model_roster import R33_MODELS, model_order, SUPPORTED_MODELS
+    names = set(pool_models) & SUPPORTED_MODELS
+    if names == set(R33_MODELS):
+        return R33_MODELS
     try:
-        return model_order(set(pool_models) & SUPPORTED_MODELS)
+        return model_order(names)
     except ValueError as exc:
         raise ModelPoolContractError("model_pool replacement slot invalid: " + str(exc)) from exc
 

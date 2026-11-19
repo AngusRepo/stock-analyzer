@@ -102,7 +102,10 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         if: matrix.suite != 'hygiene' && steps.cached.outputs.hit != 'true'
         with:
-          node-version: '22'
+          # Temporary pin: 22.23.5 bundles SQLite 3.54.1, which drops the JSON subtype of the
+          # ev_fence_sql subqueries, so node:sqlite and the runner's Python sqlite3 disagree on the
+          # OPB NAV fence token. Unpin with the json() fence fix (fix/ci-opb-nav-fence-sqlite).
+          node-version: '22.23.4'
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         if: steps.cached.outputs.hit != 'true'
@@ -179,7 +182,8 @@ jobs:
         run: python .ci-tools/ci/rerun_new_failures.py list failures "$RUNNER_TEMP/new.txt"
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '22'
+          # Same temporary pin as the suite job above.
+          node-version: '22.23.4'
       # No pip cache here: most runs install nothing, and an unused cache fails the post step.
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:

@@ -27,9 +27,13 @@
     ],
     "ci_level": 0.95,
     "hac": "newey_west_bartlett_lag_equals_horizon_minus_1",
-    "tail_gate": "same_sign_as_oof AND ci_overlaps_oof; days_with_names >= min_trading_days - horizon",
+    "tail_gate": "same_sign_as_oof AND ci_overlaps_oof; days_with_names >= tail_min_days_with_names[tail] (Wei 11/18: 1.5 -> 15, 2.0 -> 10); realized signal days >= min_trading_days - horizon",
     "tail_cost_report": "mean and HAC CI net of one round-trip cost (2 * commission + tax) per tail are reported, not gated (Wei 10/29); the after-cost gate is net_excess",
-    "realized_rule": "a signal day counts when the holiday-KV calendar shows >= horizon trading days after it up to as_of"
+    "realized_rule": "a signal day counts when the holiday-KV calendar shows >= horizon trading days after it up to as_of",
+    "tail_min_days_with_names": {
+      "1.5": 15,
+      "2.0": 10
+    }
   },
   "net_excess": {
     "cost_source": "trading:config.fees (2 * commission + tax per unit of one-way turnover)",

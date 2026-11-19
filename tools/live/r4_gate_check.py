@@ -144,6 +144,13 @@ def validate_policy(policy: Any) -> dict:
     for key, container in (("identity_fields", paper), ("z_tails", signal)):
         if not isinstance(container.get(key), list) or not container[key]:
             raise EvidenceError(f"policy_list_empty:{key}")
+    tail_min = _dict(_need(signal, "tail_min_days_with_names"), "tail_min_days_with_names")
+    if sorted(tail_min) != sorted(str(tail) for tail in signal["z_tails"]):
+        raise EvidenceError("policy_tail_min_days_keys_mismatch")
+    for tail, days in tail_min.items():
+        # Each tail needs its own floor (Wei 11/18: z>=1.5 every realized day, z>=2 at least 10).
+        if isinstance(days, bool) or not isinstance(days, int) or not 1 <= days <= minimum - horizon:
+            raise EvidenceError(f"policy_tail_min_days_invalid:{tail}")
     level = _number(_need(signal, "ci_level"), "ci_level")
     if not 0 < level < 1:
         raise EvidenceError("policy_ci_level_invalid")
@@ -265,14 +272,15 @@ def gate_signal(policy: dict, ev: dict, window: list[str]) -> tuple[bool, dict]:
         oof = _dict(_need(oof_all, tail), f"oof.{tail}")
         oof_point = _number(_need(oof, "point"), "oof.point")
         oof_low, oof_high = _number(_need(oof, "ci_low"), "oof.ci_low"), _number(_need(oof, "ci_high"), "oof.ci_high")
-        if len(values) < required:
-            details["tails"][tail] = {"n": len(values), "required": required, "status": "too_few_days_with_names"}
+        tail_required = int(cfg["tail_min_days_with_names"][str(tail)])
+        if len(values) < tail_required:
+            details["tails"][tail] = {"n": len(values), "required": tail_required, "status": "too_few_days_with_names"}
             passed = False
             continue
         stats = hac_mean_ci(values, horizon - 1, level)
         same_sign = _sign(stats["mean"]) == _sign(oof_point) != 0
         overlap = stats["ci_low"] <= oof_high and oof_low <= stats["ci_high"]
-        details["tails"][tail] = {**stats, "days_without_names": len(realized) - len(values),
+        details["tails"][tail] = {**stats, "required": tail_required, "days_without_names": len(realized) - len(values),
                                   "oof": {"point": oof_point, "ci_low": oof_low, "ci_high": oof_high},
                                   "same_sign_as_oof": same_sign, "ci_overlaps_oof": overlap,
                                   "net_of_round_trip_cost_report_only": {

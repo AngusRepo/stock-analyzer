@@ -1,6 +1,6 @@
-# M12 R4-gate 條件（草稿 v1）
+# M12 R4-gate 條件（審核版 v1-rc，11/18）
 
-> 狀態：草稿。**Paper 第 1 天之前由 Wei 核准並凍結**（D-9）。凍結做法：
+> 狀態：審核版。**Paper 第 1 天之前由 Wei 核准並凍結**（D-9）。K20 R33 cutover 延到 11/19（四）盤後，Paper 第 1 天＝11/20（五），所以核准期限是 11/20（五）開盤前。凍結做法：
 > 1. policy 的 `status` 改成 `frozen`；`calendar.official_closures` 填入 TWSE 公告、涵蓋 gate 期間的休市日。
 > 2. 用 `python -c 'import json,sys; sys.path.insert(0,"tools/live"); import r4_gate_check as g; print(g.sha256_of(json.load(open("docs/live/r4_gate_policy_v1.json"))))'` 算出 canonical sha。
 > 3. 把這個 sha 寫進 `docs/live/r4_gate_policy_v1.approved_sha256`，和 policy 放在同一個 commit；sha 同時記進 DECISIONS。這一步由 parent 在 Wei 核准凍結時做。
@@ -21,9 +21,9 @@
 
 | Gate | 條件 | 失敗時 |
 |---|---|---|
-| G1 identity 連續 | 從 `as_of` 往回數交易日。交易日曆由腳本自己推導：`calendar_start` 到 `as_of` 的平日，扣掉兩種休市日。一是凍結在 policy 的 TWSE 公告休市日；二是 evidence 補的臨時休市（例如颱風），每一天都要有 `wei_confirmed=true` 和原因，否則 FAIL。收據會分開列出這兩種。這樣可以防止 collector 把缺 Paper 的日子改標成休市。每天都要有 Paper 紀錄，identity（`grant_key`、`execution_owner_version`、`l3_identity`、`allocator_identity`）相同。連續段的第一天必須等於 Slice A identity。中途如果 identity 改變，必須有 Wei 確認過的 D-12 重播收據（from／to identity sha 加收據 sha），否則從改變那天重新計數。需要 ≥20 個交易日。 | FAIL，列出實際天數 |
+| G1 identity 連續 | 從 `as_of` 往回數交易日。交易日曆由腳本自己推導：`calendar_start` 到 `as_of` 的平日，扣掉兩種休市日。一是凍結在 policy 的 TWSE 公告休市日；二是 evidence 補的臨時休市（例如颱風），每一天都要有 `wei_confirmed=true` 和原因，否則 FAIL。收據會分開列出這兩種。這樣可以防止 collector 把缺 Paper 的日子改標成休市。每天都要有 Paper 紀錄，identity（`grant_key`、`execution_owner_version`、`l3_identity`、`allocator_identity`）相同。連續段的第一天必須等於 **K20 R33 cutover 之後的 identity**（11/19（四）盤後 G14 讀回後，由 parent 填進 manual 的 `slice_a_identity`；欄位名稱沿用，不改程式）。推論：cutover 會換 `l3_identity`／`allocator_identity`（R33 四模型 roster＋isotonic，以 11/20 第一天讀回為準），所以 cutover 之前的 Paper 日不計入。中途如果 identity 改變，必須有 Wei 確認過的 D-12 重播收據（from／to identity sha 加收據 sha），否則從改變那天重新計數。需要 ≥20 個交易日。 | FAIL，列出實際天數 |
 | G2 工程健康 | G1 連續段內每一天，這 5 個計數都要是 0：08:45 後才出現的 pending buys、NAV 報價日期不符、`paper_execution_scope` 違規、evening chain 沒跑完、T3 帳本交叉寫入。欄位缺失也算 FAIL。 | FAIL，列出每一筆違規 |
-| G3 訊號方向 | 在 L2 池算日內去均值的 5 日超額；z 分段邊界用封存的校準 blocks（訊號強度條件化，不做 top-k 截斷）。只算 5 日報酬已實現的訊號日，需要 ≥ 20 − 5 = 15 天。訊號日是否已實現由腳本依交易日曆推導（之後到 `as_of` 至少有 horizon 個交易日），不採信 evidence 的旗標。每個尾端（z≥1.5、z≥2）：有名單的天數也要 ≥15。window 剛好 20 天時，等於這 15 天每天都要有該尾端的名單，只要缺一天就會 FAIL，**這個嚴格度請 Wei 明確同意**；OOS 日均值的符號必須和 OOF 點估計相同；OOS 95% CI 和 OOF CI 有重疊；OOS 日均值和 HAC CI 減一次來回成本（2 × `commission` + `tax`）後的值照算照報，**只列報告，不當 gate**（Wei 10/29）；扣成本後的 gate 由 G4 在組合層級負責。CI 用 HAC Newey-West（Bartlett），lag ＝ horizon − 1 ＝ 4，這個值由 target 定義推出，不是調出來的。CI 跨 0 時要照實標示。全段 Spearman 照實報告。HMM 各狀態分開列，只做描述，不當 gate；regime 只用 ml-service HMM。 | FAIL |
+| G3 訊號方向 | 在 L2 池算日內去均值的 5 日超額；z 分段邊界用封存的校準 blocks（訊號強度條件化，不做 top-k 截斷）。只算 5 日報酬已實現的訊號日，需要 ≥ 20 − 5 = 15 天。訊號日是否已實現由腳本依交易日曆推導（之後到 `as_of` 至少有 horizon 個交易日），不採信 evidence 的旗標。每個尾端（z≥1.5、z≥2）：有名單的天數也要 ≥15。window 剛好 20 天時，等於這 15 天每天都要有該尾端的名單，只要缺一天就會 FAIL。**z≥2 尾端的嚴格度（Wei 11/18 選 B）**：z≥1.5 維持「有名單的天數 ≥ 15」；z≥2 改成「有名單的天數 ≥ 10」，同號與 CI 重疊條件不變。寫進 policy `signal.tail_min_days_with_names`；OOS 日均值的符號必須和 OOF 點估計相同；OOS 95% CI 和 OOF CI 有重疊；OOS 日均值和 HAC CI 減一次來回成本（2 × `commission` + `tax`）後的值照算照報，**只列報告，不當 gate**（Wei 10/29）；扣成本後的 gate 由 G4 在組合層級負責。CI 用 HAC Newey-West（Bartlett），lag ＝ horizon − 1 ＝ 4，這個值由 target 定義推出，不是調出來的。CI 跨 0 時要照實標示。全段 Spearman 照實報告。HMM 各狀態分開列，只做描述，不當 gate；regime 只用 ml-service HMM。 | FAIL |
 | G4 扣成本淨超額 | 主要指標：每日淨超額 ＝ 毛超額 − 單邊換手 × (2 × `commission` + `tax`)。費率取自 `trading:config.fees`，不另設常數；實際值以收據的 `cost_per_one_way_turnover` 為準。費率和換手都必須 ≥0。這個公式沒有計入 `minCommission`（NT$20）和當沖稅，小額或零股的成本會被低估。點估計 > 0 才算通過（0 是語意門檻），HAC CI 照實列出；lag 沿用 horizon − 1，因為部位約持有 horizon 天，日報酬會重疊。Paper 帳戶報酬（含成本、修正未交割）有資料就一併列點估計和 CI，只報告，不當 gate。 | FAIL |
 | G5 配置器 | R13 重播和 NEW-L08 的結論都要有 Wei 的定案紀錄：`decided_by=wei`、收據引用、定案日 ≤ `as_of`。 | FAIL |
 | G6 Live 測試 | 在 release SHA 上 T1–T7 全部 pass。T8 有 Wei 自己跑 Shioaji simulation 的收據 sha。T9 有 prod R17 切換再切回的收據，當時 gateway 送單開關 = 0、委託 = 0 筆。 | FAIL |
@@ -83,11 +83,13 @@ G1 的 20 日、G3 的 z 尾端和 horizon、CI 水準都寫在 `r4_gate_policy_
   - `net_excess_benchmark_undecided`：毛超額的基準（`benchmark_value`＝0050 或 `twii_value`）待 Wei 決定；決定前不算 `gross_excess`。決定後的算法是 Paper 報酬＋當天實付成本 ÷ 前一交易日 NAV − 基準報酬，也請 Wei 一併確認。
   - `signal_artifact_missing`：z 尾端（z≥1.5／2.0）與「封存校準 blocks 分段」的對應尚未定案，訊號程式在 `sa/native`／`sa/serving`。
 
-## 5. 執行（12/8（二）收盤後，plan §4.7）
+## 5. 執行（12/17（四）收盤後，plan §4.7）
+
+推論：以 Paper 第 1 天 11/20（五）起算第 20 個交易日；holiday KV 在 11/20–12/17 沒有休市日（12/25 在窗外）。cutover 若再延，日期跟著順延。
 ```sh
 set -e
 # 只讀收集：D1 SELECT 與 KV GET；evidence 寫到本機。
-python tools/live/r4_gate_collect.py --calendar-start "<Slice A 第 1 個 Paper 交易日>" \
+python tools/live/r4_gate_collect.py --calendar-start "2026-11-20"  # K20 cutover 後第 1 個 Paper 交易日；cutover 延期就改 \
   --manual manual.json --signal signal.json --out evidence.json
 # 只讀：policy 與 evidence 都是本機檔案；收據寫到本機。
 python tools/live/r4_gate_check.py --evidence evidence.json --out live_gate_receipt.json \

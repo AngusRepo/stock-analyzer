@@ -465,3 +465,53 @@ def test_a_non_finite_value_in_gate_details_still_yields_a_fail_receipt(monkeypa
     assert receipt["overall"] == "FAIL" and receipt["gates"] == {
         "receipt": {"status": "FAIL", "error": "receipt_not_canonical_json"}}
     assert receipt["receipt_sha256"] == gate.sha256_of({k: v for k, v in receipt.items() if k != "receipt_sha256"})
+
+
+def _blank_tail(ev, tail, n):
+    """Remove names for `tail` on the first n realized signal days of the 20-day window."""
+    realized = set(DAYS[-20:-POLICY["signal"]["target_horizon_trading_days"]][:n])
+    for row in ev["signal"]["oos_days"]:
+        if row["date"] in realized:
+            row["tails"][tail] = None
+
+
+def test_the_z2_tail_passes_with_ten_days_of_names_and_fails_with_nine():
+    ev = _evidence()
+    _blank_tail(ev, "2.0", 5)
+    g3 = _run(ev)["gates"]["G3_signal"]
+    assert g3["status"] == "PASS"
+    assert g3["details"]["tails"]["2.0"]["required"] == 10
+    assert g3["details"]["tails"]["2.0"]["days_without_names"] == 5
+    ev = _evidence()
+    _blank_tail(ev, "2.0", 6)
+    tail = _run(ev)["gates"]["G3_signal"]["details"]["tails"]["2.0"]
+    assert tail == {"n": 9, "required": 10, "status": "too_few_days_with_names"}
+
+
+def test_the_z15_tail_still_needs_every_realized_day():
+    ev = _evidence()
+    _blank_tail(ev, "1.5", 1)
+    g3 = _run(ev)["gates"]["G3_signal"]
+    assert g3["status"] == "FAIL"
+    assert g3["details"]["tails"]["1.5"] == {"n": 14, "required": 15, "status": "too_few_days_with_names"}
+
+
+@pytest.mark.parametrize("tail_min, reason", [
+    (None, "missing"),
+    ({"1.5": 15}, "policy_tail_min_days_keys_mismatch"),
+    ({"1.5": 15, "2.0": 10, "2.5": 5}, "policy_tail_min_days_keys_mismatch"),
+    ({"1.5": 15, "2.0": 0}, "policy_tail_min_days_invalid:2.0"),
+    ({"1.5": 16, "2.0": 10}, "policy_tail_min_days_invalid:1.5"),
+    ({"1.5": 15, "2.0": True}, "policy_tail_min_days_invalid:2.0"),
+    ({"1.5": 15, "2.0": 10.0}, "policy_tail_min_days_invalid:2.0"),
+])
+def test_a_tail_floor_must_be_set_for_every_tail_within_the_realized_window(tail_min, reason):
+    policy = copy.deepcopy(POLICY)
+    if tail_min is None:
+        del policy["signal"]["tail_min_days_with_names"]
+    else:
+        policy["signal"]["tail_min_days_with_names"] = tail_min
+    with pytest.raises((gate.EvidenceError, KeyError)) as exc:
+        gate.validate_policy(policy)
+    if reason != "missing":
+        assert str(exc.value) == reason

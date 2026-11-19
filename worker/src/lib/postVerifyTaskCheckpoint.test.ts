@@ -53,7 +53,7 @@ function fixture() {
     EVIDENCE_ARTIFACT_WRITER:{write:async()=>{effects.push('artifact-writer');return {status:'ready'}}},
     ML_CONTROLLER_URL:'https://never-network.invalid', ENVIRONMENT:'test'} as any
   const ctx={runDate:date,upstreamRunId:run,stageLeaseOwner:'lease-A',assertStageLease:async()=>{}}
-  const authority=async()=>({allowed:true,runScope:'live_canonical' as const,reason:'fixture',queuedAt:'now',queuedTaipeiDate:date,nextSessionOpenUtc:null})
+  const authority=async()=>({allowed:true,runScope:'live_canonical' as const,reason:'fixture',queuedAt:'now',queuedTaipeiDate:date,nextSessionOpenUtc:null,liveEffectsAllowed:true,liveEffectsReason:'fixture'})
   const manager=()=>createPostVerifyTaskCheckpoints(env,{businessDate:date,canonicalRunId:run,leaseOwner:'lease-A',productionEligible:true,assertStageLease:ctx.assertStageLease})
   return {sqlite,env,ctx,authority,manager,root,enqueued,effects,queries:()=>queries}
 }
@@ -86,6 +86,38 @@ for(const failedTask of tasks) test(`actual owner injects settled failure at ${f
   assert.equal(JSON.parse(receipt.receipt_json).result.status,'error')
   if(!POST_VERIFY_RETRY_SAFE_TASKS.includes(failedTask)) assert.equal(calls.get(failedTask),1,'non-idempotent failed phase must not blindly run again')
   f.sqlite.close()
+})
+
+test('LIVE-AUTH-B: the post-close window runs only the five live-effect tasks; promotion, adapt and GA stay historical',async()=>{
+  const scopes=[
+    {liveEffectsAllowed:true,skipped:['artifact-auto-promotion','adapt','obsidian-sync','ga-shadow-daily']},
+    {liveEffectsAllowed:false,skipped:['artifact-auto-promotion','paper-intraday-cache-clear','linucb-reward-ledger','adapt',
+      'daily-report','paper-active-postmarket','obsidian-sync','meta-learning-shadow','ga-shadow-daily']},
+  ]
+  for(const scope of scopes){
+    const f=fixture(), calls:string[]=[]
+    const taskRunner=async(task:string)=>{calls.push(task);return success(task)}
+    const authority=async()=>({...await f.authority(),allowed:false,runScope:'historical_replay' as const,
+      reason:'next_executable_session_opened_use_snapshot_only_repair',liveEffectsAllowed:scope.liveEffectsAllowed,
+      liveEffectsReason:scope.liveEffectsAllowed?'post_close_next_session_window':'post_close_window_closed'})
+    const fetched:string[]=[], realFetch=globalThis.fetch
+    globalThis.fetch=(async(input:any)=>{fetched.push(String(input?.url??input));throw new Error('network_disabled_in_test')}) as any
+    try{assert.equal(await runPostVerifyCallbackChain(f.env,f.ctx,{productionAuthority:authority,taskRunner}),'success')}
+    finally{globalThis.fetch=realFetch}
+    assert.deepEqual(calls,tasks.filter(task=>!scope.skipped.includes(task)))
+    // Design-disabled (Wei 11/18): no promotion call, so no serving pointer write, and the receipt says so.
+    assert.ok(!fetched.some(url=>url.includes('auto_promote')),fetched.join(','))
+    const promotion=await f.env.KV.get(`scheduler:run:artifact-auto-promotion:${date}`,'json')
+    assert.equal(promotion.status,'skipped')
+    assert.match(promotion.summary,/^disabled_by_design:r33_monthly_promotion_owner; artifact-auto-promotion does not run/)
+    assert.doesNotMatch(promotion.summary,/live-canonical only/,'must not read as a should-have-run skip')
+    const adapt=await f.env.KV.get(`scheduler:run:adapt:${date}`,'json')
+    assert.match(adapt.summary,/adapt is live-canonical only/,'other historical skips keep their attention summary')
+    const chainLog=await f.env.KV.get(`scheduler:run:post-verify-chain:${date}`,'json')
+    assert.match(chainLog.summary,/artifact-auto-promotion:disabled_by_design/)
+    assert.match(chainLog.summary,/adapt:skipped/)
+    f.sqlite.close()
+  }
 })
 
 test('EC-F: the chain yields after each heavy task it ran and the continuations resume from receipts',async()=>{
@@ -268,6 +300,31 @@ test('one batch adds one write-fence read rather than one per row',async()=>{
   })
   assert.equal(cost,21,'20 producer writes + one batch authority check')
   f.sqlite.close()
+})
+
+test('LIVE-AUTH-B: an independent effect with an unknown outcome settles as a never-rerun error and blocks nothing',async()=>{
+  const f=fixture(), manager=await f.manager()
+  let calls=0
+  const failed=await manager.run('paper-active-postmarket',async()=>{calls++;return {...success('paper-active-postmarket'),
+    status:'error',critical:false,summary:'Controller HTTP 502: connection lost'}},{critical:false,independentEffect:true})
+  assert.equal(failed.status,'error')
+  assert.equal((f.sqlite.prepare('SELECT state FROM post_verify_task_receipts_v1').get() as any).state,'post_verify_task_v1:error')
+  // A later task of the same date still claims; the settled error is replayed, never rerun.
+  assert.equal((await manager.run('strategy-learning',async()=>success('strategy-learning'))).status,'success')
+  const again=await f.manager()
+  assert.equal((await again.run('paper-active-postmarket',async()=>{calls++;return success('paper-active-postmarket')},
+    {critical:false,independentEffect:true})).status,'error')
+  assert.equal(calls,1)
+  // In the chain: a 5xx from a released task in the post-close window still reaches strategy-learning.
+  const g=fixture(), seen:string[]=[]
+  const authority=async()=>({...await g.authority(),allowed:false,runScope:'historical_replay' as const,
+    reason:'next_executable_session_opened_use_snapshot_only_repair',liveEffectsAllowed:true,liveEffectsReason:'post_close_next_session_window'})
+  const taskRunner=async(task:string)=>{seen.push(task);return ['paper-active-postmarket','daily-report'].includes(task)
+    ?{...success(task),status:'error' as const,summary:'Controller HTTP 504: timeout'}:success(task)}
+  assert.equal(await runPostVerifyCallbackChain(g.env,g.ctx,{productionAuthority:authority,taskRunner}),'success')
+  assert.equal(seen.at(-1),'strategy-learning')
+  assert.equal((g.sqlite.prepare(`SELECT COUNT(*) n FROM post_verify_task_receipts_v1 WHERE state='post_verify_task_v1:uncertain'`).get() as any).n,0)
+  f.sqlite.close(); g.sqlite.close()
 })
 
 test('unknown remote side effects stay uncertain across new root/revision and never redispatch',async()=>{
@@ -606,6 +663,62 @@ test('expired lease keeps a non-idempotent running receipt blocked and names it'
   f.sqlite.close()
 })
 
+test('LIVE-AUTH-B: an expired independent-effect claim settles as a never-rerun error for the same task and unblocks the date',async()=>{
+  const f=fixture();let calls=0
+  // daily-report hangs on an untimed Discord send past the checkpoint timeout and its invocation dies.
+  await assert.rejects((await f.manager()).run('daily-report',async()=>{calls++;return new Promise<PostVerifyTaskResult>(()=>{})},
+    {timeoutMs:2,critical:false,independentEffect:true}),/timeout_unsettled/)
+  const next=await takeover(f,'lease-B')
+  const settled=await next.run('daily-report',async()=>{calls++;return success('daily-report')},{critical:false,independentEffect:true})
+  assert.equal(settled.status,'error');assert.match(settled.summary,/lease_expired_reclaimed:daily-report/)
+  // Replayed, never rerun: it must stay optional or the chain fails the date on every delivery.
+  assert.equal(settled.critical,false)
+  assert.equal(calls,1,'the report is not sent again')
+  assert.equal((await next.run('strategy-learning',async()=>{calls++;return success('strategy-learning')})).status,'success')
+  assert.equal(calls,2)
+  assert.deepEqual(f.sqlite.prepare('SELECT state FROM post_verify_task_receipts_v1 ORDER BY state').all().map((row:any)=>row.state),
+    ['post_verify_task_v1:error','post_verify_task_v1:success'])
+  f.sqlite.close()
+})
+
+test('LIVE-AUTH-B: in the chain a daily-report claim left by a dead invocation is replayed as optional and the date succeeds',async()=>{
+  const f=fixture(), seen:string[]=[]
+  const authority=async()=>({...await f.authority(),allowed:false,runScope:'historical_replay' as const,
+    reason:'next_executable_session_opened_use_snapshot_only_repair',liveEffectsAllowed:true,liveEffectsReason:'post_close_next_session_window'})
+  let hang=true
+  const taskRunner=async(task:string)=>{seen.push(task)
+    return task==='daily-report'&&hang?new Promise<PostVerifyTaskResult>(()=>{}):success(task)}
+  await assert.rejects(runPostVerifyCallbackChain(f.env,f.ctx,{productionAuthority:authority,taskRunner,taskTimeoutMs:5}),/timeout_unsettled/)
+  hang=false
+  await takeover(f,'lease-B')
+  const next={...f.ctx,stageLeaseOwner:'lease-B'}
+  assert.equal(await runPostVerifyCallbackChain(f.env,next,{productionAuthority:authority,taskRunner,taskTimeoutMs:5}),'success')
+  assert.equal(seen.filter(task=>task==='daily-report').length,1,'the report is not sent again')
+  assert.equal(seen.at(-1),'strategy-learning')
+  // A further delivery replays the same settled receipts and still succeeds.
+  assert.equal(await runPostVerifyCallbackChain(f.env,next,{productionAuthority:authority,taskRunner,taskTimeoutMs:5}),'success')
+  assert.equal(seen.filter(task=>task==='daily-report').length,1)
+  f.sqlite.close()
+})
+
+test('LIVE-AUTH-B: a later task closes an expired independent-effect claim; the same claim without the flag still blocks',async()=>{
+  const f=fixture();let calls=0
+  await assert.rejects((await f.manager()).run('paper-active-postmarket',async()=>{calls++;return new Promise<PostVerifyTaskResult>(()=>{})},
+    {timeoutMs:2,critical:false,independentEffect:true}),/timeout_unsettled/)
+  // An unflagged claim (an earlier revision, or a gated task) keeps requiring reconciliation.
+  f.sqlite.prepare("UPDATE post_verify_task_receipts_v1 SET receipt_json=json_remove(receipt_json,'$.independentEffect')").run()
+  const unflagged=f.sqlite.prepare('SELECT receipt_json FROM post_verify_task_receipts_v1').get() as any
+  const blocked=await takeover(f,'lease-B')
+  await assert.rejects(blocked.run('strategy-learning',async()=>{calls++;return success('strategy-learning')}),
+    /expired_lease_requires_reconciliation:paper-active-postmarket/)
+  f.sqlite.prepare('UPDATE post_verify_task_receipts_v1 SET receipt_json=?').run(
+    JSON.stringify({...JSON.parse(unflagged.receipt_json),independentEffect:true}))
+  const next=await takeover(f,'lease-C')
+  assert.equal((await next.run('strategy-learning',async()=>{calls++;return success('strategy-learning')})).status,'success')
+  assert.equal(calls,2)
+  f.sqlite.close()
+})
+
 test('legacy running receipt from an older revision is reclaimed by the same idempotent task under a new lease',async()=>{
   const f=fixture();let calls=0
   await assert.rejects((await f.manager()).run(tasks[0],async()=>{calls++;return new Promise<PostVerifyTaskResult>(()=>{})},
@@ -818,6 +931,21 @@ test('EC-F: the operator dump closes a listed task stored as retrySafe:false, ma
   assert.deepEqual(f.sqlite.prepare(out.statements[0]).all().map((row:any)=>row.receipt_key),[rows[0].receipt_key])
   // It takes no verdict: the reclaim already settles it.
   await assert.rejects(reconcileStatements(rows,deadStage,[{receipt_key:rows[0].receipt_key,verdict:'keep-error',reason:'x'}],'20261115'),
+    /verdict_receipt_needs_no_judgment/)
+  f.sqlite.close()
+})
+
+test('LIVE-AUTH-B: the operator dump closes an expired independent-effect claim without a verdict, matching the reclaim',async()=>{
+  const f=fixture()
+  await assert.rejects((await f.manager()).run('daily-report',async()=>new Promise<PostVerifyTaskResult>(()=>{}),
+    {timeoutMs:2,critical:false,independentEffect:true}),/timeout_unsettled/)
+  const rows=dumpRows(f)
+  f.sqlite.prepare("UPDATE pipeline_stage_runs SET lease_expires_at='2000-01-01 00:00:00'").run()
+  const out=await reconcileStatements(rows,deadStage)
+  assert.match(String(out.report[0].action),/close as ERROR/)
+  assert.deepEqual(f.sqlite.prepare(out.statements[0]).all().map((row:any)=>row.receipt_key),[rows[0].receipt_key])
+  assert.equal(JSON.parse((f.sqlite.prepare('SELECT receipt_json FROM post_verify_task_receipts_v1').get() as any).receipt_json).result.critical,false)
+  await assert.rejects(reconcileStatements(rows,deadStage,[{receipt_key:rows[0].receipt_key,verdict:'keep-error',reason:'x'}],'20261117'),
     /verdict_receipt_needs_no_judgment/)
   f.sqlite.close()
 })

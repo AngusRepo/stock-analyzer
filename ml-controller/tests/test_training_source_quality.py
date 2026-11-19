@@ -28,7 +28,8 @@ def test_shareholding_export_handles_both_date_formats_without_future_rows(monke
     db.execute('CREATE TABLE shareholding(stock_id,date,total_shares,holder_count,retail_shares,retail_pct,large_holder_shares,large_holder_pct,created_at)')
     db.executemany("INSERT INTO shareholding VALUES (1,?,100,10,20,20,80,80,'2026-08-09 12:00:00')", [('20260731',),('2026-08-07',),('20260911',)])
     def query(sql,start,end,chunk_days,**kwargs):
-        return [dict(r) for r in db.execute(sql,[start,end])],1
+        bounds={'start':start,'end':end}
+        return [dict(r) for r in db.execute(sql,[bounds[n] for n in kwargs.get('bind_shape',('start','end'))])],1
     monkeypatch.setattr(exporter,'_query_date_range',query)
     rows,_=exporter._query_shareholding('2026-07-01','2026-09-01',10)
     assert [r['date'] for r in rows]==['2026-07-31','2026-08-07']

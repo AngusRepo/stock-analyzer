@@ -9,6 +9,7 @@ import { commitExpectedReturnChampion, hydrateExpectedReturnConfigFromPointers }
 import { buildExpectedReturnOwnerPromotionPlan } from './expectedReturnArtifactPromotion'
 import { verifyNavPromotionEvidence } from './pairedNavPromotionEvidence'
 import { inspectExpectedReturnComparison } from './expectedReturnComparison'
+import { startNavPythonBridge } from './navPythonBridge.testSupport'
 
 const source = process.env.NAV_L3_EV_FIXTURE
 if (source) test('L3 remains usable after genuinely committed EV projections', async t => {
@@ -35,13 +36,9 @@ if (source) test('L3 remains usable after genuinely committed EV projections', a
   } }
   const current = structuredClone(f.current)
   const readCurrent = async () => ({ tradingConfig: structuredClone(current.trading_config), riskConfig: structuredClone(current.risk_config) })
-  const bridge = (mode: string, formal?: any, readFault?: string) => {
-    const result = spawnSync(f.python, ['tests/nav_l3_opb_bridge.py'], { cwd: path.resolve('../ml-controller'),
-      input: JSON.stringify({ mode, formal, readFault, database: f.database, now: f.now, current }), encoding: 'utf8',
-      env: process.env, timeout: 60000 })
-    assert.equal(result.status, 0, String(result.error ?? '') + result.stdout + result.stderr)
-    return JSON.parse(result.stdout)
-  }
+  const read = startNavPythonBridge(f.python, t)
+  const bridge = (mode: string, formal?: any, readFault?: string) =>
+    read({ mode, formal, readFault, database: f.database, now: f.now, current })
   const oldFetch = globalThis.fetch
   globalThis.fetch = async (input: any, options?: any) => {
     assert.match(String(input), /\/nav\/committed-l3-baseline$/)

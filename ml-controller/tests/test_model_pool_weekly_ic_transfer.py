@@ -9,7 +9,7 @@ from datetime import date
 
 from routers import model_pool
 from services.model_ic_tracker import IC_TARGET_SEMANTIC_VERSION, tracked_model_names
-from tests.test_model_pool_weekly_ic_rows import (
+from test_model_pool_weekly_ic_rows import (
     TRACKED,
     _ORIGINAL_RUN_DATE_SQL,
     _SqliteClient,

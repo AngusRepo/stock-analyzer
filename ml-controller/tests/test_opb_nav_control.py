@@ -205,3 +205,21 @@ def test_plain_json_control_claim_has_no_authority():
     with pytest.raises(ValueError, match='unverified_grant'):
         with control_scope({'production_control_ready': True}):
             pytest.fail('JSON must never activate OPB control')
+
+
+def test_cold_decoded_configuration_compares_equal_without_relaxing_json_types():
+    # Cold snapshots decode objects as dict subclasses; KV current config is plain JSON.
+    from io import BytesIO
+    from services.opb_nav_control import _same_json
+    from services.streaming_json_reader import load
+    current = {'risk_config': {'order': {'enforceRegularLots': True, 'maxDailyBuyOrders': 5}, 'stop': 0},
+               'allocator_source_identity': {'a.py': 'x' * 64}, 'ranking': [{'w': 0.5}, {'w': 1}]}
+    frozen = load(BytesIO(json.dumps(current).encode()))
+    assert type(frozen) is not dict and type(frozen['risk_config']['order']) is not dict
+    assert _same_json(frozen, current) and _same_json(current, frozen)
+    assert _same_json({'stop': 0.0}, {'stop': 0})
+    assert not _same_json({'flag': True}, {'flag': 1})
+    assert not _same_json(load(BytesIO(b'{"flag": true}')), {'flag': 1})
+    assert not _same_json(load(BytesIO(b'{"a": [1]}')), {'a': (1,)})
+    assert not _same_json(load(BytesIO(b'{"a": {"b": 1}}')), {'a': {'b': 1, 'c': 2}})
+    assert not _same_json(load(BytesIO(b'{"a": [1]}')), {'a': {'0': 1}})

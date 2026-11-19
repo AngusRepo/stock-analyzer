@@ -2,6 +2,7 @@
 from argparse import Namespace
 from copy import deepcopy
 import json
+import subprocess
 from pathlib import Path
 import sys
 import types
@@ -68,6 +69,8 @@ def world(monkeypatch, tmp_path):
     deployed = {'source_sha': 's'}
     head = {'sha': 's'}
     monkeypatch.setattr(tool, '_local_head', lambda: head['sha'])
+    dirty = []
+    monkeypatch.setattr(tool, '_checkout_changes', lambda: list(dirty))
     monkeypatch.setattr(tool, '_behavior', lambda: {'runtime_admission': packet['writes']['grant']['key']})
     monkeypatch.setitem(sys.modules, 'runtime_context', types.SimpleNamespace(load_environment=lambda: dict(deployed)))
     monkeypatch.setattr(r33_switch, 'validate_packet', _validate_at(r33_switch.validate_packet))
@@ -84,12 +87,12 @@ def world(monkeypatch, tmp_path):
     def promote(packet, *, confirm):
         if confirm:
             learning.pointer.update({k: packet['ensemble_row'][k] for k in r33_switch.IDENTITY_KEYS})
-        return {'status': 'ok' if confirm else 'dry_run'}
+        return {'status': 'ok'} if confirm else {'status': 'dry_run', 'can_promote': True}
     monkeypatch.setattr(tool, '_promote', promote)
     run = lambda command, step, execute=False: tool.activate(
         Namespace(out=tmp_path, step=step, execute=execute), undo=command == 'rollback')
     return types.SimpleNamespace(packet=packet, kv=kv, learning=learning, writes=writes, run=run, live=live,
-                                 out=tmp_path, blobs=blobs, deployed=deployed, head=head)
+                                 out=tmp_path, blobs=blobs, deployed=deployed, head=head, dirty=dirty)
 
 
 def _validate_at(validate):
@@ -298,3 +301,198 @@ def test_prepare_needs_the_deployed_checkout(world, tmp_path):
     with pytest.raises(SystemExit, match='is not the deployed controller source'):
         tool.prepare(Namespace(out=tmp_path / 'new'))
     assert not (tmp_path / 'new').exists()
+
+
+def test_a_blocked_publisher_fails_the_promotion_dry_run(world, monkeypatch):
+    for step in r33_switch.STEPS[:4]:
+        world.run('activate', step, execute=True)
+    world.run('activate', 'promotion')
+    assert json.loads((world.out / 'activate-promotion-dry-run.json').read_text())['publisher_dry_run']['can_promote']
+    monkeypatch.setattr(tool, '_promote', lambda packet, *, confirm: {
+        'status': 'blocked', 'decision': 'active8_bundle_contract_invalid', 'can_promote': False})
+    with pytest.raises(SystemExit, match='publisher_dry_run_not_promotable:active8_bundle_contract_invalid'):
+        world.run('activate', 'promotion')
+    saved = json.loads((world.out / 'activate-promotion-dry-run.json').read_text())
+    assert saved['publisher_dry_run']['status'] == 'blocked'    # kept for inspection
+    assert {k: world.learning.pointer[k] for k in r33_switch.IDENTITY_KEYS} == world.packet['baseline_pointer']
+
+
+def _full_fit_metadata(model, known='2026-10-30', **fit):
+    return {'model_name': model, 'deployment_fit': {
+        'performed': True, 'label_known_date_max': known, 'knowledge_cutoff_date': known,
+        'input_scope': {'label_known_at_max': known, 'point_in_time_vintage_certified': True,
+                        'pit_certification_sha256': '9' * 64}, **fit}}
+
+
+@pytest.fixture
+def prepare_world(world, monkeypatch, tmp_path):
+    """prepare's reads up to the serving table: the label attestation runs on full-fit metadata."""
+    from test_r33_switch import _bundle
+    from services import d1_domain_client
+    bundle = _bundle()
+    blobs = {'bundle.json': json.dumps(bundle).encode(), bundle['oof_checks']['path']: b'{}'}
+    for model, item in bundle['artifacts'].items():
+        blobs[item['metadata_path']] = json.dumps(_full_fit_metadata(model)).encode()
+
+    class Blob:
+        def __init__(self, name): self.name = name
+        def download_as_bytes(self): return blobs[self.name]
+        def download_as_text(self): return blobs[self.name].decode()
+    monkeypatch.setattr(tool, '_bucket', lambda: types.SimpleNamespace(blob=Blob, name='b'))
+    monkeypatch.setattr(d1_domain_client, 'client_for_domain',
+                        lambda domain: types.SimpleNamespace(query=lambda sql, params: [{'plan_id': 'p' * 64}]))
+    monkeypatch.setattr(r33_switch, 'check_oof_checks_report', lambda raw, bundle: {})
+    args = Namespace(out=tmp_path / 'prepare', bundle_path='bundle.json', serving_table=tmp_path / 'no-table.json')
+    return types.SimpleNamespace(bundle=bundle, blobs=blobs, args=args)
+
+
+@pytest.mark.parametrize('trainer', ['2026-10-30', '2026-10-29'])    # equal to / below the scope ceiling
+def test_prepare_attests_full_fit_labels_from_deployment_fit(prepare_world, trainer):
+    item = prepare_world.bundle['artifacts']['TabM']
+    prepare_world.blobs[item['metadata_path']] = json.dumps(
+        _full_fit_metadata('TabM', label_known_date_max=trainer)).encode()
+    # Past the attestation, prepare reaches the serving table (absent here).
+    with pytest.raises(FileNotFoundError, match='no-table.json'):
+        tool.prepare(prepare_world.args)
+
+
+@pytest.mark.parametrize('fit,reason', [
+    ({'performed': False}, 'full_fit_not_performed'),
+    ({'label_known_date_max': '2026-10-31'}, 'full_fit_label_known_max_exceeds_scope'),
+    ({'input_scope': {'label_known_at_max': '2026-11-03', 'point_in_time_vintage_certified': True,
+                      'pit_certification_sha256': '9' * 64}}, 'full_fit_label_known_max_after_cutoff'),
+    ({'label_known_date_max': None, 'input_scope': {'point_in_time_vintage_certified': True,
+                                                    'pit_certification_sha256': '9' * 64}},
+     'full_fit_label_known_max_missing'),
+    ({'input_scope': {'label_known_at_max': '2026-10-30', 'point_in_time_vintage_certified': False}},
+     'full_fit_scope_not_pit_certified'),
+    ({'input_scope': {'label_known_at_max': '2026-10-30', 'point_in_time_vintage_certified': True,
+                      'pit_certification_sha256': '8' * 64}}, 'full_fit_scope_pit_receipt_mismatch'),
+])
+def test_prepare_refuses_an_unattested_full_fit_artifact(prepare_world, fit, reason):
+    item = prepare_world.bundle['artifacts']['TabM']
+    prepare_world.blobs[item['metadata_path']] = json.dumps(_full_fit_metadata('TabM', **fit)).encode()
+    with pytest.raises(RuntimeError, match='r33_artifact_label_attestation_invalid:.*"TabM": "' + reason):
+        tool.prepare(prepare_world.args)
+
+
+def test_prepare_refuses_metadata_of_another_model(prepare_world):
+    items = prepare_world.bundle['artifacts']
+    prepare_world.blobs[items['TabM']['metadata_path']] = json.dumps(_full_fit_metadata('GNN')).encode()
+    with pytest.raises(RuntimeError, match='"TabM": "full_fit_metadata_model_mismatch"'):
+        tool.prepare(prepare_world.args)
+
+
+def test_prepare_refuses_labels_after_the_bundle_cutoff(prepare_world):
+    for model, item in prepare_world.bundle['artifacts'].items():
+        prepare_world.blobs[item['metadata_path']] = json.dumps(_full_fit_metadata(model, known='2026-11-03')).encode()
+    with pytest.raises(RuntimeError, match='full_fit_label_known_max_after_cutoff'):
+        tool.prepare(prepare_world.args)
+
+
+def test_prepare_refuses_fold_only_metadata(prepare_world):
+    # A fold artifact's split_metadata attestation is not a deployment-fit attestation.
+    item = prepare_world.bundle['artifacts']['GNN']
+    prepare_world.blobs[item['metadata_path']] = json.dumps(
+        {'model_name': 'GNN', 'split_metadata': {'train_label_known_max': '2026-10-30'}}).encode()
+    with pytest.raises(RuntimeError, match='"GNN": "full_fit_not_performed"'):
+        tool.prepare(prepare_world.args)
+
+
+def test_a_dirty_checkout_at_the_deployed_sha_is_refused(world, tmp_path):
+    world.dirty.append('ml-controller/services/model_artifact_registry.py')
+    with pytest.raises(SystemExit, match='r33_cutover_checkout_dirty:ml-controller/services/model_artifact_registry.py'):
+        world.run('activate', 'kv-config')
+    with pytest.raises(SystemExit, match='r33_cutover_checkout_dirty'):
+        tool.prepare(Namespace(out=tmp_path / 'new'))
+    assert world.writes == [] and not (tmp_path / 'new').exists()
+    world.dirty.clear()
+    world.run('activate', 'kv-config')
+
+
+def test_a_dirty_checkout_blocks_rollback_too(world):
+    # Rollback may run on a later release (no HEAD check) but never on modified local code.
+    world.run('activate', 'kv-config', execute=True)
+    world.dirty.append('ml-controller/services/r33_switch.py')
+    with pytest.raises(SystemExit, match='r33_cutover_checkout_dirty'):
+        world.run('rollback', 'kv-config', execute=True)
+    assert world.kv['trading:config'] == world.packet['writes']['kv-config']['after']
+    world.dirty.clear()
+    world.run('rollback', 'kv-config', execute=True)
+    assert world.kv['trading:config'] == world.packet['writes']['kv-config']['before']
+
+
+def test_the_dirty_check_runs_before_the_environment_is_loaded(world, monkeypatch, tmp_path):
+    def secrets():
+        raise AssertionError('load_environment ran on a dirty checkout')
+    monkeypatch.setitem(sys.modules, 'runtime_context', types.SimpleNamespace(load_environment=secrets))
+    world.dirty.append('tools/release/runtime_context.py')
+    for run in (lambda: tool.prepare(Namespace(out=tmp_path / 'new')), lambda: world.run('activate', 'kv-config'),
+                lambda: world.run('rollback', 'kv-config')):
+        with pytest.raises(SystemExit, match='r33_cutover_checkout_dirty'):
+            run()
+
+
+@pytest.fixture
+def checkout(tmp_path):
+    """A real git checkout laid out like the deployed clone (code dirs, audits/, ignored files)."""
+    import subprocess
+    repo = tmp_path / 'clone'
+
+    def git(*args):
+        subprocess.run(['git', '-C', str(repo), *args], check=True, capture_output=True)
+    for path, body in {'ml-controller/services/a.py': 'A = 1\n', 'tools/t.py': 'T = 1\n',
+                       'audits/kept.json': '{}\n', '.gitignore': '__pycache__/\n.venv/\n*.pyc\n'}.items():
+        (repo / path).parent.mkdir(parents=True, exist_ok=True)
+        (repo / path).write_text(body)
+    subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+    git('add', '-A')
+    git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'base')
+    return types.SimpleNamespace(repo=repo, git=git, changes=lambda: tool._checkout_changes(repo))
+
+
+def test_checkout_changes_clean_tree_and_runbook_outputs_pass(checkout):
+    assert checkout.changes() == []
+    # The runbook's audits/ inputs and cutover --out directory, plus ignored runtime files.
+    for path in ('audits/slicea-release/crossfit_serving_table.json', 'audits/slicea-cutover-x/packet.json',
+                 'audits/slicea-cutover-x/notes.py', 'ml-controller/services/__pycache__/a.cpython-312.pyc',
+                 'ml-controller/.venv/lib/site.py', 'ml-controller/services/scratch.txt'):
+        (checkout.repo / path).parent.mkdir(parents=True, exist_ok=True)
+        (checkout.repo / path).write_text('x')
+    (checkout.repo / 'tools/.venv').symlink_to(checkout.repo / 'ml-controller/.venv')    # a linked venv
+    assert checkout.changes() == []
+
+
+def test_checkout_changes_ignore_the_callers_git_environment(checkout, monkeypatch, tmp_path):
+    (checkout.repo / 'tools/t.py').write_text('T = 2\n')
+    other = tmp_path / 'other'
+    subprocess.run(['git', 'init', '-q', str(other)], check=True)
+    monkeypatch.setenv('GIT_DIR', str(other / '.git'))
+    monkeypatch.setenv('GIT_INDEX_FILE', str(other / '.git' / 'index'))
+    assert checkout.changes() == ['tools/t.py']
+
+
+@pytest.mark.parametrize('change,expected', [
+    (lambda c: (c.repo / 'ml-controller/services/a.py').write_text('A = 2\n'), 'ml-controller/services/a.py'),
+    (lambda c: ((c.repo / 'tools/t.py').write_text('T = 2\n'), c.git('add', 'tools/t.py')), 'tools/t.py'),
+    (lambda c: (c.repo / 'ml-controller/services/a.py').unlink(), 'ml-controller/services/a.py'),
+    (lambda c: ((c.repo / 'ml-controller/services/a.py').write_text('A = 3\n'),
+                c.git('update-index', '--assume-unchanged', 'ml-controller/services/a.py')), 'ml-controller/services/a.py'),
+    (lambda c: ((c.repo / 'tools/t.py').write_text('T = 3\n'),
+                c.git('update-index', '--skip-worktree', 'tools/t.py')), 'tools/t.py'),
+    (lambda c: (c.repo / 'ml-controller/services/json.py').write_text('x'), 'ml-controller/services/json.py'),
+    (lambda c: (c.repo / 'tools/release_shadow.py').write_text('x'), 'tools/release_shadow.py'),
+    # ignored by .gitignore but still importable (sys.path puts code dirs before the stdlib)
+    (lambda c: (c.repo / 'ml-controller/ssl.pyc').write_bytes(b'x'), 'ml-controller/ssl.pyc'),
+    (lambda c: (c.repo / 'tools/fast.cpython-312-darwin.so').write_bytes(b'x'), 'tools/fast.cpython-312-darwin.so'),
+    # git lists these as one entry each and never expands them, yet each can shadow a package
+    (lambda c: ((c.repo / 'ml-controller/json').mkdir(), (c.repo / 'ml-controller/json/__init__.py').write_text('x'),
+                subprocess.run(['git', 'init', '-q', str(c.repo / 'ml-controller/json')], check=True)), 'ml-controller/json/'),
+    (lambda c: ((c.repo.parent / 'elsewhere').mkdir(), (c.repo.parent / 'elsewhere/__init__.py').write_text('x'),
+                (c.repo / 'tools/numpy').symlink_to(c.repo.parent / 'elsewhere')), 'tools/numpy'),
+    (lambda c: (c.repo / 'tools/\u00e9.py').write_text('x'), 'tools/\u00e9.py'),
+    (lambda c: (c.git('mv', 'tools/t.py', 'tools/u.py')), 'tools/u.py'),
+])
+def test_checkout_changes_report_modified_staged_hidden_and_untracked_code(checkout, change, expected):
+    change(checkout)
+    assert expected in checkout.changes()

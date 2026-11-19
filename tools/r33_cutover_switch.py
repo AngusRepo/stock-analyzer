@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import hashlib
+from importlib.machinery import all_suffixes    # before the code dirs shadow the stdlib (dirty check)
 import json
 import os
 from pathlib import Path
@@ -103,14 +104,54 @@ def _behavior():
     return json.loads((REPO / 'ml-controller/services/native_execution_behavior_release.json').read_text())
 
 
+# sys.path puts these ahead of the standard library, so an importable file there is executed code.
+CODE_DIRS = ('ml-controller', 'tools')
+
+
+def _checkout_changes(repo=REPO):
+    """What makes this checkout differ from its HEAD as executed code.
+
+    Tracked: any staged or unstaged change, and any path hidden from status by
+    assume-unchanged / skip-worktree. Untracked, ignored included: any importable file
+    (importlib suffixes: .py, .pyc, extension modules) under CODE_DIRS, except bytecode caches
+    and dot directories (.venv); also any untracked nested repo or symlink there, which git does not
+    expand. Git runs without inherited GIT_* variables or fsmonitor. Other untracked files (the runbook's audits/ inputs and the
+    --out packet directory) are not code this tool runs.
+    """
+    env = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}    # this checkout, its own index
+
+    def git(*args):
+        return [p for p in subprocess.check_output(['git', '-C', str(repo), '-c', 'core.fsmonitor=false', *args],
+                                                   env=env).decode('utf-8', 'replace').split('\0') if p]
+    # Every -z status entry counts (a rename's source path follows as a bare entry).
+    changes = [entry[3:] if entry[2:3] == ' ' else entry for entry in git('status', '--porcelain', '-z', '--untracked-files=no')]
+    changes += [entry[2:] for entry in git('ls-files', '-v', '-z') if entry[:1].islower() or entry[:1] == 'S']
+    suffixes = tuple(all_suffixes())
+    # A nested repo is listed as one 'dir/' entry and a symlink as one path: either can be a package.
+    changes += [path for path in git('ls-files', '-z', '--others', '--', *CODE_DIRS)
+                if (path.endswith(suffixes + ('/',)) or os.path.islink(repo / path))
+                and not any(part == '__pycache__' or part.startswith('.') for part in path.rstrip('/').split('/'))]
+    return sorted(set(changes))
+
+
+def _require_clean_checkout():
+    # Before anything from this checkout runs (load_environment holds secrets): HEAD alone does
+    # not prove the code, a modified or added module would run instead. Rollback included.
+    changes = _checkout_changes()
+    if changes:
+        raise SystemExit('r33_cutover_checkout_dirty:' + ','.join(changes[:8]) + (',...' if len(changes) > 8 else ''))
+
+
 def _require_deployed_checkout(release):
     # Validators and the runtime key come from this checkout; they must be the deployed ones.
     local = _local_head()
     if local != release['source_sha']:
         raise SystemExit(f'checkout {local} is not the deployed controller source {release["source_sha"]}')
+    _require_clean_checkout()
 
 
 def prepare(args):
+    _require_clean_checkout()
     from runtime_context import load_environment
     release = load_environment()
     _require_deployed_checkout(release)
@@ -120,7 +161,7 @@ def prepare(args):
     from services.r33_crossfit_serving import TABLE_NAME, rebuild_and_check, table_bytes
     from services.r33_ensemble import round_trip_cost
     from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
-    from services.r33_monthly_lifecycle import BUNDLE_PREFIX, _artifact_train_label_known_max
+    from services.r33_monthly_lifecycle import BUNDLE_PREFIX, full_fit_label_known_max
     from services.worker_config_client import load_active_trading_config
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -139,11 +180,17 @@ def prepare(args):
     bundle = json.loads(bundle_raw)
     oof_checks_report = r33_switch.check_oof_checks_report(
         bucket.blob(bundle['oof_checks']['path']).download_as_bytes(), bundle)
-    labels = {}
+    # The bundle's artifacts are full-fit deployment models, attested in deployment_fit.
+    labels, invalid = {}, {}
     for name, item in sorted(bundle['artifacts'].items()):
-        labels[name] = _artifact_train_label_known_max(json.loads(bucket.blob(item['metadata_path']).download_as_text()))
-    if not all(labels.values()) or max(labels.values()) > bundle['knowledge_cutoff_date']:
-        raise RuntimeError('r33_artifact_label_attestation_invalid:' + json.dumps(labels))
+        try:
+            labels[name] = full_fit_label_known_max(json.loads(bucket.blob(item['metadata_path']).download_as_text()),
+                                                    model_name=name, knowledge_cutoff_date=bundle['knowledge_cutoff_date'],
+                                                    pit_certification_sha256=bundle['oof_checks'].get('pit_certification_sha256'))
+        except ValueError as exc:
+            invalid[name] = str(exc)
+    if invalid or not labels:
+        raise RuntimeError('r33_artifact_label_attestation_invalid:' + json.dumps(invalid, sort_keys=True))
     serving_table = json.loads(args.serving_table.read_bytes())
     # B-7: the table must be the one the archived OOF and pool receipt rebuild, byte for byte
     # (not only a file whose labels match); B-1: its sanity at the serving round trip.
@@ -251,6 +298,7 @@ def _promote(packet, *, confirm):
 
 
 def activate(args, *, undo):
+    _require_clean_checkout()
     from runtime_context import load_environment
     release = load_environment()
     from services import r33_switch
@@ -306,6 +354,10 @@ def activate(args, *, undo):
             plan['publisher_dry_run'] = _promote(packet, confirm=False)
         _save(out / (stem + '-dry-run.json'), plan)
         print(json.dumps(plan, default=str))
+        publisher = plan.get('publisher_dry_run')
+        if publisher is not None and (publisher.get('status') != 'dry_run' or publisher.get('can_promote') is not True):
+            # The plan is saved for inspection; a blocked publisher must not read as a passing dry-run.
+            raise SystemExit('publisher_dry_run_not_promotable:' + str(publisher.get('decision')))
         return
     receipt = {**plan, 'started_at': _now(), 'status': 'writing'}
     # A step can run again after its rollback; each run keeps its own receipt.

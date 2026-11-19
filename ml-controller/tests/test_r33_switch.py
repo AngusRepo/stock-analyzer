@@ -245,3 +245,63 @@ def test_validate_packet_refuses_each_resealed_edit(edit):
     r33_switch.seal(packet)
     with pytest.raises((RuntimeError, ValueError), match=message):
         r33_switch.validate_packet(packet, now=NOW)
+
+
+def _publish_r33_dry_run(monkeypatch, *, registry_edit=None, ranking=None, paper=True):
+    """The original atomic publisher (dry run) on a prepared R33 cutover. D1, structure and paper
+    adoption are stubbed; the base-artifact contract and the ranking gate run for real."""
+    import json
+    from services import active8_bundle_transaction, active8_paper_admission
+    from services import model_artifact_registry as registry, model_serving_resolver
+    packet = r33_switch.prepare(**_inputs())
+    row = {**packet['ensemble_row'], 'state': 'candidate', 'production_effect': 0}
+    evidence = {'registration': {'oof_promotion_evidence': {
+        'schema_version': 'model-cpcv-evidence-v1', 'method': 'outer_purged_walk_forward_rank_ic', 'folds': 7,
+        'decision': 'PASS'}}}
+    rows = [{**item, 'model_name': name, 'candidate_type': 'oof_full_fit_release', 'training_run_id': row['training_run_id'],
+             'artifact_path': f'universal/{name}.joblib', 'metadata_path': f'universal/{name}.json',
+             'state': 'offline_strong_pass', 'offline_evidence_json': json.dumps(evidence)}
+            for name, item in packet['ensemble']['base_artifacts'].items()]
+    if registry_edit:
+        registry_edit(rows)
+    calls = []
+    monkeypatch.setattr(registry, 'assess_ensemble_qualifications',
+                        lambda payload: calls.append(payload) or {'ranking': ranking or {'decision': 'FAIL', 'blockers': ['x']}})
+    monkeypatch.setattr(model_serving_resolver, '_artifact_structure_block_reason', lambda *a, **k: None)
+    monkeypatch.setattr(active8_bundle_transaction, 'prepare_bundle_transaction',
+                        lambda **k: {'guards': [], 'recovered_existing_commit': False, 'current_pointers': []})
+    monkeypatch.setattr(active8_paper_admission, 'prepare_paper_adoption',
+                        lambda **k: {'admission': k['admission'], 'configuration': {}})
+    result = registry.run_active8_ensemble_bundle_promotion_controller(
+        training_run_id=row['training_run_id'], registry_rows=rows, d1_pointers=[], ensemble_rows=[row],
+        ensemble_artifact_id=row['artifact_id'], ensemble_payload_checksum=row['payload_checksum'],
+        evaluation_business_date=packet['admission']['business_date'], paper_admission=packet['admission'] if paper else None,
+        confirm=False, reason='r33_cutover')
+    return result, calls
+
+
+def test_publisher_admits_the_r33_full_fit_bundle_without_the_active8_ranking_gate(monkeypatch):
+    # R33 base artifacts bind artifact_id/version/checksum; their rows are oof_full_fit_release.
+    # The active8 ranking gate (d952019c, "for non-R33 Paper") does not apply: R33's gate is its OOF checks.
+    result, calls = _publish_r33_dry_run(monkeypatch)
+    assert result['status'] == 'dry_run' and result['can_promote'] is True, result
+    assert result['release_models'] == sorted(_bundle()['artifacts']) and calls == []
+    assert 'paper_ranking_override' not in result
+
+
+@pytest.mark.parametrize('edit,decision', [
+    (lambda rows: rows[0].update(checksum='sha256:' + '0' * 64), 'active8_bundle_contract_invalid'),
+    (lambda rows: rows[0].update(version='other'), 'active8_bundle_contract_invalid'),
+    (lambda rows: rows[0].update(candidate_type='manual_hotfix'), 'active8_bundle_incomplete'),
+    (lambda rows: rows[0].update(state='rejected'), 'active8_bundle_contract_invalid'),
+    (lambda rows: rows[0].update(artifact_id='other:v1:oof_full_fit_release'), 'active8_bundle_incomplete'),
+])
+def test_publisher_still_binds_each_r33_base_artifact(monkeypatch, edit, decision):
+    result, _ = _publish_r33_dry_run(monkeypatch, registry_edit=edit)
+    assert result['status'] == 'blocked' and result['decision'] == decision
+
+
+def test_publisher_never_adopts_an_r33_object_without_its_paper_admission(monkeypatch):
+    # No R33 NAV adoption exists (active8_nav_inference refuses it); the publisher blocks first.
+    result, calls = _publish_r33_dry_run(monkeypatch, paper=False)
+    assert result['status'] == 'blocked' and result['decision'] == 'r33_requires_paper_admission' and calls == []

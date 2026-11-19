@@ -1,6 +1,6 @@
 {
   "schema_version": "r4-gate-policy-v1",
-  "status": "draft_pending_wei_approval_before_paper_day_1",
+  "status": "frozen",
   "paper": {
     "min_trading_days_under_slice_a_identity": 20,
     "identity_fields": [
@@ -58,7 +58,9 @@
   ],
   "freshness": "as_of is the latest trading day on or before the Taiwan date of generated_at",
   "calendar": {
-    "official_closures": [],
+    "official_closures": [
+      "2026-12-25"
+    ],
     "note": "TWSE published market closures covering the gate window; filled from the TWSE announcement when Wei freezes this policy. Evidence may only add ad hoc closures (e.g. typhoon) that Wei confirmed one by one."
   }
 }

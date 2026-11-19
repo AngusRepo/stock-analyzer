@@ -15,7 +15,9 @@ _spec = importlib.util.spec_from_file_location("r4_gate_check", ROOT / "tools/li
 gate = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(gate)
 
-DRAFT = json.loads((ROOT / "docs/live/r4_gate_policy_v1.json").read_text())
+REPO_POLICY = json.loads((ROOT / "docs/live/r4_gate_policy_v1.json").read_text())
+# The repo copy is frozen once Wei approves it; the draft cases keep testing a draft-status copy.
+DRAFT = {**REPO_POLICY, "status": "draft_pending_wei_approval_before_paper_day_1"}
 OFFICIAL = "2026-11-26"  # a TWSE-announced closure frozen in the policy
 POLICY = {**DRAFT, "status": "frozen", "calendar": {**DRAFT["calendar"], "official_closures": [OFFICIAL]}}
 POLICY_SHA = gate.sha256_of(POLICY)
@@ -364,8 +366,8 @@ def test_duplicate_json_keys_are_rejected_before_hashing():
 
 def test_the_approved_sha_ships_only_with_a_frozen_policy():
     approved = ROOT / "docs/live/r4_gate_policy_v1.approved_sha256"
-    if DRAFT.get("status") == "frozen":
-        assert approved.read_text().strip() == gate.sha256_of(DRAFT)
+    if REPO_POLICY.get("status") == "frozen":
+        assert approved.read_text().strip() == gate.sha256_of(REPO_POLICY)
     else:
         assert not approved.exists()
 

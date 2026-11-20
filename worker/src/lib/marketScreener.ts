@@ -3906,7 +3906,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
 
     const info = sectorMap[stockId]
     const taxonomy = taxonomyProfiles.get(stockId)
-    const industry = taxonomyDisplay(taxonomy, industryMap.get(stockId) ?? '?嗡?')
+    const industry = taxonomyDisplay(taxonomy, industryMap.get(stockId) ?? '未分類')
 
     const raw_signals = deriveStrategyRawSignals(
       prices,
@@ -4972,7 +4972,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
         )
         const info = sectorMap[stockId]
         const taxonomy = taxonomyProfiles.get(stockId)
-        const industry = taxonomyDisplay(taxonomy, industryMap.get(stockId) ?? '?嗡?')
+        const industry = taxonomyDisplay(taxonomy, industryMap.get(stockId) ?? '未分類')
         emergingScored.push({
           symbol: stockId,
           name: info?.name ?? stockId,

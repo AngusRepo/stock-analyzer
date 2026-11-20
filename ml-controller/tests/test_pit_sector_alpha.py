@@ -254,6 +254,17 @@ def test_sector_exposure_cap_reduces_to_cash_without_forced_redistribution() -> 
     assert evidence["unallocated_increment"] == pytest.approx(0.25)
 
 
+def test_screener_no_owner_sector_literal_is_still_capped() -> None:
+    # NEW-1030-11: the screener labels a stock with no industry owner '未分類'; unlike 'unknown' it stays a capped category.
+    weights, applied, _ = apply_categorical_exposure_cap(
+        {"3718": 0.80, "2603": 0.20},
+        {"3718": "未分類", "2603": "SHIPPING"},
+        max_category_weight=0.50,
+    )
+    assert applied is True
+    assert weights["3718"] == pytest.approx(0.50)
+
+
 def test_l4_v5_can_learn_sector_alpha_while_v4_remains_a_separate_contract() -> None:
     feature_names = sorted(CANONICAL_FEATURE_NAMES)
     coefficients = {name: 0.0 for name in feature_names}

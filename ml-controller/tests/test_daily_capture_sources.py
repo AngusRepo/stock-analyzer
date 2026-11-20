@@ -39,7 +39,7 @@ def fixture():
     raw={name:{"1":[]} for name in ("prices_by_id","indicators_by_id","sentiment_by_id")}
     raw.update({name:{"1":{}} for name in ("real_acc_by_id","model_stats_by_id","misc_by_id")})
     raw.update(chips_by_sym={"3004":[]},tag_rows=[])
-    raw["prices_by_id"]["1"]=[{"date":DAY,"close":999.}]
+    raw["prices_by_id"]["1"]=[{"date":DAY,"close":999.,"avg_price":999.}]
     packet={"schema_version":"payload-source-observations-v1","decision_date":DAY,"stocks":stocks,"sources":raw,
         "started_at":"2026-09-29T10:00:00+00:00","observed_at":"2026-09-29T10:01:00+00:00","knowledge_scope":"observed_at_capture_not_historical_asof"}
     packet["source_checksum"]=digest(packet)
@@ -49,6 +49,8 @@ def test_real_binding_sequence_and_frozen_retry():
     bucket,source,packet=fixture();before=deepcopy(packet)
     bound=bind_daily_capture_sources(packet,capture_source=source,decision_date=DAY,bucket=bucket)
     assert packet==before and bound["sources"]["prices_by_id"]["1"][0]["adj_close"]==50.5
+    # NEW-82: serving avg_price is the training value/volume, never the legacy D1 column.
+    assert [r["avg_price"] for r in bound["sources"]["prices_by_id"]["1"]]==[101000./1000.,112200./1100.]
     assert bound["sources"]["chips_by_sym"]["3004"][0]["dealer_net"]==10.
     assert bound["sources"]["misc_by_id"]["1"]["per_stock_ts"][DAY]["market_cap_proxy"] is None
     payload=[{"symbol":"3004","stock_id":1,"prices":bound["sources"]["prices_by_id"]["1"]}]

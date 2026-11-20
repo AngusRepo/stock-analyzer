@@ -6,6 +6,7 @@ import path from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { DatabaseSync } from 'node:sqlite'
 import { commitOpbNavChampion, projectOpbNavChampion } from './opbNavPublication'
+import { startNavPythonBridge } from './navPythonBridge.testSupport'
 
 const source = process.env.NAV_L3_OPB_FIXTURE
 if (source) test('original NAV L3 -> original NAV OPB -> projection -> next-day serving', async t => {
@@ -32,12 +33,9 @@ if (source) test('original NAV L3 -> original NAV OPB -> projection -> next-day 
   } }
   const current = structuredClone(f.current)
   const readCurrent = async () => ({ tradingConfig: structuredClone(current.trading_config), riskConfig: structuredClone(current.risk_config) })
+  const read = startNavPythonBridge(f.python, t)
   function bridge(mode: string, formal?: any) {
-    const result = spawnSync(f.python, ['tests/nav_l3_opb_bridge.py'], { cwd: path.resolve('../ml-controller'),
-      input: JSON.stringify({ mode, formal, database: f.database, now: f.now, current }),
-      encoding: 'utf8', env: process.env, timeout: 60000 })
-    assert.equal(result.status, 0, result.stdout + result.stderr)
-    return JSON.parse(result.stdout)
+    return read({ mode, formal, database: f.database, now: f.now, current })
   }
   const oldFetch = globalThis.fetch
   globalThis.fetch = async (input: any, options?: any) => {

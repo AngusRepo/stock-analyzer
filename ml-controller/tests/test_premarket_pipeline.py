@@ -237,6 +237,71 @@ def test_ambiguous_l4_completion_cannot_recompute(f):
     with pytest.raises(ValueError,match='requires_reconciliation'):run()
     assert len(calls)==1
 
+TRANSIENT_D1='D1 request failed: HTTP 429: {"errors":[{"message":"D1 DB is overloaded"}]}'
+def _recommend_after_personas(f,node_recommend,merge=None):
+    s,state,c=f;r=m.seal_l3(state,client=s);j=Jobs();m.dispatch(r,c,jobs_client=j,client=s)
+    uri=j.calls[0]['env_overrides']['PIPELINE_PREMARKET_INPUT_GCS_URI']
+    async def node_compute_personas(value):return {'persona_opinions':{}}
+    def run():return asyncio.run(m.resume(uri,nodes=[node_compute_personas,node_recommend],
+        merge=merge or (lambda st,up:st.update(up)),client=s))
+    claim=s.blob(m.prefix(r['run_date'],r['run_id'])+'/phases/node_recommend.claim.json')
+    return s,r,c,j,run,claim
+
+@pytest.mark.parametrize('wrapped',[False,True])
+def test_pre_seal_transient_d1_read_failure_is_redispatched_before_cutoff(f,wrapped):
+    calls=[];fail=[True]
+    async def node_recommend(value):
+        m.recommend_progress('pre_seal');calls.append(1)
+        if fail[0]:
+            fail[0]=False
+            if not wrapped:raise RuntimeError(TRANSIENT_D1)
+            try:raise RuntimeError(TRANSIENT_D1)
+            except RuntimeError as exc:raise RuntimeError('recommend_source_read_failed') from exc
+        m.recommend_progress('seal');return {'final_recommendations':[]}
+    s,r,c,j,run,claim=_recommend_after_personas(f,node_recommend)
+    with pytest.raises(RuntimeError):run()
+    assert json.loads(claim.raw)['status']=='failed'
+    j.state='failed'
+    assert m.dispatch(r,c,jobs_client=j,client=s)['status']=='dispatched' and len(j.calls)==2
+    assert run()['final_recommendations']==[] and len(calls)==2
+
+@pytest.mark.parametrize('stage',['unreported','seal','returned'])
+def test_transient_d1_failure_without_pre_seal_report_stays_ambiguous(f,stage):
+    async def node_recommend(value):
+        if stage!='unreported':m.recommend_progress('pre_seal')
+        if stage=='seal':m.recommend_progress('seal')
+        if stage!='returned':raise RuntimeError(TRANSIENT_D1)
+        return {'final_recommendations':[]}
+    def merge(st,up):
+        if 'final_recommendations' in up:raise RuntimeError(TRANSIENT_D1)
+        st.update(up)
+    s,r,c,j,run,claim=_recommend_after_personas(f,node_recommend,merge)
+    with pytest.raises(RuntimeError):run()
+    assert json.loads(claim.raw)['status']=='ambiguous'
+    j.state='failed'
+    result=m.dispatch(r,c,jobs_client=j,client=s)
+    assert result['status']=='reconciliation_required' and len(j.calls)==1
+
+@pytest.mark.parametrize('error',[RuntimeError('D1 request failed: HTTP 400: near "SELEC": syntax error'),
+    RuntimeError('D1 request unsuccessful: [{"code":7500,"message":"SQLITE_CONSTRAINT"}]'),
+    RuntimeError('Worker D1 batch failed: HTTP 429: busy'), ValueError(TRANSIENT_D1),
+    RuntimeError('paired_nav_formal_baseline_identity_missing_or_mismatched')])
+def test_pre_seal_non_transient_failure_stays_ambiguous(f,error):
+    async def node_recommend(value):m.recommend_progress('pre_seal');raise error
+    s,r,c,j,run,claim=_recommend_after_personas(f,node_recommend)
+    with pytest.raises(type(error)):run()
+    assert json.loads(claim.raw)['status']=='ambiguous'
+
+def test_transient_d1_classifier_matches_only_exhausted_client_errors():
+    from services.d1_client import is_transient_d1_error
+    for message in (TRANSIENT_D1,'D1 request failed: HTTP 503: unavailable','D1 raw request failed: network error: reset',
+                    'D1 request unsuccessful: [{"message":"Requests queued for too long"}]'):
+        assert is_transient_d1_error(RuntimeError(message)),message
+    implicit=RuntimeError('paired_nav_source_or_capture_failed');implicit.__context__=RuntimeError(TRANSIENT_D1)
+    for error in (None,implicit,RuntimeError('D1 request failed: HTTP 401: denied'),
+                  RuntimeError('prefix D1 request failed: HTTP 429: x'),ValueError(TRANSIENT_D1)):
+        assert not is_transient_d1_error(error),error
+
 def test_postwrite_requires_serving_receipts_and_can_finish_after_allocation_cutoff(f,monkeypatch):
     s,state,c=f;r=m.seal_l3(state,client=s);j=Jobs();m.dispatch(r,c,jobs_client=j,client=s)
     uri=j.calls[0]['env_overrides']['PIPELINE_PREMARKET_INPUT_GCS_URI']
@@ -523,6 +588,23 @@ def test_authorized_after_close_recovery_retains_actual_capture(monkeypatch):
     context['checksum']='0'*64
     with pytest.raises(ValueError,match='checksum'):
         m.validate_context(receipt,context,now=datetime(2026,10,12,11,0,tzinfo=timezone.utc))
+
+
+def test_context_checksum_matches_worker_json_stringify(monkeypatch):
+    # 2026-11-16: DXY moved 9.66e-06 over the weekend; Python wrote 9.664...e-06
+    # where JSON.stringify writes 0.000009664..., and allocate failed three times.
+    # Expected text and hash come from the Worker's stable() under node.
+    nums=[9.664932290878164e-06,1e-7,1.5e-7,0.000001,1e21,123456789012345680000,1e16,-0.0,3.0,-2.5e-5,0.1]
+    assert m._js_canonical(nums)==('[0.000009664932290878164,1e-7,1.5e-7,0.000001,1e+21,'
+        '123456789012345680000,10000000000000000,0,3,-0.000025,0.1]')
+    monkeypatch.setenv('PIPELINE_DAILY_PLAN_OWNER',m.OWNER)
+    context={'trade_date':'2026-10-12','cutoff':'2026-10-12T08:40:18.152Z',
+        'us':{'dxy_return':9.664932290878164e-06,'sector':'半導體','\U0001F600':1,'￿':2}}
+    assert m._js_canonical(context)==('{"cutoff":"2026-10-12T08:40:18.152Z","trade_date":"2026-10-12",'
+        '"us":{"dxy_return":0.000009664932290878164,"sector":"半導體","\U0001F600":1,"￿":2}}')
+    assert m.digest(context)!=m.worker_digest(context)
+    context['checksum']='6550053b52cac05593b1316507b3ac8e717a6328224d5d82f86abf406f0df200'
+    m.validate_context({'run_date':'2026-10-08'},context,now=datetime(2026,10,12,11,0,tzinfo=timezone.utc))
 
 
 @pytest.mark.parametrize('signal,trade,cutoff,owner,error',[

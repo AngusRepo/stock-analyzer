@@ -1437,6 +1437,52 @@ def test_promotion_blockers_use_adaptive_pbo_policy():
 
     assert "pbo_threshold_missing" in codes
 
+    # EC-D (G2): a PASS label without an extractable PBO number fails closed.
+    for unextractable in ({"decision": "PASS", "method": "cscv_rank_logit"}, "PASS", {"pbo": "n/a"}, {"pbo": float("nan")}):
+        offline["pbo"] = unextractable
+        row = dict(base_row, offline_evidence_json=json.dumps(offline))
+        codes = {blocker["code"] for blocker in registry.artifact_promotion_blockers(row, champion_version="vOld")}
+        assert "pbo_threshold_missing" in codes, unextractable
+
+    offline["pbo"] = 0.2
+    row = dict(base_row, offline_evidence_json=json.dumps(offline))
+    codes = {blocker["code"] for blocker in registry.artifact_promotion_blockers(row, champion_version="vOld")}
+    assert "pbo_threshold_missing" not in codes
+
+
+@pytest.mark.parametrize("value, max_fail_value, expected", [
+    ({"decision": "FAIL", "score": 0.3}, None, False),
+    ({"status": "failed", "value": 1.2}, None, False),
+    ({"go_live_verdict": "PBO_FAIL", "pbo": 0.1}, 0.5, False),
+    ({"passed": False, "score": 0.9}, None, False),
+    ({"ok": "false", "decision": "PASS"}, None, False),
+    ({"decision": "PASS", "score": 0.3}, None, True),
+    ({"decision": "N/A", "score": 0.3}, None, True),
+    ({"pbo": 0.2}, 0.5, True),
+    ({"pbo": 0.7}, 0.5, False),
+    ({"value": float("nan")}, None, False),
+    ({"value": float("inf")}, None, False),
+    (float("-inf"), 0.5, False),
+    ("PASS", None, True),
+    ("FAIL", None, False),
+])
+def test_truthy_gate_value_explicit_fail_and_non_finite(value, max_fail_value, expected):
+    assert registry._truthy_gate_value(value, max_fail_value=max_fail_value) is expected
+
+
+def test_multi_evidence_status_no_longer_drops_promotion_blockers():
+    row = {
+        "artifact_id": "LightGBM:vNew:monthly_release",
+        "model_name": "LightGBM",
+        "candidate_type": "monthly_release",
+        "state": "live_gate_passed",
+        "offline_gate_decision": "STRONG_PASS",
+        "live_gate_status": "multi_evidence_passed",
+        "offline_evidence_json": json.dumps({"gate": {"decision": "STRONG_PASS"}}),
+    }
+    codes = {blocker["code"] for blocker in registry.artifact_promotion_blockers(row, champion_version="vOld")}
+    assert {"pbo_threshold_missing", "dsr_mc_missing"} <= codes
+
 
 def test_promotion_blockers_enforce_cpcv_policy_metrics():
     row = {
@@ -3599,3 +3645,35 @@ def test_v4_tabm_registry_requires_true_full_feature_and_member_semantics():
     codes = {x["code"] for x in registry.artifact_promotion_blockers(row)}
     assert "tabm_member_output_contract_missing" in codes
     assert "tabm_full_feature_contract_mismatch" in codes
+
+
+def test_update_live_gate_from_ic_reuses_caller_registry_snapshot(monkeypatch):
+    row = _oof_full_fit_release_row()
+    reads: list[str] = []
+    executed: list[list[object]] = []
+
+    def fake_query(sql, params=None, timeout=60.0):
+        reads.append(sql)
+        return [] if "model_champion_pointers" in sql else [dict(row)]
+
+    def fake_execute(sql, params=None, timeout=60.0):
+        executed.append(list(params or []))
+        return {"success": True}
+
+    monkeypatch.setattr(registry.d1_client, "query", fake_query)
+    monkeypatch.setattr(registry.d1_client, "execute", fake_execute)
+    monkeypatch.setattr(registry, "_now_iso", lambda: "2026-11-18T00:00:00+00:00")
+    per_model_ic = {"XGBoost::challenger": {"status": "computed", "ic": 0.05, "n_samples": 900,
+                                            "n_dates": 12, "root_cause": "ok"}}
+
+    fresh = registry.update_live_gate_from_ic(per_model_ic, min_samples=50)
+    snapshot = registry.list_artifact_registry(limit=1000)
+    pointers = registry.list_champion_pointers()
+    reads.clear()
+    reused = registry.update_live_gate_from_ic(per_model_ic, min_samples=50,
+                                               registry_rows=snapshot, champion_pointers=pointers)
+
+    assert fresh["selected"] == 1 and fresh["updated"] == 1
+    assert reads == []
+    assert reused == fresh
+    assert executed[0] == executed[1]

@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+from contextvars import ContextVar
 from datetime import date, datetime, timezone, timedelta
 from google.cloud import storage
 from google.api_core.exceptions import NotFound, PreconditionFailed
@@ -18,10 +19,52 @@ SERVING_PHASES=('node_compute_personas','node_recommend','node_llm_reasons','nod
 # Serving before the open publishes a receipt; research resumes after 13:30 on the sealed state.
 CURRENT_SERVING_PHASES=('node_compute_personas','node_recommend','node_write_d1')
 POSTCLOSE_PHASES=('node_compute_sector_flow','node_compute_pit_residual_shadow')
+# node_recommend reports how far it got. Unknown progress keeps the claim ambiguous.
+_recommend_progress=ContextVar('premarket_recommend_progress',default=None)
+def recommend_progress(stage):
+    """'pre_seal' until the first allocation-context write may start, then 'seal'."""
+    progress=_recommend_progress.get()
+    if progress is not None:progress['stage']=stage
+def failed_phase_status(name,progress,exc):
+    # Before the seal, node_recommend only reads (plus content-addressed slate
+    # objects), so a transient D1 read failure may be redispatched before cutoff.
+    if name!='node_recommend':return 'failed'
+    from services.d1_client import is_transient_d1_error
+    return 'failed' if progress.get('stage')=='pre_seal' and is_transient_d1_error(exc) else 'ambiguous'
 def enabled():
     return os.environ.get('PIPELINE_DAILY_PLAN_OWNER') == OWNER
 def digest(value):
     return hashlib.sha256(json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False,ensure_ascii=False).encode()).hexdigest()
+# The Worker seals the morning context with JSON.stringify output. Python and
+# JavaScript disagree on number text (9.66e-06 vs 0.00000966, 1e-07 vs 1e-7)
+# and on key order outside the BMP, so verify with the Worker's own encoding.
+_JS_ESCAPES={'"':'\\"','\\':'\\\\','\b':'\\b','\f':'\\f','\n':'\\n','\r':'\\r','\t':'\\t'}
+def _js_number(value):
+    if isinstance(value,int):return str(value) if abs(value)<=2**53 else _js_number(float(value))
+    if value!=value or value in (float('inf'),float('-inf')):raise ValueError('premarket_context_number')
+    if value==0:return '0'
+    mantissa,_,exp=repr(abs(value)).partition('e')
+    whole,_,frac=mantissa.partition('.')
+    raw=whole+frac;digits=raw.lstrip('0').rstrip('0')
+    n=len(whole)+int(exp or 0)-(len(raw)-len(raw.lstrip('0')));k=len(digits)
+    if k<=n<=21:text=digits+'0'*(n-k)
+    elif 0<n<=21:text=digits[:n]+'.'+digits[n:]
+    elif -6<n<=0:text='0.'+'0'*-n+digits
+    else:text=digits[0]+('.'+digits[1:] if k>1 else '')+'e'+('+' if n>0 else '-')+str(abs(n-1))
+    return ('-' if value<0 else '')+text
+def _js_canonical(value):
+    if value is None:return 'null'
+    if isinstance(value,bool):return 'true' if value else 'false'
+    if isinstance(value,(int,float)):return _js_number(value)
+    if isinstance(value,str):
+        return '"'+''.join(_JS_ESCAPES.get(c) or ('\\u%04x'%ord(c) if ord(c)<0x20 or 0xD800<=ord(c)<=0xDFFF else c) for c in value)+'"'
+    if isinstance(value,list):return '['+','.join(_js_canonical(v) for v in value)+']'
+    if isinstance(value,dict):
+        keys=sorted(value,key=lambda k:k.encode('utf-16-be','surrogatepass'))
+        return '{'+','.join(_js_canonical(k)+':'+_js_canonical(value[k]) for k in keys)+'}'
+    raise ValueError('premarket_context_type')
+def worker_digest(value):
+    return hashlib.sha256(_js_canonical(value).encode()).hexdigest()
 def prefix(day, run_id):
     datetime.strptime(day,'%Y-%m-%d')
     if not run_id: raise ValueError('premarket_run_id_missing')
@@ -182,7 +225,7 @@ def validate_context(receipt, context, *, now=None):
     # Context can freeze at 06:45; the independent 08:45 cutoff remains strict.
     max_age_minutes = 105 if (paper_recovery or opening_recovery) else 120
     if now-cutoff>timedelta(minutes=max_age_minutes) and not (after_close_recovery or late_recovery):raise ValueError('premarket_context_stale')
-    if context['checksum']!=digest({k:v for k,v in context.items() if k!='checksum'}):raise ValueError('premarket_context_checksum')
+    if context['checksum']!=worker_digest({k:v for k,v in context.items() if k!='checksum'}):raise ValueError('premarket_context_checksum')
 
 def dispatch(receipt,context,*,jobs_client,client=None):
     validate_context(receipt,context)
@@ -459,12 +502,16 @@ async def resume(input_uri, *, nodes, merge, client=None, postwrite_only=False, 
             if old.get('status')!='failed':raise ValueError('premarket_phase_outcome_requires_reconciliation:'+node.__name__)
             claim.reload()
             claim.upload_from_string(json_bytes({**identity,'status':'running'}),if_generation_match=claim.generation)
+        progress={'stage':None}
+        token=_recommend_progress.set(progress)
         try:
             from services.pipeline_progress import phase
             from services.runtime_phase_metrics import measured_phase
             async with phase(node.__name__):
                 with measured_phase(node.__name__):
-                    merge(state,await node(state))
+                    update=await node(state)
+                    progress['stage']='completed'
+                    merge(state,update)
                 # Completion is durable only after its checkpoint is sealed.
                 # Measure serialization independently from the node's work.
                 with measured_phase(node.__name__+'.checkpoint'):
@@ -477,9 +524,11 @@ async def resume(input_uri, *, nodes, merge, client=None, postwrite_only=False, 
                 if node.__name__ == 'node_write_d1':
                     from services.premarket_publication import record
                     record(state,client=client)
-        except Exception:
+        except Exception as exc:
             claim.reload()
-            claim.upload_from_string(json_bytes({**identity,'status':'ambiguous' if node.__name__=='node_recommend' else 'failed'}),
+            claim.upload_from_string(json_bytes({**identity,'status':failed_phase_status(node.__name__,progress,exc)}),
                 if_generation_match=claim.generation)
             raise
+        finally:
+            _recommend_progress.reset(token)
     return state

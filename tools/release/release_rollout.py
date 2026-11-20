@@ -24,6 +24,10 @@ complete runtime specs stay in process memory. Changes from the rehearsal3 copy:
 - KV: only a new-grant release stages grants, and only with operator credentials. Without KV
   (controller CD) the trading:config byte comparison is replaced by "the serving controller's
   paper runtime is still PASS with no drift" at the full boundaries.
+- failed rollout: after the rollback, the live controller and application jobs are read back
+  (post_rollback_state in the receipt); a SHA that differs from the one restored, or a read that
+  fails, leaves the attempt requires_reconciliation, which blocks every later rollout until
+  `release.py verify --from-receipts --reconcile` records the live state as coherent.
 """
 from __future__ import annotations
 
@@ -39,7 +43,8 @@ import sys
 import time
 from urllib.parse import quote
 
-from application_job_inventory import application_jobs, read_live_inventory, verify_inventory, verify_ownership
+from application_job_inventory import (application_jobs, read_live_inventory, verify_inventory, verify_ownership,
+                                       verify_runtime)
 
 OUT: Path | None = None
 SOURCE_KEYS = ('STOCKVISION_SOURCE_SHA', 'STOCKVISION_SOURCE_TREE_SHA',
@@ -284,6 +289,87 @@ def source_restore_flags(before, kind):
     return args
 
 
+def source_sha(spec):
+    """STOCKVISION_SOURCE_SHA of a container; None when unset or not a plain value."""
+    return env_map(spec).get('STOCKVISION_SOURCE_SHA', {}).get('value')
+
+
+def live_source_state(gc, rollback):
+    """The controller template, every revision serving traffic and every application Job template,
+    read fresh and compared with the source SHAs rollback.json restores. Jobs: those rollback.json
+    holds plus today's application list (a job it does not hold is a mismatch). Scaler jobs (*-min-*)
+    are not application jobs and carry no source env. Never raises: a failed read is recorded and the
+    state is 'unknown' (or 'mismatch'), never 'aligned' (2026-11-13: jobs stayed on the new SHA
+    behind a reverted controller and the next postclose dispatch failed on the mismatch)."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def describe(*argv):
+        return json.loads(gc('run', *argv, '--region=asia-east1', '--format=json'))
+    expected = (rollback.get('service_source') or {}).get('STOCKVISION_SOURCE_SHA')
+    state = dict(read_at=now(), expected_controller_sha=expected, controller_sha=None, serving={}, jobs={},
+                 mismatches=[], read_errors=[])
+
+    def check(component, want, actual):
+        if actual != want:
+            state['mismatches'].append(dict(component=component, expected=want, actual=actual))
+
+    def failed(component, exc):
+        state['read_errors'].append(dict(component=component, error_type=type(exc).__name__, reason=str(exc)[:160]))
+    try:
+        current = describe('services', 'describe', 'ml-controller')
+        state['controller_sha'] = source_sha(container(current, 'service'))
+        check('services/ml-controller', expected, state['controller_sha'])
+        routed = [row['revisionName'] for row in current['status']['traffic'] if int(row.get('percent') or 0) > 0]
+        if not routed:
+            raise RuntimeError('no_revision_serving_traffic')
+        for name in routed:
+            containers = describe('revisions', 'describe', name)['spec']['containers']
+            if len(containers) != 1:
+                raise RuntimeError('unreviewed_multicontainer_resource')
+            state['serving'][name] = source_sha(containers[0])
+            check('services/ml-controller/serving/' + name, expected, state['serving'][name])
+    except BaseException as exc:
+        failed('services/ml-controller', exc)
+
+    restored = rollback.get('jobs') or {}
+
+    def read_job(name):
+        try:
+            state['jobs'][name] = source_sha(container(describe('jobs', 'describe', name), 'job'))
+            if name not in restored:
+                state['mismatches'].append(dict(component='jobs/' + name, expected='not_in_rollback', actual=state['jobs'][name]))
+            else:
+                check('jobs/' + name, restored[name]['source'].get('STOCKVISION_SOURCE_SHA'), state['jobs'][name])
+        except BaseException as exc:
+            failed('jobs/' + name, exc)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        list(pool.map(read_job, sorted(set(restored) | set(JOBS))))
+    for key in ('mismatches', 'read_errors'):
+        state[key].sort(key=lambda row: row['component'])
+    state['status'] = 'mismatch' if state['mismatches'] else 'unknown' if state['read_errors'] else 'aligned'
+    return state
+
+
+def close_failed_rollout(receipt, *, errors, reverted, post, grant_staged):
+    """Final receipt of a failed rollout and the error to raise. The rollout's own error stays in
+    the receipt (error_type, error); the rollback counts as verified only when every step passed
+    and the live controller and jobs were read back on the SHAs it restored."""
+    aligned = post.get('status') == 'aligned'
+    receipt.update(rollback_status='verified' if not errors and aligned else 'requires_reconciliation', reverted=reverted,
+                   rollback_errors=errors, post_rollback_state=post, new_source_grant_retained=grant_staged,
+                   prior_grant_unchanged=True)
+    try:
+        save('controller-release.json', receipt, durable=True, strict=False)
+    except BaseException as exc:
+        print(f'::warning::failed rollout receipt not saved: {type(exc).__name__}', flush=True)
+    codes = ['controller_modal_release_failed_see_receipt']
+    if post.get('mismatches'):
+        codes.append('post_rollback_controller_job_sha_mismatch')
+    if post.get('read_errors') or not (aligned or post.get('mismatches')):
+        codes.append('post_rollback_state_unknown')
+    return RuntimeError(':'.join(codes))
+
+
 def validate_bootstrap_ref(raw):
     value = json.loads(raw)
     if (not isinstance(value, dict) or not isinstance(value.get('path'), str)
@@ -315,6 +401,8 @@ def prior_bootstrap(prior: dict, baseline_modal: dict, history: dict) -> tuple[s
 def rollout(*, source: Path, out: Path, build_dir: Path, admission_dir: Path, prior: dict, python: str,
             resume_staged: bool = False, idle_wait=IDLE_WAIT, publish=None) -> dict:
     global OUT, PUBLISH
+    from release_admission import grant_size, grant_size_warn_bytes, live_paper_authority
+    warn_bytes = grant_size_warn_bytes()  # CD-NEW-09: a bad threshold stops here, before any wait
     OUT, PUBLISH = out, publish
     out.mkdir(parents=True, exist_ok=True)
     packet_path, build_start = build_dir / 'deployment-build-packet.json', build_dir / 'build-start.json'
@@ -431,6 +519,7 @@ def rollout(*, source: Path, out: Path, build_dir: Path, admission_dir: Path, pr
         grant = load(admission_dir / 'source-grant.json')
         if admission['prior_key'] == admission['new_key'] or grant['approval_checksum'] != admission['approval_checksum']:
             raise RuntimeError('new_source_grant_packet_mismatch')
+        grant_size(grant, admission['new_key'], warn_bytes)  # CD-NEW-09: warning only
         os.environ['NATIVE_PAPER_RUNNER'] = str(admission_dir / 'native-paper.cjs')
         if sha(Path(os.environ['NATIVE_PAPER_RUNNER']).read_bytes()) != packet['native_bundle_sha256']:
             raise RuntimeError('native_bundle_checksum_mismatch')
@@ -449,8 +538,9 @@ def rollout(*, source: Path, out: Path, build_dir: Path, admission_dir: Path, pr
                     or set(keys) & {admission['new_key'], admission['prior_key']}
                     or any(g.get('approved_l4_execution_policy_change') is None for g in policy_grants)):
                 raise RuntimeError('policy_grant_packet_mismatch')
-            for policy_grant in policy_grants:
+            for key, policy_grant in zip(keys, policy_grants):
                 validate_runtime_approval(policy_grant, policy_grant['admission'])
+                grant_size(policy_grant, key, warn_bytes)
     kv_state = {}
     if use_kv:
         kv_state['config'] = {'http_status': 200, 'body': load(OUT / 'config-before.json')}
@@ -460,7 +550,10 @@ def rollout(*, source: Path, out: Path, build_dir: Path, admission_dir: Path, pr
         if policy_grants:
             kv_state['risk'] = kv_get('trading:risk_config')
     grant_staged, policy_staged = False, 0
-    serving = {'url': live['url']}
+    # Until traffic moves, `serving` is the old live revision; a reuse admission that Wei let past its
+    # live view FAIL (live_paper_authority_override) checks it under the same narrow rule.
+    serving = {'url': live['url'],
+               'override': (admission.get('live_paper_authority_override') or {}).get('authorization')}
 
     def paper(url, artifact=None):
         result = request(url.rstrip('/') + '/research_validation/production_bundle',
@@ -489,7 +582,15 @@ def rollout(*, source: Path, out: Path, build_dir: Path, admission_dir: Path, pr
         elif full_grants:
             # No KV in controller CD: the serving controller re-derives its configuration from KV and
             # must still match the grant it runs under (status PASS, no drift fields).
-            paper(serving['url'])
+            if serving['override']:
+                result = request(serving['url'].rstrip('/') + '/research_validation/production_bundle',
+                    headers={'X-Controller-Token': os.environ['ML_CONTROLLER_SECRET']})
+                if result['http_status'] == 200 and (result['body'] or {}).get('status') == 'PASS':
+                    verify_paper_runtime(result['body'])
+                else:
+                    live_paper_authority(result, serving['override'])
+            else:
+                paper(serving['url'])
         current_worker = worker('/api/health')
         if current_worker['http_status'] != 200 or current_worker['body'].get('provenance') != worker_provenance:
             raise RuntimeError('concurrent_worker_change')
@@ -549,6 +650,8 @@ def rollout(*, source: Path, out: Path, build_dir: Path, admission_dir: Path, pr
     before = resumed_before if resume_staged else service()
     referenced, listed_jobs = read_live_inventory(gc, region='asia-east1', service='ml-controller')
     verify_ownership(controller_env=referenced, live_jobs=listed_jobs, expected_image=image)
+    # Reviewed Job runtime drift stops the release before any Job is updated, not only at acceptance.
+    verify_runtime(listed_jobs)
     jobs_before = {name: job(name) for name in JOBS}
     if container(before, 'service')['image'] != packet['base_image']:
         raise RuntimeError('controller_base_image_drift')
@@ -757,7 +860,7 @@ def rollout(*, source: Path, out: Path, build_dir: Path, admission_dir: Path, pr
         staged_snapshot = live_after
         verify_health(request(live_after['status']['url'] + '/health')['body'], expected_health)
         paper(live_after['status']['url'], 'live-paper.json')
-        serving['url'] = live_after['status']['url']
+        serving.update(url=live_after['status']['url'], override=None)
         accept_own_change({'services/ml-controller'})
         boundary('final')
         save('runtime-after.json', expected_inventory)
@@ -852,7 +955,14 @@ def rollout(*, source: Path, out: Path, build_dir: Path, admission_dir: Path, pr
                 raise RuntimeError('final_service_rollback_labels_mismatch')
         except BaseException as exc:
             errors.append(dict(component='service-template', error_type=type(exc).__name__, reason=str(exc)[:160]))
-        receipt.update(rollback_status='requires_reconciliation' if errors else 'verified', reverted=reverted,
-                       rollback_errors=errors, new_source_grant_retained=grant_staged, prior_grant_unchanged=True)
+        # Durable before the live read below, so a run killed during it still leaves the rollback detail.
+        receipt.update(rollback_status='requires_reconciliation', reverted=reverted, rollback_errors=errors)
         save('controller-release.json', receipt, durable=True, strict=False)
-        raise RuntimeError('controller_modal_release_failed_see_receipt') from None
+        # Read what is live now, whatever the steps above reported (60 s per read, not the 600 s of gc).
+        try:
+            post = live_source_state(lambda *argv: subprocess.check_output([GC, *argv, '--project=' + PROJECT], timeout=60),
+                                     rollback)
+        except BaseException as exc:
+            post = dict(status='unknown', mismatches=[], read_errors=[dict(component='post-rollback-state',
+                        error_type=type(exc).__name__, reason=str(exc)[:160])])
+        raise close_failed_rollout(receipt, errors=errors, reverted=reverted, post=post, grant_staged=grant_staged) from None

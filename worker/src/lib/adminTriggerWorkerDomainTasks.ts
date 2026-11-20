@@ -1,4 +1,5 @@
 import type { SchedulerCallbackContext, TaskHandler, TriggerDeps } from './adminTriggerTaskMap'
+import { R33_MONTHLY_PROMOTION_DESIGN_DISABLED } from './designDisabledSteps'
 import { DATA_DOMAINS, databaseForDataDomain, databaseForTable, shadowDatabaseForDataDomain } from './dataDomainRegistry'
 import type { DataDomain } from './dataDomainRegistry'
 import { runVerifyV2 } from './controllerWorkflows'
@@ -609,8 +610,8 @@ export function buildAdminWorkerDomainTaskMap(
         `reward_rows=${rewards.persisted_rows}`,
         `reward_stale_retired=${rewards.stale_rows_retired}`,
         `refresh_run_id=${rewards.refresh_run_id ?? 'none'}`,
-        `policy=${policy ? policy.policy_state.status : 'skipped_historical'}`,
-        `production_policy=${productionPolicy ? productionPolicy.state.status : 'skipped_historical'}`,
+        `policy=${policy ? policy.policy_state.status : R33_MONTHLY_PROMOTION_DESIGN_DISABLED}`,
+        `production_policy=${productionPolicy ? productionPolicy.state.status : R33_MONTHLY_PROMOTION_DESIGN_DISABLED}`,
         `evidence_closure=${closureSummary}`,
         `run_scope=${runScope}`,
         `production_authority=${authorityReason}`,
@@ -721,6 +722,7 @@ export function buildAdminWorkerDomainTaskMap(
       const { repairHistoricalSelectionReferences } = await import('./selectionReferenceRepair')
       const result = await repairHistoricalSelectionReferences(c.env.DB, runDate, {
         dryRun: c.req.query('dry_run') === '1',
+        archiveEnv: c.env,
       })
       return [
         'selection_reference_repair date=' + result.signal_date,
@@ -824,6 +826,9 @@ export function buildAdminWorkerDomainTaskMap(
     },
     'postclose-research-dispatch': async () => {
       const { runPostcloseResearch } = await import('./postcloseResearch')
+      // NEW-47: report pointer changes after the close; the alert never blocks the dispatch.
+      await import('./pointerChangeAlert').then((m) => m.alertPointerChangesGuarded(c.env))
+        .catch((error) => console.warn('[PointerChange] check failed: ' + String(error)))
       return runPostcloseResearch(c.env, requestedRunDate() || twToday())
     },
     'daily-snapshot': () => deps.runDailySnapshot(requestedRunDate()),

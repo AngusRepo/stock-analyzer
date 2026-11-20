@@ -196,19 +196,17 @@ def _counted(seq_fields):
 
 
 def _spawn_ready(monkeypatch,prep,seq):
-    from dataclasses import dataclass
     from types import SimpleNamespace
     from routers import walk_forward as wf
     from services import walk_forward_retrain as retrain,modal_client,payload_builder
 
-    @dataclass
-    class Env:
-        regime:str="neutral"
     window=SimpleNamespace(window_id=0,train_start="2026-01-01",train_end="2026-03-01",test_start="2026-03-02",test_end="2026-04-01")
     monkeypatch.setattr(retrain,"_get_bucket",lambda:Bucket(prep,seq))
     monkeypatch.setattr(wf,"_walk_forward_calendar_and_windows",lambda req:([],{},[window]))
     monkeypatch.setattr(wf,"_load_resume_plan",lambda *a,**k:{"new_window_ids":[0]})
-    monkeypatch.setattr(payload_builder,"load_market_env",lambda run_date,**k:(Env(),{},{},{},{}))
+    def unused_market_env(*a,**k):
+        raise AssertionError("KD-14: walk-forward dispatch must not read market_env")
+    monkeypatch.setattr(payload_builder,"load_market_env",unused_market_env)
     spawn=AsyncMock(return_value=SimpleNamespace(object_id="fc-1"))
     monkeypatch.setattr(modal_client,"spawn_walk_forward_orchestrator",spawn)
     return wf,spawn
@@ -221,6 +219,7 @@ def test_paid_orchestrator_gets_sealed_batch_counts_not_defaults(monkeypatch):
     asyncio.run(wf.walk_forward_run(req))
     payload=spawn.call_args.args[0]
     assert (payload["batch_count"],payload["sequence_batch_count"])==(len(prep["batch_rows"]),3)
+    assert payload["market_env"]=={}
 
 
 @pytest.mark.parametrize("seq_fields,explicit,reason",[

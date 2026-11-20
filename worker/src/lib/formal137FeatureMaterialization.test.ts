@@ -262,3 +262,18 @@ const strategy0193 = {
   assert.equal(telemetry.componentCoverage.sector_turnover_share_delta, 0)
   assert.equal(telemetry.materializedCount, 0)
 }
+
+
+// X-MEM-SECTORRS: the screener publishes sector evidence as factorSignals.sectorRsRatio /
+// sectorTurnoverShareDelta (marketScreener sector_flow patch); the exposure must read those keys.
+{
+  const screenerShaped: any[] = [0.8, 1.0, 1.3].map((rs, index) => ({ raw_signals: { factorSignals: {
+    us_sentiment_score: 0.7, sectorRsRatio: rs, sectorTurnoverShareDelta: index * 0.01 - 0.01,
+  } } }))
+  const telemetry = materializeFormal137UsSentimentScoreRank(screenerShaped)
+  assert.equal(telemetry.componentCoverage.sector_rs_ratio, 3)
+  assert.equal(telemetry.componentCoverage.sector_turnover_share_delta, 3)
+  assert.equal(telemetry.materializedCount, 3)
+  const ranks = screenerShaped.map((candidate) => candidate.raw_signals.factorSignals.formal137UsSentimentScoreRank)
+  assert.ok(ranks[0] < ranks[1] && ranks[1] < ranks[2], `positive sentiment ranks higher sector strength higher: ${ranks}`)
+}

@@ -45,8 +45,38 @@ NATIVE_ENTRY = 'worker/src/node-runner/nativePaperJobMain.ts'  # Dockerfile esbu
 NATIVE_RUNNER_DIR = 'worker/src/node-runner/'
 
 
+# CD-NEW-09: each grant nests its whole predecessor (prior_runtime_approval), ~300 KiB per new grant;
+# a Cloudflare KV value is capped at 25 MiB. Warn (never refuse) above a configurable size.
+GRANT_SIZE_WARN_ENV = 'STOCKVISION_GRANT_SIZE_WARN_BYTES'
+GRANT_SIZE_WARN_DEFAULT = 20 * 1024 * 1024
+KV_VALUE_LIMIT = 25 * 1024 * 1024
+
+
 def sha(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
+
+
+def grant_size_warn_bytes() -> int:
+    raw = os.environ.get(GRANT_SIZE_WARN_ENV, '').strip()
+    if not raw:
+        return GRANT_SIZE_WARN_DEFAULT
+    if not re.fullmatch(r'[0-9]+', raw) or not 0 < int(raw) <= KV_VALUE_LIMIT:
+        raise SystemExit(f'{GRANT_SIZE_WARN_ENV} must be an integer byte count in (0, {KV_VALUE_LIMIT}]')
+    return int(raw)
+
+
+def grant_size(grant: dict, label: str, warn_bytes: int | None = None) -> dict:
+    """Bytes of the grant as a compact JSON KV value; prints a warning above the threshold."""
+    warn_bytes = grant_size_warn_bytes() if warn_bytes is None else warn_bytes
+    size = len(json.dumps(grant, ensure_ascii=False, separators=(',', ':')).encode('utf-8'))
+    depth, node = 0, grant
+    while isinstance(node, dict) and isinstance(node.get('prior_runtime_approval'), dict):
+        depth, node = depth + 1, node['prior_runtime_approval']
+    over = size > warn_bytes
+    if over:
+        print(f'::warning::grant {label} is {size} bytes ({size / 1048576:.2f} MiB, nesting depth {depth}), above '
+              f'{GRANT_SIZE_WARN_ENV}={warn_bytes}; the KV value limit is {KV_VALUE_LIMIT} bytes', file=sys.stderr, flush=True)
+    return {'bytes': size, 'prior_depth': depth, 'warn_bytes': warn_bytes, 'over_warn': over, 'kv_limit_bytes': KV_VALUE_LIMIT}
 
 
 def git(source: Path, *args: str, raw: bool = False):
@@ -60,7 +90,27 @@ def save(path: Path, value) -> None:
         stream.write('\n')
 
 
-def runtime_baseline(source: Path, expected_live: str) -> dict:
+LIVE_AUTHORITY_OVERRIDE = re.compile(r'wei-go-\d{8}-[a-z0-9-]{3,40}')
+LIVE_AUTHORITY_OVERRIDE_REASON = 'canonical_serving_authority_unverified'
+
+
+def live_paper_authority(paper: dict, override: str | None = None) -> dict | None:
+    """None when the live Paper authority PASSes; the override record when Wei authorized a reuse
+    release past a live view that cannot read the committed bundle (11/20: the R33 roster object has
+    no learned-ensemble fit, so the live view FAILs and would block its own fix). Anything else raises.
+    The staged revision and the post-rollout verify still require PASS."""
+    body = paper.get('body') or {}
+    if paper.get('http_status') == 200 and body.get('status') == 'PASS':
+        if not re.fullmatch('[a-f0-9]{64}', body.get('source_receipt_checksum', '')):
+            raise RuntimeError('live_paper_source_receipt_missing')
+        return None
+    if (override and LIVE_AUTHORITY_OVERRIDE.fullmatch(override) and paper.get('http_status') == 200
+            and body.get('status') == 'FAIL' and body.get('reason') == LIVE_AUTHORITY_OVERRIDE_REASON):
+        return {'authorization': override, 'live_status': 'FAIL', 'live_reason': LIVE_AUTHORITY_OVERRIDE_REASON}
+    raise RuntimeError('live_paper_authority_not_verified')
+
+
+def runtime_baseline(source: Path, expected_live: str, *, live_authority_override: str | None = None) -> dict:
     """Authenticated read-only metadata; credentials never enter return values."""
     live = load_environment()
     service = json.loads(gc('run', 'services', 'describe', 'ml-controller', '--region=asia-east1', '--format=json'))
@@ -85,10 +135,7 @@ def runtime_baseline(source: Path, expected_live: str) -> dict:
         raise RuntimeError('live_health_source_mismatch')
     paper = request(live['url'] + '/research_validation/production_bundle',
                     headers={'X-Controller-Token': os.environ['ML_CONTROLLER_SECRET']})
-    if paper['http_status'] != 200 or paper['body'].get('status') != 'PASS':
-        raise RuntimeError('live_paper_authority_not_verified')
-    if not re.fullmatch('[a-f0-9]{64}', paper['body'].get('source_receipt_checksum', '')):
-        raise RuntimeError('live_paper_source_receipt_missing')
+    paper_override = live_paper_authority(paper, live_authority_override)
     jobs = {}
     for name in JOBS:
         job = json.loads(gc('run', 'jobs', 'describe', name, '--region=asia-east1', '--format=json'))
@@ -102,7 +149,7 @@ def runtime_baseline(source: Path, expected_live: str) -> dict:
             'revision': live['latest_ready_revision'], 'image': container['image'], 'source': source_env,
             'service_account': service['spec']['template']['spec'].get('serviceAccountName'),
             'service_spec_sha256': sha(json.dumps(service['spec'], sort_keys=True).encode()),
-            'paper': paper['body'], 'jobs': jobs}
+            'paper': paper['body'], 'paper_override': paper_override, 'jobs': jobs}
 
 
 IDENTITY_PROBE = r'''
@@ -269,7 +316,8 @@ def reuse(source: Path, out: Path, expected_live: str, native_receipt_sha: str |
         raise RuntimeError('release_source_detached_head')
     if subprocess.run(['git', '-C', str(source), 'merge-base', '--is-ancestor', expected_live, head]).returncode != 0:
         raise RuntimeError('live_source_not_ancestor_of_release')
-    baseline = runtime_baseline(source, expected_live)
+    baseline = runtime_baseline(source, expected_live,
+                                live_authority_override=os.environ.get('RELEASE_LIVE_AUTHORITY_OVERRIDE') or None)
     decision = classify(source, expected_live, head, identities)
     if decision['mode'] != 'reuse':
         raise RuntimeError('identity_changing_release_requires_manual_new_grant:' + ';'.join(decision['reasons']))
@@ -284,6 +332,7 @@ def reuse(source: Path, out: Path, expected_live: str, native_receipt_sha: str |
                    manifest_sha256={name: sha(raw) for name, raw in services.items()},
                    production_baseline_source=expected_live, production_baseline_image=baseline['image'],
                    source_identities_checked_by='plan_job' if identities == 'checked' else 'admission',
+                   live_paper_authority_override=baseline['paper_override'],
                    policy_keys=[], cloud_writes=0, kv_reads=0, models_invoked=0, chain_dispatched=False)
     save(out / 'admission-receipt.json', receipt)
     return receipt
@@ -454,6 +503,7 @@ def new_grant(source: Path, out: Path, expected_live: str, *, prior_bundle: byte
         configuration=current, prior_runtime_approval=prior,
         approved_strategy_nav_source_change={'release_manifest_checksum': digest(manifest)})
     grant['approval_checksum'] = digest(grant)
+    size = grant_size(grant, key)
     out.mkdir(parents=True)
     save(out / 'baseline.json', baseline)
     save(out / 'identity-delta.json', {'allocator_and_l3': source_delta,
@@ -483,7 +533,7 @@ def new_grant(source: Path, out: Path, expected_live: str, *, prior_bundle: byte
             production_baseline_source=baseline['source_sha'], production_baseline_image=baseline['image'],
             manifest_sha256={name: sha((services / name).read_bytes()) for name in MANIFESTS},
             policy_keys=policy_keys, policy_chain_sha256=sha(policy_chain.read_bytes()) if chain else None,
-            cloud_writes=0, models_invoked=0, chain_dispatched=False)
+            grant_size=size, cloud_writes=0, models_invoked=0, chain_dispatched=False)
         save(out / 'admission-receipt.json', receipt)
     except BaseException:
         for name, raw in originals.items():

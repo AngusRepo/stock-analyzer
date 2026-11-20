@@ -192,7 +192,15 @@ export async function runModelIcFullCheck(env: Bindings, runDate?: string,
   return dispatchWeeklyOperation(env, 'model-ic-full-check', runDate, context)
 }
 
-export async function runModelIcRollingRefresh(env: Bindings, runDate?: string) {
+// Worker-side work after the controller returns (evidence capture, receipt write) must fit in the same task budget.
+const MODEL_IC_POST_RESPONSE_RESERVE_MS = 20_000
+
+export function modelIcFetchTimeoutMs(deadlineAt: number | undefined, now = Date.now()) {
+  if (deadlineAt == null || !Number.isFinite(deadlineAt)) return 120_000
+  return Math.max(1_000, Math.floor(deadlineAt - now - MODEL_IC_POST_RESPONSE_RESERVE_MS))
+}
+
+export async function runModelIcRollingRefresh(env: Bindings, runDate?: string, budget: { deadlineAt?: number } = {}) {
   requireController(env)
   const icData = await controllerJson<any>(env, '/model_pool/compute_weekly_ic', {
     method: 'POST',
@@ -203,7 +211,7 @@ export async function runModelIcRollingRefresh(env: Bindings, runDate?: string) 
       append_history: false,
       run_date: runDate || undefined,
     },
-    timeoutMs: 120_000,
+    timeoutMs: modelIcFetchTimeoutMs(budget.deadlineAt),
   })
   const computed = Object.entries(icData.per_model_ic || {})
     .filter(([_, value]: any) => value.status === 'computed')

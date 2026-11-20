@@ -171,6 +171,14 @@ def predict(rows: list[dict], model: dict) -> list[dict]:
 
 def validate_bundle(bundle: dict, *, l3_identity: dict, signal_date: str,
                     require_paper_release: bool = True) -> None:
+    from services.l3_equal_weight_bundle import is_r33_bundle, validate as validate_r33_bundle
+    if is_r33_bundle(bundle):
+        validate_r33_bundle(bundle, l3_identity=l3_identity, signal_date=signal_date)
+        if bundle.get("l4plus", {}).get("enabled") is True:
+            raise ValueError("r33_multiple_calibration_owners")
+        if require_paper_release:
+            _validate_paper_release(bundle, l3_identity)
+        return
     order = recipe_order(bundle.get("model", {}).get("recipe", {}))
     if (bundle.get("schema_version") != SCHEMA or bundle.get("feature_schema") != feature_schema(order)
             or bundle.get("label_schema") != LABEL_SCHEMA or bundle.get("horizon_sessions") != 5):
@@ -211,17 +219,21 @@ def validate_bundle(bundle: dict, *, l3_identity: dict, signal_date: str,
         if values.shape!=(30,) or not np.isfinite(values).all() or (key=='scale' and (values<=0).any()):
             raise ValueError('l4_distribution_scaler_invalid')
     if require_paper_release:
-        release = bundle.get("release") or {}
-        if (release.get("scope") != "paper" or release.get("decision") != "PASS"
-                or release.get("model_checksum") != bundle["model_checksum"]
-                or release.get("l3_identity_checksum") != digest(l3_identity)
-                or not release.get("validation_receipt_checksum")):
-            raise ValueError("l4_distribution_paper_release_missing")
-        receipt = release.get('validation_receipt') or {}
-        from services.l4_distribution_lifecycle import validate_acceptance
-        validate_acceptance(receipt,bundle)
-        if release['validation_receipt_checksum'] != digest(receipt):
-            raise ValueError("l4_distribution_paper_release_missing")
+        _validate_paper_release(bundle, l3_identity)
+
+
+def _validate_paper_release(bundle, l3_identity):
+    release = bundle.get("release") or {}
+    if (release.get("scope") != "paper" or release.get("decision") != "PASS"
+            or release.get("model_checksum") != bundle["model_checksum"]
+            or release.get("l3_identity_checksum") != digest(l3_identity)
+            or not release.get("validation_receipt_checksum")):
+        raise ValueError("l4_distribution_paper_release_missing")
+    receipt = release.get('validation_receipt') or {}
+    from services.l4_distribution_lifecycle import validate_acceptance
+    validate_acceptance(receipt,bundle)
+    if release['validation_receipt_checksum'] != digest(receipt):
+        raise ValueError("l4_distribution_paper_release_missing")
 
 
 def fit_head(matrix: np.ndarray, target: np.ndarray, weights: np.ndarray,

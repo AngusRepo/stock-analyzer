@@ -69,6 +69,25 @@ case "$suite" in
     npx tsc --noEmit > "$RUNNER_TEMP/tsc.txt" 2>&1 || tsc_ids "frontend tsc" < "$RUNNER_TEMP/tsc.txt"
     npx vite build > "$RUNNER_TEMP/vite.txt" 2>&1 || { tail -40 "$RUNNER_TEMP/vite.txt"; fail "frontend: vite build"; }
     ;;
+  service)
+    # ml-service (the Modal app). Same order as ml-service/Dockerfile: scikit-learn-extra builds
+    # from source against NumPy 1.26 (scipy 1.18 would pull NumPy 2 under it). CPU torch: no test
+    # needs CUDA, whose wheels add ~3 GB; torchvision (timm) from the same index, since PyPI's is a
+    # CUDA build that cannot load next to CPU torch and breaks neuralforecast imports.
+    # modal is the controller's pin, the client that deploys the app (1.6 dropped get_raw_f).
+    { python -m pip install -q numpy==1.26.4 Cython==0.29.37 setuptools wheel &&
+      python -m pip install -q --no-build-isolation scikit-learn-extra==0.3.0 numpy==1.26.4 'scipy<1.18' &&
+      python -m pip install -q torch==2.14.0 torchvision==0.29.1 --index-url https://download.pytorch.org/whl/cpu &&
+      python -m pip install -q --prefer-binary -r ml-service/requirements.txt modal==1.4.0 \
+        pytest==9.0.3 pytest-timeout==2.4.0; } || { fail "service: dependency install"; exit 0; }
+    cd ml-service
+    # test_l4_tabpack_official imports upstream TabPack, which only tabpack_image's own uv venv has.
+    mapfile -t files < <(ls tests/test_*.py | grep -v 'test_l4_tabpack_official\.py$' | sort)
+    # ml-controller last: some tests import `services` (mounted at /root/services in the Modal image).
+    PYTHONPATH="$PWD:$(cd .. && pwd):$(cd ../ml-controller && pwd)" python -m pytest "${files[@]}" -q -p no:cacheprovider \
+      --timeout=300 --durations=20 --continue-on-collection-errors --junitxml="$RUNNER_TEMP/junit.xml" || true
+    python "$tools/junit_failures.py" "$RUNNER_TEMP/junit.xml" service >> "$out" || fail "service: pytest produced no report"
+    ;;
   hygiene)
     pwsh -NoProfile -File scripts/p12_secret_scan.ps1 -Root "$PWD" || fail "hygiene: P12 secret scan"
     ;;

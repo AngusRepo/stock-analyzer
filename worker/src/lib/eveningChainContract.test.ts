@@ -176,9 +176,9 @@ assert(
 assert(
   updateOrchestrator.includes('retriablePartialFailure') &&
     updateOrchestrator.includes('/partial_failed/i') &&
-    updateOrchestrator.includes('const retriableFailure = retriablePartialFailure || lateLaneNotReady') &&
+    updateOrchestrator.includes('const retriableFailure = retriablePartialFailure || lateLaneNotReady || transientFailure') &&
     updateOrchestrator.includes('allowFetchedLaneRefetch: retriablePartialFailure || lateLane') &&
-    updateOrchestrator.includes("retriablePartialFailure ? 'partial failure' : 'pending dispatch'"),
+    updateOrchestrator.includes("retriablePartialFailure ? 'partial failure' : transientFailure ? 'transient failure' : 'pending dispatch'"),
   'FinLab watchdog must retry source-key-scoped partial failures, including incomplete keys inside a fetched lane',
 )
 assert(
@@ -342,7 +342,7 @@ assert(
   postMarketChain.includes('`verify_v2:${ctx.runDate}:${snapshotEvidenceKey}`'),
   'post-pipeline chain must trigger verify-v2 with a deterministic date-level idempotency key',
 )
-const rollingIcTask = postMarketChain.indexOf("'model-ic-rolling', env => runModelIcRollingRefresh")
+const rollingIcTask = postMarketChain.indexOf("'model-ic-rolling', (env, budget) => runModelIcRollingRefresh")
 assert(
   rollingIcTask >= 0 && rollingIcTask < postMarketChain.indexOf("'adapt', env => runAdaptiveUpdate"),
   'post-verify chain must refresh rolling IC before adaptive params',

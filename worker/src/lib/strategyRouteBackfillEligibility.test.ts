@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { auditStrategyRouteBackfillEligibility, projectStrategyRouteMaturity } from './strategyRouteBackfillEligibility'
+import { ROUTE_ELIGIBILITY_HEADS_PER_STATEMENT, auditStrategyRouteBackfillEligibility, projectStrategyRouteMaturity } from './strategyRouteBackfillEligibility'
 import { STRATEGY_ROUTE_AFFINITY_VERSION, STRATEGY_ROUTE_CHALLENGER_VERSION } from './strategyRouteCalibration'
 
 type Row = {
@@ -25,7 +25,11 @@ class FakeStatement {
     this.boundArgs = args
     return this
   }
-  async all<T>(): Promise<{ results: T[] }> { return { results: this.db.rows as T[] } }
+  async all<T>(): Promise<{ results: T[] }> {
+    // Each eligibility page answers for the heads it binds.
+    const heads = this.sql.includes('WITH canonical_heads AS') ? JSON.parse(String(this.boundArgs[0])) as Record<string, string> : null
+    return { results: (heads ? this.db.rows.filter((row) => heads[row.signal_date] === row.producer_run_id) : this.db.rows) as T[] }
+  }
   async run(): Promise<unknown> { return {} }
 }
 
@@ -107,7 +111,12 @@ async function main(): Promise<void> {
   assert(db.sqls[0].includes('LEFT JOIN selection_reference_snapshots_v1 r'))
   assert(db.sqls[0].includes('canonical_selection_label_rejections_v4'))
   assert(!db.sqls[0].includes('canonical_run_heads'))
-  assert.equal(db.statements[0].boundArgs[0], JSON.stringify(canonicalRunIds))
+  // Heads are read ROUTE_ELIGIBILITY_HEADS_PER_STATEMENT at a time, in date order, covering every head once.
+  const pages = db.statements.filter((statement) => statement.sql.includes('WITH canonical_heads AS'))
+  assert.equal(pages.length, Math.ceil(6 / ROUTE_ELIGIBILITY_HEADS_PER_STATEMENT))
+  assert.deepEqual(Object.assign({}, ...pages.map((page) => JSON.parse(String(page.boundArgs[0])))), canonicalRunIds)
+  assert.equal(db.statements[0].boundArgs[0], JSON.stringify(Object.fromEntries(
+    Object.entries(canonicalRunIds).slice(0, ROUTE_ELIGIBILITY_HEADS_PER_STATEMENT))))
 
   assert.equal(rows[0].status, 'eligible')
   assert.deepEqual(rows[0].blockers, [])

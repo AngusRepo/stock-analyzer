@@ -14,7 +14,7 @@ type Identity = {
 }
 type Receipt = {
   schema: 'post-verify-task-receipt-v1'; identity: Identity; task: string; predecessor: string
-  claim: string; leaseOwner: string; retrySafe?: boolean; result?: PostVerifyTaskResult; checksum?: string
+  claim: string; leaseOwner: string; retrySafe?: boolean; independentEffect?: boolean; result?: PostVerifyTaskResult; checksum?: string
 }
 type Row = { state: string; receipt_json: string }
 /** Idempotent post-verify producers: a closed claim may simply run again (the chain passes retrySafe from this).
@@ -34,8 +34,11 @@ const UNCERTAIN = PREFIX + 'uncertain'
 /** The ERROR receipt that closes a running claim whose stage lease expired (also used by the operator reconcile). */
 export async function closeExpiredPostVerifyReceipt(receiptJson: string): Promise<{ task: string; leaseOwner: string; receiptJson: string }> {
   const stale = JSON.parse(receiptJson) as Receipt
+  // An independent effect replays this ERROR without rerunning, so it must stay optional (its only critical task,
+  // linucb-reward-ledger, is retry-safe and runs again instead).
   const closed: Receipt = { ...stale, result: { task: stale.task, status: 'error',
-    summary: `post_verify_checkpoint_lease_expired_reclaimed:${stale.task}:lease_owner=${stale.leaseOwner}` } }
+    summary: `post_verify_checkpoint_lease_expired_reclaimed:${stale.task}:lease_owner=${stale.leaseOwner}`,
+    ...(stale.independentEffect === true ? { critical: false } : {}) } }
   closed.checksum = await digest(closed)
   return { task: stale.task, leaseOwner: stale.leaseOwner, receiptJson: JSON.stringify(closed) }
 }
@@ -150,7 +153,8 @@ export async function createPostVerifyTaskCheckpoints(env: Bindings, input: {
   // A running receipt belongs to the stage lease that claimed it. Once that
   // lease is no longer live, its producer can no longer write through the
   // scoped environment, so an idempotent claim closes as ERROR and may run
-  // again. Elapsed time alone never reclaims; other claims keep blocking.
+  // again, and an independent-effect claim closes as an ERROR that is never
+  // rerun. Elapsed time alone never reclaims; other claims keep blocking.
   const reclaimExpiredLeases = async (task: string, retrySafe: boolean) => {
     const rows = await db.prepare('SELECT receipt_key,receipt_json FROM post_verify_task_receipts_v1 WHERE business_date=? AND state=?')
       .bind(input.businessDate, RUNNING).all<{ receipt_key: string; receipt_json: string }>()
@@ -164,7 +168,10 @@ export async function createPostVerifyTaskCheckpoints(env: Bindings, input: {
       // flagged one from any task (NEW-1030-22: a dead outcomes producer must not block projection; EC-F: the
       // 11/2 strategy-evidence-current claim was stored as retrySafe:false).
       const listedRetrySafe = POST_VERIFY_RETRY_SAFE_TASKS.includes(stale.task)
-      if (stale.retrySafe !== true && !listedRetrySafe && !(retrySafe && stale.task === task)) {
+      // An independent-effect claim (LIVE-AUTH-B) has no dependent task, so closing it unblocks the date; the ERROR
+      // receipt is a settled optional error that the non-retry-safe path returns without running the producer again.
+      if (stale.retrySafe !== true && !listedRetrySafe && stale.independentEffect !== true
+          && !(retrySafe && stale.task === task)) {
         requiresReconciliation.push(stale.task)
         continue
       }
@@ -179,9 +186,12 @@ export async function createPostVerifyTaskCheckpoints(env: Bindings, input: {
     }
     return { reclaimed, requiresReconciliation }
   }
-  return {
+  const checkpoints = {
     async run(task: string, fn: (scoped: Bindings) => Promise<PostVerifyTaskResult>, options: {
       timeoutMs?: number; retrySafe?: boolean; critical?: boolean; verifyResult?: (result: PostVerifyTaskResult) => Promise<boolean>
+      /** No later task depends on this producer's effect: an unknown remote outcome settles as a never-rerun ERROR
+       * instead of an UNCERTAIN receipt that blocks every later claim of the date (LIVE-AUTH-B). */
+      independentEffect?: boolean
     } = {}): Promise<PostVerifyTaskResult> {
       await assertAuthority()
       const key = PREFIX + await digest({ identity, task, predecessor })
@@ -220,7 +230,8 @@ export async function createPostVerifyTaskCheckpoints(env: Bindings, input: {
         }
       }
       const receipt: Receipt = { schema: 'post-verify-task-receipt-v1', identity, task, predecessor,
-        claim: crypto.randomUUID(), leaseOwner: input.leaseOwner, retrySafe: options.retrySafe === true }
+        claim: crypto.randomUUID(), leaseOwner: input.leaseOwner, retrySafe: options.retrySafe === true,
+        ...(options.independentEffect === true ? { independentEffect: true } : {}) }
       const serialized = JSON.stringify(receipt)
       const claimOnce = () => db.prepare(`INSERT INTO post_verify_task_receipts_v1(receipt_key,state,business_date,receipt_json)
         SELECT ?,?,?,? WHERE EXISTS(SELECT 1 FROM pipeline_stage_runs
@@ -239,6 +250,8 @@ export async function createPostVerifyTaskCheckpoints(env: Bindings, input: {
       if (!claim) {
         const blocked = await reclaimExpiredLeases(task, options.retrySafe === true)
         if (blocked.reclaimed) claim = await claimOnce()
+        // This task's own independent-effect claim may be the one just closed: the lookup now settles on that ERROR.
+        if (!claim && blocked.reclaimed && options.independentEffect === true) return checkpoints.run(task, fn, options)
         if (!claim) throw new Error(`post_verify_checkpoint_unsettled_side_effect:${task}`
           + (blocked.requiresReconciliation.length ? `:expired_lease_requires_reconciliation:${blocked.requiresReconciliation.join(',')}` : ''))
       }
@@ -271,7 +284,7 @@ export async function createPostVerifyTaskCheckpoints(env: Bindings, input: {
           completed.checksum = await digest(completed)
           encoded = JSON.stringify(completed)
           if (new TextEncoder().encode(encoded).length > 32_768) throw new Error(`post_verify_checkpoint_receipt_too_large:${task}`)
-          const uncertain = result.status === 'error' && options.retrySafe !== true
+          const uncertain = result.status === 'error' && options.retrySafe !== true && options.independentEffect !== true
             && /timeout|timed out|abort|network|fetch failed|HTTP\s*5\d\d|socket|connection|unacknowledged/i.test(result.summary)
           state = result.status === 'error' ? uncertain ? UNCERTAIN : ERROR : SUCCESS
         } catch (error) {
@@ -332,4 +345,5 @@ export async function createPostVerifyTaskCheckpoints(env: Bindings, input: {
       }
     },
   }
+  return checkpoints
 }

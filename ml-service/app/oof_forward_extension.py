@@ -21,7 +21,7 @@ from .model_store import _get_bucket, load_model
 from .oof_lineage import save_oof_prediction_artifact
 from .oof_forward_source_contract import assess_fold_forward_sources
 from .research_benchmarks.common import load_sequence_dataset
-from .sequence_training import SEQUENCE_RETURN_SEMANTIC_VERSION
+from .sequence_training import CANONICAL_ROUNDTRIP_COST_BPS, SEQUENCE_RETURN_SEMANTIC_VERSION
 
 SCHEMA_VERSION = "active8-oof-forward-extension-v2"
 GENERATION_MODE = "frozen_forward_oos"
@@ -87,7 +87,7 @@ def _verify_prep_manifest(bucket: Any, prefix: str, expected_semantic: str = LEG
         or manifest.get("feature_imputation_semantic") != FEATURE_IMPUTATION_SEMANTIC_VERSION
         or manifest.get("producer_source_sha") != _runtime_source_sha()
         or manifest.get("target_semantic_version") != SEQUENCE_RETURN_SEMANTIC_VERSION
-        or float(manifest.get("roundtrip_cost_bps") or 0.0) != 18.0
+        or float(manifest.get("roundtrip_cost_bps") or 0.0) != CANONICAL_ROUNDTRIP_COST_BPS
         or manifest.get("manifest_checksum") != _manifest_checksum(manifest)
     ):
         raise ValueError("forward_extension_prep_manifest_invalid")

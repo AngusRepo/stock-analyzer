@@ -167,6 +167,55 @@ def _artifact_train_label_known_max(metadata: dict) -> str | None:
     return None
 
 
+def full_fit_label_known_max(metadata: dict, *, model_name: str, knowledge_cutoff_date: str,
+                             pit_certification_sha256: str) -> str:
+    """The latest label a deployment (full-fit) artifact trained on, or ValueError.
+
+    Full-fit metadata has no split_metadata (that is the fold artifacts' attestation, read by
+    _artifact_train_label_known_max for the leakage check). The trainer's validate_full_history
+    writes deployment_fit.label_known_date_max; the controller-derived input scope writes
+    deployment_fit.input_scope.label_known_at_max (the scope ceiling). The trainer value may sit below
+    the ceiling (the last scoped dates can lack mature labels) but never above it; both present must
+    be on or before the cutoff, and the trainer value is returned. The scope must be
+    PIT-certified: that flag only comes from the controller's receipt, and the bundle pins the
+    artifact checksums but not the metadata file read here (so it must also name model_name and
+    the bundle's own PIT receipt, as artifacts_missing_pit_binding does at sealing).
+    Only the cross-sectional trainers' shape (tree/TabM/GNN) is read; TimeXer and the
+    neuralforecast runtime store theirs elsewhere and stay unattested here (fail closed).
+    """
+    from datetime import date
+
+    def iso(value):
+        try:
+            return isinstance(value, str) and date.fromisoformat(value).isoformat() == value
+        except ValueError:
+            return False
+    if not iso(knowledge_cutoff_date):
+        raise ValueError("full_fit_knowledge_cutoff_not_a_date")
+    fit = metadata.get("deployment_fit") if isinstance(metadata, dict) else None
+    if not isinstance(fit, dict) or fit.get("performed") is not True:
+        raise ValueError("full_fit_not_performed")
+    if metadata.get("model_name") != model_name:
+        raise ValueError("full_fit_metadata_model_mismatch")
+    scope = fit.get("input_scope")
+    if not isinstance(scope, dict) or scope.get("point_in_time_vintage_certified") is not True:
+        raise ValueError("full_fit_scope_not_pit_certified")
+    if (not isinstance(pit_certification_sha256, str) or not pit_certification_sha256
+            or scope.get("pit_certification_sha256") != pit_certification_sha256):
+        raise ValueError("full_fit_scope_pit_receipt_mismatch")
+    trainer, ceiling = fit.get("label_known_date_max"), scope.get("label_known_at_max")
+    present = [v for v in (trainer, ceiling) if v is not None]
+    if not present:
+        raise ValueError("full_fit_label_known_max_missing")
+    if not all(iso(v) for v in present):
+        raise ValueError("full_fit_label_known_max_not_a_date")
+    if any(v > knowledge_cutoff_date for v in present):
+        raise ValueError("full_fit_label_known_max_after_cutoff")
+    if trainer is not None and ceiling is not None and trainer > ceiling:
+        raise ValueError(f"full_fit_label_known_max_exceeds_scope:{trainer}>{ceiling}")
+    return trainer if trainer is not None else ceiling
+
+
 def fold_receipts(manifest: dict, bucket) -> list[dict]:
     """One receipt per fold whose every model attests the latest label it trained on.
 

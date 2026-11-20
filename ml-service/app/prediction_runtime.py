@@ -247,9 +247,14 @@ class ModelPoolContractError(RuntimeError):
 
 
 def _pool_model_order(pool_models: dict) -> tuple[str, ...]:
-    from .alpha_model_roster import model_order, SUPPORTED_MODELS
+    # The controller sends the R33 roster (LightGBM/ExtraTrees/TabM/GNN) or an eight-model set
+    # (is_complete_roster); model_order() alone would expand the R33 roster to the legacy eight.
+    from .alpha_model_roster import R33_MODELS, model_order, SUPPORTED_MODELS
+    names = set(pool_models) & SUPPORTED_MODELS
+    if names == set(R33_MODELS):
+        return R33_MODELS
     try:
-        return model_order(set(pool_models) & SUPPORTED_MODELS)
+        return model_order(names)
     except ValueError as exc:
         raise ModelPoolContractError("model_pool replacement slot invalid: " + str(exc)) from exc
 
@@ -323,22 +328,33 @@ def predict_stock_v2(req: PredictRequest) -> dict:
         raise ValueError("active8_frozen_model_pool_required")
     _require_model_pool_contract(pool_snapshot, stage="predict_v2_feature_evidence")
 
+    # R33: one model's non-finite score is that model missing for this symbol (z=0,
+    # denominator seven); the row keeps its other scores. Other modes fail the row.
+    from .active8_ensemble_runtime import R33_KIND
+    r33 = (pool_snapshot.get("active8_ensemble") or {}).get("kind") == R33_KIND
     rank_scores: dict[str, float] = {}
+    non_finite: list[str] = []
     for model_name, raw_score in precomputed.items():
         if model_name not in _FEATURE_MODEL_NAMES_V2:
             continue
         score = float(raw_score)
         if not np.isfinite(score):
-            raise ValueError(f"active8_base_score_non_finite:{model_name}")
+            if not r33:
+                raise ValueError(f"active8_base_score_non_finite:{model_name}")
+            non_finite.append(f"active8_base_score_non_finite:{model_name}")
+            continue
         rank_scores[model_name] = float(np.clip(score, 0.0, 1.0))
-    if not rank_scores:
+    # R33 (NEW-1030-06): the controller builds a symbol's row from this one, so raising here
+    # would drop its GNN and sequence scores too; the row carries each model's gap in
+    # model_errors and the rank pool unscores it only when none of the seven scored.
+    if not rank_scores and not r33:
         raise ValueError("active8_feature_evidence_empty")
 
     errors = [
         str(value)
         for value in (runtime_options.get(_BATCH_FEATURE_MODEL_ERRORS_KEY) or [])
         if value
-    ]
+    ] + non_finite
     challengers = {
         str(name): round(float(np.clip(float(value), 0.0, 1.0)), 6)
         for name, value in (runtime_options.get(_BATCH_CHALLENGER_RANK_SCORES_KEY) or {}).items()

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { DatabaseSync } from 'node:sqlite'
 import { readFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import test from 'node:test'
 import { createPostVerifyTaskCheckpoints, POST_VERIFY_RETRY_SAFE_TASKS, postVerifyOwnerAckEvidence, postVerifyAckDescriptor, type PostVerifyTaskResult } from './postVerifyTaskCheckpoint'
 import { POST_VERIFY_HEAVY_TASKS, POST_VERIFY_MAX_HOPS, runPostVerifyCallbackChain } from './postMarketChain'
@@ -52,7 +53,7 @@ function fixture() {
     EVIDENCE_ARTIFACT_WRITER:{write:async()=>{effects.push('artifact-writer');return {status:'ready'}}},
     ML_CONTROLLER_URL:'https://never-network.invalid', ENVIRONMENT:'test'} as any
   const ctx={runDate:date,upstreamRunId:run,stageLeaseOwner:'lease-A',assertStageLease:async()=>{}}
-  const authority=async()=>({allowed:true,runScope:'live_canonical' as const,reason:'fixture',queuedAt:'now',queuedTaipeiDate:date,nextSessionOpenUtc:null})
+  const authority=async()=>({allowed:true,runScope:'live_canonical' as const,reason:'fixture',queuedAt:'now',queuedTaipeiDate:date,nextSessionOpenUtc:null,liveEffectsAllowed:true,liveEffectsReason:'fixture'})
   const manager=()=>createPostVerifyTaskCheckpoints(env,{businessDate:date,canonicalRunId:run,leaseOwner:'lease-A',productionEligible:true,assertStageLease:ctx.assertStageLease})
   return {sqlite,env,ctx,authority,manager,root,enqueued,effects,queries:()=>queries}
 }
@@ -85,6 +86,38 @@ for(const failedTask of tasks) test(`actual owner injects settled failure at ${f
   assert.equal(JSON.parse(receipt.receipt_json).result.status,'error')
   if(!POST_VERIFY_RETRY_SAFE_TASKS.includes(failedTask)) assert.equal(calls.get(failedTask),1,'non-idempotent failed phase must not blindly run again')
   f.sqlite.close()
+})
+
+test('LIVE-AUTH-B: the post-close window runs only the five live-effect tasks; promotion, adapt and GA stay historical',async()=>{
+  const scopes=[
+    {liveEffectsAllowed:true,skipped:['artifact-auto-promotion','adapt','obsidian-sync','ga-shadow-daily']},
+    {liveEffectsAllowed:false,skipped:['artifact-auto-promotion','paper-intraday-cache-clear','linucb-reward-ledger','adapt',
+      'daily-report','paper-active-postmarket','obsidian-sync','meta-learning-shadow','ga-shadow-daily']},
+  ]
+  for(const scope of scopes){
+    const f=fixture(), calls:string[]=[]
+    const taskRunner=async(task:string)=>{calls.push(task);return success(task)}
+    const authority=async()=>({...await f.authority(),allowed:false,runScope:'historical_replay' as const,
+      reason:'next_executable_session_opened_use_snapshot_only_repair',liveEffectsAllowed:scope.liveEffectsAllowed,
+      liveEffectsReason:scope.liveEffectsAllowed?'post_close_next_session_window':'post_close_window_closed'})
+    const fetched:string[]=[], realFetch=globalThis.fetch
+    globalThis.fetch=(async(input:any)=>{fetched.push(String(input?.url??input));throw new Error('network_disabled_in_test')}) as any
+    try{assert.equal(await runPostVerifyCallbackChain(f.env,f.ctx,{productionAuthority:authority,taskRunner}),'success')}
+    finally{globalThis.fetch=realFetch}
+    assert.deepEqual(calls,tasks.filter(task=>!scope.skipped.includes(task)))
+    // Design-disabled (Wei 11/18): no promotion call, so no serving pointer write, and the receipt says so.
+    assert.ok(!fetched.some(url=>url.includes('auto_promote')),fetched.join(','))
+    const promotion=await f.env.KV.get(`scheduler:run:artifact-auto-promotion:${date}`,'json')
+    assert.equal(promotion.status,'skipped')
+    assert.match(promotion.summary,/^disabled_by_design:r33_monthly_promotion_owner; artifact-auto-promotion does not run/)
+    assert.doesNotMatch(promotion.summary,/live-canonical only/,'must not read as a should-have-run skip')
+    const adapt=await f.env.KV.get(`scheduler:run:adapt:${date}`,'json')
+    assert.match(adapt.summary,/adapt is live-canonical only/,'other historical skips keep their attention summary')
+    const chainLog=await f.env.KV.get(`scheduler:run:post-verify-chain:${date}`,'json')
+    assert.match(chainLog.summary,/artifact-auto-promotion:disabled_by_design/)
+    assert.match(chainLog.summary,/adapt:skipped/)
+    f.sqlite.close()
+  }
 })
 
 test('EC-F: the chain yields after each heavy task it ran and the continuations resume from receipts',async()=>{
@@ -267,6 +300,31 @@ test('one batch adds one write-fence read rather than one per row',async()=>{
   })
   assert.equal(cost,21,'20 producer writes + one batch authority check')
   f.sqlite.close()
+})
+
+test('LIVE-AUTH-B: an independent effect with an unknown outcome settles as a never-rerun error and blocks nothing',async()=>{
+  const f=fixture(), manager=await f.manager()
+  let calls=0
+  const failed=await manager.run('paper-active-postmarket',async()=>{calls++;return {...success('paper-active-postmarket'),
+    status:'error',critical:false,summary:'Controller HTTP 502: connection lost'}},{critical:false,independentEffect:true})
+  assert.equal(failed.status,'error')
+  assert.equal((f.sqlite.prepare('SELECT state FROM post_verify_task_receipts_v1').get() as any).state,'post_verify_task_v1:error')
+  // A later task of the same date still claims; the settled error is replayed, never rerun.
+  assert.equal((await manager.run('strategy-learning',async()=>success('strategy-learning'))).status,'success')
+  const again=await f.manager()
+  assert.equal((await again.run('paper-active-postmarket',async()=>{calls++;return success('paper-active-postmarket')},
+    {critical:false,independentEffect:true})).status,'error')
+  assert.equal(calls,1)
+  // In the chain: a 5xx from a released task in the post-close window still reaches strategy-learning.
+  const g=fixture(), seen:string[]=[]
+  const authority=async()=>({...await g.authority(),allowed:false,runScope:'historical_replay' as const,
+    reason:'next_executable_session_opened_use_snapshot_only_repair',liveEffectsAllowed:true,liveEffectsReason:'post_close_next_session_window'})
+  const taskRunner=async(task:string)=>{seen.push(task);return ['paper-active-postmarket','daily-report'].includes(task)
+    ?{...success(task),status:'error' as const,summary:'Controller HTTP 504: timeout'}:success(task)}
+  assert.equal(await runPostVerifyCallbackChain(g.env,g.ctx,{productionAuthority:authority,taskRunner}),'success')
+  assert.equal(seen.at(-1),'strategy-learning')
+  assert.equal((g.sqlite.prepare(`SELECT COUNT(*) n FROM post_verify_task_receipts_v1 WHERE state='post_verify_task_v1:uncertain'`).get() as any).n,0)
+  f.sqlite.close(); g.sqlite.close()
 })
 
 test('unknown remote side effects stay uncertain across new root/revision and never redispatch',async()=>{
@@ -605,6 +663,62 @@ test('expired lease keeps a non-idempotent running receipt blocked and names it'
   f.sqlite.close()
 })
 
+test('LIVE-AUTH-B: an expired independent-effect claim settles as a never-rerun error for the same task and unblocks the date',async()=>{
+  const f=fixture();let calls=0
+  // daily-report hangs on an untimed Discord send past the checkpoint timeout and its invocation dies.
+  await assert.rejects((await f.manager()).run('daily-report',async()=>{calls++;return new Promise<PostVerifyTaskResult>(()=>{})},
+    {timeoutMs:2,critical:false,independentEffect:true}),/timeout_unsettled/)
+  const next=await takeover(f,'lease-B')
+  const settled=await next.run('daily-report',async()=>{calls++;return success('daily-report')},{critical:false,independentEffect:true})
+  assert.equal(settled.status,'error');assert.match(settled.summary,/lease_expired_reclaimed:daily-report/)
+  // Replayed, never rerun: it must stay optional or the chain fails the date on every delivery.
+  assert.equal(settled.critical,false)
+  assert.equal(calls,1,'the report is not sent again')
+  assert.equal((await next.run('strategy-learning',async()=>{calls++;return success('strategy-learning')})).status,'success')
+  assert.equal(calls,2)
+  assert.deepEqual(f.sqlite.prepare('SELECT state FROM post_verify_task_receipts_v1 ORDER BY state').all().map((row:any)=>row.state),
+    ['post_verify_task_v1:error','post_verify_task_v1:success'])
+  f.sqlite.close()
+})
+
+test('LIVE-AUTH-B: in the chain a daily-report claim left by a dead invocation is replayed as optional and the date succeeds',async()=>{
+  const f=fixture(), seen:string[]=[]
+  const authority=async()=>({...await f.authority(),allowed:false,runScope:'historical_replay' as const,
+    reason:'next_executable_session_opened_use_snapshot_only_repair',liveEffectsAllowed:true,liveEffectsReason:'post_close_next_session_window'})
+  let hang=true
+  const taskRunner=async(task:string)=>{seen.push(task)
+    return task==='daily-report'&&hang?new Promise<PostVerifyTaskResult>(()=>{}):success(task)}
+  await assert.rejects(runPostVerifyCallbackChain(f.env,f.ctx,{productionAuthority:authority,taskRunner,taskTimeoutMs:5}),/timeout_unsettled/)
+  hang=false
+  await takeover(f,'lease-B')
+  const next={...f.ctx,stageLeaseOwner:'lease-B'}
+  assert.equal(await runPostVerifyCallbackChain(f.env,next,{productionAuthority:authority,taskRunner,taskTimeoutMs:5}),'success')
+  assert.equal(seen.filter(task=>task==='daily-report').length,1,'the report is not sent again')
+  assert.equal(seen.at(-1),'strategy-learning')
+  // A further delivery replays the same settled receipts and still succeeds.
+  assert.equal(await runPostVerifyCallbackChain(f.env,next,{productionAuthority:authority,taskRunner,taskTimeoutMs:5}),'success')
+  assert.equal(seen.filter(task=>task==='daily-report').length,1)
+  f.sqlite.close()
+})
+
+test('LIVE-AUTH-B: a later task closes an expired independent-effect claim; the same claim without the flag still blocks',async()=>{
+  const f=fixture();let calls=0
+  await assert.rejects((await f.manager()).run('paper-active-postmarket',async()=>{calls++;return new Promise<PostVerifyTaskResult>(()=>{})},
+    {timeoutMs:2,critical:false,independentEffect:true}),/timeout_unsettled/)
+  // An unflagged claim (an earlier revision, or a gated task) keeps requiring reconciliation.
+  f.sqlite.prepare("UPDATE post_verify_task_receipts_v1 SET receipt_json=json_remove(receipt_json,'$.independentEffect')").run()
+  const unflagged=f.sqlite.prepare('SELECT receipt_json FROM post_verify_task_receipts_v1').get() as any
+  const blocked=await takeover(f,'lease-B')
+  await assert.rejects(blocked.run('strategy-learning',async()=>{calls++;return success('strategy-learning')}),
+    /expired_lease_requires_reconciliation:paper-active-postmarket/)
+  f.sqlite.prepare('UPDATE post_verify_task_receipts_v1 SET receipt_json=?').run(
+    JSON.stringify({...JSON.parse(unflagged.receipt_json),independentEffect:true}))
+  const next=await takeover(f,'lease-C')
+  assert.equal((await next.run('strategy-learning',async()=>{calls++;return success('strategy-learning')})).status,'success')
+  assert.equal(calls,2)
+  f.sqlite.close()
+})
+
 test('legacy running receipt from an older revision is reclaimed by the same idempotent task under a new lease',async()=>{
   const f=fixture();let calls=0
   await assert.rejects((await f.manager()).run(tasks[0],async()=>{calls++;return new Promise<PostVerifyTaskResult>(()=>{})},
@@ -725,7 +839,7 @@ test('NEW-1030-22 operator CAS closes a dead running receipt exactly like the le
   assert.equal(uncertain.statements.length,0);assert.match(String(uncertain.report[0].action),/uncertain/)
   assert.equal(uncertain.report[0].task,'strategy-multi-horizon-outcomes')
   // Counter: a running receipt of a task that is not retry-safe (legacy 'adapt', or flagged false) gets no statement.
-  for(const [task,flag] of [['adapt',undefined],['strategy-multi-horizon-outcomes',false]] as const){
+  for(const [task,flag] of [['adapt',undefined],['adapt',false]] as const){
     const g=fixture()
     await assert.rejects((await g.manager()).run(task,async()=>new Promise<PostVerifyTaskResult>(()=>{}),{timeoutMs:2}),/timeout_unsettled/)
     g.sqlite.prepare(flag===undefined?"UPDATE post_verify_task_receipts_v1 SET receipt_json=json_remove(receipt_json,'$.retrySafe')"
@@ -735,5 +849,131 @@ test('NEW-1030-22 operator CAS closes a dead running receipt exactly like the le
     assert.equal(out.statements.length,0,task);assert.match(String(out.report[0].action),/not retry-safe/)
     g.sqlite.close()
   }
+  f.sqlite.close()
+})
+
+const dumpRows=(f:ReturnType<typeof fixture>)=>f.sqlite.prepare(`SELECT receipt_key,state,business_date,receipt_json FROM post_verify_task_receipts_v1
+  WHERE state IN ('post_verify_task_v1:running','post_verify_task_v1:uncertain')`).all() as any[]
+const deadStage=[{business_date:date,status:'running',lease_owner:'lease-A',lease_live:0}]
+
+// EC-F: an uncertain receipt (HTTP 5xx from a non-retry-safe producer, 11/10 model-ic-rolling) or a dead running claim of a
+// task outside the retry-safe list stays blocked until the operator records a verdict.
+for(const origin of ['uncertain','running'] as const) test(`EC-F: operator verdicts settle a ${origin} non-retry-safe receipt`,async()=>{
+  for(const verdict of ['no-effect','keep-error'] as const){
+    const f=fixture();let calls=0
+    if(origin==='uncertain')await (await f.manager()).run('promotion',async()=>{calls++;return {...success('promotion'),status:'error',summary:'Controller HTTP 500: Internal Server Error'}})
+    else await assert.rejects((await f.manager()).run('promotion',async()=>{calls++;return new Promise<PostVerifyTaskResult>(()=>{})},{timeoutMs:2}),/timeout_unsettled/)
+    const rows=dumpRows(f)
+    assert.equal(rows.length,1);assert.equal(rows[0].state,`post_verify_task_v1:${origin}`)
+    const verdicts=[{receipt_key:rows[0].receipt_key,verdict,reason:'controller wrote no rows for 2026-10-16',
+      ...(origin==='running'&&verdict==='keep-error'?{critical:true}:{})}]
+    // Without a verdict the dump only reports it.
+    const plain=await reconcileStatements(rows,deadStage)
+    assert.equal(plain.statements.length,0);assert.match(String(plain.report[0].action),/verdict/)
+    // Counter: a live post-verify lease of the date gets no statement, and a stale dump's SQL changes nothing.
+    const live=await reconcileStatements(rows,[{...deadStage[0],lease_live:1}],verdicts,'20261115')
+    assert.equal(live.statements.length,0);assert.match(String(live.report[0].action),/lease is live/)
+    const stale=await reconcileStatements(rows,deadStage,verdicts,'20261115')
+    assert.equal(stale.statements.length,1)
+    assert.deepEqual(f.sqlite.prepare(stale.statements[0]).all(),[])
+    f.sqlite.prepare("UPDATE pipeline_stage_runs SET lease_expires_at='2000-01-01 00:00:00'").run()
+    assert.deepEqual(f.sqlite.prepare(stale.statements[0]).all().map((row:any)=>row.receipt_key),
+      [verdict==='no-effect'?stale.report[0].archive_key:rows[0].receipt_key])
+    // The CAS is exact: running it again changes nothing.
+    assert.deepEqual(f.sqlite.prepare(stale.statements[0]).all(),[])
+    const settled=f.sqlite.prepare('SELECT receipt_key,state,receipt_json FROM post_verify_task_receipts_v1').all() as any[]
+    assert.equal(settled.length,1);assert.equal(settled[0].state,'post_verify_task_v1:error')
+    assert.equal(settled[0].receipt_key===rows[0].receipt_key,verdict==='keep-error')
+    assert.match(JSON.parse(settled[0].receipt_json).result.summary,
+      new RegExp(`^post_verify_operator_settled_${verdict.replace('-','_')}:promotion:controller wrote no rows`))
+    // The settled receipt is valid for the checkpoint under the next lease.
+    const next=await takeover(f,'lease-B'), before=calls
+    const again=await next.run('promotion',async()=>{calls++;return success('promotion')})
+    if(verdict==='no-effect'){assert.equal(again.status,'success');assert.equal(calls,before+1)}
+    else{assert.equal(again.status,'error');assert.equal(calls,before);assert.match(again.summary,/operator_settled_keep_error/)}
+    // Either way the date is no longer blocked: the next task claims and runs.
+    assert.equal((await next.run('report',async()=>{calls++;return success('report')})).status,'success')
+    f.sqlite.close()
+  }
+})
+
+test('EC-F counter: an invalid verdict fails the whole batch instead of emitting partial SQL',async()=>{
+  const f=fixture()
+  await (await f.manager()).run('promotion',async()=>({...success('promotion'),status:'error',summary:'Controller HTTP 502: connection lost'}))
+  const g=fixture()
+  await assert.rejects((await g.manager()).run('strategy-multi-horizon-outcomes',async()=>new Promise<PostVerifyTaskResult>(()=>{}),
+    {retrySafe:true,timeoutMs:2}),/timeout_unsettled/)
+  const uncertain=dumpRows(f)[0], retrySafe=dumpRows(g)[0]
+  const ok={receipt_key:uncertain.receipt_key,verdict:'no-effect' as const,reason:'checked'}
+  for(const [verdicts,settledOn,error] of [
+    [[ok,{receipt_key:'post_verify_task_v1:missing',verdict:'no-effect',reason:'x'}],'20261115',/verdict_receipt_not_in_dump/],
+    [[{...ok,reason:'  '}],'20261115',/verdict_reason_missing/],
+    [[{...ok,verdict:'applied'}],'20261115',/verdict_unknown/],
+    [[ok,ok],'20261115',/verdict_duplicate/],
+    [[ok],'2026-11-15',/verdict_settled_date_invalid/],
+    // A retry-safe running claim is closed by the lease reclaim; it never takes a verdict.
+    [[ok,{receipt_key:retrySafe.receipt_key,verdict:'keep-error',reason:'x'}],'20261115',/verdict_receipt_needs_no_judgment/],
+    // The stored uncertain result already says critical:true; a verdict cannot flip it.
+    [[{...ok,verdict:'keep-error',critical:false}],'20261115',/verdict_critical_conflicts_with_receipt/],
+    [[{...ok,critical:'no'}],'20261115',/verdict_critical_invalid/],
+  ] as const) await assert.rejects(reconcileStatements([uncertain,retrySafe],deadStage,verdicts as any,settledOn),error)
+  f.sqlite.close();g.sqlite.close()
+})
+
+test('EC-F: the operator dump closes a listed task stored as retrySafe:false, matching the checkpoint reclaim',async()=>{
+  const f=fixture()
+  await assert.rejects((await f.manager()).run('strategy-evidence-current',async()=>new Promise<PostVerifyTaskResult>(()=>{}),{timeoutMs:2}),/timeout_unsettled/)
+  const rows=dumpRows(f)
+  assert.equal(JSON.parse(rows[0].receipt_json).retrySafe,false)
+  f.sqlite.prepare("UPDATE pipeline_stage_runs SET lease_expires_at='2000-01-01 00:00:00'").run()
+  const out=await reconcileStatements(rows,deadStage)
+  assert.match(String(out.report[0].action),/close as ERROR/)
+  assert.deepEqual(f.sqlite.prepare(out.statements[0]).all().map((row:any)=>row.receipt_key),[rows[0].receipt_key])
+  // It takes no verdict: the reclaim already settles it.
+  await assert.rejects(reconcileStatements(rows,deadStage,[{receipt_key:rows[0].receipt_key,verdict:'keep-error',reason:'x'}],'20261115'),
+    /verdict_receipt_needs_no_judgment/)
+  f.sqlite.close()
+})
+
+test('LIVE-AUTH-B: the operator dump closes an expired independent-effect claim without a verdict, matching the reclaim',async()=>{
+  const f=fixture()
+  await assert.rejects((await f.manager()).run('daily-report',async()=>new Promise<PostVerifyTaskResult>(()=>{}),
+    {timeoutMs:2,critical:false,independentEffect:true}),/timeout_unsettled/)
+  const rows=dumpRows(f)
+  f.sqlite.prepare("UPDATE pipeline_stage_runs SET lease_expires_at='2000-01-01 00:00:00'").run()
+  const out=await reconcileStatements(rows,deadStage)
+  assert.match(String(out.report[0].action),/close as ERROR/)
+  assert.deepEqual(f.sqlite.prepare(out.statements[0]).all().map((row:any)=>row.receipt_key),[rows[0].receipt_key])
+  assert.equal(JSON.parse((f.sqlite.prepare('SELECT receipt_json FROM post_verify_task_receipts_v1').get() as any).receipt_json).result.critical,false)
+  await assert.rejects(reconcileStatements(rows,deadStage,[{receipt_key:rows[0].receipt_key,verdict:'keep-error',reason:'x'}],'20261117'),
+    /verdict_receipt_needs_no_judgment/)
+  f.sqlite.close()
+})
+
+test('EC-F: keep-error on a dead optional claim needs critical:false so the date chain is not failed by it',async()=>{
+  const f=fixture()
+  await assert.rejects((await f.manager()).run('artifact-auto-promotion',async()=>new Promise<PostVerifyTaskResult>(()=>{}),{timeoutMs:2,critical:false}),/timeout_unsettled/)
+  const rows=dumpRows(f), base={receipt_key:rows[0].receipt_key,verdict:'keep-error' as const,reason:'promotion wrote nothing'}
+  // A running receipt has no result: without critical the chain would treat the kept error as critical.
+  await assert.rejects(reconcileStatements(rows,deadStage,[base],'20261115'),/verdict_critical_missing/)
+  await assert.rejects(reconcileStatements(rows,deadStage,[{...base,critical:'no' as any}],'20261115'),/verdict_critical_invalid/)
+  f.sqlite.prepare("UPDATE pipeline_stage_runs SET lease_expires_at='2000-01-01 00:00:00'").run()
+  const out=await reconcileStatements(rows,deadStage,[{...base,critical:false}],'20261115')
+  assert.equal(f.sqlite.prepare(out.statements[0]).all().length,1)
+  const result=(await (await takeover(f,'lease-B')).run('artifact-auto-promotion',async()=>{throw new Error('must not rerun')},{critical:false}))
+  assert.equal(result.status,'error');assert.equal(result.critical,false)
+  assert.equal((result.evidence as any).operator_verdict,'keep-error')
+  assert.equal((result.evidence as any).original_receipt_sha256,createHash('sha256').update(rows[0].receipt_json,'utf8').digest('hex'))
+  f.sqlite.close()
+})
+
+test('EC-F counter: a retry-safe task with a legacy uncertain receipt takes only no-effect',async()=>{
+  const f=fixture()
+  await (await f.manager()).run('strategy-evidence-current',async()=>({...success('strategy-evidence-current'),status:'error',summary:'HTTP 503 upstream'}))
+  const rows=dumpRows(f)
+  assert.equal(rows[0].state,'post_verify_task_v1:uncertain')
+  await assert.rejects(reconcileStatements(rows,deadStage,[{receipt_key:rows[0].receipt_key,verdict:'keep-error',reason:'x'}],'20261115'),
+    /verdict_keep_error_on_retry_safe_task/)
+  assert.equal((await reconcileStatements(rows,deadStage,[{receipt_key:rows[0].receipt_key,verdict:'no-effect',reason:'x'}],'20261115')).statements.length,1)
   f.sqlite.close()
 })

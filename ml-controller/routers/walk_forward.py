@@ -335,10 +335,7 @@ async def walk_forward_run(req: WalkForwardRequest):
 
     from services.walk_forward_retrain import MODELS_ALL, walk_forward_model_coverage
     from services.backtest_engine import walk_forward_windows
-    from services.payload_builder import load_market_env
     from services import modal_client
-    from dataclasses import asdict
-    from datetime import datetime, timezone, timedelta
 
     from services.training_source_preflight import require_single_adjustment_capture, sealed_batch_counts
     from services.walk_forward_retrain import _get_bucket
@@ -367,11 +364,6 @@ async def walk_forward_run(req: WalkForwardRequest):
             status_code=400,
             detail=f"No windows generated. trading_days={len(trading_days)}, need >= {req.train_window_days + req.test_window_days}",
         )
-
-    # Load market_env once ??orchestrator filters per-window
-    run_date = datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
-    me, _, _, _, _ = load_market_env(run_date)
-    market_env = asdict(me)
 
     windows_payload = [
         {
@@ -407,7 +399,12 @@ async def walk_forward_run(req: WalkForwardRequest):
     try:
         fn_call = await modal_client.spawn_walk_forward_orchestrator({
             "windows": windows_payload,
-            "market_env": market_env,
+            # KD-14: the per-window HMM is record-only (no model, gate or manifest
+            # check reads it), so dispatch no longer loads market_env and cannot 500
+            # on ml:adaptive_params / trading:config. The orchestrator still reads the key.
+            # Research optuna_per_regime_robust (walk_forward_retrain.predict_regime_at_date)
+            # then reads an older hmm_detector snapshot, or falls back to sideways without one.
+            "market_env": {},
             "batch_count": batch_count,
             "models": models,
             "model_profile_schema_version":req.model_profile_schema_version,
@@ -2094,7 +2091,9 @@ async def materialize_walk_forward_oof(req: OofMaterializeRequest):
     from services.trading_config_loader import load_merged_trading_config_with_contract
     native_config=load_merged_trading_config_with_contract().config
     if native_config.get('l4Distribution') is not None:
-        from services.paper_strategy_mode import refresh_family
+        from services.paper_strategy_mode import refresh_family, r33_native_refresh_skip
+        if skipped := r33_native_refresh_skip(native_config, cohort_id=req.cohort_id, as_of=req.knowledge_cutoff_date):
+            return skipped
         from services.l4_oof_lifecycle import materialize_native_base
         from services.walk_forward_retrain import _get_bucket
         return await materialize_native_base(manifest_path=req.manifest_path or f'walk_forward/oof_cohorts/{req.cohort_id}/manifest.json',
@@ -2867,8 +2866,25 @@ OOF_FEATURE_SEMANTIC_VERSION = "formal137-pit-asof-source-quality-v3"
 OOF_FEATURE_IMPUTATION_SEMANTIC_VERSION = "prior_252_row_median_then_zero_v2"
 OOF_COHORT_ID_VERSION = "v9-feature-semantic-source-attested"
 # R33 cohorts carry their roster: the seven-model G5 #3 cohort of 2026-11-07 keeps its own
-# write-once OOF checks and fold artifacts, which a four-model cohort must never read back.
-R33_ROSTER_COHORT_TAG = "core4"
+# write-once OOF checks and fold artifacts, which a cohort of another roster must never read back.
+# The tag is derived from the roster (Q4, Wei 2026-11-12); the November four-model roster keeps
+# the "core4" name its 2026-11-09 cohort was written under.
+_R33_LEGACY_COHORT_TAGS = {("LightGBM", "ExtraTrees", "TabM", "GNN"): "core4"}
+
+
+def r33_roster_cohort_tag(roster) -> str:
+    import hashlib
+    from services.alpha_model_roster import validate_r33_roster
+    roster = validate_r33_roster(tuple(roster))
+    return _R33_LEGACY_COHORT_TAGS.get(roster) or "r" + hashlib.sha256(",".join(roster).encode()).hexdigest()[:8]
+
+
+def _r33_training_roster_tag() -> str:
+    from services.alpha_model_roster import R33_MODELS
+    return r33_roster_cohort_tag(R33_MODELS)
+
+
+R33_ROSTER_COHORT_TAG = _r33_training_roster_tag()
 OOF_LIFECYCLE_RECEIPT_SCHEMA_VERSION = "active8-oof-lifecycle-receipt-v17-nav-inventory-native-frontier"
 
 
@@ -4192,7 +4208,9 @@ async def run_walk_forward_oof_lifecycle(req: OofLifecycleRequest):
     from services.l4_oof_lifecycle import uses_native_l4
     if new_distribution or uses_native_l4(manifest):
         from services.l4_oof_lifecycle import materialize_native_base
-        from services.paper_strategy_mode import refresh_family
+        from services.paper_strategy_mode import refresh_family, r33_native_refresh_skip
+        if skipped := r33_native_refresh_skip(config, cohort_id=cohort_id, as_of=knowledge_cutoff_date, cadence=cadence):
+            return skipped
         if cadence == 'monthly':
             calendar_evidence['deferred_oof_dates'] = [d for d in dates if d > manifest['end_date']]
         return await materialize_native_base(manifest_path=manifest_path,cohort_id=cohort_id,

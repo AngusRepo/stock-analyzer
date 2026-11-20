@@ -21,12 +21,12 @@ assert(
 )
 
 assert(
-  postMarketChain.includes('runModelIcRollingRefresh(env, ctx.runDate)'),
+  postMarketChain.includes('runModelIcRollingRefresh(env, ctx.runDate, budget)'),
   'post-verify chain must pass callback run_date into rolling IC refresh',
 )
 
 assert(
-  postMarketChain.includes("'model-ic-rolling', env => runModelIcRollingRefresh") &&
+  postMarketChain.includes("'model-ic-rolling', (env, budget) => runModelIcRollingRefresh") &&
     !postMarketChain.includes("'model-ic-tracker'"),
   'rolling IC callback must persist only the model-ic-rolling scheduler identity',
 )
@@ -38,7 +38,7 @@ assert(
 )
 
 assert(
-  controllerDailyWorkflows.includes('runModelIcRollingRefresh(env: Bindings, runDate?: string)') &&
+  controllerDailyWorkflows.includes('runModelIcRollingRefresh(env: Bindings, runDate?: string, budget: { deadlineAt?: number } = {})') &&
     controllerDailyWorkflows.includes('run_date: runDate || undefined'),
   'rolling IC refresh must send run_date to ml-controller when callback has one',
 )

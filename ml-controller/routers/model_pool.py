@@ -9,7 +9,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, HTTPException
 from starlette.concurrency import run_in_threadpool
-from services.d1_client import read_connection_scope
+from services.d1_client import read_connection_scope, read_raw_batch
 
 
 async def _read_in_threadpool(reader, *, verify_sources=False):
@@ -39,6 +39,7 @@ from services.model_artifact_registry import (
     run_feature_release_promotion_controller,
     run_promotion_controller,
 )
+from services.model_ic_tracker import IC_TARGET_SEMANTIC_VERSION
 from services.model_pool_registry_view import list_workbench_artifacts
 from services.model_serving_resolver import load_d1_champion_pool
 from services.model_upgrade_research_track import build_research_benchmark_manifest
@@ -94,6 +95,12 @@ class FeatureReleasePromotionControllerRequest(BaseModel):
 # model's full history. The date() predicates stay as the exact filter.
 # json_valid() rejects NaN/Infinity that json.loads would accept; writers
 # sanitize non-finite payloads, so such rows only lose their score.
+# Transfer, not SQL, set the latency (2026-11-17: ~74k rows, 57 MB of keyed
+# JSON over 36 requests): days now travel as /raw arrays, several per request,
+# and the two label-semantic columns, which repeat one ~85-character constant on
+# every row, come back as a flag that _restore_weekly_ic_targets reverses exactly.
+_WEEKLY_IC_DAYS_PER_READ = 6
+_WEEKLY_IC_TARGET_COLUMNS = ("fd_target_semantic_version", "verification_label_schema_version")
 _WEEKLY_IC_FORECAST_PATHS = (
     ("fd_rank_score", "$.rank_score"),
     ("fd_artifact_version", "$.model_signal.artifact_version"),
@@ -118,6 +125,19 @@ def _weekly_ic_forecast(row: dict) -> dict:
     }
 
 
+def _weekly_ic_column(expr: str, alias: str) -> str:
+    if alias not in _WEEKLY_IC_TARGET_COLUMNS:
+        return f"{expr} AS {alias}"
+    return (f"CASE WHEN {expr} = ? THEN 1 ELSE 0 END AS {alias}__is_target,\n"
+            f"                   CASE WHEN {expr} = ? THEN NULL ELSE {expr} END AS {alias}")
+
+
+def _restore_weekly_ic_targets(row: dict) -> None:
+    for alias in _WEEKLY_IC_TARGET_COLUMNS:
+        if row.pop(f"{alias}__is_target") == 1:
+            row[alias] = IC_TARGET_SEMANTIC_VERSION
+
+
 def _load_weekly_ic_rows(all_tracked, run_date: str | None, lookback_days: int) -> list[dict]:
     if run_date:
         try:
@@ -129,9 +149,10 @@ def _load_weekly_ic_rows(all_tracked, run_date: str | None, lookback_days: int) 
     else:
         anchor = datetime.now(timezone.utc).date()
     forecast_columns = ",\n                   ".join(
-        f"CASE WHEN json_valid(forecast_data) THEN json_extract(forecast_data, '{path}') END AS {alias}"
+        _weekly_ic_column(f"CASE WHEN json_valid(forecast_data) THEN json_extract(forecast_data, '{path}') END", alias)
         for alias, path in _WEEKLY_IC_FORECAST_PATHS
     )
+    target_params = [IC_TARGET_SEMANTIC_VERSION] * (2 * len(_WEEKLY_IC_TARGET_COLUMNS))
     placeholders = ",".join(["?"] * len(all_tracked))
     upper_filter = "AND date(prediction_date) <= date(?)" if run_date else ""
     # Without run_date the original query had no prediction_date upper bound,
@@ -143,13 +164,13 @@ def _load_weekly_ic_rows(all_tracked, run_date: str | None, lookback_days: int) 
         day += timedelta(days=1)
     if not run_date:
         ranges.append(((anchor + timedelta(days=1)).isoformat(), None))
-    rows: list[dict] = []
+    statements: list[dict] = []
     for lower, upper in ranges:
         sql = f"""
             SELECT id, stock_id, model_name, direction_accuracy,
                    {forecast_columns},
                    actual_return_pct, verified_at, prediction_date, generated_at,
-                   verification_label_schema_version,
+                   {_weekly_ic_column("verification_label_schema_version", "verification_label_schema_version")},
                    verification_label_entry_price,
                    verification_label_end_date,
                    verification_label_known_date
@@ -160,12 +181,22 @@ def _load_weekly_ic_rows(all_tracked, run_date: str | None, lookback_days: int) 
               AND date(verification_label_known_date) <= date(?)
               AND date(prediction_date) >= date(?, ?)
         """
-        params = [*all_tracked, lower, *([upper] if upper else []),
+        params = [*target_params, *all_tracked, lower, *([upper] if upper else []),
                   *[anchor.isoformat()] * (3 if run_date else 2), f"-{lookback_days} days"]
-        chunk = LEARNING_D1_CLIENT.query(sql, params)
-        for row in chunk:
-            row["forecast_data"] = _weekly_ic_forecast(row)
-        rows.extend(chunk)
+        statements.append({"sql": sql, "params": params})
+    database_id = getattr(LEARNING_D1_CLIENT, "database_id", None)
+    rows: list[dict] = []
+    for start in range(0, len(statements), _WEEKLY_IC_DAYS_PER_READ):
+        group = statements[start:start + _WEEKLY_IC_DAYS_PER_READ]
+        chunks = (read_raw_batch(group, database_id=database_id) if database_id
+                  else [LEARNING_D1_CLIENT.query(item["sql"], item["params"]) for item in group])
+        if len(chunks) != len(group):
+            raise RuntimeError("weekly_ic_read_batch_incomplete")
+        for chunk in chunks:
+            for row in chunk:
+                _restore_weekly_ic_targets(row)
+                row["forecast_data"] = _weekly_ic_forecast(row)
+            rows.extend(chunk)
     logger.info("weekly IC rows=%d queries=%d anchor=%s lookback_days=%d",
                 len(rows), len(ranges), anchor.isoformat(), lookback_days)
     return rows
@@ -188,7 +219,20 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
 
     t0 = time.time()
     all_tracked = tracked_model_names()
-    pool = load_d1_champion_pool()
+    stage_s: dict[str, float] = {}
+    rows = await _read_in_threadpool(
+        lambda: _load_weekly_ic_rows(all_tracked, req.run_date, req.lookback_days))
+    stage_s["prediction_read"] = round(time.time() - t0, 1)
+
+    # One lifecycle snapshot, read after the long prediction read, decides the
+    # expected identities and the live-gate rows written below (previously the
+    # 468-row registry, ~27 MB with offline evidence, was read twice per call).
+    def read_lifecycle():
+        return load_d1_champion_pool(), list_artifact_registry(limit=1000), list_champion_pointers()
+
+    stage_started = time.time()
+    pool, registry_rows, champion_pointers = await _read_in_threadpool(read_lifecycle)
+    stage_s["lifecycle_read"] = round(time.time() - stage_started, 1)
     expected_artifact_versions: dict[str, str] = {}
     expected_artifact_identities: dict[str, dict[str, str]] = {}
     for name, entry in (pool.get("models") or {}).items():
@@ -206,8 +250,8 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
             }
 
     registry_shadow_selection = build_live_shadow_candidate_selection(
-        list_artifact_registry(limit=1000),
-        champion_pointers=list_champion_pointers(),
+        registry_rows,
+        champion_pointers=champion_pointers,
     )
     for candidate in registry_shadow_selection.get("selected") or []:
         if not isinstance(candidate, dict):
@@ -223,9 +267,6 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
                 "artifact_id": artifact_id,
                 "checksum": checksum,
             }
-
-    rows = await _read_in_threadpool(
-        lambda: _load_weekly_ic_rows(all_tracked, req.run_date, req.lookback_days))
 
     per_model_ic = compute_weekly_ic_from_rows(
         rows,
@@ -244,8 +285,11 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
                 "append_history": req.append_history,
                 "lifecycle_owner": "model_artifact_registry/model_champion_pointers",
             })
+    stage_started = time.time()
     try:
-        registry_updates = update_live_gate_from_ic(per_model_ic, min_samples=req.min_samples)
+        registry_updates = update_live_gate_from_ic(
+            per_model_ic, min_samples=req.min_samples,
+            registry_rows=registry_rows, champion_pointers=champion_pointers)
     except Exception as exc:
         logger.exception("canonical artifact registry live IC update failed")
         raise HTTPException(status_code=500, detail=f"artifact_registry_live_gate_failed:{exc}") from exc
@@ -258,6 +302,7 @@ async def compute_weekly_ic(req: ComputeWeeklyICRequest):
         "n_rows_total": len(rows),
         "per_model_ic": per_model_ic,
         "artifact_registry_updates": registry_updates,
+        "stage_s": {**stage_s, "registry_write": round(time.time() - stage_started, 1)},
         "elapsed_s": round(time.time() - t0, 1),
     }
 

@@ -4,6 +4,23 @@ import hashlib
 import time
 from pathlib import Path
 
+from tools.finlab_capture_guard import retry_transient
+
+# (connect, read) seconds per socket operation; a stalled write raises instead of hanging. On 11/16 one
+# such timeout failed the whole capture, so a transient error now resends that object (bounded backoff).
+UPLOAD_TIMEOUT = (15, 120)
+
+
+def is_precondition_failed(exc) -> bool:
+    return any(cls.__name__ == 'PreconditionFailed' for cls in type(exc).__mro__)
+
+
+def committed_copy(bucket, name: str, sha: str, size: int):
+    blob = retry_transient(lambda: bucket.get_blob(name, timeout=UPLOAD_TIMEOUT), label='upload_verify:' + name)
+    if blob is None or (blob.metadata or {}).get('sha256') != sha or int(blob.size) != size:
+        return None
+    return blob
+
 
 def verify_capture_upload(bucket) -> dict:
     """Exercise the real small/resumable uploader before fetching paid data."""
@@ -42,7 +59,8 @@ def upload_capture(local_dir: Path, *, bucket, prefix: str, uploaded_files: dict
     started = time.monotonic()
     prefix = prefix.rstrip('/')
     # One metadata listing also detects deleted/replaced objects between passes.
-    remote = {b.name: b for b in bucket.list_blobs(prefix=prefix + '/')}
+    remote = retry_transient(lambda: {b.name: b for b in bucket.list_blobs(prefix=prefix + '/', timeout=UPLOAD_TIMEOUT)},
+                             label='upload_listing:' + prefix)
     paths = sorted(p for p in local_dir.rglob('*') if p.is_file())
     pending, skipped, skipped_bytes = [], 0, 0
     for path in paths:
@@ -65,10 +83,23 @@ def upload_capture(local_dir: Path, *, bucket, prefix: str, uploaded_files: dict
 
     def upload(item):
         path, rel, name, key, sha, size, generation = item
-        blob = bucket.blob(name)
-        blob.metadata = {'sha256': sha}
-        # Modal pins storage 2.18.2, which requires an explicit checksum type.
-        blob.upload_from_filename(str(path), if_generation_match=generation, checksum='crc32c')
+
+        def send():
+            blob = bucket.blob(name)
+            blob.metadata = {'sha256': sha}
+            # Modal pins storage 2.18.2, which requires an explicit checksum type.
+            blob.upload_from_filename(str(path), if_generation_match=generation, checksum='crc32c',
+                                      timeout=UPLOAD_TIMEOUT)
+            return blob
+
+        try:
+            blob = retry_transient(send, label='upload:' + rel)
+        except Exception as exc:
+            # A send that timed out after GCS committed it fails its retry on the generation
+            # precondition; accept that object only when it holds exactly these bytes.
+            blob = committed_copy(bucket, name, sha, size) if is_precondition_failed(exc) else None
+            if blob is None:
+                raise
         if blob.generation is None:
             raise RuntimeError('finlab_upload_generation_missing:' + rel)
         # Do not cache a file that changed while the upload was reading it.

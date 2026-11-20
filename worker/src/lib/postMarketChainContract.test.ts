@@ -129,6 +129,10 @@ assert(
   'post-verify critical tasks must throw into durable stage last_error and can never finalize an error return as success',
 )
 assert(
+  postMarketChain.includes("'daily-report', env => generateDailyReport(env, ctx.runDate)"),
+  'LIVE-AUTH-B: the post-close daily report must close the business date its evidence reads back, not the wall-clock day',
+)
+assert(
   postMarketChain.includes('const productionEligible = productionAuthority.allowed'),
   'production-only tasks must use resolved canonical authority so historical reruns cannot dirty current reports',
 )
@@ -209,7 +213,7 @@ assert(
   'post-pipeline chain must not be the primary regime producer; pipeline already consumed market_regime_state by then',
 )
 assert(
-  postMarketChain.includes('runModelIcRollingRefresh(env, ctx.runDate)'),
+  postMarketChain.includes('runModelIcRollingRefresh(env, ctx.runDate, budget)'),
   'rolling IC refresh must receive the callback business date',
 )
 assert(
@@ -233,7 +237,7 @@ assert(
   'post-pipeline and post-verify chains must stay separate owners',
 )
 assert(
-  postMarketChain.indexOf("'model-ic-rolling', env => runModelIcRollingRefresh") <
+  postMarketChain.indexOf("'model-ic-rolling', (env, budget) => runModelIcRollingRefresh") <
     postMarketChain.indexOf("'s12-replay-backfill', env => enqueueS12ReplayBackfillTask") &&
     postMarketChain.indexOf("'s12-replay-backfill', env => enqueueS12ReplayBackfillTask") <
     postMarketChain.indexOf("'paper-intraday-cache-clear', env => clearOpenPositionIntradayPriceCache"),

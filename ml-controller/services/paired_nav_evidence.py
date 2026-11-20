@@ -188,9 +188,13 @@ def _read_verified_nav_evidence(*, business_date: str, query: Query, page_size: 
             'bounded_sessions': sum(o.lower is not None and o.upper is not None for p in pairs for o in p.observations)}
     from services.paired_nav_population import read_candidate_population
     census = []
+    # The chain above resolved each journaled execution's comparison in this
+    # same read; the census re-resolves only executions it did not journal.
+    verified = {p['snapshot_id']: p['comparison'] for rows in prefixes.values() for p in rows}
     population = read_candidate_population(business_date=business_date, query=query,
         series=pairs, page_size=page_size, now=clock, _snapshot_ids=_population_snapshot_ids,
-        _capture_snapshot_ids=census.extend, _observed_at=_population_observed_at)
+        _capture_snapshot_ids=census.extend, _observed_at=_population_observed_at,
+        _verified_comparisons=verified)
     if observe_prefix is not None:
         for pair in pairs:
             exact = 0

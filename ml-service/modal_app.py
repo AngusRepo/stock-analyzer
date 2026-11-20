@@ -1857,6 +1857,44 @@ def _pipeline_runtime_expected_symbols(
     ]
 
 
+def _assert_pipeline_bundle_rows(model_name: str, rows: object, *, expected: list[str], feature_models: list[str],
+                                 require_rank: bool, r33: bool) -> None:
+    """Every expected symbol exactly once. Outside R33 any row error or missing feature rank
+    fails the bundle; under R33 they are that symbol's coverage (z=0 / prediction_missing,
+    same as the controller closure), and only the structure fails closed."""
+    model_expected_set = set(expected)
+    if not expected or len(model_expected_set) != len(expected):
+        raise ValueError(f"pipeline_modal_{model_name.lower()}_expected_symbol_contract_invalid")
+    if not isinstance(rows, list):
+        raise ValueError(f"pipeline_modal_{model_name.lower()}_results_not_list")
+    observed: list[str] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ValueError(f"pipeline_modal_{model_name.lower()}_row_invalid")
+        symbol = str(row.get("symbol") or row.get("stock_id") or "").strip()
+        if not symbol or (row.get("error") and not r33):
+            raise ValueError(f"pipeline_modal_{model_name.lower()}_row_error:{symbol or '<missing>'}")
+        observed.append(symbol)
+        if require_rank and not r33:
+            rank_scores = row.get("rank_scores")
+            for feature_model in feature_models:
+                value = rank_scores.get(feature_model) if isinstance(rank_scores, dict) else None
+                try:
+                    valid = value is not None and math.isfinite(float(value))
+                except (TypeError, ValueError):
+                    valid = False
+                if not valid:
+                    raise ValueError(
+                        f"pipeline_modal_feature_rank_missing:{symbol}:{feature_model}"
+                    )
+    if (
+        len(rows) != len(expected)
+        or len(set(observed)) != len(observed)
+        or set(observed) != model_expected_set
+    ):
+        raise ValueError(f"pipeline_modal_{model_name.lower()}_cardinality_mismatch")
+
+
 def _compute_pipeline_prediction_bundle(payload: dict) -> dict:
     """Same L3 engine without publication or callback side effects."""
     _setup_env()
@@ -1978,7 +2016,15 @@ def _compute_pipeline_prediction_bundle(payload: dict) -> dict:
             f"(required={contract.get('seq_len') or 'unknown'} usable=0)"
         )
 
+    from app.r33_prep_rows import stage_runner
+    from app.model_store import _get_bucket
+    # R33-NEW-11: the feature and GNN stages read the sealed prep rows, loaded once.
+    _with_r33_prep = stage_runner(frozen_pool, payload, payloads, bucket_factory=_get_bucket)
+
     def _feature() -> list[dict]:
+        return _with_r33_prep(_feature_rows)
+
+    def _feature_rows() -> list[dict]:
         raw_chunk_size = payload.get("predict_batch_v2_chunk_size")
         try:
             chunk_size = int(raw_chunk_size or len(payloads) or 1)
@@ -1995,7 +2041,7 @@ def _compute_pipeline_prediction_bundle(payload: dict) -> dict:
     def _gnn() -> dict:
         if not _is_active("GNN"):
             return _skip("GNN retired by model_pool")
-        return predict_gnn_graphsage_batch(payloads, pool_snapshot=frozen_pool)
+        return _with_r33_prep(lambda: predict_gnn_graphsage_batch(payloads, pool_snapshot=frozen_pool))
 
     from app.pipeline_prediction_stages import SCOPE, namespace
     stage_journal = SCOPE.get()
@@ -2153,6 +2199,9 @@ def _compute_pipeline_prediction_bundle(payload: dict) -> dict:
         if _is_active(name)
     ]
 
+    from app.active8_ensemble_runtime import R33_KIND
+    r33_bundle = (frozen_pool.get("active8_ensemble") or {}).get("kind") == R33_KIND
+
     def _assert_exact_rows(
         model_name: str,
         rows: object,
@@ -2160,39 +2209,8 @@ def _compute_pipeline_prediction_bundle(payload: dict) -> dict:
         expected: list[str] | None = None,
         require_rank: bool = False,
     ) -> None:
-        model_expected = expected_symbols if expected is None else expected
-        model_expected_set = set(model_expected)
-        if not model_expected or len(model_expected_set) != len(model_expected):
-            raise ValueError(f"pipeline_modal_{model_name.lower()}_expected_symbol_contract_invalid")
-        if not isinstance(rows, list):
-            raise ValueError(f"pipeline_modal_{model_name.lower()}_results_not_list")
-        observed: list[str] = []
-        for row in rows:
-            if not isinstance(row, dict):
-                raise ValueError(f"pipeline_modal_{model_name.lower()}_row_invalid")
-            symbol = str(row.get("symbol") or row.get("stock_id") or "").strip()
-            if not symbol or row.get("error"):
-                raise ValueError(f"pipeline_modal_{model_name.lower()}_row_error:{symbol or '<missing>'}")
-            observed.append(symbol)
-            if require_rank:
-                rank_scores = row.get("rank_scores")
-                for feature_model in feature_models:
-                    value = rank_scores.get(feature_model) if isinstance(rank_scores, dict) else None
-                    try:
-                        valid = value is not None and math.isfinite(float(value))
-                    except (TypeError, ValueError):
-                        valid = False
-                    if not valid:
-                        raise ValueError(
-                            f"pipeline_modal_feature_rank_missing:{symbol}:{feature_model}"
-                        )
-        if (
-            len(rows) != len(model_expected)
-            or len(observed) != len(model_expected)
-            or len(set(observed)) != len(observed)
-            or set(observed) != model_expected_set
-        ):
-            raise ValueError(f"pipeline_modal_{model_name.lower()}_cardinality_mismatch")
+        _assert_pipeline_bundle_rows(model_name, rows, expected=expected_symbols if expected is None else expected,
+                                     feature_models=feature_models, require_rank=require_rank, r33=r33_bundle)
 
     _assert_exact_rows("feature", feature_rows, require_rank=True)
     runtime_output_keys = {
@@ -4724,17 +4742,34 @@ def finlab_v4_backfill(payload: dict) -> dict:
     import contextlib
     import io
     import json
+    import shutil
     import sys
     import time
     import traceback
+    import uuid
+    from pathlib import Path
 
     for path in ("/root", "/root/tools"):
         if path not in sys.path:
             sys.path.insert(0, path)
+    from tools.finlab_capture_guard import callback_error, clear_deadline, install_deadline, redact
 
     started = time.time()
     run_id = str(payload.get("run_id") or "auto")
     dispatch_attempt = int(payload.get("dispatch_attempt") or 1)
+    # Daily captures took 20-30 min (11/11-11/17). A fetch still running after the budget stops and
+    # reports, instead of Modal killing the call at timeout=7200 without any callback.
+    daily_capture = bool(payload.get("daily_refresh") or payload.get("continue_evening_chain"))
+    deadline_seconds = 3600.0 if daily_capture else 6600.0
+    try:
+        deadline_seconds = float(payload.get("capture_deadline_seconds") or deadline_seconds)
+    except (TypeError, ValueError):
+        pass
+    install_deadline(min(max(deadline_seconds, 60.0), 6600.0))
+    # Each call writes its own directory. The run dir must stay named <run_id> (it is the capture_id),
+    # so a resend of the same run_id that lands on this warm container cannot find the previous
+    # attempt's output (daily_composition_output_already_exists).
+    output_root = Path(str(payload.get("output_dir") or "/tmp/finlab_remote_backfill")) / f"attempt-{dispatch_attempt}-{uuid.uuid4().hex[:12]}"
     controller_env = {
         "FINLAB_CONTROLLER_D1_QUERY_URL": payload.get("controller_d1_query_url"),
         "FINLAB_CONTROLLER_D1_BATCH_URL": payload.get("controller_d1_batch_url"),
@@ -4765,7 +4800,7 @@ def finlab_v4_backfill(payload: dict) -> dict:
         "finlab_v4_remote_backfill.py",
         "--years", str(int(payload.get("years") or 3)),
         "--run-id", run_id,
-        "--output-dir", str(payload.get("output_dir") or "/tmp/finlab_remote_backfill"),
+        "--output-dir", str(output_root),
         "--gcs-prefix", str(payload.get("gcs_prefix") or "finlab/v4/backfill"),
         "--canonical-window-days", str(int(payload.get("canonical_window_days") or 7)),
         "--canonical-d1-chunk-size", str(int(payload.get("canonical_d1_chunk_size") or 250)),
@@ -4898,25 +4933,33 @@ def finlab_v4_backfill(payload: dict) -> dict:
         return result
     except (Exception, SystemExit) as exc:
         duration_ms = int((time.time() - started) * 1000)
-        error = f"{type(exc).__name__}: {exc}"
+        # The summary keeps the `<type>: <message>` head the Worker classifier reads; the error adds
+        # the innermost frames so the run log shows where it failed.
+        error, error_detail = callback_error(exc)
+        trace = redact(traceback.format_exc())[-4000:]
+        print(f"[finlab_v4_backfill] error run_id={run_id} dispatch_attempt={dispatch_attempt} "
+              f"{error_detail}\n{trace}", file=sys.stderr, flush=True)
         result = {
             "status": "error",
             "run_id": run_id,
-            "error": error,
-            "trace": traceback.format_exc()[-4000:],
+            "error": error_detail,
+            "trace": trace,
             "stdout_tail": stdout.getvalue()[-4000:],
             "continue_evening_chain": bool(payload.get("continue_evening_chain")),
             "duration_ms": duration_ms,
             "dispatch_attempt": dispatch_attempt,
             "start_callback": start_callback,
         }
-        result["callback"] = _post_worker_scheduler_callback(payload, result, "error", error, duration_ms, error=error)
+        result["callback"] = _post_worker_scheduler_callback(payload, result, "error", error, duration_ms, error=error_detail)
         stage_progress.finish('failed')
         result['stage_progress'] = stage_progress.snapshot()
         return result
     finally:
         reset(stage_token)
+        clear_deadline()
         sys.argv = old_argv
+        # Only this call's directory. Artifacts are in GCS, where a later attempt's reuse finds them.
+        shutil.rmtree(output_root, ignore_errors=True)
 
 
 # Sealed R33 training capture (K15). Separate from finlab_v4_backfill so the

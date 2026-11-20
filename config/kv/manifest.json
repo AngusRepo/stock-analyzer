@@ -3,14 +3,14 @@
   "store": "gs://stockvision-config-private/kv-config/",
   "keys": {
     "trading:config": {
-      "digest": "c4ef295821675fb027bbd1405327c294f314a375dd69686d5717e99ff8ad73b5",
+      "digest": "7e8264d95c17054767265633f9986010884288ada194c2c542da0dd319359bce",
       "runtime_owned": [
         "alphaFramework.allocation.controller",
         "alphaFramework.allocation.opbArmPrior"
       ]
     },
     "trading:risk_config": {
-      "digest": "67cd6ca78c1ea2744707feb7ff26a4cf6b40fa02013e6c29b601e47652e51913",
+      "digest": "b1f9c64776dd812431ed935af7aae4a3070a8238fbfade134da2a8dd8d937dd0",
       "runtime_owned": []
     }
   }

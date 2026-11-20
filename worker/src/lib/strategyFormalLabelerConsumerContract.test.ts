@@ -49,7 +49,7 @@ for (const [name, source] of Object.entries(sources)) {
 }
 
 const pipelineTrackingMatrixQueries = sources.publicRoute.match(
-  /const \{ results: rawMatrixRows \}[\s\S]*?const loadStageStrategyRows/,
+  /const \{ results: rawMatrixRows \}[\s\S]*?loadFunnelStageStrategyRows\(opsDb/,
 )?.[0]
 assert.ok(pipelineTrackingMatrixQueries, 'public pipeline tracking route must load canonical matrix evidence')
 assert.equal(
@@ -164,7 +164,7 @@ assert.match(sources.recovery, /LEFT JOIN matrix_counts mc/)
 assert.doesNotMatch(sources.recovery, /SUM\(CASE WHEN EXISTS \(/)
 assert.match(sources.maturity, /mr\.labeler_version=r\.strategy_labeler_version/)
 assert.match(sources.maturity, /m\.labeler_version=r\.labeler_version/)
-assert.match(sources.maturity, /matrix\.labeler_version=run\.labeler_version/)
+assert.match(sources.maturity, /m\.labeler_version=run\.labeler_version/)
 assert.match(sources.publicRoute, /mr\.labeler_version=strategy_label_matrix_v4\.labeler_version/)
 assert.match(sources.publicRoute, /mr\.labeler_version=selection_reference_snapshots_v1\.strategy_labeler_version/)
 assert.match(sources.adminRoute, /buildStrategyRedundancyBackfillDatesSql\(formalMatureCompatibility\)/)

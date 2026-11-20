@@ -1,3 +1,9 @@
+import type { Bindings } from '../types'
+import { AUDIT_POINTER_SCHEMA, visitArchivedFunnelEvidence } from './screenerEvidenceResolver'
+
+// A canonical scoring day spans tens of retention chunks; read sequentially, one at a time.
+const REPAIR_ARCHIVE_CHUNK_LIMIT = 64
+
 function cleanRepairValue(value: unknown): string {
   return String(value ?? '').trim()
 }
@@ -42,7 +48,7 @@ export const SELECTION_REFERENCE_RECONSTRUCTION_VERSION =
 export async function repairHistoricalSelectionReferences(
   db: D1Database,
   signalDate: string,
-  options: { dryRun?: boolean } = {},
+  options: { dryRun?: boolean; archiveEnv?: Pick<Bindings, 'DB' | 'ARTIFACTS'> } = {},
 ): Promise<SelectionReferenceRepairResult> {
   if (signalDate.length !== 10 || Number.isNaN(Date.parse(signalDate + 'T00:00:00Z'))) {
     throw new Error('selection_reference_repair_invalid_date')
@@ -78,16 +84,35 @@ export async function repairHistoricalSelectionReferences(
            SUM(CASE WHEN decision='pass' THEN 1 ELSE 0 END) pass_count,
            SUM(CASE WHEN json_valid(evidence)=1 THEN 1 ELSE 0 END) valid_evidence_count,
            SUM(CASE WHEN json_extract(json_extract(evidence, '$.score_components'), '$.version')='score_v2'
-                    THEN 1 ELSE 0 END) score_v2_count
+                    THEN 1 ELSE 0 END) score_v2_count,
+           SUM(CASE WHEN json_valid(evidence)=1 AND json_extract(evidence, '$.schema_version')=?
+                    THEN 1 ELSE 0 END) archived_count
       FROM screener_funnel_items
      WHERE run_id=? AND date=? AND stage='scoring'
-  `).bind(producerRunId, signalDate).first<any>()
+  `).bind(AUDIT_POINTER_SCHEMA, producerRunId, signalDate).first<any>()
+  // Rows past audit-json retention hold a pointer; their score_v2 must come from the
+  // verified R2 pre-image (all-or-error), never from the pointer or a silent default.
+  // Only the canonical score_v2 (or null) is kept per row, not the whole evidence.
+  const archivedScoreV2 = new Map<number, string | null>()
+  if (Number(coverage?.archived_count ?? 0) > 0) {
+    if (!options.archiveEnv) throw new Error(`selection_reference_repair_archived_evidence_unavailable:${signalDate}`)
+    const archived = await db.prepare(`
+      SELECT id, run_id, stage, symbol, evidence
+        FROM screener_funnel_items
+       WHERE run_id=? AND date=? AND stage='scoring'
+         AND json_valid(evidence)=1 AND json_extract(evidence, '$.schema_version')=?
+    `).bind(producerRunId, signalDate, AUDIT_POINTER_SCHEMA).all<any>()
+    await visitArchivedFunnelEvidence(options.archiveEnv, archived.results ?? [], (_index, row, _text, evidence) => {
+      archivedScoreV2.set(Number(row.id), canonicalRepairScoreV2(evidence.score_components))
+    }, { limit: REPAIR_ARCHIVE_CHUNK_LIMIT })
+  }
+  const restoredScoreV2 = [...archivedScoreV2.values()].filter(Boolean).length
   const coverageCounts = [
     Number(coverage?.row_count ?? 0),
     Number(coverage?.symbol_count ?? 0),
     Number(coverage?.pass_count ?? 0),
     Number(coverage?.valid_evidence_count ?? 0),
-    Number(coverage?.score_v2_count ?? 0),
+    Number(coverage?.score_v2_count ?? 0) + restoredScoreV2,
   ]
   if (coverageCounts.some((count) => count !== expectedRows)) {
     throw new Error(`selection_reference_repair_scoring_coverage_mismatch:${coverageCounts.join('/')}/${expectedRows}`)
@@ -172,8 +197,16 @@ export async function repairHistoricalSelectionReferences(
         if (!Number.isInteger(stockId) || stockId <= 0) {
           throw new Error(`selection_reference_repair_stock_identity_missing:${row.symbol}`)
         }
-        const evidence = parseRepairObject(row.evidence)
-        const scoreComponents = canonicalRepairScoreV2(evidence?.score_components)
+        let scoreComponents: string | null
+        if (archivedScoreV2.has(Number(row.id))) {
+          scoreComponents = archivedScoreV2.get(Number(row.id)) ?? null
+        } else {
+          const evidence = parseRepairObject(row.evidence)
+          if (evidence?.schema_version === AUDIT_POINTER_SCHEMA) {
+            throw new Error(`selection_reference_repair_archived_after_coverage:${row.id}`)
+          }
+          scoreComponents = canonicalRepairScoreV2(evidence?.score_components)
+        }
         return db.prepare(`
           INSERT OR IGNORE INTO selection_reference_snapshots_v1 (
             signal_date, symbol, producer_run_id, stock_id, name, market_segment, sector,

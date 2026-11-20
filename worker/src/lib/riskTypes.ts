@@ -49,6 +49,8 @@ export interface CircuitBreakerState {
   marketRiskHmmLineage?: import('./hmmLifecycle').HmmLineage | null
   triggeredLayers?: string[]
   haltReasons?: string[]
+  /** Annotation-only evidence (e.g. P2 p2_evidence_stale); never changes thresholds. */
+  evidenceNotes?: string[]
   marketRestrictionEvidence?: {owner:string;aggregation:string;components:Array<{id:string;halt:boolean;maxPositionPct:number;reason?:string}>}
 }
 

@@ -55,6 +55,7 @@ import {
   classifyFinLabLateLaneNotReady,
   classifyFinLabTransientFailure,
   finLabLatePublicationFields,
+  finLabLatePublicationFieldsForLane,
   finLabLateRetryCutoffPassed,
   finLabLateRetryCutoffTw,
 } from './finlabSourceContract'
@@ -771,11 +772,21 @@ function canonicalDatasetsForLanes(lanes: string[]): string | undefined {
   return csvJoin(datasets)
 }
 
+// C28-25 (ii): the tool upserts every canonical_chip_daily column, so a chip retry scoped to foreign_net alone would
+// NULL margin/short; the tool refuses that apply with finlab_source_not_ready. A scoped entry for a lane with
+// contract late_publication fields therefore always carries them, so the retry fetches them or, once they are ok
+// for the target date, reuses them. An empty field list already means every key of the lane.
+function withLatePublicationFields(entry: FinLabKeyScopeEntry): FinLabKeyScopeEntry {
+  const late = finLabLatePublicationFieldsForLane(entry.lane)
+  if (!late.length || !entry.fields.length) return entry
+  return { ...entry, fields: Array.from(new Set([...entry.fields, ...late])) }
+}
+
 function keyScopeJsonForLanes(sourceScope: FinLabRefreshScope, lanes: string[]): string | undefined {
   const allow = new Set(lanes)
   const entries = (sourceScope.keyScope ?? [])
     .filter((entry) => allow.has(entry.lane))
-    .map((entry) => ({ lane: entry.lane, fields: entry.fields }))
+    .map((entry) => withLatePublicationFields({ lane: entry.lane, fields: entry.fields }))
   return entries.some((entry) => entry.fields.length > 0) ? JSON.stringify(entries) : undefined
 }
 
@@ -902,7 +913,7 @@ function finLabSourceKeyQuotaBlocked(row: SourceKeyReportRow): boolean {
   return String(row.status ?? '').toLowerCase() === 'quota_blocked'
 }
 
-async function finLabRetryScopeForReadiness(
+export async function finLabRetryScopeForReadiness(
   env: Bindings,
   targetDate: string,
   readiness: SourceReadinessSnapshot,
@@ -926,7 +937,7 @@ async function finLabRetryScopeForReadiness(
       ...emptyFinLabRetryScope({
         lanes: csvJoin(retryLanes),
         canonicalDatasets: canonicalDatasetsForLanes(retryLanes),
-        keyScope: sourceScope.keyScope?.filter((entry) => retryLanes.includes(entry.lane)),
+        keyScope: sourceScope.keyScope?.filter((entry) => retryLanes.includes(entry.lane)).map(withLatePublicationFields),
         keyScopeJson: keyScopeJsonForLanes(sourceScope, retryLanes),
       }, requestedLanes),
       skippedFetchedLanes,
@@ -964,7 +975,7 @@ async function finLabRetryScopeForReadiness(
       const contractRequiredFields = finLabRequiredFieldsForLane(lane)
       if (!laneRows.length) {
         retryLanes.push(lane)
-        keyScope.push({ lane, fields: contractRequiredFields })
+        keyScope.push(withLatePublicationFields({ lane, fields: contractRequiredFields }))
         retryKeyCount += contractRequiredFields.length
         partialFailedLanes.push(lane)
         for (const dataset of finLabCanonicalDatasetsForLane(lane)) blockedDatasets.add(dataset)
@@ -994,7 +1005,7 @@ async function finLabRetryScopeForReadiness(
         for (const dataset of finLabCanonicalDatasetsForLane(lane)) materializedDatasets.add(dataset)
         if (finLabArtifactReuseEnabled(env)) {
           retryLanes.push(lane)
-          keyScope.push({ lane, fields: readyFields })
+          keyScope.push(withLatePublicationFields({ lane, fields: readyFields }))
         }
         continue
       }
@@ -1012,7 +1023,7 @@ async function finLabRetryScopeForReadiness(
 
       if (uniqueFields.length) {
         retryLanes.push(lane)
-        keyScope.push({ lane, fields: uniqueFields })
+        keyScope.push(withLatePublicationFields({ lane, fields: uniqueFields }))
         retryKeyCount += uniqueFields.length
         partialFailedLanes.push(lane)
         for (const dataset of finLabCanonicalDatasetsForLane(lane)) blockedDatasets.add(dataset)

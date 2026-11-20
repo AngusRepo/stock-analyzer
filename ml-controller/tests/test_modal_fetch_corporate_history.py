@@ -8,15 +8,15 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'scripts'))
 
 import modal_fetch_corporate_history as entry  # noqa: E402
-from test_fetch_corporate_history_sources import DAYS, SECRET, chatty_get, clock, vendor  # noqa: E402
+from test_fetch_corporate_history_sources import DAYS, CANARY, chatty_get, clock, vendor  # noqa: E402
 
 SOURCE = (Path(__file__).resolve().parent.parent / 'scripts' / 'modal_fetch_corporate_history.py').read_text()
-ENV = {'FINLAB_API_KEY': SECRET, 'FINLAB_REFRESH_TOKEN': SECRET + 'r', 'FINLAB_SESSION_ID': SECRET + 's'}
+ENV = {'FINLAB_API_KEY': CANARY, 'FINLAB_REFRESH_TOKEN': CANARY + 'r', 'FINLAB_SESSION_ID': CANARY + 's'}
 
 
 def loader(role='vip', get=None):
     def load(env, fetcher):
-        print('logged in with', env['FINLAB_API_KEY'])  # SDK chatter stays inside
+        print('logged in with', *env.values())  # SDK chatter stays inside
         return 'session_env', get or chatty_get([]), lambda: role
     return load
 
@@ -34,15 +34,15 @@ def test_remote_returns_data_and_env_names_only(capsys):
     assert result['env_names_present'] == ['FINLAB_API_KEY', 'FINLAB_REFRESH_TOKEN', 'FINLAB_SESSION_ID']
     blob = json.dumps({k: v for k, v in result.items() if k != 'blobs'}) + ''.join(
         b.decode('latin-1') for b in result['blobs'].values())
-    assert SECRET not in blob
+    assert CANARY not in blob
     captured = capsys.readouterr()
-    assert SECRET not in captured.out + captured.err
+    assert CANARY not in captured.out + captured.err
 
 
 @pytest.mark.parametrize('fail', ['vendor', 'role', 'auth'])
 def test_errors_come_back_scrubbed_without_a_traceback(fail, capsys):
     def get(key):
-        raise RuntimeError(f'refresh failed for key={SECRET} session={SECRET}s')
+        raise RuntimeError(f'refresh failed for key={CANARY} session={CANARY}s')
     if fail == 'auth':
         def bad(env, fetcher):
             raise RuntimeError('token ' + env['FINLAB_REFRESH_TOKEN'] + ' rejected')
@@ -51,11 +51,11 @@ def test_errors_come_back_scrubbed_without_a_traceback(fail, capsys):
         result = entry.remote_fetch(ENV, sdk_loader=loader(role='free' if fail == 'role' else 'vip',
                                                            get=get if fail == 'vendor' else None))
     assert result['ok'] is False and 'blobs' not in result
-    assert SECRET not in json.dumps(result)
+    assert CANARY not in json.dumps(result)
     if fail == 'role':
         assert result['error_type'] == 'SystemExit' and 'finlab_role_insufficient:free' in result['error']
     captured = capsys.readouterr()
-    assert SECRET not in captured.out + captured.err and 'Traceback' not in captured.out + captured.err
+    assert CANARY not in captured.out + captured.err and 'Traceback' not in captured.out + captured.err
 
 
 def test_local_side_seals_the_remote_bytes_with_the_registry(tmp_path):
@@ -73,7 +73,7 @@ def test_local_side_seals_the_remote_bytes_with_the_registry(tmp_path):
     spec = json.loads((tmp_path / 'spec.json').read_text(encoding='utf-8'))
     _, days, scoped, _ = compile_history(spec, base=tmp_path)
     assert days == DAYS and scoped == ['1101', '2330', '0056']
-    assert all(SECRET.encode() not in p.read_bytes() for p in tmp_path.iterdir())
+    assert all(CANARY.encode() not in p.read_bytes() for p in tmp_path.iterdir())
 
 
 def test_real_sdk_session_mode_checks_the_token_and_never_logs_in(monkeypatch):
@@ -116,7 +116,7 @@ def test_real_sdk_legacy_mode_logs_in_first_then_hardens(monkeypatch):
     finlab.auth, data.auth = auth, data_auth
     for name, module in (('finlab', finlab), ('finlab.data', data), ('finlab.auth', auth), ('finlab.data.auth', data_auth)):
         monkeypatch.setitem(sys.modules, name, module)
-    mode, _, _ = entry._real_sdk({'FINLAB_API_KEY': SECRET}, entry._fetcher())
+    mode, _, _ = entry._real_sdk({'FINLAB_API_KEY': CANARY}, entry._fetcher())
     assert mode == 'legacy_api_token' and order == [('login', 1)]
     with pytest.raises(SystemExit, match='server rejected'):
         finlab.login()
@@ -129,13 +129,13 @@ def test_sdk_logging_is_silenced_inside_the_function(caplog):
         return 'session_env', chatty_get([]), lambda: 'vip'
     with caplog.at_level(logging.DEBUG):
         assert entry.remote_fetch(ENV, sdk_loader=noisy, clock=clock())['ok']
-    assert SECRET not in caplog.text
+    assert CANARY not in caplog.text
     logging.getLogger('after').warning('visible')  # silencing ends with the function
     assert 'visible' in caplog.text
 
 
 def test_scrub_removes_prefixes_pieces_and_url_queries():
-    env = {'FINLAB_API_TOKEN': 'A' * 10 + SECRET * 8, 'OTHER': 'keep'}
+    env = {'FINLAB_API_TOKEN': 'A' * 10 + CANARY * 8, 'OTHER': 'keep'}
     assert entry.scrub('token=' + env['FINLAB_API_TOKEN'][:64] + ' end', env) == 'token=*** end'
     assert entry.scrub('piece ' + env['FINLAB_API_TOKEN'][20:40], env) == 'redacted'
     assert entry.scrub('403 for url: https://x.example/a.feather?X-Goog-Signature=abc&k=1 done', env) == \
@@ -163,7 +163,7 @@ def test_a_local_seal_failure_keeps_the_remote_result_for_resume(tmp_path):
     entry.finish(tmp_path, resumed, days_path=tmp_path / 'days.json', universe_path=tmp_path / 'universe.json',
                  http_get=lambda url: b'["0050","0056"]')
     assert not (tmp_path / entry.RECOVERY).exists() and (tmp_path / 'spec.json').exists()
-    assert all(SECRET.encode() not in p.read_bytes() for p in tmp_path.iterdir() if p.is_file())
+    assert all(CANARY.encode() not in p.read_bytes() for p in tmp_path.iterdir() if p.is_file())
 
 
 def test_an_interrupted_recovery_save_explains_itself(tmp_path):

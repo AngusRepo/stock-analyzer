@@ -11,6 +11,15 @@ import type { SchedulerRunLogEntry } from './schedulerRunLogger'
 // redispatches are counted in KV per lifecycle run instead.
 const POST_VERIFY_WATCHDOG_MAX_REDISPATCHES = 6
 const POST_VERIFY_REDISPATCH_TTL_SECONDS = 7 * 86_400
+// Learning normally closes a waiting post-verify within hours; a day means nobody will.
+const POST_VERIFY_WAITING_STALE_HOURS = 24
+export const S12_REPLAY_RETIRED_REASON = 'retired_fusion_maturity_backfill_new_l4_active'
+
+/** Under the new L4 no S12 fusion replay runs, so a date has no replay_pending_maturity step. */
+export async function s12ReplayRetiredUnderNewL4(kv: KVNamespace): Promise<boolean> {
+  const config = await kv.get('trading:config', 'json') as { l4Distribution?: unknown } | null
+  return Boolean(config?.l4Distribution)
+}
 
 export type AllocatorEvLifecycleState =
   | 'lineage_ready'
@@ -795,25 +804,84 @@ export async function runAllocatorEvLifecycleWatchdog(
     // so this tick fails even though it redispatches again.
     const previousStage = await opsDb.prepare(`
       SELECT status, canonical_run_id, last_error, attempt_count,
-             CASE WHEN lease_expires_at < CURRENT_TIMESTAMP THEN 1 ELSE 0 END AS lease_expired
+             CASE WHEN lease_expires_at < CURRENT_TIMESTAMP THEN 1 ELSE 0 END AS lease_expired,
+             CASE WHEN datetime(updated_at) <= datetime('now', ?) THEN 1 ELSE 0 END AS waiting_stale
         FROM pipeline_stage_runs
        WHERE business_date=? AND stage='post_verify_chain'
-    `).bind(businessDate).first<{
+    `).bind(`-${POST_VERIFY_WAITING_STALE_HOURS} hours`, businessDate).first<{
       status?: string | null
       canonical_run_id?: string | null
       last_error?: string | null
       attempt_count?: number | string | null
       lease_expired?: number | null
+      waiting_stale?: number | null
     }>()
-    const previousIncomplete = previousStage?.canonical_run_id === lifecycleRunId
-      && (previousStage.status === 'error' || (previousStage.status === 'running' && Number(previousStage.lease_expired) === 1))
+    const detail = (value: string | null | undefined) =>
+      String(value ?? 'missing').replace(/status=/gi, 'status:').replace(/\s+/g, '_').slice(0, 300)
+    const sameRun = previousStage?.canonical_run_id === lifecycleRunId
+    const leaseExpired = Number(previousStage?.lease_expired) === 1
+    // PV1105: re-queueing a waiting/success/in-flight post-verify re-ran its non-retry-safe tasks every
+    // tick (11/16 model-ic-rolling UNCERTAIN checkpoint). Only error or an expired lease is re-queued.
+    if (sameRun && (['waiting', 'success', 'queued'].includes(String(previousStage?.status))
+      || (previousStage?.status === 'running' && !leaseExpired))) {
+      if (previousStage?.status === 'success' && await s12ReplayRetiredUnderNewL4(env.KV)) {
+        const closed = await recordAllocatorEvLifecycle(learningDb, {
+          businessDate,
+          state: 'replay_complete',
+          replayMaturityAsOfDate: businessDate,
+          upstreamRunId: lifecycleRunId,
+          expectedLifecycleRunId: lifecycleRunId,
+        })
+        return `status=success allocator EV lifecycle replay_not_applicable=${S12_REPLAY_RETIRED_REASON} `
+          + `date=${businessDate} run_id=${lifecycleRunId} lifecycle=${closed ? 'replay_complete' : 'unchanged'}`
+      }
+      if (previousStage?.status === 'waiting') {
+        // A waiting stage whose learning run already failed was never closed (11/17, 11/18); closing it
+        // here also covers dates outside the learning watchdog's lookback. Neither branch re-queues.
+        const { propagateStrategyLearningFailureAfterWaiting } = await import('./strategyLearningRunState')
+        const learningError = await propagateStrategyLearningFailureAfterWaiting(opsDb, {
+          businessDate, canonicalRunId: lifecycleRunId,
+        }, env.KV)
+        if (learningError) {
+          return `status=failed allocator EV lifecycle post-verify closed by failed strategy-learning date=${businessDate} `
+            + `run_id=${lifecycleRunId} learning_error=${detail(learningError)} recovery_dispatch=not_queued`
+        }
+        if (Number(previousStage.waiting_stale) === 1) {
+          return `status=failed allocator EV lifecycle post-verify waiting_stale date=${businessDate} run_id=${lifecycleRunId} `
+            + `waiting_hours>=${POST_VERIFY_WAITING_STALE_HOURS} recovery_dispatch=not_queued manual_review_required`
+        }
+      }
+      return `status=success allocator EV lifecycle recovery_observation=post_verify_current date=${businessDate} `
+        + `downstream_status=${previousStage?.status}`
+    }
+    const previousIncomplete = sameRun
+      && (previousStage.status === 'error' || (previousStage.status === 'running' && leaseExpired))
+    if (previousIncomplete && previousStage.status === 'error') {
+      // A post-verify closed by a terminal learning failure cannot be fixed by re-running it: the rerun
+      // re-executes its tasks and fails on the same learning row.
+      const learning = await opsDb.prepare(`
+        SELECT status, canonical_run_id FROM strategy_learning_runs WHERE business_date=?
+      `).bind(businessDate).first<{ status?: string | null; canonical_run_id?: string | null }>()
+      if (learning?.status === 'error' && learning.canonical_run_id === lifecycleRunId) {
+        const closed = await s12ReplayRetiredUnderNewL4(env.KV) && await recordAllocatorEvLifecycle(learningDb, {
+          businessDate,
+          state: 'replay_complete',
+          replayMaturityAsOfDate: businessDate,
+          upstreamRunId: lifecycleRunId,
+          expectedLifecycleRunId: lifecycleRunId,
+        })
+        return `status=failed allocator EV lifecycle post-verify blocked by terminal strategy-learning date=${businessDate} `
+          + `run_id=${lifecycleRunId} previous_error=${detail(previousStage.last_error)} `
+          + `recovery_dispatch=not_queued lifecycle=${closed ? 'replay_complete' : 'unchanged'}`
+      }
+    }
     const redispatchKey = `allocator-ev-lifecycle:post-verify-redispatches:${businessDate}:${lifecycleRunId}`
     const redispatches = Number.parseInt((await env.KV.get(redispatchKey)) ?? '0', 10) || 0
     if (previousIncomplete) {
       if (redispatches >= POST_VERIFY_WATCHDOG_MAX_REDISPATCHES) {
         return `status=failed allocator EV lifecycle post-verify redispatch exhausted date=${businessDate} run_id=${lifecycleRunId} `
           + `previous_status=${previousStage?.status} redispatches=${redispatches} `
-          + `previous_error=${String(previousStage?.last_error ?? 'missing').replace(/status=/gi, 'status:').replace(/\s+/g, '_').slice(0, 300)} `
+          + `previous_error=${detail(previousStage?.last_error)} `
           + 'recovery_dispatch=not_queued manual_redispatch_required'
       }
       await env.KV.put(redispatchKey, String(redispatches + 1), { expirationTtl: POST_VERIFY_REDISPATCH_TTL_SECONDS })

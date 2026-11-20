@@ -19,6 +19,8 @@ import {
   inspectAllocatorSnapshotClosure,
   readAllocatorEvLifecycle,
   recordAllocatorEvLifecycle,
+  S12_REPLAY_RETIRED_REASON,
+  s12ReplayRetiredUnderNewL4,
 } from './allocatorEvDailyLifecycle'
 import {
   claimPipelineStage,
@@ -341,13 +343,31 @@ async function enqueueStrategyLearningClosureTask(
   return `triggered strategy-learning queue run_date=${runDate} run_id=${runId}`
 }
 
-async function enqueueS12ReplayBackfillTask(env: Bindings, ctx: ChainContext): Promise<string> {
-  const config=await env.KV.get('trading:config','json') as {l4Distribution?:unknown}|null
-  if (config?.l4Distribution) return 'skipped retired_fusion_maturity_backfill_new_l4_active'
+export async function enqueueS12ReplayBackfillTask(env: Bindings, ctx: ChainContext): Promise<string> {
+  const retired = await s12ReplayRetiredUnderNewL4(env.KV)
   const runDate = ctx.runDate ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const canonicalRunId = String(ctx.upstreamRunId ?? '').trim()
   const leaseOwner = String(ctx.stageLeaseOwner ?? '').trim()
+  if (retired && (!canonicalRunId || !leaseOwner)) return `skipped ${S12_REPLAY_RETIRED_REASON}`
   if (!canonicalRunId || !leaseOwner) throw new Error('post_verify_stage_authority_missing')
+  if (retired) {
+    // PV1105: no replay will ever mature this date, so close its lifecycle here; left at verify_triggered
+    // the allocator watchdog re-queued post-verify every tick (staleVerifyTrigger never cleared).
+    // A failed write (D1 overload) must not fail this critical task: the allocator watchdog closes a
+    // successful post-verify's lifecycle later. Only a lost stage fence stops the chain.
+    const closed = await recordAllocatorEvLifecycle(databaseForDataDomain(env, 'learning'), {
+      businessDate: runDate,
+      state: 'replay_complete',
+      replayMaturityAsOfDate: runDate,
+      upstreamRunId: canonicalRunId,
+      stageAuthority: { businessDate: runDate, stage: 'post_verify_chain', canonicalRunId, leaseOwner },
+    }, databaseForDataDomain(env, 'ops')).catch((error) => {
+      console.warn(`[postVerify] s12 retired lifecycle close deferred date=${runDate}:`, error)
+      return null
+    })
+    if (closed === false) throw new Error(`stale_post_verify_lifecycle:${runDate}:${canonicalRunId}`)
+    return `skipped ${S12_REPLAY_RETIRED_REASON} lifecycle=${closed ? 'replay_complete' : 'deferred'}`
+  }
   const { loadReplayReadySignalDates } = await import('./s12ReplayTradeOutcome')
   const signalDates = await loadReplayReadySignalDates(env.DB, runDate, 5)
   for (const signalDate of signalDates) {

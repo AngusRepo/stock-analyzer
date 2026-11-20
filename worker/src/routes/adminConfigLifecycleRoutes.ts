@@ -374,16 +374,14 @@ adminConfigLifecycleRoutes.post('/api/admin/config/challenger/promote_to_prod', 
     }),
   ).run()
 
-  if ((c.env as any).DISCORD_WEBHOOK_URL) {
-    try {
-      const { sendDiscordNotification } = await import('../lib/notify')
-      await sendDiscordNotification(
-        (c.env as any).DISCORD_WEBHOOK_URL,
-        `Config Challenger PROMOTED\nchallenger=${ch.hash} source=${ch.source}\nreason=${body?.reason ?? 'auto'}\nnew_snapshot=${snap.snapshotId}`,
-      )
-    } catch (e) {
-      console.warn('[config/promote_to_prod] discord alert failed (non-blocking)', e)
-    }
+  try {
+    const { sendOperatorAlert } = await import('../lib/operatorAlert')
+    await sendOperatorAlert(
+      c.env,
+      `Config Challenger PROMOTED\nchallenger=${ch.hash} source=${ch.source}\nreason=${body?.reason ?? 'auto'}\nnew_snapshot=${snap.snapshotId}`,
+    )
+  } catch (e) {
+    console.warn('[config/promote_to_prod] operator alert failed (non-blocking)', e)
   }
 
   return c.json({

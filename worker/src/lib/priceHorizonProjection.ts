@@ -7,6 +7,7 @@ import {
 } from './selectionReferenceEvidence'
 import { loadCoreStockIdentitiesByIds, type CoreStockIdentity } from './stockIdentityMarketBridge'
 import { verifiedCanonicalSessions } from './canonicalSessionIntegrity'
+import { isTwEquityLimitDownClose } from './twEquityMarketContract'
 
 // Label semantics are unchanged: retain valid historic evidence. Recompute only
 // horizons whose entry/exit identity differs after source-calendar restoration.
@@ -184,31 +185,28 @@ async function materializeMissingMarketBreadth(
     if (!missing.has(row.session_date)) continue
     const previousDate = sessions[index - 1]?.session_date
     if (!previousDate) continue
-    const breadth = await db.prepare(`
-      SELECT
-        COUNT(*) AS sample_size,
-        SUM(CASE WHEN cur.close > prev.close THEN 1 ELSE 0 END) AS advance_count,
-        SUM(CASE WHEN cur.close < prev.close THEN 1 ELSE 0 END) AS decline_count,
-        SUM(CASE WHEN cur.close = prev.close THEN 1 ELSE 0 END) AS unchanged_count,
-        SUM(CASE WHEN cur.open > 0 AND cur.close >= cur.open * 0.9
-                  AND cur.close <= cur.open * 0.905 THEN 1 ELSE 0 END) AS limit_down_count
+    // Limit-down needs the tick-ceil band of the previous close, so count per row here.
+    const { results: pairs } = await db.prepare(`
+      SELECT cur.close AS close, prev.close AS prev_close
       FROM stock_prices cur INDEXED BY idx_prices_date_stock
       JOIN stock_prices prev
         ON prev.stock_id = cur.stock_id AND prev.date = ?
      WHERE cur.date = ? AND cur.close > 0 AND prev.close > 0
-    `).bind(previousDate, row.session_date).first<{
-      sample_size: number | null
-      advance_count: number | null
-      decline_count: number | null
-      unchanged_count: number | null
-      limit_down_count: number | null
-    }>()
-    const sampleSize = Number(breadth?.sample_size ?? 0)
+    `).bind(previousDate, row.session_date).all<{ close: number; prev_close: number }>()
+    const sampleSize = pairs?.length ?? 0
     if (sampleSize < MIN_SESSION_SAMPLE_SIZE) continue
-    const advanceCount = Number(breadth?.advance_count ?? 0)
-    const declineCount = Number(breadth?.decline_count ?? 0)
-    const unchangedCount = Number(breadth?.unchanged_count ?? 0)
-    const limitDownCount = Number(breadth?.limit_down_count ?? 0)
+    let advanceCount = 0
+    let declineCount = 0
+    let unchangedCount = 0
+    let limitDownCount = 0
+    for (const pair of pairs ?? []) {
+      const close = Number(pair.close)
+      const previous = Number(pair.prev_close)
+      if (close > previous) advanceCount += 1
+      else if (close < previous) declineCount += 1
+      else unchangedCount += 1
+      if (isTwEquityLimitDownClose(close, previous)) limitDownCount += 1
+    }
     await db.prepare(`
       INSERT INTO market_breadth (
         date, advance_count, decline_count, unchanged_count, advance_ratio,

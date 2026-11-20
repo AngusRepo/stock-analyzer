@@ -1039,3 +1039,25 @@ def test_grant_size_is_recorded_by_admission_and_checked_before_staging():
     # the threshold is read once at the start of rollout, before any wait, inventory or mutation
     body = staged[staged.index('def rollout('):]
     assert body.index('warn_bytes = grant_size_warn_bytes()') < body.index('out.mkdir(')
+
+
+def test_live_paper_authority_override_is_narrow():
+    receipt = 'a' * 64
+    assert admission.live_paper_authority({'http_status': 200, 'body': {'status': 'PASS',
+                                           'source_receipt_checksum': receipt}}) is None
+    fail = {'http_status': 200, 'body': {'status': 'FAIL', 'reason': 'canonical_serving_authority_unverified'}}
+    with pytest.raises(RuntimeError, match='live_paper_authority_not_verified'):
+        admission.live_paper_authority(fail)
+    assert admission.live_paper_authority(fail, 'wei-go-20261120-r33-view') == {
+        'authorization': 'wei-go-20261120-r33-view', 'live_status': 'FAIL',
+        'live_reason': 'canonical_serving_authority_unverified'}
+    for paper, override in (
+            (fail, 'yes'),
+            ({'http_status': 200, 'body': {'status': 'FAIL', 'reason': 'drift'}}, 'wei-go-20261120-r33-view'),
+            ({'http_status': 200, 'body': {'status': 'INSUFFICIENT', 'reason': 'canonical_serving_authority_unverified'}},
+             'wei-go-20261120-r33-view'),
+            ({'http_status': 500, 'body': {}}, 'wei-go-20261120-r33-view')):
+        with pytest.raises(RuntimeError, match='live_paper_authority_not_verified'):
+            admission.live_paper_authority(paper, override)
+    with pytest.raises(RuntimeError, match='live_paper_source_receipt_missing'):
+        admission.live_paper_authority({'http_status': 200, 'body': {'status': 'PASS'}}, 'wei-go-20261120-r33-view')

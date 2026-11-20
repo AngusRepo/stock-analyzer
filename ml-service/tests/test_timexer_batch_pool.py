@@ -53,3 +53,29 @@ def test_short_history_preserves_native_batch_evidence_without_fabricating_score
     req.prices=[]
     with pytest.raises(ValueError,match='current_price_missing'):
         runtime.predict_stock_v2(req)
+
+
+def test_r33_roster_pool_is_complete_and_keeps_its_order():
+    from app.alpha_model_roster import R33_MODELS
+    p=pool(R33_MODELS)
+    _require_model_pool_contract(p)
+    assert tuple(_model_pool_status(p))==R33_MODELS
+    for name in R33_MODELS:
+        p=pool(R33_MODELS);del p['models'][name]
+        with pytest.raises(ModelPoolContractError,match='missing model_pool.models entries'):
+            _model_pool_status(p)
+
+
+def test_r33_roster_preload_skips_models_outside_the_roster(monkeypatch):
+    # 11/20: the R33 pool made preload ask for XGBoost status and every chunk became an error row.
+    from app import batch_prediction, model_store
+    from app.alpha_model_roster import R33_MODELS
+    loaded=[]
+    monkeypatch.setattr(batch_prediction,'_active_model_artifact_identity',lambda name,pool:{
+        'artifact_path':name,'metadata_path':name,'version':'v1','artifact_id':name,'checksum':'c'})
+    monkeypatch.setattr(model_store,'load_model',lambda _id,name,**_:(loaded.append(name) or object(),{}))
+    import app.tabm_batch_runtime as tabm
+    monkeypatch.setattr(tabm,'load_tabm_artifact',lambda pool:None)
+    out=batch_prediction.preload_batch_artifacts([{'symbol':'X'}],pool_snapshot=pool(R33_MODELS))
+    assert loaded==['LightGBM','ExtraTrees']
+    assert out['errors']==[] and out['active_attempted']==3 and out['active_loaded']==3

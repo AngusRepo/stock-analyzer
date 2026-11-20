@@ -23,6 +23,37 @@ async function run(): Promise<void> {
 
   {
     const result = await validateOrder({
+      symbol: '2330',
+      side: 'buy',
+      shares: 1000,
+      limitPrice: 8.1599999,
+      refClose: 8.16,
+      avgVolume20d: 100_000,
+    }, RISK_CONFIG_FIXTURE)
+
+    assert(result.adjustedOrder?.limitPrice === 8.15, 'sub-tick buy limit must floor to the lower legal tick')
+    assert(
+      result.violations.some((v) => v.gate === 'G6' && v.severity === 'adjust' && v.allowedValue === 8.15),
+      'a tick normalization that changes the price must record the G6 adjust reason',
+    )
+  }
+
+  {
+    const result = await validateOrder({
+      symbol: '2330',
+      side: 'buy',
+      shares: 1000,
+      limitPrice: 0.1 + 0.2,
+      refClose: 0.3,
+      avgVolume20d: 100_000,
+    }, RISK_CONFIG_FIXTURE)
+
+    assert(result.approved && result.adjustedOrder === null, 'float noise on a legal tick needs no adjusted order')
+    assert(!result.violations.some((v) => v.gate === 'G6'), 'float noise must not be reported as a tick adjustment')
+  }
+
+  {
+    const result = await validateOrder({
     symbol: '2330',
     side: 'buy',
     shares: 301,

@@ -401,7 +401,7 @@ def prior_bootstrap(prior: dict, baseline_modal: dict, history: dict) -> tuple[s
 def rollout(*, source: Path, out: Path, build_dir: Path, admission_dir: Path, prior: dict, python: str,
             resume_staged: bool = False, idle_wait=IDLE_WAIT, publish=None) -> dict:
     global OUT, PUBLISH
-    from release_admission import grant_size, grant_size_warn_bytes
+    from release_admission import grant_size, grant_size_warn_bytes, live_paper_authority
     warn_bytes = grant_size_warn_bytes()  # CD-NEW-09: a bad threshold stops here, before any wait
     OUT, PUBLISH = out, publish
     out.mkdir(parents=True, exist_ok=True)
@@ -550,7 +550,10 @@ def rollout(*, source: Path, out: Path, build_dir: Path, admission_dir: Path, pr
         if policy_grants:
             kv_state['risk'] = kv_get('trading:risk_config')
     grant_staged, policy_staged = False, 0
-    serving = {'url': live['url']}
+    # Until traffic moves, `serving` is the old live revision; a reuse admission that Wei let past its
+    # live view FAIL (live_paper_authority_override) checks it under the same narrow rule.
+    serving = {'url': live['url'],
+               'override': (admission.get('live_paper_authority_override') or {}).get('authorization')}
 
     def paper(url, artifact=None):
         result = request(url.rstrip('/') + '/research_validation/production_bundle',
@@ -579,7 +582,15 @@ def rollout(*, source: Path, out: Path, build_dir: Path, admission_dir: Path, pr
         elif full_grants:
             # No KV in controller CD: the serving controller re-derives its configuration from KV and
             # must still match the grant it runs under (status PASS, no drift fields).
-            paper(serving['url'])
+            if serving['override']:
+                result = request(serving['url'].rstrip('/') + '/research_validation/production_bundle',
+                    headers={'X-Controller-Token': os.environ['ML_CONTROLLER_SECRET']})
+                if result['http_status'] == 200 and (result['body'] or {}).get('status') == 'PASS':
+                    verify_paper_runtime(result['body'])
+                else:
+                    live_paper_authority(result, serving['override'])
+            else:
+                paper(serving['url'])
         current_worker = worker('/api/health')
         if current_worker['http_status'] != 200 or current_worker['body'].get('provenance') != worker_provenance:
             raise RuntimeError('concurrent_worker_change')
@@ -849,7 +860,7 @@ def rollout(*, source: Path, out: Path, build_dir: Path, admission_dir: Path, pr
         staged_snapshot = live_after
         verify_health(request(live_after['status']['url'] + '/health')['body'], expected_health)
         paper(live_after['status']['url'], 'live-paper.json')
-        serving['url'] = live_after['status']['url']
+        serving.update(url=live_after['status']['url'], override=None)
         accept_own_change({'services/ml-controller'})
         boundary('final')
         save('runtime-after.json', expected_inventory)

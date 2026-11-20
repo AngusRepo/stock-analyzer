@@ -40,6 +40,10 @@ on:
         description: verify / reconcile only - rollout attempt gh-<run id>-<run attempt> (default the only one)
         type: string
         default: ''
+      live_authority_override:
+        description: deploy only - Wei's authorization (wei-go-YYYYMMDD-<slug>) to admit a reuse release while the live Paper view FAILs with canonical_serving_authority_unverified; recorded in the admission receipt
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -162,6 +166,9 @@ jobs:
       # gs://stockvision-models/release-receipts/<sha>/ (never to logs or artifacts: public repo).
       - name: Admission (read-only)
         if: steps.tip.outputs.current == 'true'
+        env:
+          # Only a manual dispatch can carry it; release_admission validates its format and the live FAIL reason.
+          RELEASE_LIVE_AUTHORITY_OVERRIDE: ${{ github.event_name == 'workflow_dispatch' && inputs.live_authority_override || '' }}
         run: |
           set -e
           OUT="$RUNNER_TEMP/release"

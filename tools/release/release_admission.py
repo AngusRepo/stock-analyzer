@@ -90,7 +90,27 @@ def save(path: Path, value) -> None:
         stream.write('\n')
 
 
-def runtime_baseline(source: Path, expected_live: str) -> dict:
+LIVE_AUTHORITY_OVERRIDE = re.compile(r'wei-go-\d{8}-[a-z0-9-]{3,40}')
+LIVE_AUTHORITY_OVERRIDE_REASON = 'canonical_serving_authority_unverified'
+
+
+def live_paper_authority(paper: dict, override: str | None = None) -> dict | None:
+    """None when the live Paper authority PASSes; the override record when Wei authorized a reuse
+    release past a live view that cannot read the committed bundle (11/20: the R33 roster object has
+    no learned-ensemble fit, so the live view FAILs and would block its own fix). Anything else raises.
+    The staged revision and the post-rollout verify still require PASS."""
+    body = paper.get('body') or {}
+    if paper.get('http_status') == 200 and body.get('status') == 'PASS':
+        if not re.fullmatch('[a-f0-9]{64}', body.get('source_receipt_checksum', '')):
+            raise RuntimeError('live_paper_source_receipt_missing')
+        return None
+    if (override and LIVE_AUTHORITY_OVERRIDE.fullmatch(override) and paper.get('http_status') == 200
+            and body.get('status') == 'FAIL' and body.get('reason') == LIVE_AUTHORITY_OVERRIDE_REASON):
+        return {'authorization': override, 'live_status': 'FAIL', 'live_reason': LIVE_AUTHORITY_OVERRIDE_REASON}
+    raise RuntimeError('live_paper_authority_not_verified')
+
+
+def runtime_baseline(source: Path, expected_live: str, *, live_authority_override: str | None = None) -> dict:
     """Authenticated read-only metadata; credentials never enter return values."""
     live = load_environment()
     service = json.loads(gc('run', 'services', 'describe', 'ml-controller', '--region=asia-east1', '--format=json'))
@@ -115,10 +135,7 @@ def runtime_baseline(source: Path, expected_live: str) -> dict:
         raise RuntimeError('live_health_source_mismatch')
     paper = request(live['url'] + '/research_validation/production_bundle',
                     headers={'X-Controller-Token': os.environ['ML_CONTROLLER_SECRET']})
-    if paper['http_status'] != 200 or paper['body'].get('status') != 'PASS':
-        raise RuntimeError('live_paper_authority_not_verified')
-    if not re.fullmatch('[a-f0-9]{64}', paper['body'].get('source_receipt_checksum', '')):
-        raise RuntimeError('live_paper_source_receipt_missing')
+    paper_override = live_paper_authority(paper, live_authority_override)
     jobs = {}
     for name in JOBS:
         job = json.loads(gc('run', 'jobs', 'describe', name, '--region=asia-east1', '--format=json'))
@@ -132,7 +149,7 @@ def runtime_baseline(source: Path, expected_live: str) -> dict:
             'revision': live['latest_ready_revision'], 'image': container['image'], 'source': source_env,
             'service_account': service['spec']['template']['spec'].get('serviceAccountName'),
             'service_spec_sha256': sha(json.dumps(service['spec'], sort_keys=True).encode()),
-            'paper': paper['body'], 'jobs': jobs}
+            'paper': paper['body'], 'paper_override': paper_override, 'jobs': jobs}
 
 
 IDENTITY_PROBE = r'''
@@ -299,7 +316,8 @@ def reuse(source: Path, out: Path, expected_live: str, native_receipt_sha: str |
         raise RuntimeError('release_source_detached_head')
     if subprocess.run(['git', '-C', str(source), 'merge-base', '--is-ancestor', expected_live, head]).returncode != 0:
         raise RuntimeError('live_source_not_ancestor_of_release')
-    baseline = runtime_baseline(source, expected_live)
+    baseline = runtime_baseline(source, expected_live,
+                                live_authority_override=os.environ.get('RELEASE_LIVE_AUTHORITY_OVERRIDE') or None)
     decision = classify(source, expected_live, head, identities)
     if decision['mode'] != 'reuse':
         raise RuntimeError('identity_changing_release_requires_manual_new_grant:' + ';'.join(decision['reasons']))
@@ -314,6 +332,7 @@ def reuse(source: Path, out: Path, expected_live: str, native_receipt_sha: str |
                    manifest_sha256={name: sha(raw) for name, raw in services.items()},
                    production_baseline_source=expected_live, production_baseline_image=baseline['image'],
                    source_identities_checked_by='plan_job' if identities == 'checked' else 'admission',
+                   live_paper_authority_override=baseline['paper_override'],
                    policy_keys=[], cloud_writes=0, kv_reads=0, models_invoked=0, chain_dispatched=False)
     save(out / 'admission-receipt.json', receipt)
     return receipt

@@ -31,3 +31,21 @@ def test_canonical_reader_reports_current_drift_without_new_authority(approved,m
     assert result['status']=='FAIL' and result['drift_fields']
     assert any(row['field'].startswith(component+'.') for row in result['drift_fields'])
     assert result['promotion_authority'] is False
+
+
+def test_r33_roster_object_components_without_learned_fit():
+    # 11/20: the R33 roster object has no fit/feature_names, so the view FAILed and blocked CD admission.
+    from services.r33_ensemble import KIND
+    from services.research_canonical_bundle_view import configuration_components
+    calibration={'schema_version':'r33-cal-v1','target':'fwd','weighting':'equal','blocks':[1]}
+    model={'kind':KIND,'schema_version':'r33-roster-ensemble-v1','artifact_id':'r33-roster:x','cohort_id':'c',
+           'payload_checksum':'p'*64,'base_artifacts':{'LightGBM':{}},'model_order':['LightGBM'],
+           'variant':'mean_z','serving_calibration':calibration}
+    configuration={'native_execution_policy':{'frozen_kv':{},'kv_read_policy':{},'execution_owner_version':'n',
+                   'variables':{}},'trading_config':{'fees':{}},'risk_config':{},
+                   'allocator_source_identity':{},'l3_inference_source_identity':{}}
+    out=configuration_components(configuration,strategy={'s':1},model=model)
+    assert out['models']['weight_semantic']=='r33_roster_equal_weight' and 'fit_coefficients' not in out['models']
+    assert out['models']['variant']=='mean_z' and out['data_semantics']['calibration_target']=='fwd'
+    calibration['blocks']=[2]
+    assert configuration_components(configuration,strategy={'s':1},model=model)['models']!=out['models']

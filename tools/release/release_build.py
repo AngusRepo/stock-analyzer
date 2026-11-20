@@ -226,8 +226,10 @@ def prepare(source: Path, admission: Path, out: Path, expected_live: str) -> dic
             raise RuntimeError('committed_release_manifest_drift')
     if mode == 'new-grant' and sha((admission / 'native-paper.cjs').read_bytes()) != approved['native_bundle_sha256']:
         raise RuntimeError('approved_native_bundle_drift')
-    baseline = runtime_baseline(source, expected_live)
     prior = json.loads((admission / 'baseline.json').read_bytes())
+    # Only a reuse admission can carry Wei's live-authority override, and build re-checks under the same one.
+    override = (prior.get('paper_override') or {}).get('authorization') if mode == 'reuse' else None
+    baseline = runtime_baseline(source, expected_live, live_authority_override=override)
     if baseline['service_spec_sha256'] != prior['service_spec_sha256'] or baseline['jobs'] != prior['jobs']:
         raise RuntimeError('runtime_drift_since_admission_reprepare')
     if mode == 'new-grant':

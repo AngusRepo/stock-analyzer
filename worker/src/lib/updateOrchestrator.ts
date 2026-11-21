@@ -10,6 +10,7 @@ import { ACTIVE8_OOF_CONTINUATION_MAX_ATTEMPTS, active8OofContinuationDelay } fr
 import type { Bindings, UpdateQueueMsg } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { loadActiveCoreStockIdentities, loadCoreStockIdentitiesBySymbols } from './stockIdentityMarketBridge'
+import { isTwEquityLimitDownClose } from './twEquityMarketContract'
 import {
   historicalLearningLineageBlockedMessage,
   historicalLearningLineageDecision,
@@ -1382,7 +1383,7 @@ export async function syncMarketBreadthFromFinLabCanonical(
   const identities = await loadActiveCoreStockIdentities(env)
   const { results } = await marketDb.prepare(`
     WITH current_prices AS (
-      SELECT stock_id, date, open, close
+      SELECT stock_id, date, close, source
         FROM canonical_market_daily
        WHERE date = ? AND source IN ('finlab.price', 'finlab.rotc_price')
          AND close IS NOT NULL AND close > 0
@@ -1395,7 +1396,7 @@ export async function syncMarketBreadthFromFinLabCanonical(
          AND prev.close IS NOT NULL AND prev.close > 0
        GROUP BY cur.stock_id
     )
-    SELECT cur.stock_id, cur.open, cur.close, prev.close AS prev_close
+    SELECT cur.stock_id, cur.close, cur.source, prev.close AS prev_close
       FROM current_prices cur
       JOIN prev_dates pd ON pd.stock_id = cur.stock_id
       JOIN canonical_market_daily prev
@@ -1409,13 +1410,13 @@ export async function syncMarketBreadthFromFinLabCanonical(
   let unchangedCount = 0
   let limitDownCount = 0
   for (const row of paired) {
-    const open = Number(row.open)
     const close = Number(row.close)
     const previous = Number(row.prev_close)
     if (close > previous) advanceCount++
     else if (close < previous) declineCount++
     else unchangedCount++
-    if (open > 0 && close >= open * 0.9 && close <= open * 0.905) limitDownCount++
+    // Limit-down = close at the previous-close band's down limit; emerging (ROTC) rows have no band.
+    if (isTwEquityLimitDownClose(close, previous, { unrestricted: row.source === 'finlab.rotc_price' })) limitDownCount++
   }
   if (sampleSize < 1000) return { rows: 0, sampleSize, advanceCount, declineCount, unchangedCount, limitDownCount }
   const result = await marketDb.prepare(`

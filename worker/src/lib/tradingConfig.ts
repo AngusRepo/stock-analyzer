@@ -375,6 +375,9 @@ export interface TradingConfig {
     // effective clip 套在 baseline + delta 上
     confidence_effective_clip_lo: number  // 預設 0.45（注意：原 hardcode 0.55）
     confidence_effective_clip_hi: number  // 預設 0.75
+    // FG-02/03: ml:adaptive_params 超過 N 個日曆天（台北日期）視為過期：
+    // confidence_delta 以 0 計（regime override 之後套用）、P2 不讀 recent_accuracy_30d
+    adaptive_params_max_age_days: number  // 預設 7（對齊 controller ML threshold overlay guard）
     // SL/TP 加碼（per market_risk_level）
     sltp_add_orange_sl: number     // 預設 0.3
     sltp_add_orange_tp: number     // 預設 0.3
@@ -661,6 +664,7 @@ export const DEFAULT_TRADING_CONFIG: TradingConfig = {
     confidence_delta_clip_hi: 0.20,
     confidence_effective_clip_lo: 0.45,
     confidence_effective_clip_hi: 0.75,
+    adaptive_params_max_age_days: 7,
     sltp_add_orange_sl: 0.3,
     sltp_add_orange_tp: 0.3,
     sltp_add_red_sl: 0.5,
@@ -1744,6 +1748,8 @@ export function validateTradingConfig(config: TradingConfig, privateResearch = f
     if (l2.confidence_effective_clip_lo >= l2.confidence_effective_clip_hi)
       errors.push(`confidence clip lo (${l2.confidence_effective_clip_lo}) must be < hi (${l2.confidence_effective_clip_hi})`)
   }
+  if (!Number.isInteger(l2?.adaptive_params_max_age_days) || l2.adaptive_params_max_age_days < 1 || l2.adaptive_params_max_age_days > 30)
+    errors.push('L2_formula.adaptive_params_max_age_days must be an integer 1-30')
   if (typeof config.mlPool?.useEnsembleV2 !== 'boolean')
     errors.push('mlPool.useEnsembleV2 must be boolean')
   if (!isFiniteNumber(config.mlPool?.degradedDampening) || config.mlPool.degradedDampening < 0 || config.mlPool.degradedDampening > 1)

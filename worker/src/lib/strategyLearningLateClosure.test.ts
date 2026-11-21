@@ -132,6 +132,9 @@ async function main() {
   assert.equal(sql.prepare(STRATEGY_PRODUCTION_POLICY_POINT_IN_TIME_SQL).get('policy','2026-09-08')?.checksum,'late','historical evidence adapter stays separate')
   assert.equal(isStrategyLearningTerminalFailure('evening_chain_formal_evidence_backlog:2026-08-20:formal_canonical_head_missing'),true)
   assert.equal(isStrategyLearningTerminalFailure('D1 transient network error'),false)
+  // 11/21: the finalizer stage wrapper hid this terminal backlog and the queue retried it every minute.
+  assert.equal(isStrategyLearningTerminalFailure(new Error('strategy_learning_finalizer_stage_failed:before_promotion:evening_chain_formal_evidence_backlog:2026-11-04:formal_canonical_head_missing')),true)
+  assert.equal(isStrategyLearningTerminalFailure('strategy_learning_finalizer_stage_failed:before_promotion:D1_ERROR: D1 DB is overloaded'),false)
   sql.close()
   console.log('strategyLearningLateClosure: PASS (real SQLite retry, frozen-time, registry, publication fences)')
 }

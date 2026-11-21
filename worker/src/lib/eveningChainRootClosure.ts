@@ -7,6 +7,7 @@ import { logSchedulerResult } from './schedulerRunLogger'
 import { nextTwTradingDate } from './schedulerPolicy'
 import { expirePremarketWaitingExecution } from './pipelineStageLease'
 import { premarketPublicationCutoff } from './premarketPublicationWindow'
+import type { ReportDeliveryEnv } from './reportDeliveryChannel'
 
 const REQUIRED_STAGES = [
   'pipeline_execution',
@@ -337,7 +338,7 @@ export async function closeEveningChainRootAndLog(
   db: D1Database,
   input: EveningChainRootClosureInput & {
     attemptId?: string
-    alertEnv?: { DISCORD_WEBHOOK_URL?: string }
+    alertEnv?: ReportDeliveryEnv
     /** Defaults to true; a caller whose own outcome must not hinge on the receipt passes false. */
     strict?: boolean
     supersedePrevious?: boolean
@@ -460,7 +461,7 @@ export type PremarketWaitingSettlementOptions = {
   /** Market-domain DB: a past resume session counts only with its own FinLab 0050 bar. */
   marketDb?: D1Database
   nowMs?: number
-  alertEnv?: { DISCORD_WEBHOOK_URL?: string }
+  alertEnv?: ReportDeliveryEnv
   /**
    * Controller publication probe (premarket-state): true when the L4 serving publication of this exact
    * run exists. A throw keeps the execution waiting.
@@ -485,7 +486,7 @@ async function alertKeptPremarketWait(
   row: { business_date: string; canonical_run_id: string },
   resumeTradeDate: string,
   reason: string,
-  alertEnv?: { DISCORD_WEBHOOK_URL?: string },
+  alertEnv?: ReportDeliveryEnv,
 ): Promise<void> {
   const error = `${reason}:resume_trade_date=${resumeTradeDate}`
   const previous = await kv.get(`scheduler:run:${PREMARKET_WAIT_ALERT_TASK}:${row.business_date}`, 'json')

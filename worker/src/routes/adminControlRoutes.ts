@@ -3,6 +3,7 @@ import { ACTIVE8_OOF_CONTINUATION_MAX_ATTEMPTS, active8OofContinuationDelay } fr
 import type { Bindings, Variables } from '../types'
 import { hasServiceToken, requireAdminOrServiceToken } from '../lib/auth'
 import { databaseForDataDomain } from '../lib/dataDomainRegistry'
+import { resolveReportDeliveryChannel } from '../lib/reportDeliveryChannel'
 import { writeSystemLog } from '../lib/notify'
 import { resolveFinLabDispatchFence, finLabCallbackSummary, finLabCompositionBlockerSuffix, finLabStartMarkerKey } from '../lib/finLabDispatchFence'
 import { classifyFinLabLateLaneNotReady, finLabLatePublicationFields, finLabLateRetryCutoffPassed, finLabLateRetryCutoffTw } from '../lib/finlabSourceContract'
@@ -1825,12 +1826,12 @@ async function handleSchedulerCallback(c: any) {
 
   if (body.task === 'weekly-audit' && body.status === 'success'
     && body.metadata?.source === 'weekly_operations'
-    && body.metadata?.audit_report && c.env.DISCORD_WEBHOOK_URL) {
+    && body.metadata?.audit_report && resolveReportDeliveryChannel(c.env) !== 'not_sent:no_channel_configured') {
     // Preserve the existing best-effort report notification after background completion.
     const key = `weekly-audit:notification:${callbackRunDate}:${callbackRunId}`
     if (!await c.env.KV.get(key)) {
-      const { sendDiscordNotification } = await import('../lib/notify')
-      await sendDiscordNotification(c.env.DISCORD_WEBHOOK_URL,
+      const { sendOperatorAlert } = await import('../lib/operatorAlert')
+      await sendOperatorAlert(c.env,
         `Weekly AI Audit Report (${body.metadata.audit_report_date})\n\n${body.metadata.audit_report}`.slice(0, 2000))
       await c.env.KV.put(key, 'attempted', { expirationTtl: 60 * 60 * 24 * 35 })
     }

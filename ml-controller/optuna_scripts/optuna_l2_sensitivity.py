@@ -298,6 +298,7 @@ def run_l2_sensitivity_search(
     sampler_name: str = "tpe",
     seed: int = 42,
     policy: OptunaL2Policy | None = None,
+    corporate_history: bool = True,
 ) -> dict[str, Any]:
     """NSGA-II (or TPE) search over L2 dims against Mode B replay.
 
@@ -350,9 +351,13 @@ def run_l2_sensitivity_search(
         end_date=end_date,
         business_date=end_date,
         mode="snapshot",
+        corporate_history=corporate_history,
     )
     if data_access.get("source") != "snapshot":
         raise RuntimeError("optuna_l2_requires_immutable_snapshot")
+    # A corporate gap would otherwise fail every trial into the -1e9 floor.
+    from services.research_corporate_preflight import require_corporate_coverage
+    require_corporate_coverage(dataset, start_date, end_date)
     logger.info(f"[L2 Optuna] Dataset loaded, starting {n_trials} trials")
 
     def objective(trial: "optuna.Trial") -> float:
@@ -378,6 +383,9 @@ def run_l2_sensitivity_search(
                 initial_capital=initial_capital,
             )
         except Exception as e:
+            from services.research_corporate_preflight import is_corporate_data_error
+            if is_corporate_data_error(e):
+                raise  # missing corporate evidence is never a fitness score
             trial.set_user_attr("replay_error", type(e).__name__)
             logger.warning(f"[L2 Optuna] trial {trial.number} replay crashed: {e}")
             return -1e9

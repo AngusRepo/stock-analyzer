@@ -4193,6 +4193,25 @@ export async function processUpdateBatch(
         console.warn(`[Queue] stale post-verify finalizer ignored date=${triggerTime} run_id=${runId}`)
         return
       }
+      if (status === 'waiting') {
+        // PV1105: the learning run may already have failed while this stage held its lease.
+        const { propagateStrategyLearningFailureAfterWaiting } = await import('./strategyLearningRunState')
+        const learningError = await propagateStrategyLearningFailureAfterWaiting(databaseForDataDomain(env, 'ops'), {
+          businessDate: triggerTime, canonicalRunId: runId,
+        }, env.KV)
+        if (learningError) {
+          await logSchedulerResult(env.KV, 'post-verify-chain', {
+            status: 'error',
+            summary: `strategy-learning failed before post-verify waited: ${learningError}`,
+            error: learningError,
+            duration_ms: 0,
+            run_id: runId,
+            run_date: triggerTime,
+          })
+          console.warn(`[Queue] post-verify closed as error: strategy-learning already failed date=${triggerTime} run_id=${runId}`)
+          return
+        }
+      }
       const chain = await env.KV.get(`scheduler:run:post-verify-chain:${triggerTime}`, 'json') as {
         status?: 'success' | 'error' | 'running'
         summary?: string
@@ -5001,6 +5020,56 @@ export async function processUpdateBatch(
         const { isStrategyLearningTerminalFailure, propagateStrategyLearningTerminalFailure }
           = await import('./strategyLearningRunState')
         const terminalPolicyClosureFailure = isStrategyLearningTerminalFailure(error)
+      // PV1105: a page that hit D1 overload (11/17, 11/18) failed the whole run. Hand it back at its
+      // durable cursor and retry after a backoff; the budget is per run, counted once the release holds.
+      let failureMessage = errorMessage
+      if (!materializationValidated && !terminalPolicyClosureFailure) {
+        const {
+          isTransientD1Overload,
+          STRATEGY_LEARNING_MATERIALIZE_TRANSIENT_MAX_RETRIES: maxRetries,
+          strategyLearningMaterializeTransientDelaySeconds,
+        } = await import('./strategyLearningRecoveryWatchdog')
+        if (isTransientD1Overload(error)) {
+          const retryKey = `strategy-learning:materialize-transient-retries:${triggerTime}:${canonicalRunId}`
+          const retries = Number.parseInt((await env.KV.get(retryKey)) ?? '0', 10) || 0
+          if (retries < maxRetries) {
+            const retry = retries + 1
+            const delaySeconds = strategyLearningMaterializeTransientDelaySeconds(retry)
+            const { STRATEGY_LEARNING_MATERIALIZE_TRANSIENT_PREFIX, releaseStrategyLearningPageForRetry }
+              = await import('./strategyLearningRunState')
+            // released_at is kept in the error: later deliveries rewrite updated_at, the watchdog gate must not drift.
+            const released = await releaseStrategyLearningPageForRetry(runStateDb, {
+              ...leaseIdentity,
+              error: `${STRATEGY_LEARNING_MATERIALIZE_TRANSIENT_PREFIX}${retry}/${maxRetries}:at=${Date.now()}:${errorMessage}`,
+            })
+            if (!released) {
+              console.warn(`[Queue] strategy-learning transient release fence lost; queue retry required date=${triggerTime} run_id=${canonicalRunId}`)
+              throw error
+            }
+            await env.KV.put(retryKey, String(retry), { expirationTtl: 7 * 86_400 })
+            await env.UPDATE_QUEUE.send({
+              type: 'strategy_learning_materialize',
+              cursor: 0,
+              cursorKey: durableCursor,
+              triggerTime,
+              runId: canonicalRunId,
+              force: Boolean(msg.force),
+              policyMutationAllowed: msg.policyMutationAllowed,
+              productionAuthorityIntent: state.production_authority_intent === 1,
+              leaseRetryAttempt: 0,
+            }, { delaySeconds } as any)
+            await logSchedulerResult(env.KV, 'strategy-learning', {
+              status: 'running',
+              summary: `transient D1 error; page released cursor=${durableCursor || 'start'} retry=${retry}/${maxRetries} delay_seconds=${delaySeconds}: ${errorMessage.slice(0, 300)}`,
+              duration_ms: 0,
+              run_id: canonicalRunId,
+              run_date: triggerTime,
+            })
+            return
+          }
+          failureMessage = `strategy_learning_materialize_transient_exhausted:retries=${retries}:${errorMessage}`
+        }
+      }
         const transitioned = materializationValidated && !terminalPolicyClosureFailure
           ? await deferStrategyLearningFinalizer(runStateDb, {
               ...leaseIdentity,
@@ -5008,7 +5077,7 @@ export async function processUpdateBatch(
           })
         : await failStrategyLearningRun(runStateDb, {
             ...leaseIdentity,
-          error: errorMessage,
+          error: failureMessage,
         })
       if (!transitioned) {
         console.warn(`[Queue] strategy-learning terminal fence lost; queue retry required date=${triggerTime} run_id=${canonicalRunId}`)
@@ -5039,7 +5108,7 @@ export async function processUpdateBatch(
       // finalizer on learning-db; the recovery watchdog owns deferred retries. Outside its
       // lookback nothing would retry, so a manual replay keeps the queue retry.
       const { isStrategyLearningRecoveryWindowDate } = await import('./strategyLearningRecoveryWatchdog')
-      if (!isStrategyLearningRecoveryWindowDate(triggerTime)) throw error
+      if (!(await isStrategyLearningRecoveryWindowDate(env, triggerTime))) throw error
       console.error(`[Queue] strategy-learning ${terminalPolicyClosureFailure || !materializationValidated ? 'failed' : 'deferred to watchdog'}; acknowledged date=${triggerTime} run_id=${canonicalRunId}: ${errorMessage}`)
       return
     } finally {

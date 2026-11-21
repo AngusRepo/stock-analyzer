@@ -210,7 +210,7 @@ const afterFenceCheck = afterTransition.slice(afterTransition.indexOf('throw err
 // Only a date outside the watchdog lookback keeps the queue retry (manual replays).
 assert.deepEqual(
   afterFenceCheck.match(/^.*throw error.*$/gm)?.map((line) => line.trim()),
-  ['if (!isStrategyLearningRecoveryWindowDate(triggerTime)) throw error'],
+  ['if (!(await isStrategyLearningRecoveryWindowDate(env, triggerTime))) throw error'],
   'a recorded finalizer failure inside the watchdog lookback must not be redelivered by the queue',
 )
 assert.match(afterFenceCheck, /propagateStrategyLearningTerminalFailure[\s\S]*Promise\.allSettled[\s\S]*isStrategyLearningRecoveryWindowDate[\s\S]*deferred to watchdog[\s\S]*\n\s*return\s*$/)

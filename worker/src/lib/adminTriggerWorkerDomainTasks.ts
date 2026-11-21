@@ -369,7 +369,11 @@ export function buildAdminWorkerDomainTaskMap(
           (_env, date, options) => deps.runScreenerV2!(date, options),
           screenerRunDate,
         ),
-        runStrategyLearningRecoveryWatchdog(c.env, explicitDate),
+        // PV1105: after midnight explicitDate is the previous evening's root, whose learning run is only
+        // created next afternoon; only an operator date pins the learning watchdog, otherwise it scans its window.
+        // A blocked terminal run throws (it is reported red); keep the screener half of this tick's summary.
+        runStrategyLearningRecoveryWatchdog(c.env, c.req.query('date') || undefined)
+          .catch((error) => `error ${error instanceof Error ? error.message : String(error)}`),
       ])
       const compositeStatuses = [
         classifySchedulerSummary(screenerSummary),

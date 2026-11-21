@@ -3,6 +3,7 @@ import { databaseForDataDomain } from './dataDomainRegistry'
 import { twToday } from './dateUtils'
 import { logSchedulerResult } from './schedulerRunLogger'
 
+// Trading days (strategyLearningRecoveryWindowStart): a weekend must not consume the lookback.
 export const RECOVERY_LOOKBACK_DAYS = 4
 const DISPATCH_FENCE_TTL_SECONDS = 15 * 60
 // A deferred finalizer failure used to be resumed on every 15-minute fence expiry, so
@@ -16,6 +17,11 @@ const DEFERRED_FAILURE_BACKOFF_CAP_MINUTES = 160
 const DEFERRED_FAILURE_DISPATCH_TTL_SECONDS = 7 * 86_400
 const SIMILARITY_ARTIFACT_INCOMPLETE = 'evening_chain_similarity_artifact_incomplete'
 const SIMILARITY_ARTIFACT_OVERDUE_MS = 6 * 3_600_000
+// A materialize page released after D1 overload retries itself through a delayed queue message;
+// the watchdog only redispatches it once that message is overdue (lost).
+export const STRATEGY_LEARNING_MATERIALIZE_TRANSIENT_MAX_RETRIES = 6
+const MATERIALIZE_TRANSIENT_RETRY = /^strategy_learning_materialize_transient_retry:(\d+)\/\d+:at=(\d+):/
+const MATERIALIZE_TRANSIENT_GRACE_MS = 15 * 60_000
 
 export type StrategyLearningRecoveryRow = {
   business_date: string
@@ -103,6 +109,20 @@ export function strategyLearningDeferredBackoffMinutes(dispatch: number): number
   return Math.min(DEFERRED_FAILURE_BACKOFF_CAP_MINUTES, DEFERRED_FAILURE_BACKOFF_BASE_MINUTES * 2 ** (dispatch - 2))
 }
 
+/** D1 capacity errors only (same class as isRetryableRetentionArchiveD1Error). Unlike isTransientD1Reset,
+ * a deterministic D1_ERROR (bad SQL, constraint) does not match, so it stays terminal. Kept here, not in
+ * d1TransientRetry.ts, which is a native paper identity input. */
+export function isTransientD1Overload(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+  return /D1 DB is overloaded|Requests queued for too long|SQLITE_BUSY|database is locked|storage operation exceeded timeout|Network connection lost/i.test(message)
+    || /D1 request failed:\s*HTTP\s*(?:429|5\d\d)/i.test(message)
+}
+
+/** Queue delay before materialize transient retry n (1-based): 1, 20, 40, 80, 160, 160 minutes. */
+export function strategyLearningMaterializeTransientDelaySeconds(retry: number): number {
+  return Math.max(60, strategyLearningDeferredBackoffMinutes(retry) * 60)
+}
+
 export function strategyLearningDeferredRetryGate(
   row: StrategyLearningRecoveryRow,
   dispatches: number,
@@ -138,17 +158,31 @@ const RECOVERY_RUN_COLUMNS = `
   production_authority_intent, policy_closure_status,
   completed_at, policy_closure_completed_at`
 
-export function strategyLearningRecoveryWindowStart(today = twToday()): string {
-  return new Date(Date.parse(`${today}T00:00:00Z`) - RECOVERY_LOOKBACK_DAYS * 86_400_000).toISOString().slice(0, 10)
+/** RECOVERY_LOOKBACK_DAYS trading days before today (weekends and holiday:* closures do not count). */
+export async function strategyLearningRecoveryWindowStart(
+  env: Pick<Bindings, 'DB' | 'KV'>,
+  today = twToday(),
+): Promise<string> {
+  const { getPrevTradingDay } = await import('./paperMarketData')
+  let start = today
+  for (let day = 0; day < RECOVERY_LOOKBACK_DAYS; day += 1) {
+    start = await getPrevTradingDay(env.DB, env.KV, start)
+  }
+  return start
 }
 
 /** Dates the watchdog's lookback reaches; a failure outside it has no automatic retry owner. */
-export function isStrategyLearningRecoveryWindowDate(businessDate: string, today = twToday()): boolean {
-  return businessDate >= strategyLearningRecoveryWindowStart(today) && businessDate <= today
+export async function isStrategyLearningRecoveryWindowDate(
+  env: Pick<Bindings, 'DB' | 'KV'>,
+  businessDate: string,
+  today = twToday(),
+): Promise<boolean> {
+  return businessDate >= await strategyLearningRecoveryWindowStart(env, today) && businessDate <= today
 }
 
 async function loadRecoveryCandidates(
   db: D1Database,
+  windowStart: string,
   requestedDate?: string,
 ): Promise<StrategyLearningRecoveryRow[]> {
   if (requestedDate) {
@@ -161,34 +195,43 @@ async function loadRecoveryCandidates(
     return row ? [row] : []
   }
   const cutoffDate = twToday()
+  // PV1105: a failed run whose post-verify still waits (its propagation lost the race with the
+  // post-verify lease, 11/17–11/18) sorts first, so blockTerminalRun closes it.
   const { results } = await db.prepare(`
     SELECT ${RECOVERY_RUN_COLUMNS}
       FROM strategy_learning_runs
-     WHERE business_date BETWEEN date(?, ?) AND ?
+     WHERE business_date BETWEEN ? AND ?
        AND (
          (status='queued' AND lease_owner IS NULL AND lease_expires_at IS NULL)
          OR (status='running' AND (lease_expires_at IS NULL OR lease_expires_at<=CURRENT_TIMESTAMP))
          OR status='success'
+         OR (status='error' AND EXISTS (
+           SELECT 1 FROM pipeline_stage_runs p
+            WHERE p.business_date=strategy_learning_runs.business_date
+              AND p.stage='post_verify_chain'
+              AND p.canonical_run_id=strategy_learning_runs.canonical_run_id
+              AND p.status='waiting' AND p.lease_owner IS NULL
+         ))
        )
-     ORDER BY CASE WHEN status IN ('queued','running') THEN 0 ELSE 1 END,
+     ORDER BY CASE WHEN status='error' THEN 0 WHEN status IN ('queued','running') THEN 1 ELSE 2 END,
               business_date DESC
      LIMIT ?
-  `).bind(cutoffDate, `-${RECOVERY_LOOKBACK_DAYS} days`, cutoffDate, RECOVERY_LOOKBACK_DAYS + 1)
+  `).bind(windowStart, cutoffDate, RECOVERY_LOOKBACK_DAYS + 1)
     .all<StrategyLearningRecoveryRow>()
   return results ?? []
 }
 
-async function loadActiveLeaseDate(db: D1Database): Promise<string | null> {
+async function loadActiveLeaseDate(db: D1Database, windowStart: string): Promise<string | null> {
   const cutoffDate = twToday()
   const row = await db.prepare(`
     SELECT business_date
       FROM strategy_learning_runs
-     WHERE business_date BETWEEN date(?, ?) AND ?
+     WHERE business_date BETWEEN ? AND ?
        AND status IN ('queued','running')
        AND lease_expires_at>CURRENT_TIMESTAMP
      ORDER BY business_date DESC
      LIMIT 1
-  `).bind(cutoffDate, `-${RECOVERY_LOOKBACK_DAYS} days`, cutoffDate)
+  `).bind(windowStart, cutoffDate)
     .first<{ business_date: string }>()
   return row?.business_date ?? null
 }
@@ -289,6 +332,22 @@ async function evaluateRecoveryCandidate(
     return blocked('running', 'dispatch_fenced', `date=${row.business_date} reason=dispatch_fenced`)
   }
 
+  const transient = row.status === 'queued' ? MATERIALIZE_TRANSIENT_RETRY.exec(String(row.last_error ?? '')) : null
+  const transientRetry = Number(transient?.[1] ?? 0)
+  const transientReleasedMs = Number(transient?.[2] ?? 0)
+  if (transientRetry > 0 && transientReleasedMs > 0 && !options.overrideBackoff) {
+    const dueMs = transientReleasedMs + strategyLearningMaterializeTransientDelaySeconds(transientRetry) * 1000
+      + MATERIALIZE_TRANSIENT_GRACE_MS
+    if (Date.now() < dueMs) {
+      return blocked('running', 'materialize_transient_backoff', [
+        `date=${row.business_date}`,
+        'reason=materialize_transient_backoff',
+        `next_due=${new Date(dueMs).toISOString()}`,
+        `retry=${transientRetry}/${STRATEGY_LEARNING_MATERIALIZE_TRANSIENT_MAX_RETRIES}`,
+      ].join(' '))
+    }
+  }
+
   const deferredFailure = isStrategyLearningDeferredFailure(row)
   const deferredKey = `strategy-learning:watchdog-deferred-dispatches:${row.business_date}:${row.canonical_run_id}`
   const deferredDispatches = deferredFailure
@@ -344,7 +403,8 @@ export async function runStrategyLearningRecoveryWatchdog(
     throw new Error(`invalid_strategy_learning_watchdog_date:${requestedDate}`)
   }
   const opsDb = databaseForDataDomain(env, 'ops')
-  const candidates = await loadRecoveryCandidates(opsDb, requestedDate)
+  const windowStart = await strategyLearningRecoveryWindowStart(env)
+  const candidates = await loadRecoveryCandidates(opsDb, windowStart, requestedDate)
   const row = candidates[0] ?? null
   const decision = strategyLearningRecoveryDecision(row)
   if (!row) {
@@ -399,7 +459,7 @@ export async function runStrategyLearningRecoveryWatchdog(
     return summary
   }
 
-  const activeDate = await loadActiveLeaseDate(opsDb)
+  const activeDate = await loadActiveLeaseDate(opsDb, windowStart)
   if (activeDate) {
     const summary = `running strategy-learning recovery date=${row.business_date} reason=other_date_active:${activeDate}`
     await logWatchdog(env, row, 'running', summary)
@@ -415,7 +475,8 @@ export async function runStrategyLearningRecoveryWatchdog(
     const candidateDecision = first ? decision : strategyLearningRecoveryDecision(candidate)
     if (!candidateDecision.resume) {
       if (candidateDecision.reason.startsWith('run_error:') || candidateDecision.reason === 'recoverable_progress_invalid') {
-        // Recorded only: walk rows are queued/running, so the propagation's guarded UPDATE
+        // Recorded only: walk rows are queued/running (error rows sort first and stop at
+        // blockTerminalRun above), so the propagation's guarded UPDATE
         // (learning status='error') would be a no-op that still rewrites the root receipt.
         blockedCandidates.push({ row: candidate, outcome: {
           dispatch: false, status: 'error', token: candidateDecision.reason,

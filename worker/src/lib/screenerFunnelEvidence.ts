@@ -114,7 +114,6 @@ export interface StrategyPortfolioIntelligenceHealth {
 
 const L2_TIMESFM_MODELS = ['TimesFM'] as const
 const L3_FORMAL_MODELS = ['LightGBM', 'XGBoost', 'ExtraTrees', 'TabM', 'GNN', 'DLinear', 'PatchTST', 'iTransformer'] as const
-const ACTIVE_8_DIRECT_ALPHA_TEACHER_MODELS = [...L3_FORMAL_MODELS] as const
 const LEGACY_L2_COARSE_MODELS = ['LightGBM', 'XGBoost', 'ExtraTrees'] as const
 
 function parseEvidence(raw: unknown): Record<string, unknown> {
@@ -838,8 +837,6 @@ function buildLayer15MultiStrategyRouterSummary(
   const strategyIds = arrayOfStrings(evidence.strategy_ids ?? evidence.strategy_pool_ids)
   const familyIds = arrayOfStrings(evidence.strategy_family_ids)
   const researchStrategyIds = arrayOfStrings(evidence.research_strategy_ids)
-  const teacherLabels = numberRecord(evidence.runtime_teacher_evidence ?? evidence.ml_teacher_labels ?? evidence.model_teacher_labels)
-  const teacherModelIds = unionStrings(Object.keys(teacherLabels))
   const formalL2Queue = evidence.formal_l2_queue === true
     || evidence.strategy_router_decision === 'ml_slate'
     || evidence.strategy_pool_decision === 'ml_queue'
@@ -895,14 +892,8 @@ function buildLayer15MultiStrategyRouterSummary(
     no_minimum_fill: true,
     is_topk_ranker: false,
     output_scope: 'candidate_route_score_ml_slate_eligibility_family_exposure_diversity_risk_uncertainty',
-    teacher_label_scope: 'training_teacher_labels_offline_runtime_teacher_evidence_optional',
-    runtime_teacher_evidence_policy: evidence.runtime_teacher_evidence_policy
-      ?? 'previous_trading_day_or_latest_verified_cache_no_same_day_l2_l3_dependency',
-    runtime_teacher_evidence_source: evidence.runtime_teacher_evidence_source ?? null,
-    expected_teacher_models: [...ACTIVE_8_DIRECT_ALPHA_TEACHER_MODELS],
-    expected_teacher_count: ACTIVE_8_DIRECT_ALPHA_TEACHER_MODELS.length,
-    teacher_models: teacherModelIds,
-    teacher_label_count: teacherModelIds.length,
+    admission_policy: 'eligible_for_ml_and_active_strategy_label_only',
+    route_score_teacher_term: false,
     formal_l2_queue: formalL2Queue,
     observe_only_top_up: observeOnlyTopUp,
     strategy_labeler_version: evidence.strategy_labeler_version ?? null,
@@ -949,7 +940,6 @@ function buildLayer15MultiStrategyRouterSummary(
     new_family_ratio: normalizeScore01(components.new_family_ratio),
     strategy_rank_ic: toNullableNumber(components.strategy_rank_ic),
     strategy_cluster_uniqueness: normalizeScore01(components.strategy_cluster_uniqueness),
-    teacher_alignment: normalizeScore01(components.teacher_alignment),
     portfolio_metric_source: evidence.strategy_portfolio_metric_source ?? null,
     portfolio_metric_status: evidence.strategy_portfolio_metric_status ?? null,
     portfolio_metric_count: toNullableNumber(evidence.strategy_portfolio_metric_count),

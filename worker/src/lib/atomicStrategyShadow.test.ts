@@ -230,7 +230,7 @@ test('daily inputs are sealed separately from the exact replacement definition',
   next.options.regime = 'bear'
   next.options.productionStrategyWeights.original = .75
   const daily = await buildAtomicStrategyShadow({ ...next, options: { ...next.options,
-    previousSlateSymbols: ['both'], runtimeTeacherEvidence: { both: { ml: 70 } } } })
+    previousSlateSymbols: ['both'] } })
   assert.equal(daily.replacement_definition_checksum, baseline.replacement_definition_checksum)
   assert.notEqual(daily.runtime_context_checksum, baseline.runtime_context_checksum)
   assert.notEqual(daily.input_checksum, baseline.input_checksum)

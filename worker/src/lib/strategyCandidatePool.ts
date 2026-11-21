@@ -128,9 +128,6 @@ export interface StrategyCandidatePoolCandidate extends StrategyCandidateInput {
   diversity_contribution?: number
   risk_adjusted_affinity?: number
   uncertainty?: number
-  runtime_teacher_evidence?: Record<string, number>
-  runtime_teacher_evidence_source?: string
-  ml_teacher_labels?: Record<string, number>
   market_heat_score?: number
   market_heat_contribution?: number
   strategy_router_decision?: 'ml_slate' | 'observe_only' | 'research_only' | 'capacity_overflow'
@@ -290,12 +287,8 @@ export interface Layer1StrategyBreadthPlan<T extends StrategyCandidatePoolCandid
     route_veto_applied?: boolean
     route_veto_candidate_count?: number
     route_priority_only_candidate_count?: number
-    teacher_label_available_count?: number
-    teacher_label_missing_count?: number
-    teacher_label_contract?: string
-    runtime_teacher_evidence_policy?: string
-    runtime_teacher_evidence_available_count?: number
-    runtime_teacher_evidence_missing_count?: number
+    l15_admission_rule_version?: string
+    l15_route_score_formula_version?: string
     performance_weight_owner?: 'ple_portfolio_metrics' | 'formal_evidence_owner'
     strategy_metric_status_counts?: Record<string, number>
     strategy_metric_ready_count?: number
@@ -1415,7 +1408,6 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
     strategyPortfolioMetrics?: Record<string, Partial<StrategyPortfolioMetrics>>
     strategyPortfolioMetricSource?: string
     strategySimilarityGraphEvidence?: StrategySimilarityGraphEvidence | null
-    runtimeTeacherEvidence?: Record<string, Record<string, number>>
     previousSlateSymbols?: string[]
     promotedRouteCalibration?: { runId: string; routeVersion: string; routeFloor: number | null } | null
     policy?: StrategyCandidatePoolPolicy
@@ -1432,8 +1424,9 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
     lowLoadTotalCap: Math.max(basePolicy.lowLoadTotalCap, targetSize),
     hardTotalCap: Math.max(basePolicy.hardTotalCap, Math.ceil(targetSize * 4 / 3)),
   }
-  const provisionalRouterPlan = buildMultiStrategyPleRoutingPlan(featureEnrichedUniverse, specs, {
-    maxSlateSize: policy.hardTotalCap,
+  // One router pass: admission (eligibleForMl + active strategy label) does
+  // not depend on capacity, so capacity is derived from the routed plan.
+  const routerPlan = buildMultiStrategyPleRoutingPlan(featureEnrichedUniverse, specs, {
     regime: options.regime,
     evidenceMode: options.evidenceMode,
     strategyWeights: options.strategyWeights,
@@ -1441,7 +1434,6 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
     performanceWeightOwner: options.performanceWeightOwner,
     strategyPortfolioMetrics: options.strategyPortfolioMetrics,
     strategySimilarityGraphEvidence: options.strategySimilarityGraphEvidence,
-    runtimeTeacherEvidence: options.runtimeTeacherEvidence,
     previousSlateSymbols: options.previousSlateSymbols,
     promotedRouteCalibration: options.promotedRouteCalibration,
   })
@@ -1450,10 +1442,10 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
     coarseMlQueueSize,
     hardTotalCap: policy.hardTotalCap,
     sourceUniverseCount: featureEnrichedUniverse.length,
-    routeScoreAboveFloorCount: provisionalRouterPlan.telemetry.route_score_above_floor_count,
-    activeLabeledCandidateCount: provisionalRouterPlan.telemetry.active_labeled_candidates,
-    matchedCandidateCount: provisionalRouterPlan.telemetry.matched_candidates,
-    routeVetoAuthoritative: provisionalRouterPlan.telemetry.route_veto_applied,
+    routeScoreAboveFloorCount: routerPlan.telemetry.route_score_above_floor_count,
+    activeLabeledCandidateCount: routerPlan.telemetry.active_labeled_candidates,
+    matchedCandidateCount: routerPlan.telemetry.matched_candidates,
+    routeVetoAuthoritative: routerPlan.telemetry.route_veto_applied,
   })
   const adaptiveTargetSizeBeforeDynamicQuota = adaptiveCapacity.target
   const selection = planStrategyFirstCandidateSelection(featureEnrichedUniverse, specs, {
@@ -1467,24 +1459,7 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
     mlQueueCapOverride: Math.max(1, adaptiveTargetSizeBeforeDynamicQuota),
   })
   const dynamicEffectiveQuota = resolveDynamicEffectiveQuota(selection.pools)
-  const adaptiveTargetSize = adaptiveTargetSizeBeforeDynamicQuota
-  const routerPlan = adaptiveTargetSize > 0
-    ? buildMultiStrategyPleRoutingPlan(featureEnrichedUniverse, specs, {
-        maxSlateSize: adaptiveTargetSize,
-        regime: options.regime,
-        evidenceMode: options.evidenceMode,
-        strategyWeights: options.strategyWeights,
-        productionStrategyWeights: options.productionStrategyWeights,
-        performanceWeightOwner: options.performanceWeightOwner,
-        strategyPortfolioMetrics: options.strategyPortfolioMetrics,
-        strategySimilarityGraphEvidence: options.strategySimilarityGraphEvidence,
-        runtimeTeacherEvidence: options.runtimeTeacherEvidence,
-        previousSlateSymbols: options.previousSlateSymbols,
-        promotedRouteCalibration: options.promotedRouteCalibration,
-      })
-    : provisionalRouterPlan
-
-  const strategySelected = adaptiveTargetSize > 0 ? routerPlan.mlSlate : []
+  const strategySelected = routerPlan.mlSlate
   const breadthEvidenceTargetSize = strategySelected.length
   const topUp: T[] = []
 
@@ -1556,12 +1531,8 @@ export function buildLayer1StrategyBreadthPlan<T extends StrategyCandidatePoolCa
       route_veto_applied: routerPlan.telemetry.route_veto_applied,
       route_veto_candidate_count: routerPlan.telemetry.route_veto_candidate_count,
       route_priority_only_candidate_count: routerPlan.telemetry.route_priority_only_candidate_count,
-      teacher_label_available_count: routerPlan.telemetry.teacher_label_available_count,
-      teacher_label_missing_count: routerPlan.telemetry.teacher_label_missing_count,
-      teacher_label_contract: routerPlan.telemetry.teacher_label_contract,
-      runtime_teacher_evidence_policy: routerPlan.telemetry.runtime_teacher_evidence_policy,
-      runtime_teacher_evidence_available_count: routerPlan.telemetry.runtime_teacher_evidence_available_count,
-      runtime_teacher_evidence_missing_count: routerPlan.telemetry.runtime_teacher_evidence_missing_count,
+      l15_admission_rule_version: routerPlan.telemetry.admission_rule_version,
+      l15_route_score_formula_version: routerPlan.telemetry.route_score_formula_version,
       performance_weight_owner: routerPlan.telemetry.performance_weight_owner,
       strategy_metric_status_counts: routerPlan.telemetry.strategy_metric_status_counts,
       strategy_metric_ready_count: routerPlan.telemetry.strategy_metric_ready_count,

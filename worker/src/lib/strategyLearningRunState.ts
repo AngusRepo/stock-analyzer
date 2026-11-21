@@ -21,7 +21,9 @@ export type StrategyLearningRunRow = {
 export const STRATEGY_LEARNING_LEASE_SECONDS = 900
 
 export function isStrategyLearningTerminalFailure(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error)
+  // The finalizer wraps stage errors as strategy_learning_finalizer_stage_failed:<stage>:<reason>; judge the reason.
+  const message = (error instanceof Error ? error.message : String(error))
+    .replace(/^strategy_learning_finalizer_stage_failed:[a-z_]+:/, '')
   return message.startsWith('strategy_learning_production_authority_denied:')
     || message.startsWith('strategy_learning_live_policy_closure_missing:')
     || message.startsWith('strategy_learning_durable_production_authority_intent_required:')
@@ -48,6 +50,29 @@ export async function propagateStrategyLearningTerminalFailure(
   // The failure itself is the outcome here, so a lost receipt must not mask it with a KV error.
   if (kv) await closeEveningChainRootAndLog(kv, db, { ...input, strict: false })
   else await closeEveningChainRootIfComplete(db, input)
+}
+
+/**
+ * PV1105: a learning run that failed while post-verify still held its lease left the propagation above
+ * a no-op (11/17, 11/18). Post-verify calls this right after its unleased 'waiting' write; a failure
+ * recorded later finds 'waiting' and propagates itself, so one of the two always closes the stage.
+ * Returns the learning error when the stage is now closed as error.
+ */
+export async function propagateStrategyLearningFailureAfterWaiting(
+  db: D1Database,
+  input: { businessDate: string; canonicalRunId: string },
+  kv?: KVNamespace,
+): Promise<string | null> {
+  const learning = await db.prepare(`
+    SELECT status, canonical_run_id, last_error FROM strategy_learning_runs WHERE business_date=?
+  `).bind(input.businessDate).first<{ status: string; canonical_run_id: string; last_error: string | null }>()
+  if (learning?.status !== 'error' || learning.canonical_run_id !== input.canonicalRunId) return null
+  await propagateStrategyLearningTerminalFailure(db, input, kv)
+  const stage = await db.prepare(`
+    SELECT status FROM pipeline_stage_runs
+     WHERE business_date=? AND stage='post_verify_chain' AND canonical_run_id=?
+  `).bind(input.businessDate, input.canonicalRunId).first<{ status: string }>()
+  return stage?.status === 'error' ? learning.last_error ?? 'strategy_learning_error' : null
 }
 
 export type StrategyLearningLeaseIdentity = {
@@ -751,6 +776,27 @@ export async function deferStrategyLearningFinalizer(
     input.businessDate, input.canonicalRunId, input.leaseOwner,
   ).first<{ deferred: number }>()
   return Number(row?.deferred ?? 0) === 1
+}
+
+export const STRATEGY_LEARNING_MATERIALIZE_TRANSIENT_PREFIX = 'strategy_learning_materialize_transient_retry:'
+
+/** Hands a page that hit a transient D1 error back unleased at its durable cursor; progress is untouched. */
+export async function releaseStrategyLearningPageForRetry(
+  db: D1Database,
+  input: StrategyLearningLeaseIdentity & { error: string },
+): Promise<boolean> {
+  const row = await db.prepare(`
+    UPDATE strategy_learning_runs
+       SET status='queued', lease_owner=NULL, lease_expires_at=NULL,
+           last_error=?, updated_at=CURRENT_TIMESTAMP
+     WHERE business_date=? AND canonical_run_id=?
+       AND status='running' AND lease_owner=?
+       AND lease_expires_at >= CURRENT_TIMESTAMP
+    RETURNING 1 AS released
+  `).bind(
+    input.error.slice(0, 1000), input.businessDate, input.canonicalRunId, input.leaseOwner,
+  ).first<{ released: number }>()
+  return Number(row?.released ?? 0) === 1
 }
 
 export async function failStrategyLearningRun(

@@ -19,6 +19,8 @@ import {
   inspectAllocatorSnapshotClosure,
   readAllocatorEvLifecycle,
   recordAllocatorEvLifecycle,
+  S12_REPLAY_RETIRED_REASON,
+  s12ReplayRetiredUnderNewL4,
 } from './allocatorEvDailyLifecycle'
 import {
   claimPipelineStage,
@@ -341,13 +343,31 @@ async function enqueueStrategyLearningClosureTask(
   return `triggered strategy-learning queue run_date=${runDate} run_id=${runId}`
 }
 
-async function enqueueS12ReplayBackfillTask(env: Bindings, ctx: ChainContext): Promise<string> {
-  const config=await env.KV.get('trading:config','json') as {l4Distribution?:unknown}|null
-  if (config?.l4Distribution) return 'skipped retired_fusion_maturity_backfill_new_l4_active'
+export async function enqueueS12ReplayBackfillTask(env: Bindings, ctx: ChainContext): Promise<string> {
+  const retired = await s12ReplayRetiredUnderNewL4(env.KV)
   const runDate = ctx.runDate ?? new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const canonicalRunId = String(ctx.upstreamRunId ?? '').trim()
   const leaseOwner = String(ctx.stageLeaseOwner ?? '').trim()
+  if (retired && (!canonicalRunId || !leaseOwner)) return `skipped ${S12_REPLAY_RETIRED_REASON}`
   if (!canonicalRunId || !leaseOwner) throw new Error('post_verify_stage_authority_missing')
+  if (retired) {
+    // PV1105: no replay will ever mature this date, so close its lifecycle here; left at verify_triggered
+    // the allocator watchdog re-queued post-verify every tick (staleVerifyTrigger never cleared).
+    // A failed write (D1 overload) must not fail this critical task: the allocator watchdog closes a
+    // successful post-verify's lifecycle later. Only a lost stage fence stops the chain.
+    const closed = await recordAllocatorEvLifecycle(databaseForDataDomain(env, 'learning'), {
+      businessDate: runDate,
+      state: 'replay_complete',
+      replayMaturityAsOfDate: runDate,
+      upstreamRunId: canonicalRunId,
+      stageAuthority: { businessDate: runDate, stage: 'post_verify_chain', canonicalRunId, leaseOwner },
+    }, databaseForDataDomain(env, 'ops')).catch((error) => {
+      console.warn(`[postVerify] s12 retired lifecycle close deferred date=${runDate}:`, error)
+      return null
+    })
+    if (closed === false) throw new Error(`stale_post_verify_lifecycle:${runDate}:${canonicalRunId}`)
+    return `skipped ${S12_REPLAY_RETIRED_REASON} lifecycle=${closed ? 'replay_complete' : 'deferred'}`
+  }
   const { loadReplayReadySignalDates } = await import('./s12ReplayTradeOutcome')
   const signalDates = await loadReplayReadySignalDates(env.DB, runDate, 5)
   for (const signalDate of signalDates) {
@@ -771,8 +791,9 @@ export async function runPostPipelineCallbackChain(
  * (EC-F: all four plus the tail shared one invocation, and 11/2 died inside strategy-evidence-current). */
 export const POST_VERIFY_HEAVY_TASKS: readonly string[] = ['price-horizon-projection', 'strategy-multi-horizon-outcomes',
   'strategy-evidence-current', 'strategy-evidence-metric-backfill']
-/** One hop per heavy task normally; a receipt that keeps failing its fresh proof (each rerun yields again) is
- * bounded here, after which the chain finishes in one invocation as it did before continuations. */
+/** One hop per heavy task normally; a receipt that keeps failing its readback (each rerun yields again) is bounded
+ * here, after which the chain finishes in one invocation as it did before continuations. A later hop skips the
+ * readback of a receipt settled within POST_VERIFY_FRESH_RECEIPT_SECONDS, so that loop needs an older receipt. */
 export const POST_VERIFY_MAX_HOPS = POST_VERIFY_HEAVY_TASKS.length * 2
 /** LIVE-AUTH-B (Wei 11/16, plan B): tasks also run in the post-close live-effects window. adapt stays out (Wei
  * chose C: retire; it would write ml:adaptive_params and may trip frozen_policy_identity), and so does
@@ -816,7 +837,7 @@ export async function runPostVerifyCallbackChain(
   const checkpoints = await createPostVerifyTaskCheckpoints(env, {
     businessDate: String(ctx.runDate ?? ''), canonicalRunId: String(ctx.upstreamRunId ?? ''),
     leaseOwner: String(ctx.stageLeaseOwner ?? ''), productionEligible,
-    assertStageLease: ctx.assertStageLease,
+    assertStageLease: ctx.assertStageLease, hop,
   })
   const runTask = async (task: string, fn: (scoped: Bindings, budget: { deadlineAt: number }) => Promise<unknown>,
     options: { critical?: boolean; timeoutMs?: number } = {}) => {
@@ -855,7 +876,8 @@ export async function runPostVerifyCallbackChain(
       retrySafe: POST_VERIFY_RETRY_SAFE_TASKS.includes(task),
       independentEffect: POST_CLOSE_LIVE_EFFECT_TASKS.includes(task),
       verifyResult:dependencies.taskRunner?undefined:async result=>{
-        // Projection receipts are re-read from their status/run pointer rows first; outcomes always take the full capture.
+        // Projection receipts are re-read from their status/run pointer rows first; outcomes always take the full capture
+        // (a later hop skips both for a receipt settled within POST_VERIFY_FRESH_RECEIPT_SECONDS).
         if(task==='price-horizon-projection')return verifyPostVerifyLabelEvidencePointer(env,result.evidence as any)
         if(task==='strategy-multi-horizon-outcomes')return verifyPostVerifyLabelEvidence(env,result.evidence as any)
         if(['strategy-evidence-current','strategy-evidence-metric-backfill'].includes(task))return verifyPostVerifyMetricEvidence(env,result.evidence as any)

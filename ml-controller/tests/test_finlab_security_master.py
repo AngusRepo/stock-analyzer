@@ -128,8 +128,23 @@ def test_company_fails_missing_or_unverifiable_facts(changes, reason):
         normalize_security_master(pl.DataFrame([company(**changes)]), '2026-09-08T00:00:00Z')
 
 
+def test_tpex_detail_page_lists_the_etf_on_otc_and_twse_rows_keep_their_checksum():
+    # 11/21 capture: 118 of 368 rows link https://info.tpex.org.tw/ETF/zh/detail.html?query=<symbol>.
+    tpex = etf(symbol='00679B', 證券簡稱='元大美債20年', 上市日期=datetime(2017, 1, 17),
+        **{'ETF詳情頁': 'https://info.tpex.org.tw/ETF/zh/detail.html?query=00679B'})
+    rows = normalize_etf_master(pl.DataFrame([etf(), tpex]), '2026-09-08T00:00:00Z')
+    assert [(r['symbol'], r['market'], r['listing_market'], r['listed_date']) for r in rows] == [
+        ('0050', 'TWSE', 'TWSE', '2003-06-30'), ('00679B', 'OTC', 'OTC', '2017-01-17')]
+    # Golden value from the TWSE-only code (main 3e21d062): existing ETF checksums must not move.
+    assert rows[0]['listing_checksum'] == '1af6dccff8e7eca7982fa3fc4c1675170158109555ce5fa7ed46a5e68df16698'
+
+
 @pytest.mark.parametrize('url', ['https://www.twse.com.tw.evil.test/zh/ETFortune-institute/etfInfo/0050',
-    'https://www.twse.com.tw/zh/ETFortune-institute/etfInfo/0051', 'https://www.tpex.org.tw/0050'])
+    'https://www.twse.com.tw/zh/ETFortune-institute/etfInfo/0051', 'https://www.tpex.org.tw/0050',
+    'https://www.twse.com.tw/zh/ETFortune-institute/etfInfo/0050?x=1',
+    'https://info.tpex.org.tw/ETF/zh/detail.html?query=0051', 'https://info.tpex.org.tw/ETF/zh/detail.html',
+    'https://info.tpex.org.tw/ETF/zh/detail.html?query=0050&x=1', 'http://info.tpex.org.tw/ETF/zh/detail.html?query=0050',
+    'https://info.tpex.org.tw.evil.test/ETF/zh/detail.html?query=0050'])
 def test_etf_does_not_infer_unverified_market(url):
     with pytest.raises(ValueError, match='market_unverified'):
         normalize_etf_master(pl.DataFrame([etf(**{'ETF詳情頁': url})]), '2026-09-08T00:00:00Z')

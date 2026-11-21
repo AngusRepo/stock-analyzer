@@ -59,7 +59,8 @@ assert.match(
 
 const orchestrator = readFileSync(new URL('./updateOrchestrator.ts', import.meta.url), 'utf8')
 assert.match(
-  orchestrator,
+  readFileSync(new URL('./strategyLearningFinalizerCache.ts', import.meta.url), 'utf8'),
   /strategy-learning:finalizer:\$\{triggerTime\}:\$\{canonicalRunId\}:\$\{finalizerCacheMode\}:v5-known-date-publication-fence/,
 )
+assert.match(orchestrator, /openStrategyLearningFinalizerCache/)
 assert.match(orchestrator, /drainMatureSelectionEvidence/)

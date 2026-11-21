@@ -256,7 +256,7 @@ function scenario(): { seeds: Seed[]; heads: Record<string, string> } {
 async function capture(db: DatabaseSync, heads: Record<string, string>, startDate = START)
   : Promise<Recorded & { pages: Recorded[] }> {
   const log: Recorded[] = []
-  await auditStrategyRouteBackfillEligibility(d1(db, log), AS_OF, { startDate, persist: false, canonicalRunIds: heads })
+  await auditStrategyRouteBackfillEligibility(d1(db, log), AS_OF, { startDate, persist: false, canonicalRunIds: heads, pagePauseMs: 0 })
   const pages = log.filter((entry) => entry.sql.includes('WITH canonical_heads AS'))
   assert(pages.length > 0, 'eligibility query not issued')
   assert(pages.every((page) => page.sql === pages[0].sql))
@@ -296,7 +296,7 @@ test('eligibility output is unchanged end to end', async () => {
   const { seeds, heads } = scenario()
   seed(db, seeds)
   const query = await capture(db, heads)
-  const rows = await auditStrategyRouteBackfillEligibility(d1(db), AS_OF, { startDate: START, persist: false, canonicalRunIds: heads })
+  const rows = await auditStrategyRouteBackfillEligibility(d1(db), AS_OF, { startDate: START, persist: false, canonicalRunIds: heads, pagePauseMs: 0 })
   const former = db.prepare(FORMER_SQL).all(...query.params as never[]) as Array<Record<string, unknown>>
   assert.deepEqual(rows.map((row) => [row.signalDate, row.producerRunId, row.matrixRows, row.evaluableMatrixRows,
     row.matchedMatrixRows, row.thresholdMarginRows, row.referenceRows, row.matureLabelRows, row.rejectedLabelRows,
@@ -318,4 +318,16 @@ test('eligibility plan reads the matrix once by its signal_date prefix', async (
   assert.equal(matrixSteps(current).length, 1, current.join('\n'))
   assert.match(matrixSteps(current)[0], /^SEARCH m USING (?:COVERING )?INDEX \w+ \(signal_date=\?/)
   assert.ok(!current.some((detail) => /^SCAN (m|r|mr|l|q|e)\b/.test(detail)), current.join('\n'))
+})
+
+test('eligibility pages pause between statements, not before the first', async () => {
+  const db = schema()
+  const { seeds, heads } = scenario()
+  seed(db, seeds)
+  const log: Recorded[] = []
+  const startedAt = Date.now()
+  await auditStrategyRouteBackfillEligibility(d1(db, log), AS_OF, { startDate: START, persist: false, canonicalRunIds: heads, pagePauseMs: 40 })
+  const pages = log.filter((entry) => entry.sql.includes('WITH canonical_heads AS')).length
+  assert(pages > 1, 'scenario must span pages')
+  assert(Date.now() - startedAt >= 40 * (pages - 1) - 5)
 })

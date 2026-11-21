@@ -86,6 +86,18 @@ def normalize_security_master(frame, observed_at, official_boards=None, conflict
     return sorted(rows, key=lambda r: r['symbol'])
 
 
+def etf_detail_page_venue(raw_url, symbol):
+    """'TWSE' or 'OTC' when the URL is that exchange's ETF detail page for `symbol`, else None."""
+    url = urlparse(raw_url)
+    if url.scheme != 'https' or url.params or url.fragment:
+        return None
+    if url.netloc == 'www.twse.com.tw' and url.path == '/zh/ETFortune-institute/etfInfo/' + symbol and not url.query:
+        return 'TWSE'
+    if url.netloc == 'info.tpex.org.tw' and url.path == '/ETF/zh/detail.html' and url.query == 'query=' + symbol:
+        return 'OTC'
+    return None
+
+
 def normalize_etf_master(frame, observed_at):
     observed_at = _observed_clock(observed_at)
     if frame.is_empty() or not ETF_FIELDS <= set(frame.columns):
@@ -96,10 +108,9 @@ def normalize_etf_master(frame, observed_at):
         if symbol in seen or not symbol.isalnum() or not 4 <= len(symbol) <= 8:
             raise ValueError('finlab_etf_master_symbol_invalid')
         seen.add(symbol)
-        url = urlparse(str(row['ETF詳情頁']))
-        # This verified feed is TWSE only; never infer a TPEx listing from its name.
-        if (url.scheme != 'https' or url.netloc != 'www.twse.com.tw'
-                or url.path != '/zh/ETFortune-institute/etfInfo/' + symbol):
+        # The venue comes only from the exchange's own detail page for this exact symbol, never from the name.
+        market = etf_detail_page_venue(str(row['ETF詳情頁']), symbol)
+        if market is None:
             raise ValueError('finlab_etf_master_market_unverified:' + symbol)
         raw_date = row['上市日期']
         listed = raw_date.date() if isinstance(raw_date, datetime) else raw_date
@@ -110,7 +121,7 @@ def normalize_etf_master(frame, observed_at):
         if not row['證券簡稱']:
             raise ValueError('finlab_etf_master_name_missing:' + symbol)
         canonical = {**row, '上市日期': listed}
-        rows.append({'symbol': symbol, 'name': str(row['證券簡稱']), 'market': 'TWSE', 'listing_market': 'TWSE',
+        rows.append({'symbol': symbol, 'name': str(row['證券簡稱']), 'market': market, 'listing_market': market,
             'listed_date': listed, 'listed_date_source': 'finlab.tw_etf_basic_info:上市日期',
             'listing_observed_at': observed_at, 'listing_checksum': digest(canonical),
             'in_current_watchlist': 0, 'source': 'finlab_security_master'})

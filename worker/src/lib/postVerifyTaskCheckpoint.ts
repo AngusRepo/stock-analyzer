@@ -30,6 +30,10 @@ const RUNNING = PREFIX + 'running'
 const SUCCESS = PREFIX + 'success'
 const ERROR = PREFIX + 'error'
 const UNCERTAIN = PREFIX + 'uncertain'
+/** D1-OVL-C: a later hop of one continuation trusts a SUCCESS receipt settled this recently. Every hop restarts the
+ * chain from the top, so without this each hop re-ran the full readback of every earlier receipt (the outcomes proof
+ * alone is three 120-day GROUP BYs). Hop 0 of every dispatch, redispatch and late-producer wake still verifies. */
+export const POST_VERIFY_FRESH_RECEIPT_SECONDS = 900
 
 /** The ERROR receipt that closes a running claim whose stage lease expired (also used by the operator reconcile). */
 export async function closeExpiredPostVerifyReceipt(receiptJson: string): Promise<{ task: string; leaseOwner: string; receiptJson: string }> {
@@ -118,6 +122,8 @@ function scopedEnvironment(env: Bindings, assertActive: () => Promise<void>): Bi
 export async function createPostVerifyTaskCheckpoints(env: Bindings, input: {
   businessDate: string; canonicalRunId: string; leaseOwner: string; productionEligible: boolean
   assertStageLease: (boundary?: string) => Promise<void>
+  /** The continuation hop of this invocation (0 for a dispatch). */
+  hop?: number
 }) {
   const sourceSha = String(env.CF_VERSION_METADATA?.tag ?? '')
   const versionId = String(env.CF_VERSION_METADATA?.id ?? '')
@@ -195,7 +201,8 @@ export async function createPostVerifyTaskCheckpoints(env: Bindings, input: {
     } = {}): Promise<PostVerifyTaskResult> {
       await assertAuthority()
       const key = PREFIX + await digest({ identity, task, predecessor })
-      const old = await db.prepare('SELECT state,receipt_json FROM post_verify_task_receipts_v1 WHERE receipt_key=?').bind(key).first<Row>()
+      const old = await db.prepare(`SELECT state,receipt_json,CAST((julianday('now')-julianday(updated_at))*86400 AS INTEGER) AS age_seconds
+        FROM post_verify_task_receipts_v1 WHERE receipt_key=?`).bind(key).first<Row & { age_seconds: number | null }>()
       if (old && [SUCCESS, ERROR].includes(old.state)) {
         const receipt = JSON.parse(old.receipt_json) as Receipt
         if (JSON.stringify(receipt.identity) !== JSON.stringify(identity) || receipt.task !== task
@@ -203,7 +210,9 @@ export async function createPostVerifyTaskCheckpoints(env: Bindings, input: {
             || receipt.checksum !== await digest({ ...receipt, checksum: undefined })) {
           throw new Error(`post_verify_checkpoint_corrupt:${task}`)
         }
-        const verified = old.state !== SUCCESS || !options.verifyResult || await options.verifyResult(receipt.result)
+        const fresh = (input.hop ?? 0) > 0 && typeof old.age_seconds === 'number'
+          && old.age_seconds >= 0 && old.age_seconds < POST_VERIFY_FRESH_RECEIPT_SECONDS
+        const verified = old.state !== SUCCESS || !options.verifyResult || fresh || await options.verifyResult(receipt.result)
         if (!verified) {
           if (!options.retrySafe) {
             if(options.critical===false){

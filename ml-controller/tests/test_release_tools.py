@@ -121,6 +121,34 @@ def test_plan_diffs_against_live_and_fails_closed_off_main(monkeypatch):
     assert release.plan('changed', live)['controller'] == 'false'
 
 
+def test_live_controller_sha_retries_once_past_a_cold_start(monkeypatch):
+    calls = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return json.dumps({'provenance': {'sourceSha': SHA}}).encode()
+
+    def urlopen(request, timeout):
+        calls.append(timeout)
+        if len(calls) == 1:
+            raise TimeoutError('The read operation timed out')
+        return Response()
+
+    monkeypatch.setattr(release.urllib.request, 'urlopen', urlopen)
+    assert release.live_controller_sha() == SHA
+    assert calls == [30, 30]
+    calls.clear()
+    monkeypatch.setattr(release.urllib.request, 'urlopen', lambda request, timeout: (_ for _ in ()).throw(TimeoutError('down')))
+    with pytest.raises(TimeoutError):
+        release.live_controller_sha()
+
+
 def test_import_list_is_generated_from_source():
     native = (ROOT / 'ml-controller/services/native_paper_sandbox.py').read_text(encoding='utf-8')
     members = build.native_pipeline_members(native)

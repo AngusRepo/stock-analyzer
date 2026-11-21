@@ -200,6 +200,8 @@ class BacktestDataset:
 
     # Optional sealed daily source component; absence is not proof of no action.
     corporate_sources: dict[str, dict] = field(default_factory=dict)
+    # Research-history datasets only: accounting assumption used when params carry none.
+    research_accounting: Optional[dict[str, str]] = None
     replay_frames: Optional[dict[str, pl.DataFrame]] = field(default=None, repr=False)
 
     # Lazy-computed universe cache — point-in-time tradable set per date
@@ -420,7 +422,47 @@ class BacktestDataset:
         symbols: Optional[list[str]] = None,
         business_date: Optional[str] = None,
         mode: ResearchDataMode | None = None,
+        corporate_history: bool = False,
     ) -> tuple["BacktestDataset", dict[str, Any]]:
+        """Research replay inputs.
+
+        corporate_history=True reads reconstructed economic history
+        (`ga_research_dataset` with `corporate_history_records`) instead of the
+        live Paper receipts, which only cover Paper's own holdings. It needs an
+        immutable snapshot (D1 has no history tape) and drops issuers whose
+        terms are unresolved; the exclusion report rides in the access dict.
+        """
+        if corporate_history:
+            if mode not in (None, "snapshot", "auto"):
+                # A configuration error, not a snapshot that may still arrive.
+                raise ValueError(f"corporate_history_requires_snapshot:{mode}")
+            from services.research_corporate_history import COMPONENT, OWNER, RESEARCH_ACCOUNTING_DEFAULTS
+            from services.research_corporate_preflight import exclude_history_blocked_symbols
+            data_access = resolve_research_data_access(
+                lane=lane,
+                kind="ga_research_dataset",
+                business_date=business_date or end_date,
+                required_start_date=start_date,
+                required_end_date=end_date,
+                mode="snapshot",
+                required_components=("signals", COMPONENT),
+            )
+            dataset = cls.load_from_snapshot_manifest(
+                manifest=data_access.snapshot,
+                start_date=start_date,
+                end_date=end_date,
+                symbols=symbols,
+                allow_corporate_history=True,
+            )
+            if any(s.get("schema_version") != OWNER for s in dataset.corporate_sources.values()):
+                raise ValueError("corporate_history_tape_not_loaded")
+            # Search params stay untouched (nothing here can reach a KV push).
+            dataset.research_accounting = dict(RESEARCH_ACCOUNTING_DEFAULTS)
+            access = data_access.to_dict()
+            access["corporate_source"] = COMPONENT
+            access["research_accounting_assumption"] = dict(RESEARCH_ACCOUNTING_DEFAULTS)
+            access["corporate_history_exclusion"] = exclude_history_blocked_symbols(dataset, start_date, end_date)
+            return dataset, access
         data_access = resolve_research_data_access(
             lane=lane,
             kind="backtest_dataset",
@@ -845,6 +887,11 @@ class BacktestDataset:
     # ─────────────────────────────────────────────────────────────────────────
     # Accessors (hot path — replay loop calls these every day for every stock)
     # ─────────────────────────────────────────────────────────────────────────
+    def exclude_symbols(self, symbols: set[str]) -> None:
+        """Remove symbols from the tradable universe; their price bars stay for reference reads."""
+        self.stocks = self.stocks.filter(~pl.col("symbol").is_in(sorted(symbols)))
+        self._universe_cache = {}
+
     def get_universe_at(self, date: str) -> set[str]:
         """
         Point-in-time tradable universe for a given date.
@@ -5115,9 +5162,12 @@ def replay_period(
         attempts = []
         # Step 0: T+2 settle matured settlements
         account.settle_matured(day)
+        # Per key: an explicit params choice wins over the dataset's research default.
+        accounting = {**(getattr(dataset, 'research_accounting', None) or {}),
+                      **(params.get('researchAccounting') or {})}
         _apply_daily_corporate(account, dataset, day,
-            research_cash_mode=(params.get('researchAccounting') or {}).get('cashRoundingMode'),
-            research_subscription_policy=(params.get('researchAccounting') or {}).get('subscriptionPolicy'))
+            research_cash_mode=accounting.get('cashRoundingMode'),
+            research_subscription_policy=accounting.get('subscriptionPolicy'))
 
         # Step 1: exit sweep on existing positions
         trades_today = step_all_positions(account, dataset, day, exit_p, fees_p, replay_days)

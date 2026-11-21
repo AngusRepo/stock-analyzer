@@ -69,6 +69,9 @@ function shiftUtcDate(date: string, days: number): string {
 const ELIGIBILITY_SUMMARY_USABLE = matrixRunSummaryUsableInline('mr', MATRIX_RUN_SUMMARY_CHALLENGER_VERSION)
 // Canonical heads per eligibility statement; see auditStrategyRouteBackfillEligibility.
 export const ROUTE_ELIGIBILITY_HEADS_PER_STATEMENT = 4
+// Pages run back to back otherwise: ~21 pages of up to ~1.8 s right after the finalizer's label and reward writes
+// kept learning-db busy past its 10 s resource window (11/21 manual 11-10 finalize).
+export const ROUTE_ELIGIBILITY_PAGE_PAUSE_MS = 1_000
 
 export async function projectStrategyRouteMaturity(
   rows: StrategyRouteBackfillEligibility[],
@@ -176,7 +179,7 @@ export async function projectStrategyRouteMaturity(
 export async function auditStrategyRouteBackfillEligibility(
   db: D1Database,
   asOfDate: string,
-  options: { startDate?: string; persist?: boolean; canonicalRunIds?: Record<string, string> } = {},
+  options: { startDate?: string; persist?: boolean; canonicalRunIds?: Record<string, string>; pagePauseMs?: number } = {},
 ): Promise<StrategyRouteBackfillEligibility[]> {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(asOfDate)) throw new Error(`invalid_strategy_route_eligibility_date:${asOfDate}`)
   const startDate = /^\d{4}-\d{2}-\d{2}$/.test(String(options.startDate ?? ''))
@@ -288,7 +291,9 @@ export async function auditStrategyRouteBackfillEligibility(
   `
   const heads = Object.entries(canonicalRunIds)
   const rows: EligibilityRow[] = []
+  const pagePauseMs = options.pagePauseMs ?? ROUTE_ELIGIBILITY_PAGE_PAUSE_MS
   for (let offset = 0; offset < heads.length; offset += ROUTE_ELIGIBILITY_HEADS_PER_STATEMENT) {
+    if (offset > 0 && pagePauseMs > 0) await new Promise((resolve) => setTimeout(resolve, pagePauseMs))
     const page = Object.fromEntries(heads.slice(offset, offset + ROUTE_ELIGIBILITY_HEADS_PER_STATEMENT))
     const result = await db.prepare(sql).bind(
       JSON.stringify(page),

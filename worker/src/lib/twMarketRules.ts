@@ -14,19 +14,25 @@ export function getTwTickSize(price: number): number {
   return price < 10 ? 0.01 : price < 50 ? 0.05 : price < 100 ? 0.1 : price < 500 ? 0.5 : price < 1000 ? 1 : 5
 }
 
+// In tick units: absorbs binary float noise (8.16 -> 815.99999…) but keeps real
+// sub-tick remainders (8.154 -> 815.4), so ceil/floor never round to cents first.
+const TW_TICK_SNAP_EPSILON = 1e-6
+
 export function snapToTwPriceTick(price: number, mode: TwPriceSnapMode): number {
   const numericPrice = Number(price)
   if (!Number.isFinite(numericPrice) || numericPrice <= 0) return 0
 
+  // The input's band tick is also right for the result: every band boundary
+  // (10/50/100/500/1000) is a multiple of both adjacent ticks.
   const tick = getTwTickSize(numericPrice)
-  const scaledPrice = Math.round(numericPrice * 100)
   const scaledTick = Math.max(1, Math.round(tick * 100))
+  const tickUnits = (numericPrice * 100) / scaledTick
   const units =
     mode === 'ceil'
-      ? Math.ceil(scaledPrice / scaledTick)
+      ? Math.max(0, Math.ceil(tickUnits - TW_TICK_SNAP_EPSILON))
       : mode === 'nearest'
-        ? Math.round(scaledPrice / scaledTick)
-        : Math.floor(scaledPrice / scaledTick)
+        ? Math.round(Math.round(numericPrice * 100) / scaledTick)
+        : Math.floor(tickUnits + TW_TICK_SNAP_EPSILON)
 
   return Math.round(units * scaledTick) / 100
 }
@@ -34,7 +40,12 @@ export function snapToTwPriceTick(price: number, mode: TwPriceSnapMode): number 
 export function isValidTwTickPrice(price: number): boolean {
   const numericPrice = Number(price)
   if (!Number.isFinite(numericPrice) || numericPrice <= 0) return false
-  return Math.abs(snapToTwPriceTick(numericPrice, 'nearest') - numericPrice) < 0.000001
+  // Same arithmetic as snapToTwPriceTick: valid exactly when ceil and floor agree,
+  // so a valid price snaps to one legal tick in every mode.
+  const scaledTick = Math.max(1, Math.round(getTwTickSize(numericPrice) * 100))
+  const tickUnits = (numericPrice * 100) / scaledTick
+  const units = Math.ceil(tickUnits - TW_TICK_SNAP_EPSILON)
+  return units >= 1 && units === Math.floor(tickUnits + TW_TICK_SNAP_EPSILON)
 }
 
 export function normalizeTwLimitPrice(price: number, side: 'buy' | 'sell'): number {

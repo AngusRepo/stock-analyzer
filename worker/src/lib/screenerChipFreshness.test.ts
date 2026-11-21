@@ -36,8 +36,8 @@ test('C28-18: chips are stale when their latest date trails the latest price ses
     latestInstitutionalChipDate: '2026-10-28', latestBrokerFlowDate: '2026-10-28', priceMaxDate: '2026-10-28',
     institutionalStaleSessions: 0, brokerFlowStaleSessions: 0, staleSessions: 0, stale: false,
   })
-  // One session behind (legacy names count as institutional too).
-  const behind = screenerChipFreshness([chip('2026-10-27', '外資'), chip('2026-10-28', 'broker_flow')], sessions)
+  // One session behind (legacy chip_data fills arrive under the same English names).
+  const behind = screenerChipFreshness([chip('2026-10-27', 'trust'), chip('2026-10-28', 'broker_flow')], sessions)
   assert.equal(behind.stale, true)
   assert.equal(behind.institutionalStaleSessions, 1)
   assert.equal(behind.staleSessions, 1)

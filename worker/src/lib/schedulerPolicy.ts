@@ -1,3 +1,5 @@
+import { resolveReportDeliveryChannel, type ReportDeliveryEnv } from './reportDeliveryChannel'
+
 type SchedulerPolicyKind = 'trading_day' | 'trading_week' | 'maintenance' | 'research' | 'queue'
 
 export interface SchedulerTaskPolicy {
@@ -477,9 +479,7 @@ export interface TwTradingSession {
   adHocCheck: 'closed' | 'cached_closed' | 'open' | 'cached_open' | 'unavailable' | 'not_needed'
 }
 
-export interface TradingSessionAlertEnv {
-  DISCORD_WEBHOOK_URL?: string
-}
+export type TradingSessionAlertEnv = ReportDeliveryEnv
 
 async function alertAdHocCheckUnavailable(
   kv: KVNamespace,
@@ -487,25 +487,19 @@ async function alertAdHocCheckUnavailable(
   error: unknown,
   env: TradingSessionAlertEnv | undefined,
 ): Promise<void> {
-  if (!env?.DISCORD_WEBHOOK_URL) return
+  if (!env || resolveReportDeliveryChannel(env) === 'not_sent:no_channel_configured') return
   const dedupKey = `cron:alert:twse-adhoc-closure-check:${twDate}`
   try {
     if (await kv.get(dedupKey)) return
     // Claim before sending: a failing webhook must not re-alert on every run.
     await kv.put(dedupKey, '1', { expirationTtl: 86400 })
-    await fetch(env.DISCORD_WEBHOOK_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        content: [
-          `Scheduler Warn: TWSE ad-hoc closure check unavailable (\`twse-adhoc-closure-check\`)`,
-          `Date: ${twDate}`,
-          `Error: \`${String(error instanceof Error ? error.message : error).slice(0, 300)}\``,
-          `Runs continue as a trading day. If TWSE announced a closure, set holiday:${twDate}.`,
-        ].join('\n'),
-      }),
-      signal: AbortSignal.timeout(5000),
-    })
+    const { sendOperatorAlert } = await import('./operatorAlert')
+    await sendOperatorAlert(env, [
+      `Scheduler Warn: TWSE ad-hoc closure check unavailable (\`twse-adhoc-closure-check\`)`,
+      `Date: ${twDate}`,
+      `Error: \`${String(error instanceof Error ? error.message : error).slice(0, 300)}\``,
+      `Runs continue as a trading day. If TWSE announced a closure, set holiday:${twDate}.`,
+    ].join('\n'))
   } catch {
     // Alerting must never block the run.
   }

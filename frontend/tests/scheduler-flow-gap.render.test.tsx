@@ -79,3 +79,10 @@ test('U11: the skipped and attention connector states have their own styles', ()
     assert.ok(css.includes(`.obs-chain__connector.is-${state} {`), `connector is-${state} needs a style`)
   }
 })
+
+test('feature stage card shows its sub-job wait only when one was recorded', () => {
+  const card = job('pipeline-features', { stageCard: true, stageElapsed: '23分24秒', lastDuration: '23分24秒', stageSubJobWait: '11分48秒' })
+  const html = renderToStaticMarkup(<JobRunTiming job={card} />)
+  assert.match(html, /已記錄執行.*23分24秒.*其中子作業等待.*11分48秒/)
+  assert.doesNotMatch(renderToStaticMarkup(<JobRunTiming job={{ ...card, stageSubJobWait: undefined }} />), /子作業等待/)
+})

@@ -31,5 +31,6 @@ export default function JobRunTiming({ job }: { job?: SchedulerJob }) {
     <span><span className="obs-job-timing__label">{job?.stageCard ? '已記錄執行' : triggerOnly ? '總耗時' : '耗時'}</span>
       <span className="sv-num" title={triggerOnly ? `目前只有啟動回報 ${job?.lastDuration ?? 'N/A'}，無完整執行耗時` : job?.durationConcernReason}>{duration}</span>
     </span>
+    {job?.stageCard && job.stageSubJobWait && <span><span className="obs-job-timing__label">其中子作業等待</span><span className="sv-num">{job.stageSubJobWait}</span></span>}
   </span>
 }

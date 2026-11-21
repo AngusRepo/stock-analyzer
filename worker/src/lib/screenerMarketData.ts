@@ -272,6 +272,61 @@ export function canonicalChipRowsToFmChips(
   return chips
 }
 
+export interface LegacyChipDataRow {
+  symbol: string
+  date: string
+  foreign_buy: number | null
+  foreign_sell: number | null
+  trust_buy: number | null
+  trust_sell: number | null
+  dealer_buy: number | null
+  dealer_sell: number | null
+}
+
+export function chipStockDateKey(stockId: string, date: string): string {
+  return `${stockId}|${date}`
+}
+
+/**
+ * (stock,date) pairs canonical_chip_daily reports institutional flow for. Built from the query rows, not
+ * from the converted chips: netToChip drops zero nets, and a zero-net canonical day is still covered.
+ * Foreign/trust decide coverage: the FinLab materializer writes dealer_net as a non-null 0 on margin-only rows.
+ */
+export function canonicalInstitutionalKeys(rows: readonly CanonicalChipRow[]): Set<string> {
+  const keys = new Set<string>()
+  for (const row of rows) {
+    if (row.foreign_net == null && row.trust_net == null) continue
+    keys.add(chipStockDateKey(String(row.stock_id), String(row.date)))
+  }
+  return keys
+}
+
+/**
+ * Legacy chip_data only fills (stock,date) pairs canonical lacks entirely, under the canonical English names
+ * so the filled day counts in scoring. Dates before the canonical window were not queried there, so they are
+ * not filled either while canonical has any date.
+ */
+export function legacyChipRowsToFallbackChips(
+  rows: readonly LegacyChipDataRow[],
+  canonicalKeys: ReadonlySet<string>,
+  canonicalMinDate: string | null,
+): CanonicalScreenerChip[] {
+  const chips: CanonicalScreenerChip[] = []
+  for (const row of rows) {
+    if (canonicalMinDate && row.date < canonicalMinDate) continue
+    if (canonicalKeys.has(chipStockDateKey(String(row.symbol), String(row.date)))) continue
+    for (const [name, buy, sell] of [
+      ['foreign', row.foreign_buy, row.foreign_sell],
+      ['trust', row.trust_buy, row.trust_sell],
+      ['dealer', row.dealer_buy, row.dealer_sell],
+    ] as const) {
+      if (buy == null && sell == null) continue
+      chips.push({ date: row.date, stock_id: row.symbol, name, buy: buy ?? 0, sell: sell ?? 0, source: 'legacy.chip_data' })
+    }
+  }
+  return chips
+}
+
 export function mergeCanonicalFirstChips(canonical: CanonicalScreenerChip[], fallback: CanonicalScreenerChip[]): CanonicalScreenerChip[] {
   const seen = new Set<string>()
   const merged: CanonicalScreenerChip[] = []
@@ -295,9 +350,18 @@ async function loadCanonicalChipsFromD1(
   maxAllowedDate: string,
   chipLookback: number,
   chipDays: number,
-): Promise<{ chips: CanonicalScreenerChip[]; sourceSummary: Record<string, number> }> {
+): Promise<{
+  chips: CanonicalScreenerChip[]
+  brokerChips: CanonicalScreenerChip[]
+  sourceSummary: Record<string, number>
+  institutionalKeys: Set<string>
+  institutionalMinDate: string | null
+}> {
   const chips: CanonicalScreenerChip[] = []
+  const brokerChips: CanonicalScreenerChip[] = []
   const sourceSummary: Record<string, number> = {}
+  let institutionalKeys = new Set<string>()
+  let institutionalMinDate: string | null = null
 
   try {
     const { results: canonicalDates } = await db.prepare(
@@ -331,6 +395,9 @@ async function loadCanonicalChipsFromD1(
         ).bind(dates[0], dates[dates.length - 1]).all<CanonicalChipRow>()
         results = response.results ?? []
       }
+      institutionalKeys = canonicalInstitutionalKeys(results)
+      // Only a LIMIT-truncated window leaves older canonical dates unqueried.
+      institutionalMinDate = dates.length >= chipDays ? dates[0] : null
       for (const chip of canonicalChipRowsToFmChips(results ?? [])) {
         chips.push(chip)
         const source = chip.source ?? 'canonical_chip_daily'
@@ -357,7 +424,7 @@ async function loadCanonicalChipsFromD1(
          WHERE date >= ? AND date <= ?`,
       ).bind(dates[0], dates[dates.length - 1]).all<CanonicalBrokerFlowRow>()
       for (const chip of canonicalChipRowsToFmChips([], results ?? [])) {
-        chips.push(chip)
+        brokerChips.push(chip)
         const source = chip.source ?? 'canonical_broker_flow_daily'
         sourceSummary[source] = (sourceSummary[source] ?? 0) + 1
       }
@@ -366,7 +433,7 @@ async function loadCanonicalChipsFromD1(
     // Optional broker lineage table. Missing table must not break listed/OTC scoring.
   }
 
-  return { chips, sourceSummary }
+  return { chips, brokerChips, sourceSummary, institutionalKeys, institutionalMinDate }
 }
 
 const SCREENER_PRICE_DATE_PAGE_SIZE = 5
@@ -513,7 +580,7 @@ export interface ScreenerChipFreshness {
   stale: boolean
 }
 
-const INSTITUTIONAL_CHIP_NAMES = new Set(['foreign', 'trust', 'dealer', '外資', '投信'])
+const INSTITUTIONAL_CHIP_NAMES = new Set(['foreign', 'trust', 'dealer'])
 
 export function screenerChipFreshness(chips: readonly CanonicalScreenerChip[], tradingDates: readonly string[]): ScreenerChipFreshness {
   let latestInstitutionalChipDate: string | null = null
@@ -637,13 +704,19 @@ export async function loadMarketDataFromD1(
   ).bind(maxAllowedDate, maxAllowedDate, chipDays).all<{ date: string }>()
   const chipDates = (chipDateRows ?? []).map((r) => r.date).sort()
 
-  const { chips: canonicalChips, sourceSummary: canonicalChipSources } = await loadCanonicalChipsFromD1(
+  const {
+    chips: canonicalChips,
+    brokerChips: canonicalBrokerChips,
+    sourceSummary: canonicalChipSources,
+    institutionalKeys: canonicalInstitutional,
+    institutionalMinDate: canonicalInstitutionalMinDate,
+  } = await loadCanonicalChipsFromD1(
     marketDb,
     maxAllowedDate,
     chipLookback,
     chipDays,
   )
-  const fallbackChips: CanonicalScreenerChip[] = []
+  let fallbackChips: CanonicalScreenerChip[] = []
   if (chipDates.length) {
     const minChipDate = chipDates[0]
     const maxChipDate = chipDates[chipDates.length - 1]
@@ -653,49 +726,15 @@ export async function loadMarketDataFromD1(
        FROM chip_data
        WHERE date >= ? AND date <= ?`,
     ).bind(minChipDate, maxChipDate)
-     .all<{ symbol: string; date: string;
-            foreign_buy: number | null; foreign_sell: number | null;
-            trust_buy: number | null; trust_sell: number | null;
-            dealer_buy: number | null; dealer_sell: number | null }>()
+     .all<LegacyChipDataRow>()
 
-    for (const row of (chipRows ?? [])) {
-      if (row.foreign_buy != null || row.foreign_sell != null) {
-        fallbackChips.push({
-          date: row.date,
-          stock_id: row.symbol,
-          name: '外資',
-          buy: row.foreign_buy ?? 0,
-          sell: row.foreign_sell ?? 0,
-          source: 'legacy.chip_data',
-        })
-      }
-      if (row.trust_buy != null || row.trust_sell != null) {
-        fallbackChips.push({
-          date: row.date,
-          stock_id: row.symbol,
-          name: '投信',
-          buy: row.trust_buy ?? 0,
-          sell: row.trust_sell ?? 0,
-          source: 'legacy.chip_data',
-        })
-      }
-      if (row.dealer_buy != null || row.dealer_sell != null) {
-        fallbackChips.push({
-          date: row.date,
-          stock_id: row.symbol,
-          name: 'dealer',
-          buy: row.dealer_buy ?? 0,
-          sell: row.dealer_sell ?? 0,
-          source: 'legacy.chip_data',
-        })
-      }
-    }
+    fallbackChips = legacyChipRowsToFallbackChips(chipRows ?? [], canonicalInstitutional, canonicalInstitutionalMinDate)
   }
-  const allChips = mergeCanonicalFirstChips(canonicalChips, fallbackChips)
-  const canonicalKeys = new Set(canonicalChips.map(chipIdentity))
+  // Broker rows go last: buildStockData keeps the last source per day, and brokerEstimatedAmountTwd needs the
+  // broker lineage even on a day legacy fills. Names differ, so the order does not change dedup.
+  const allChips = mergeCanonicalFirstChips(canonicalChips, [...fallbackChips, ...canonicalBrokerChips])
   const chipSourceSummary = { ...canonicalChipSources }
   for (const chip of fallbackChips) {
-    if (canonicalKeys.has(chipIdentity(chip))) continue
     const source = chip.source ?? 'legacy.chip_data'
     chipSourceSummary[source] = (chipSourceSummary[source] ?? 0) + 1
   }

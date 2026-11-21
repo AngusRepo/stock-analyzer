@@ -2,6 +2,8 @@
  * schedulerRunLogger.ts - Scheduler run result persistence and alerting
  */
 
+import { resolveReportDeliveryChannel, type ReportDeliveryEnv } from './reportDeliveryChannel'
+
 export type SchedulerRunStatus = 'success' | 'error' | 'blocked' | 'skipped' | 'triggered' | 'running' | 'waiting'
 
 export interface SchedulerRunLogEntry {
@@ -323,7 +325,7 @@ export async function logSchedulerRunResult(
   kv: KVNamespace,
   task: string,
   result: SchedulerRunResultInput,
-  env?: { DISCORD_WEBHOOK_URL?: string },
+  env?: ReportDeliveryEnv,
 ): Promise<void> {
   const requestedDate = String(result.run_date ?? result.date ?? '').trim()
   const today = /^\d{4}-\d{2}-\d{2}$/.test(requestedDate)
@@ -376,7 +378,7 @@ export async function logSchedulerRunResult(
     if (result.strict) throw error
   }
 
-  if (result.status === 'error' && env?.DISCORD_WEBHOOK_URL) {
+  if (result.status === 'error' && env && resolveReportDeliveryChannel(env) !== 'not_sent:no_channel_configured') {
     const critical = new Set(['pipeline', 'ml-predict', 'ml', 'recommendation', 'morning-setup', 'paper-trade', 'verify-v2'])
     const dedupKey = `cron:alert:${task}:${today}`
 
@@ -392,12 +394,8 @@ export async function logSchedulerRunResult(
           incoming.error ? `Error: \`${String(incoming.error).slice(0, 300)}\`` : null,
         ].filter(Boolean).join('\n')
 
-        await fetch(env.DISCORD_WEBHOOK_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ content: message }),
-          signal: AbortSignal.timeout(5000),
-        }).catch(() => {})
+        const { sendOperatorAlert } = await import('./operatorAlert')
+        await sendOperatorAlert(env, message).catch(() => {})
 
         await kv.put(dedupKey, '1', { expirationTtl: 86400 }).catch(() => {})
       }

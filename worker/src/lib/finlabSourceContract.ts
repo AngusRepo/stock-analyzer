@@ -43,6 +43,10 @@ export function finLabLatePublicationFields(): string[] {
   return Object.values(FINLAB_SOURCE_CONTRACT.lanes ?? {}).flatMap((lane) => lane.late_publication?.fields ?? [])
 }
 
+export function finLabLatePublicationFieldsForLane(lane: string): string[] {
+  return FINLAB_SOURCE_CONTRACT.lanes?.[lane]?.late_publication?.fields ?? []
+}
+
 export function finLabLateRetryCutoffTw(): string {
   const cutoffs = [...new Set(Object.values(FINLAB_SOURCE_CONTRACT.lanes ?? {})
     .map((lane) => lane.late_publication?.retry_cutoff_tw)

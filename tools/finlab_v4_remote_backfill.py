@@ -1782,6 +1782,67 @@ def composition_seal_allowed(blockers: Iterable[dict[str, Any]], failed_datasets
         isinstance(blocker, dict) and blocker.get("lane") in sealable for blocker in blockers or [])
 
 
+LATE_PUBLICATION_READY_STATUSES = frozenset({"ok", "skipped_reused"})
+
+
+def late_publication_not_ready(reports: Iterable[dict[str, Any]], blockers: Iterable[dict[str, Any]], *,
+                               expected_fields: dict[str, Iterable[str]] | None = None) -> str | None:
+    """C28-25 (ii): with the composition skipped, nothing checks the contract's late-published fields, and a
+    lane that is not blocked itself would apply its target-date rows with those fields NULL. Name the lane as
+    not ready instead, the same late-lane retry the composition's market-dates check leads to.
+
+    expected_fields names, per lane, the late fields this run fetched and will write. A fetch that raised
+    (failed / schema_mismatch) or left no report is not ready either: the canonical upsert writes every
+    column, so applying without them would NULL the whole window's margin/short, prior days included.
+    Without expected_fields only the reported late fields are checked."""
+    reports = [report for report in reports or [] if isinstance(report, dict)]
+    blocked = {str(blocker.get("lane") or "") for blocker in blockers or [] if isinstance(blocker, dict)}
+    lanes = expected_fields if expected_fields is not None else {
+        lane: (meta.get("late_publication") or {}).get("fields") or [] for lane, meta in FINLAB_SOURCE_LANES.items()}
+    for lane, lane_fields in lanes.items():
+        if lane in blocked:
+            continue
+        late = set((FINLAB_SOURCE_LANES.get(lane, {}).get("late_publication") or {}).get("fields") or [])
+        fields = sorted(set(lane_fields or []) & late)
+        lane_reports = [report for report in reports if report.get("lane") == lane and report.get("field") in late]
+        not_ready = [report for report in lane_reports if report.get("status") not in LATE_PUBLICATION_READY_STATUSES]
+        unreported = [field for field in fields if expected_fields is not None
+                      and not any(report.get("field") == field for report in lane_reports)]
+        if not_ready or unreported:
+            latest = max((str(report.get("latest_date") or "") for report in not_ready), default="") or "none"
+            target = next((report.get("target_date") for report in reports
+                           if report.get("lane") == lane and report.get("target_date")), None)
+            statuses = sorted({str(report.get("status") or "unknown") for report in not_ready}
+                              | ({"no_report"} if unreported else set()))
+            return (f"finlab_source_not_ready lane={lane} "
+                    f"fields={','.join(sorted({str(report['field']) for report in not_ready} | set(unreported)))} "
+                    f"target_date={target} latest={latest} statuses={','.join(statuses)} "
+                    f"composition_blocked_lanes={','.join(sorted(blocked - {''})) or 'unknown'}")
+    return None
+
+
+def late_publication_fields_to_write(*, requested_lanes: Iterable[str], key_scope: dict[str, set[str]],
+                                     canonical_datasets: Iterable[str] | None,
+                                     blockers: Iterable[dict[str, Any]]) -> dict[str, list[str]]:
+    """Late fields, per lane run here, whose canonical dataset this run will actually upsert:
+    a run that writes none of a late lane's datasets needs no late-lane verdict (the blockers already make
+    it partial_failed)."""
+    requested = set(requested_lanes or []) | set(key_scope or {})
+    datasets = set(canonical_datasets or [])
+    blocked = canonical_datasets_for_source_key_blockers(blockers)
+    out: dict[str, list[str]] = {}
+    for spec in CORE_SPECS:
+        late = (FINLAB_SOURCE_LANES.get(spec.lane, {}).get("late_publication") or {}).get("fields") or []
+        if not late or (requested and spec.lane not in requested) or (key_scope and spec.lane not in key_scope):
+            continue
+        if not (set(FINLAB_CANONICAL_DATASETS_BY_LANE.get(spec.lane, [])) & datasets) - blocked:
+            continue
+        # Every late field, not only the key-scoped ones: the chip upsert writes all its columns, so a
+        # foreign_net-only retry without a margin artifact (fetched or reused) would NULL margin/short too.
+        out[spec.lane] = list(late)
+    return out
+
+
 def reuse_sealed_daily_inference_head(bucket, business_date: str | None, run_id: str) -> dict[str, Any]:
     """A lane repair without composition inputs may only point at a head sealed by this same run_id:
     the sequence refresh after a success callback reads the price vintage under the callback's run prefix."""
@@ -2574,6 +2635,7 @@ def materialize_specs(
         if spec.kind == "wide_fields":
             field_frames: dict[str, pd.DataFrame] = {}
             unsliced_frames: dict[str, pd.DataFrame] = {}
+            reused_fields: set[str] = set()
             chip_pit_fields = chip_pit_lane_fields_soft(spec.lane, chip_pit_errors) if chip_pit_daily else ()
             if spec.lane == "daily_price":
                 # Daily raw prices are clipped to one date. Keep source-calendar
@@ -2597,6 +2659,7 @@ def materialize_specs(
                     gcs_bucket=gcs_bucket,
                     gcs_prefix=gcs_prefix,
                 )
+                reused_fields = {str(artifact.get("field") or "") for artifact in reused_artifacts}
                 artifacts.extend(reused_artifacts)
                 source_key_reports.extend(reused_reports)
                 for artifact in reused_artifacts:
@@ -2717,7 +2780,9 @@ def materialize_specs(
                 write_training_auxiliary_vintage(unsliced_frames, lane=spec.lane, run_dir=run_dir,
                     years=years, end_date=source_end_date,
                     start_date=training_capture_start_date if daily_refresh else start,
-                    requested_fields=set(spec_keys)&set(TRAINING_AUX_FIELDS[spec.lane]))
+                    # A reused artifact is the clipped daily-tail frame, never the full vendor window this
+                    # vintage preserves; it was sealed by the capture that fetched it, so it is not requested here.
+                    requested_fields=(set(spec_keys)&set(TRAINING_AUX_FIELDS[spec.lane])) - reused_fields)
             field_errors = required_wide_field_errors(
                 spec.lane,
                 field_frames,
@@ -4406,6 +4471,14 @@ def main() -> int:
 
     # A daily canonical success must also provide all inference inputs for the
     # same capture; never leave the pipeline relying on a manually dated registry.
+    if args.daily_refresh and not composition_seal_allowed(source_key_blockers):
+        late_fields = late_publication_fields_to_write(
+            requested_lanes=requested_lanes, key_scope=key_scope, blockers=source_key_blockers,
+            canonical_datasets=(parse_canonical_datasets(args.canonical_datasets)
+                                if args.apply_canonical_d1 and not args.canonical_dry_run else ()))
+        late_lane = late_publication_not_ready(source_key_reports, source_key_blockers, expected_fields=late_fields)
+        if late_lane:
+            raise ValueError(late_lane)
     if args.daily_refresh and composition_seal_allowed(source_key_blockers):
         if not args.gcs_bucket:
             raise ValueError("daily_inference_composition_requires_gcs_bucket")

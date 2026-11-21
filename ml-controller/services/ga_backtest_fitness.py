@@ -27,8 +27,10 @@ class BacktestFitness:
         self.dataset, self.baseline = dataset, deepcopy(baseline)
         if any(s.get('schema_version') == 'research-corporate-history-v1'
                for s in getattr(dataset, 'corporate_sources', {}).values()):
-            self.baseline.setdefault('researchAccounting', {}).setdefault('cashRoundingMode', 'exact_accrual')
-            self.baseline['researchAccounting'].setdefault('subscriptionPolicy', 'do_not_subscribe_zero_value')
+            from services.research_corporate_history import RESEARCH_ACCOUNTING_DEFAULTS
+            accounting = self.baseline.setdefault('researchAccounting', {})
+            for key, value in RESEARCH_ACCOUNTING_DEFAULTS.items():
+                accounting.setdefault(key, value)
         self.split, self.snapshot, self.replay = split, deepcopy(snapshot), replay
         self.cache = {}
         self.replays = 0

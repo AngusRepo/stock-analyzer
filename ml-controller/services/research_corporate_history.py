@@ -15,6 +15,11 @@ from services.paper_corporate_source import validate_source_schema
 
 OWNER = 'research-corporate-history-v1'
 COMPONENT = 'corporate_history_records'
+# Reconstructed history has no issuer rounding or subscription decision for most
+# events. Research replays on it assume exact cash accrual and no zero-value
+# subscription; a replay reports this assumption, never a Paper receipt.
+RESEARCH_ACCOUNTING_DEFAULTS = {'cashRoundingMode': 'exact_accrual',
+                                'subscriptionPolicy': 'do_not_subscribe_zero_value'}
 
 
 class CorporateHistoryGap(ValueError):

@@ -2151,11 +2151,21 @@ def materialize_finlab_canonical_outputs(
     generated_at: str | None = None,
     datasets: Iterable[str] | None = None,
     include_emerging: bool = True,
+    symbols: Iterable[str] | None = None,
 ) -> FinLabCanonicalOutputs:
     root = Path(artifact_root)
     timestamp = generated_at or utc_now()
     rid = run_id or root.name
     dataset_filter = {str(name).strip() for name in datasets or [] if str(name).strip()}
+    # A symbol allowlist scopes only the stocks upsert; other datasets ignore it.
+    symbol_filter = None if symbols is None else {str(s).strip() for s in symbols if str(s).strip()}
+    if symbol_filter is not None:
+        if not symbol_filter:
+            raise ValueError("finlab_security_master_symbols_empty")
+        if dataset_filter != {"stocks"}:
+            raise ValueError("finlab_security_master_symbols_require_stocks_only")
+        if limit_per_dataset:
+            raise ValueError("finlab_security_master_symbols_conflict_with_limit")
 
     def wants(name: str) -> bool:
         return not dataset_filter or name in dataset_filter
@@ -2319,6 +2329,7 @@ def materialize_finlab_canonical_outputs(
     taxonomy = build_taxonomy_rows(root, generated_at=timestamp, limit=limit_per_dataset) if wants("finlab_taxonomy_tags") else []
     security_master = []
     venue_arbitration: dict[str, Any] | None = None
+    symbol_scope: dict[str, int] | None = None
     if wants("stocks"):
         from services.finlab_security_master import (normalize_security_master, normalize_etf_master,
             merge_security_masters, official_board_index)
@@ -2338,6 +2349,16 @@ def materialize_finlab_canonical_outputs(
             normalize_etf_master(etf_frame, etf_frame['__observed_at'][0]))
         if limit_per_dataset:
             security_master = security_master[:limit_per_dataset]
+        if symbol_filter is not None:
+            # Fail closed: every requested symbol must be in this capture.
+            missing = sorted(symbol_filter - {row["symbol"] for row in security_master})
+            if missing:
+                raise ValueError("finlab_security_master_symbols_missing:" + ",".join(missing))
+            source_rows = len(security_master)
+            security_master = [row for row in security_master if row["symbol"] in symbol_filter]
+            symbol_scope = {
+                "requested": len(symbol_filter), "written": len(security_master),
+                "skipped": source_rows - len(security_master), "source_rows": source_rows}
 
     output_rows: dict[str, list[dict[str, Any]]] = {}
     if wants("stocks"):
@@ -2380,11 +2401,15 @@ def materialize_finlab_canonical_outputs(
             "limit_per_dataset": limit_per_dataset,
             "datasets": sorted(dataset_filter) if dataset_filter else None,
             "include_emerging": include_emerging,
+            # Only when set: default filters (and receipt identities hashed from them) stay unchanged.
+            **({"symbols": sorted(symbol_filter)} if symbol_filter is not None else {}),
         },
         "row_counts": row_counts,
     }
     if venue_arbitration is not None:
         manifest["venue_arbitration"] = venue_arbitration
+    if symbol_scope is not None:
+        manifest["symbol_filter"] = symbol_scope
     manifest["checksum"] = sha256_json(manifest)
     return FinLabCanonicalOutputs(
         run_id=rid,

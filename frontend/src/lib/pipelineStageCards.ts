@@ -32,6 +32,24 @@ type Progress = NonNullable<SchedulerJob['pipelineProgress']>
 // FU8-A: progress belongs to the canonical run; the ticket runId is only a fallback for older payloads.
 const progressRunId = (parent: SchedulerJob) => parent.canonicalRunId ?? parent.runId
 const runHistory = (p: Progress) => Object.values(p.executions ?? {legacy:p.completed}).flat()
+/** Sub-job time (snapshot/prep) between controller executions: from an execution that yielded with a
+ *  'waiting' receipt to the next execution, only when that one resumes inside this card. The executions
+ *  map is already one run/date (Worker merges per canonical run; the caller checks run_id/run_date). */
+function subJobWaitMs(p: Progress, belongs: (phase: string) => boolean): number {
+  const ms=(v?: string|null)=>{const t=Date.parse(v??'');return Number.isFinite(t)?t:undefined}
+  const runs=Object.values(p.executions ?? {}).map(rows=>{
+    const first=rows.filter(r=>ms(r.started_at)!==undefined).sort((a,b)=>ms(a.started_at)!-ms(b.started_at)!)[0]
+    const last=rows.filter(r=>ms(r.completed_at)!==undefined).sort((a,b)=>ms(b.completed_at)!-ms(a.completed_at)!)[0]
+    return {first,last,key:ms(first?.started_at) ?? ms(last?.completed_at)}
+  }).filter(r=>r.key!==undefined).sort((a,b)=>a.key!-b.key!)
+  let total=0
+  for (let i=1;i<runs.length;i++) {
+    const prev=runs[i-1].last,next=runs[i].first
+    if (prev?.status!=='waiting' || !next || !belongs(next.phase)) continue
+    total+=Math.max(0,ms(next.started_at)!-ms(prev.completed_at)!)
+  }
+  return total
+}
 const isSealed = (parent: SchedulerJob) => /\bawaiting_premarket\b/.test(parent.summary) && /\bl3_sealed=true\b/.test(parent.summary)
 const isTerminal = (parent: SchedulerJob) => isSealed(parent) || ['failed','blocked','success'].includes(parent.lastStatus)
 /** A finished run's clocks stop at its last evidence instead of following the browser clock. */
@@ -96,11 +114,13 @@ export function pipelineStageCards(parent?: SchedulerJob, now=Date.now()): Sched
       :childRunning?(progress!.phase==='input_snapshot'?'快照匯出中':'特徵批次執行中')
       :active?pipelinePhaseName(progress!.phase):downstream?`等待${PIPELINE_STAGE_CARDS[index-1].label}完成`:rows.length?'等待接續回報':'本輪尚未開始'
       )+(active && work && work.total>1?` · 已完成 ${work.completed}/${work.total} · 執行中 ${work.active}`:batches?` · 特徵批次 ${batches.completed}/${batches.total}`:'')
-    const elapsed=rows.reduce((n,r)=>n+r.elapsed_ms,0) + (visual==='running' ? Math.max(0,clock-Date.parse(progress!.phase_started_at)) : 0)
+    // Interim (pre stage split): the feature card also counts sub-job waits between its executions.
+    const subJobWait=card.id==='pipeline-features' && progress ? subJobWaitMs(progress,belongs) : 0
+    const elapsed=rows.reduce((n,r)=>n+r.elapsed_ms,0) + subJobWait + (visual==='running' ? Math.max(0,clock-Date.parse(progress!.phase_started_at)) : 0)
     const ended=complete || (enrichmentIssue && end?.status==='completed')?end?.completed_at:failed?latest?.completed_at:undefined
     const wall=started && (!complete || ended) ? duration(Math.max(0,(ended?Date.parse(ended):clock)-Date.parse(started))) : undefined
     return {...parent,id:card.id,name:card.label,stageVisualStatus:visual,stageCard:true,
-      stageElapsed:wall,
+      stageElapsed:wall,stageSubJobWait:subJobWait>0 ? duration(subJobWait) : undefined,
       lastStatus:visual==='completed'?'success':upstreamBlocked?'blocked':visual==='blocked'?'failed':visual==='running'?'running':'waiting',
       summary,details:[summary],displayNote:summary,lastError:failed?parent.lastError:undefined,
       lastRunAt:started,lastRun:started??'N/A',lastRunBasis:'started',lastAttemptAt:null,lastEffectiveRunAt:null,

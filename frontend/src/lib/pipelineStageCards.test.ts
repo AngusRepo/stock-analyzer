@@ -245,3 +245,70 @@ test('FU8-A: a ticket runId that differs from the canonical run still shows the 
   const fallback={...parent(),canonicalRunId:null} as SchedulerJob
   assert.equal(pipelineStageCards(fallback,now)[0].stageVisualStatus,'completed')
 })
+
+// Interim (Wei, 11/20): the feature card counts sub-job waits between its controller executions.
+const t0=Date.parse('2026-11-17T09:00:00Z')
+const rec=(phase:string,startMin:number,minutes:number,status='completed')=>({phase,status,elapsed_ms:Math.round(minutes*60_000),
+  started_at:new Date(t0+startMin*60_000).toISOString(),completed_at:new Date(t0+(startMin+minutes)*60_000).toISOString()})
+const deferredRun=()=>{
+  const p=parent(),progress=p.pipelineProgress!
+  p.runId='run-1117';p.statusRunDate='2026-11-17';p.lastStatus='running'
+  Object.assign(progress,{run_id:'run-1117',run_date:'2026-11-17',phase:'node_l3_formal_predict',status:'running',
+    started_at:new Date(t0-60_000).toISOString(),phase_started_at:new Date(t0+40*60_000).toISOString(),observed_at:new Date(t0+41*60_000).toISOString()})
+  progress.executions={
+    a:[rec('node_load_inputs',-1,0.5),rec('node_load_market_env',-0.5,0.2),rec('node_attach_serving_context',-0.3,0.1),
+      rec('node_prepare_l2_inputs',-0.2,0.2),rec('node_build_payloads',0,3,'waiting')],
+    // input_snapshot sub-job: 3 → 9 min
+    b:[rec('node_resume_l2_inputs',9,0.6),rec('node_build_payloads',9.6,4,'waiting')],
+    // input_prep sub-job: 13.6 → 19.4 min
+    c:[rec('node_resume_l2_inputs',19.4,0.5),rec('node_build_payloads',19.9,3.5),
+      rec('node_prepare_sequence_inputs',23.4,1),rec('prepare_prediction_request',24.4,0.6,'waiting')],
+    // The L2 request wait resumes in another card: it is never the feature card's.
+    d:[rec('node_l2_timesfm_enrich',40,0.5)],
+  } as any
+  return p
+}
+
+test('11/17-shaped deferred run: feature card records executions plus sub-job waits',()=>{
+  const p=deferredRun()
+  const featureRows=Object.values(p.pipelineProgress!.executions!).flat()
+    .filter(r=>['node_build_payloads','node_resume_l2_inputs'].includes(r.phase))
+  assert.equal(featureRows.reduce((n,r)=>n+r.elapsed_ms,0),11.6*60_000,'receipts alone are 11.6 min')
+  const cards=pipelineStageCards(p,t0+41*60_000)
+  assert.equal(cards[1].stageVisualStatus,'completed')
+  assert.equal(cards[1].stageElapsed,'23分24秒')
+  assert.equal(cards[1].lastDuration,'23分24秒')
+  assert.equal(cards[1].stageSubJobWait,'11分48秒')
+  // Other cards keep receipts-only time and never carry the wait label.
+  assert.equal(cards[0].lastDuration,'1分0秒')
+  // The 15.4 min c→d wait resumes in the L2 card, so it is neither feature time nor added to L2.
+  assert.equal(cards[2].lastDuration,'2分6秒（已記錄）')
+  assert.deepEqual([cards[0],cards[2],cards[3]].map(c=>c.stageSubJobWait),[undefined,undefined,undefined])
+})
+
+test('a single execution has no sub-job wait label',()=>{
+  const p=deferredRun(),progress=p.pipelineProgress!
+  progress.executions={a:[rec('node_load_inputs',-1,0.5),rec('node_prepare_l2_inputs',-0.5,0.5),
+    rec('node_build_payloads',0,3),rec('node_prepare_sequence_inputs',3,1)]} as any
+  const card=pipelineStageCards(p,t0+41*60_000)[1]
+  assert.equal(card.stageSubJobWait,undefined)
+  assert.equal(card.lastDuration,'3分0秒')
+})
+
+test('overlapping, negative, non-waiting and wrong-run gaps are never counted',()=>{
+  const p=deferredRun(),progress=p.pipelineProgress!
+  // b starts before a yielded; c starts exactly when b yielded; e follows a failed (not yielded) execution.
+  progress.executions={a:[rec('node_build_payloads',0,3,'waiting')],b:[rec('node_resume_l2_inputs',2,0.5),rec('node_build_payloads',2.5,2,'waiting')],
+    c:[rec('node_resume_l2_inputs',4.5,0.5),rec('node_build_payloads',5,1,'failed')],e:[rec('node_resume_l2_inputs',30,0.5),rec('node_build_payloads',30.5,1)]} as any
+  let card=pipelineStageCards(p,t0+41*60_000)[1]
+  assert.equal(card.stageSubJobWait,undefined)
+  assert.equal(card.lastDuration,'8分30秒')
+  // Execution keys arrive in any order; time, not key order, pairs them.
+  progress.executions={z:[rec('node_build_payloads',0,3,'waiting')],a:[rec('node_resume_l2_inputs',5,0.5),rec('node_build_payloads',5.5,1)]} as any
+  card=pipelineStageCards(p,t0+41*60_000)[1]
+  assert.equal(card.stageSubJobWait,'2分0秒')
+  assert.equal(card.lastDuration,'6分30秒')
+  progress.run_id='other-run'
+  card=pipelineStageCards(p,t0+41*60_000)[1]
+  assert.equal(card.stageSubJobWait,undefined);assert.equal(card.lastDuration,'N/A')
+})

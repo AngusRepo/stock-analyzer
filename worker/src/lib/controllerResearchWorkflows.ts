@@ -132,10 +132,8 @@ async function runOptunaResearch(env: Bindings, options: OptunaResearchOptions) 
     'callback expected',
   ].join(' ')
 
-  if ((env as any).DISCORD_WEBHOOK_URL) {
-    const { sendDiscordNotification } = await import('./notify')
-    await sendDiscordNotification((env as any).DISCORD_WEBHOOK_URL, `${options.cadence} Optuna research triggered\n${summary}`)
-  }
+  const { sendOperatorAlert } = await import('./operatorAlert')
+  await sendOperatorAlert(env, `${options.cadence} Optuna research triggered\n${summary}`)
 
   return `triggered ${summary}`
 }

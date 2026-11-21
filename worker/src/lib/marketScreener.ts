@@ -5438,12 +5438,12 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
 
   // Discord ?
   try {
-    const { sendDiscordNotification } = await import('./notify')
+    const { sendOperatorAlert } = await import('./operatorAlert')
     // Sector rotation stays outside screener authority; notification keeps no leading-industry inference.
     const leadingIndustries = ''
     const topCands = finalCandidates.slice(0, 5).map(c => `${c.symbol}${c.name}(${c.score.toFixed(0)})`).join(' ')
     const pttTop = combinedBuzz.slice(0, 3).map(b => `${b.concept}(${b.mentionCount})`).join(', ')
-    void sendDiscordNotification(env.DISCORD_WEBHOOK_URL,
+    void sendOperatorAlert(env,
       `**Bottom-up screener**\n` +
       `> candidates=${finalCandidates.length}/${maxCandidates}\n` +
       `> leading=${leadingIndustries || 'n/a'}\n` +

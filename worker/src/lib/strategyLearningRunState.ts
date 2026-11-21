@@ -21,7 +21,9 @@ export type StrategyLearningRunRow = {
 export const STRATEGY_LEARNING_LEASE_SECONDS = 900
 
 export function isStrategyLearningTerminalFailure(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error)
+  // The finalizer wraps stage errors as strategy_learning_finalizer_stage_failed:<stage>:<reason>; judge the reason.
+  const message = (error instanceof Error ? error.message : String(error))
+    .replace(/^strategy_learning_finalizer_stage_failed:[a-z_]+:/, '')
   return message.startsWith('strategy_learning_production_authority_denied:')
     || message.startsWith('strategy_learning_live_policy_closure_missing:')
     || message.startsWith('strategy_learning_durable_production_authority_intent_required:')

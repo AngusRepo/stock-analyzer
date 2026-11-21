@@ -152,8 +152,15 @@ def controller_inputs_changed(changed: list[str], dockerfile: str, modal: set[st
 
 def live_controller_sha(url: str = CONTROLLER_HEALTH) -> str:
     request = urllib.request.Request(url, headers={'Cache-Control': 'no-cache', 'User-Agent': 'stockvision-deploy-plan'})
-    with urllib.request.urlopen(request, timeout=30) as response:
-        value = json.load(response)
+    # A cold controller answers /health in ~35 s, past the 30 s timeout; the retry reaches the warmed instance.
+    for attempt in range(2):
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                value = json.load(response)
+            break
+        except OSError:
+            if attempt:
+                raise
     sha = (value.get('provenance') or {}).get('sourceSha') or ''
     if len(sha) != 40 or any(c not in '0123456789abcdef' for c in sha):
         raise SystemExit('controller /health has no source sha; nothing can be diffed safely')

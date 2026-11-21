@@ -3,6 +3,7 @@ import { ACTIVE8_OOF_CONTINUATION_MAX_ATTEMPTS, active8OofContinuationDelay } fr
 import type { Bindings, Variables } from '../types'
 import { hasServiceToken, requireAdminOrServiceToken } from '../lib/auth'
 import { databaseForDataDomain } from '../lib/dataDomainRegistry'
+import { optionalLegacyDatabase } from '../lib/legacyDatabase'
 import { writeSystemLog } from '../lib/notify'
 import { resolveFinLabDispatchFence, finLabCallbackSummary, finLabCompositionBlockerSuffix, finLabStartMarkerKey } from '../lib/finLabDispatchFence'
 import { classifyFinLabLateLaneNotReady, finLabLatePublicationFields, finLabLateRetryCutoffPassed, finLabLateRetryCutoffTw } from '../lib/finlabSourceContract'
@@ -105,9 +106,13 @@ adminControlRoutes.post('/api/internal/d1/batch', async (c) => {
     return c.json({ error: e?.message ?? 'invalid statement' }, 400)
   }
 
-  const prepared = statements.map((s) => c.env.DB.prepare(s.sql).bind(...s.params))
+  // Legacy raw batch (controller module-level d1_client); domain traffic uses
+  // the domain routes. Fails closed once the legacy binding is removed.
+  const legacyDb = optionalLegacyDatabase(c.env)
+  if (!legacyDb) return c.json({ error: 'legacy_db_binding_retired:internal_d1_batch' }, 410)
+  const prepared = statements.map((s) => legacyDb.prepare(s.sql).bind(...s.params))
   const t0 = Date.now()
-  const results = await c.env.DB.batch(prepared)
+  const results = await legacyDb.batch(prepared)
   const changesTotal = results.reduce((sum: number, result: any) => {
     const meta = result?.meta ?? {}
     return sum + Number(meta.changes ?? meta.rows_written ?? 0)

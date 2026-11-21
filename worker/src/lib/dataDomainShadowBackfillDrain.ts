@@ -44,6 +44,10 @@ import {
   readDataDomainWriterEpochSnapshot,
   reopenDataDomainWriters,
 } from './dataDomainWriterEpoch'
+import { optionalLegacyDatabase, requireLegacyShadowSource } from './legacyDatabase'
+
+// Migration-era tool: reads the frozen legacy source; retired once the control plane moved to Ops.
+const legacyShadowSource = (env: Parameters<typeof requireLegacyShadowSource>[0]) => requireLegacyShadowSource(env, 'data_domain_shadow_backfill_drain')
 
 const ACTIVE_TTL_SECONDS = 6 * 3600
 const DEFAULT_MAX_ATTEMPTS = 5000
@@ -118,7 +122,7 @@ async function assertDataDomainShadowMutationAuthority(
   if (invalidDomains.length) {
     throw new Error(`data_domain_shadow_active_domain_invalid:${invalidDomains.sort().join(',')}`)
   }
-  const cutover = await env.DB.prepare(`
+  const cutover = await legacyShadowSource(env).prepare(`
     SELECT c.status, w.writer_state
       FROM data_domain_cutovers c
       LEFT JOIN data_domain_writer_epochs w ON w.domain=c.domain
@@ -260,7 +264,7 @@ export function shouldContinueDataDomainGlobalSweep(input: {
 }
 
 async function completedDomainTables(env: Bindings, domain: DataDomain): Promise<string[]> {
-  const completed = await env.DB.prepare(`
+  const completed = await legacyShadowSource(env).prepare(`
     SELECT table_name
       FROM data_domain_backfill_cursors
      WHERE domain=? AND status='complete'
@@ -299,7 +303,7 @@ async function nextDataDomainReceiptRefreshTable(
   parityNotBefore?: string | null,
 ): Promise<string | null> {
   const completedSet = new Set(await completedDomainTables(env, domain))
-  const receipts = await env.DB.prepare(`
+  const receipts = await legacyShadowSource(env).prepare(`
     SELECT table_name, status, source_count, target_count,
            source_checksum, target_checksum, evidence_json, checked_at
       FROM data_domain_parity_checks
@@ -388,22 +392,22 @@ async function resetDataDomainTableForCatchup(
   if (authority.domain !== domain || !['legacy', 'shadow'].includes(authority.cutoverStatus)) {
     throw new Error(`data_domain_shadow_authority_mismatch:${domain}`)
   }
-  const cutover = await env.DB.prepare(`
+  const cutover = await legacyShadowSource(env).prepare(`
     SELECT status FROM data_domain_cutovers WHERE domain=?
   `).bind(domain).first<{ status?: string }>()
   const status = cutover?.status ? String(cutover.status) : null
   if (!status || !['legacy', 'shadow'].includes(status)) {
     throw new Error(`domain_cutover_source_changed:${domain}:${status ?? 'missing'}`)
   }
-  await env.DB.batch([
-    env.DB.prepare(`
+  await legacyShadowSource(env).batch([
+    legacyShadowSource(env).prepare(`
       UPDATE data_domain_backfill_cursors
          SET status='running', cursor_json=NULL, rows_copied=0, last_batch_rows=0,
              last_source_checksum=NULL, last_target_checksum=NULL, error_code=NULL,
              updated_at=CURRENT_TIMESTAMP
        WHERE domain=? AND table_name=?
     `).bind(domain, table),
-    env.DB.prepare(`
+    legacyShadowSource(env).prepare(`
       UPDATE data_domain_parity_checks
          SET status='blocked',
              evidence_json=json_object(
@@ -413,13 +417,13 @@ async function resetDataDomainTableForCatchup(
              checked_at=CURRENT_TIMESTAMP
        WHERE domain=? AND table_name=? AND check_kind='full_table'
     `).bind(reason, domain, table),
-    env.DB.prepare(`
+    legacyShadowSource(env).prepare(`
       DELETE FROM data_domain_parity_checks WHERE check_id IN (?, ?)
     `).bind(
       `domain-parity:${domain}:${table}:manifest-progress`,
       `domain-parity:${domain}:${table}:delete-progress`,
     ),
-    env.DB.prepare(`
+    legacyShadowSource(env).prepare(`
       UPDATE data_domain_cutovers
          SET status='legacy', source_row_count=NULL, target_row_count=NULL,
              source_checksum=NULL, target_checksum=NULL, parity_checked_at=NULL,
@@ -480,13 +484,17 @@ export function resolveLatestEveningChainClosure(
 
 export async function inspectLatestEveningChainClosure(
   kv: KVNamespace,
-  db?: D1Database,
+  env?: Partial<Bindings>,
 ): Promise<LatestEveningChainClosure> {
   const entries = await Promise.all(
     Array.from({ length: 8 }, (_, days) => twDaysAgo(days))
       .map((date) => kv.get(`scheduler:run:evening-chain:${date}`, 'json') as Promise<SchedulerRunLogEntry | null>),
   )
   const closure = resolveLatestEveningChainClosure(entries)
+  // Unchanged behaviour: the lineage check reads the legacy source as before and
+  // an unbound legacy DB means "no recovery evidence" (the old !db branch).
+  // Reading Market/Ops instead is the separate group C change awaiting Wei.
+  const db = env ? optionalLegacyDatabase(env) : null
   if (
     closure.terminalSuccess
     || !db
@@ -630,11 +638,11 @@ export async function nextDataDomainIncrementalCatchupTable(
   for (const table of [...orderedTables].reverse()) {
     if (!completedSet.has(table)) continue
     const [sourceRows, targetRows] = await Promise.all([
-      tableRowCount(env.DB, table),
+      tableRowCount(legacyShadowSource(env), table),
       tableRowCount(target, table),
     ])
     if (targetRows > sourceRows) {
-      const deferred = await env.DB.prepare(`
+      const deferred = await legacyShadowSource(env).prepare(`
         SELECT evidence_json
           FROM data_domain_parity_checks
          WHERE check_id=?
@@ -666,9 +674,9 @@ export async function nextDataDomainIncrementalCatchupTable(
     if (!completedSet.has(table)) continue
     if (domain === 'learning' && isDataDomainControlTable(table)) {
       const [receipt, counts, liveRevision] = await Promise.all([
-        loadControlTableReceipt(env.DB, table),
-        controlTableRowCounts(env.DB, target, table),
-        loadDataDomainControlRevisionPair(env.DB, target, table),
+        loadControlTableReceipt(legacyShadowSource(env), table),
+        controlTableRowCounts(legacyShadowSource(env), target, table),
+        loadDataDomainControlRevisionPair(legacyShadowSource(env), target, table),
       ])
       const receiptBlockers = controlTableReceiptBlockers({
         table,
@@ -693,7 +701,7 @@ export async function nextDataDomainIncrementalCatchupTable(
       )
       const reasons = [...receiptBlockers]
       if (isLegacyDirectControlReceipt(receipt.parity)) {
-        const legacy = await verifyLegacyDirectControlReceipt(env.DB, env.DB, target, table)
+        const legacy = await verifyLegacyDirectControlReceipt(legacyShadowSource(env), legacyShadowSource(env), target, table)
         preserveCursor = legacy.exact
         reasons.push(...legacy.blockers)
       }
@@ -704,7 +712,7 @@ export async function nextDataDomainIncrementalCatchupTable(
       if (liveCountsExact && receiptCount !== counts.sourceCount) {
         reasons.push(`receipt_live_count_mismatch:${receiptCount}/${counts.sourceCount}`)
       }
-      await invalidateControlTableClosure(env.DB, {
+      await invalidateControlTableClosure(legacyShadowSource(env), {
         changedTables: [table],
         preserveCursorTables: preserveCursor ? [table] : [],
         reason: `control_table_receipt_refresh:${[...new Set(reasons)].join('|')}`,
@@ -713,11 +721,11 @@ export async function nextDataDomainIncrementalCatchupTable(
       return table
     }
     const [sourceRows, targetRows, sourceWatermark, targetWatermark, parityReceipt] = await Promise.all([
-      tableRowCount(env.DB, table),
+      tableRowCount(legacyShadowSource(env), table),
       tableRowCount(target, table),
-      tableFreshnessWatermark(env.DB, table),
+      tableFreshnessWatermark(legacyShadowSource(env), table),
       tableFreshnessWatermark(target, table),
-      env.DB.prepare(`
+      legacyShadowSource(env).prepare(`
         SELECT status, source_count, target_count, source_checksum, target_checksum,
                evidence_json, checked_at
           FROM data_domain_parity_checks
@@ -757,7 +765,7 @@ export async function nextDataDomainIncrementalCatchupTable(
     if (!receiptCountsExact || !receiptFresh) {
       if (!mutate) return table
       await invalidateGenericManifestProgress(
-        env.DB,
+        legacyShadowSource(env),
         domain,
         table,
         `generic_receipt_refresh:${[
@@ -898,7 +906,7 @@ async function domainChecksumReady(
   const target = shadowDatabaseForDataDomain(env, domain)
   if (!target) throw new Error(`data_domain_shadow_binding_missing:${domain}`)
   const completedTables = await completedDomainTables(env, domain)
-  const parity = await env.DB.prepare(`
+  const parity = await legacyShadowSource(env).prepare(`
     SELECT table_name, status, source_count, target_count,
            source_checksum, target_checksum, evidence_json, checked_at
       FROM data_domain_parity_checks
@@ -921,7 +929,7 @@ async function domainChecksumReady(
       || !isDataDomainFullTableParityFresh(table, row, parityNotBefore)
     ) continue
     if (domain === 'learning' && isDataDomainControlTable(table)) {
-      const live = await loadDataDomainControlRevisionPair(env.DB, target, table)
+      const live = await loadDataDomainControlRevisionPair(legacyShadowSource(env), target, table)
       if (dataDomainControlRevisionBlockers({ receipt: row, live }).length) continue
     }
     parityTables.push(table)
@@ -935,7 +943,7 @@ async function refreshDataDomainAggregateCutover(
   parityNotBefore: string,
 ): Promise<boolean> {
   const ownedTables = tablesForDataDomainShadowBackfill(domain)
-  const parity = await env.DB.prepare(`
+  const parity = await legacyShadowSource(env).prepare(`
     SELECT table_name, status, source_count, target_count,
            source_checksum, target_checksum, evidence_json, checked_at
       FROM data_domain_parity_checks
@@ -958,7 +966,7 @@ async function refreshDataDomainAggregateCutover(
   )
   if (!aggregate || aggregate.source_checksum !== aggregate.target_checksum) return false
   const checkedAt = new Date().toISOString()
-  const updated = await env.DB.prepare(`
+  const updated = await legacyShadowSource(env).prepare(`
     UPDATE data_domain_cutovers
        SET status='shadow', target_binding=?,
            source_row_count=?, target_row_count=?,
@@ -1044,17 +1052,17 @@ export async function carryForwardStableDataDomainParityReceipts(
   }
   const target = shadowDatabaseForDataDomain(env, domain)
   if (!target) throw new Error(`data_domain_shadow_binding_missing:${domain}`)
-  const before = await readDataDomainWriterEpochSnapshot(env.DB, domain)
+  const before = await readDataDomainWriterEpochSnapshot(legacyShadowSource(env), domain)
   if (before.writer_state !== 'open') {
     throw new Error(`data_domain_parity_carry_forward_writer_not_open:${domain}:${before.writer_state}`)
   }
-  const quiescedEpoch = await beginDataDomainWriterQuiescence(env.DB, domain, before.epoch)
+  const quiescedEpoch = await beginDataDomainWriterQuiescence(legacyShadowSource(env), domain, before.epoch)
   const carriedTables: string[] = []
   const alreadyFreshTables: string[] = []
   const blocked: Array<{ table: string; blockers: string[] }> = []
   try {
     for (const table of tablesForDataDomainShadowBackfill(domain)) {
-      const receipt = await env.DB.prepare(`
+      const receipt = await legacyShadowSource(env).prepare(`
         SELECT check_id, table_name, status, source_count, target_count,
                source_checksum, target_checksum, evidence_json, checked_at
           FROM data_domain_parity_checks
@@ -1064,15 +1072,15 @@ export async function carryForwardStableDataDomainParityReceipts(
         alreadyFreshTables.push(table)
         continue
       }
-      const epochBefore = await env.DB.prepare(`
+      const epochBefore = await legacyShadowSource(env).prepare(`
         SELECT epoch, updated_at FROM data_domain_table_writer_epochs
          WHERE domain=? AND table_name=?
       `).bind(domain, table).first<{ epoch?: number | string; updated_at?: string | null }>()
       const [sourceCount, targetCount] = await Promise.all([
-        tableRowCount(env.DB, table),
+        tableRowCount(legacyShadowSource(env), table),
         tableRowCount(target, table),
       ])
-      const epochAfter = await env.DB.prepare(`
+      const epochAfter = await legacyShadowSource(env).prepare(`
         SELECT epoch, updated_at FROM data_domain_table_writer_epochs
          WHERE domain=? AND table_name=?
       `).bind(domain, table).first<{ epoch?: number | string; updated_at?: string | null }>()
@@ -1111,7 +1119,7 @@ export async function carryForwardStableDataDomainParityReceipts(
         table_writer_epoch_updated_at: epochAfter?.updated_at ?? null,
         count_revalidated: true,
       })
-      const updated = await env.DB.prepare(`
+      const updated = await legacyShadowSource(env).prepare(`
         UPDATE data_domain_parity_checks
            SET evidence_json=?, checked_at=?
          WHERE check_id=? AND status='pass' AND checked_at=?
@@ -1131,7 +1139,7 @@ export async function carryForwardStableDataDomainParityReceipts(
       carriedTables.push(table)
     }
   } finally {
-    await reopenDataDomainWriters(env.DB, domain, quiescedEpoch)
+    await reopenDataDomainWriters(legacyShadowSource(env), domain, quiescedEpoch)
   }
   return {
     schema_version: 'data-domain-parity-carry-forward-v1',
@@ -1489,7 +1497,7 @@ export async function processDataDomainShadowBackfillDrain(
     const errorCode = errorMessage.slice(0, 1000)
     const nextAttempt = attempt + 1
     const nextErrorAttempt = errorAttempt + 1
-    await env.DB.prepare(`
+    await legacyShadowSource(env).prepare(`
       INSERT INTO data_domain_backfill_cursors(
         domain, table_name, status, cursor_json, rows_copied, last_batch_rows,
         last_source_checksum, last_target_checksum, error_code, updated_at

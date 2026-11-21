@@ -1,3 +1,4 @@
+import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import type { S12IntradayAssessment } from './s12IntradayStructure'
 
@@ -66,7 +67,7 @@ export function buildS12SnapshotEntryContext(assessment: S12IntradayAssessment):
 }
 
 export async function persistS12StructureSnapshot(
-  env: { DB: D1Database },
+  env: Partial<Bindings>,
   params: {
     tradeDate: string
     symbol: string
@@ -151,7 +152,7 @@ export async function persistS12StructureSnapshot(
 }
 
 export async function persistS12UnavailableStructureSnapshot(
-  env: { DB: D1Database },
+  env: Partial<Bindings>,
   params: {
     tradeDate: string
     symbol: string

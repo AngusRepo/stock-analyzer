@@ -1,6 +1,9 @@
 import { Hono } from 'hono'
 import { twToday } from '../lib/dateUtils'
 import { requireServiceToken } from '../lib/auth'
+// Promotion still reads the legacy source (unchanged behaviour); moving it to
+// Learning is the separate group C change awaiting Wei.
+import { requireLegacyDatabase } from '../lib/legacyDatabase'
 import type { Bindings, Variables } from '../types'
 
 export const adminConfigWorkflowRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -176,7 +179,7 @@ adminConfigWorkflowRoutes.post('/api/admin/config/promote', async (c) => {
     recordProductionOverride,
     validatePromotionPacketForProd,
   } = await import('../lib/parameterCandidateRegistry')
-  const evidenceValidation = await validatePromotionPacketForProd(c.env.DB, {
+  const evidenceValidation = await validatePromotionPacketForProd(requireLegacyDatabase(c.env, 'parameter_candidate_promotion'), {
     candidateId: body.candidate_id,
     promotionPacketId: body.promotion_packet_id,
   })
@@ -194,7 +197,7 @@ adminConfigWorkflowRoutes.post('/api/admin/config/promote', async (c) => {
     }, 409)
   }
   const overrideAudit = override
-    ? await recordProductionOverride(c.env.DB, {
+    ? await recordProductionOverride(requireLegacyDatabase(c.env, 'parameter_candidate_promotion'), {
       route: '/api/admin/config/promote',
       reason: String(body.reason),
       actor: 'service_token',

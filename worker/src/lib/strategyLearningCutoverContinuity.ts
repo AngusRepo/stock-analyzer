@@ -1,5 +1,6 @@
 import type { Bindings } from '../types'
 import { activeDataDomains } from './dataDomainRegistry'
+import { requireLegacyShadowSource } from './legacyDatabase'
 import {
   ensureStrategyLearningTables,
   materializeStrategyDecisionDailyStats,
@@ -241,7 +242,8 @@ export async function repairStrategyLearningCutoverContinuity(
   if (!env.LEARNING_DB) throw new Error('strategy_learning_cutover_continuity_learning_binding_missing')
   if (!env.OPS_DB) throw new Error('strategy_learning_cutover_continuity_ops_binding_missing')
 
-  const legacyDb = env.DB
+  // Migration-era parity check against the frozen legacy source.
+  const legacyDb = requireLegacyShadowSource(env, 'strategy_learning_cutover_continuity')
   const learningDb = env.LEARNING_DB
   const heads = await loadCanonicalHeads(env.OPS_DB, input.startDate, input.asOfDate)
   const canonicalRunIds = Object.fromEntries(heads.map((row) => [row.signal_date, row.run_id]))

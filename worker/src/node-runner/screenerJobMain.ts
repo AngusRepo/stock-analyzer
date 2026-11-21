@@ -43,7 +43,7 @@ function resolveRunDate(value?: string, fallbackDate = twToday()): string {
 function buildBindings(): Bindings {
   const env = process.env
   return {
-    DB: RestD1Database.fromEnv(),
+    DB: RestD1Database.optionalFromEnv(),
     CORE_DB: RestD1Database.fromEnv('CF_D1_CORE_DB_ID'),
     MARKET_DB: RestD1Database.fromEnv('CF_D1_MARKET_DB_ID'),
     LEARNING_DB: RestD1Database.fromEnv('CF_D1_LEARNING_DB_ID'),

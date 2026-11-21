@@ -367,6 +367,8 @@ export function evaluateEntryModelReplayPromotionGate(
 export async function loadEntryModelReplayCasesFromD1(
   db: D1Database,
   options: EntryModelReplayLoadOptions,
+  // Recommendations/stocks are Core-owned; stock_prices is Market-owned.
+  marketDb: D1Database = db,
 ): Promise<{ cases: EntryModelReplayCase[]; skipped: Record<string, number> }> {
   const startDate = cleanText(options.startDate)
   const endDate = cleanText(options.endDate)
@@ -417,7 +419,7 @@ export async function loadEntryModelReplayCasesFromD1(
     return { cases: [], skipped: { missing_stock_id: recommendations.length } }
   }
 
-  const { results: priceRows } = await db.prepare(`
+  const { results: priceRows } = await marketDb.prepare(`
     SELECT stock_id, date, open, high, low, close, volume
       FROM stock_prices
      WHERE stock_id IN (${stockIds.map(() => '?').join(',')})
@@ -494,8 +496,9 @@ export async function loadEntryModelReplayCasesFromD1(
 export async function buildEntryModelReplayReportFromD1(
   db: D1Database,
   options: EntryModelReplayLoadOptions,
+  marketDb: D1Database = db,
 ): Promise<EntryModelReplayReport> {
-  const loaded = await loadEntryModelReplayCasesFromD1(db, options)
+  const loaded = await loadEntryModelReplayCasesFromD1(db, options, marketDb)
   const results = loaded.cases.map(replayEntryModelCase)
   const summary = summarizeEntryModelReplay(results)
   return {

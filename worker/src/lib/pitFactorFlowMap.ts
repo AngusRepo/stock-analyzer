@@ -358,7 +358,7 @@ async function loadStockSeries(
       ORDER BY signal_date ASC, symbol ASC`,
   ).bind(requestedDate, days, ...symbols).all<Record<string, unknown>>()
 
-  const coreDb = env.CORE_DB ?? env.DB
+  const coreDb = databaseForDataDomain(env, 'core')
   const { results: stockRows } = await coreDb.prepare(
     `SELECT symbol, name FROM stocks WHERE symbol IN (${placeholders})`,
   ).bind(...symbols).all<{ symbol: string; name: string | null }>()

@@ -1,14 +1,15 @@
 import type { Bindings } from '../types'
-import { databaseForDataDomain, databaseForTable, type DataDomain } from './dataDomainRegistry'
+import { databaseForDataDomain, type DataDomain } from './dataDomainRegistry'
+import { verifiedDataDomainControlPlaneDatabase, optionalLegacyDatabase } from './legacyDatabase'
 
 const D1_MAX_BYTES = 10_000_000_000
 
 export async function loadStorageCapacityBackfillBaselines(
   env: Pick<Bindings, 'DB'> & Partial<Bindings>,
 ): Promise<{ results: Array<{ domain: string; baseline_after: string }> }> {
-  // The cutover control plane remains on DB after Ops activation. Its Ops
-  // shadow can be empty/stale and would count the initial migration as growth.
-  return databaseForTable(env, 'data_domain_backfill_cursors').prepare(`
+  // Read from the control plane's current location (DATA_DOMAIN_CONTROL_PLANE);
+  // a stale pre-copy Ops mirror would count the initial migration as growth.
+  return (await verifiedDataDomainControlPlaneDatabase(env)).prepare(`
     SELECT domain, substr(MAX(updated_at), 1, 10) AS baseline_after
       FROM data_domain_backfill_cursors
      GROUP BY domain
@@ -57,9 +58,10 @@ async function inspectBinding(
 export async function inspectStorageCapacityTelemetry(
   env: Pick<Bindings, 'DB'> & Partial<Bindings>,
 ): Promise<StorageCapacityRow[]> {
-  const sources: Array<{ domain: StorageCapacityRow['domain']; binding: string; db: D1Database }> = [
-    { domain: 'legacy', binding: 'DB', db: env.DB },
-  ]
+  const sources: Array<{ domain: StorageCapacityRow['domain']; binding: string; db: D1Database }> = []
+  // The frozen legacy DB is measured only while it is still bound.
+  const legacyDb = optionalLegacyDatabase(env)
+  if (legacyDb) sources.push({ domain: 'legacy', binding: 'DB', db: legacyDb })
   const optional: Array<[DataDomain, keyof Bindings]> = [
     ['core', 'CORE_DB'], ['market', 'MARKET_DB'], ['learning', 'LEARNING_DB'],
     ['ops', 'OPS_DB'], ['execution', 'EXECUTION_DB'], ['paper', 'PAPER_DB'],

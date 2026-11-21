@@ -86,7 +86,7 @@ assert(fusionArtifactBuilder.includes('reconstructed_rows == 0'), 'Fusion promot
 assert(lifecycle.includes("state !== 'verify_triggered'"), 'watchdog must detect stale verify callbacks')
 assert(lifecycle.includes("WHERE state = 'verify_triggered'") && lifecycle.includes("datetime(updated_at) <= datetime('now', '-15 minutes')"), 'watchdog date selection must prioritize a stale post-verify lifecycle')
 assert(lifecycle.indexOf("WHERE state = 'verify_triggered'") < lifecycle.indexOf("WHERE state = 'replay_pending_maturity'"), 'today stale post-verify recovery must not be starved by an older maturity cohort')
-assert(lifecycle.indexOf('if (staleVerifyTrigger(lifecycle))') < lifecycle.indexOf('inspectAllocatorSnapshotClosure(env.DB'), 'post-verify recovery must run before allocator snapshot and action-authority gates')
+assert(lifecycle.indexOf('if (staleVerifyTrigger(lifecycle))') < lifecycle.indexOf('inspectAllocatorSnapshotClosure(learningDb'), 'post-verify recovery must run before allocator snapshot and action-authority gates')
 assert(!lifecycle.includes("if (snapshot.ready && lifecycle?.state === 'verify_triggered')"), 'post-verify recovery must not depend on allocator snapshot readiness')
 assert(lifecycle.includes("const opsDb = databaseForDataDomain(env, 'ops')") && lifecycle.includes('await markPipelineStageFenced(opsDb, {'), 'pipeline stage reads and writes must use Ops D1')
 assert(!lifecycle.includes('status: postPipelineStatus'), 'watchdog must not enqueue recovery and immediately mark/check it in the same request')

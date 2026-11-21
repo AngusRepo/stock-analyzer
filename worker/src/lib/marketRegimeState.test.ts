@@ -127,9 +127,35 @@ void (async () => {
   assert(fallback?.label === 'volatile', 'reader must fallback to legacy meta during migration')
   assert(fallback?.source === 'legacy_meta', 'legacy fallback must be explicit in provenance')
 
+  // Market D1 stand-in: keeps the appended revision so the publication readback passes.
+  const revisions = new Map<string, { state_json: string; state_checksum: string }>()
+  const marketDb = {
+    prepare(sql: string) {
+      let values: unknown[] = []
+      const statement = {
+        bind(...bound: unknown[]) { values = bound; return statement },
+        async first() {
+          return sql.includes('FROM market_regime_state_revisions_v1') ? revisions.get(`${values[0]}:${values[1]}`) ?? null : null
+        },
+        async all() { return { results: [] } },
+        async run() {
+          if (sql.includes('INTO market_regime_state_revisions_v1')) {
+            revisions.set(`${values[0]}:${values[1]}`, { state_json: String(values[2]), state_checksum: String(values[1]) })
+          }
+          return { success: true, meta: {} }
+        },
+      }
+      return statement
+    },
+    async batch(statements: Array<{ run(): Promise<unknown> }>) { return Promise.all(statements.map((statement) => statement.run())) },
+  }
   const env = {
     KV: new FakeKV(),
     STOCKVISION_AUTH_TOKEN: 'service-token',
+    // Regime history is Market-owned; an unrouted domain no longer resolves to a missing DB.
+    MULTI_D1_ACTIVE_DOMAINS: 'market',
+    MULTI_D1_STRICT: 'true',
+    MARKET_DB: marketDb,
   } as unknown as Bindings
   const res = await adminOptunaRoutes.request('/api/admin/optuna-push', {
     method: 'POST',

@@ -8,6 +8,10 @@ import {
 } from './dataDomainRegistry'
 import { inspectActiveDataDomainOwnerProof } from './dataDomainActiveOwnerProof'
 import { inspectLatestEveningChainClosure } from './dataDomainShadowBackfillDrain'
+import { requireLegacyShadowSource } from './legacyDatabase'
+
+// Migration-era tool: reads the frozen legacy source; retired once the control plane moved to Ops.
+const legacyShadowSource = (env: Parameters<typeof requireLegacyShadowSource>[0]) => requireLegacyShadowSource(env, 'data_domain_formal_cutover')
 
 export function formalDataDomainCutoverConfirmation(domain: DataDomain): string {
   return `COMPLETE_DATA_DOMAIN_CUTOVER:${domain}`
@@ -24,12 +28,12 @@ export async function inspectFormalDataDomainCutover(
   domain: DataDomain,
 ) {
   const active = activeDataDomains(env).has(domain)
-  const latestEveningChain = await inspectLatestEveningChainClosure(env.KV, env.DB)
+  const latestEveningChain = await inspectLatestEveningChainClosure(env.KV, env)
   const activeOwnerProof = active
     ? await inspectActiveDataDomainOwnerProof(env, domain, latestEveningChain)
     : null
   const strict = String(env.MULTI_D1_STRICT ?? '').trim().toLowerCase() === 'true'
-  const readiness = await inspectDataDomainCutoverReadiness(env.DB, domain, {
+  const readiness = await inspectDataDomainCutoverReadiness(legacyShadowSource(env), domain, {
     upstreamTerminalReady: latestEveningChain.terminalSuccess,
     parityNotBefore: activeOwnerProof?.ready ? null : latestEveningChain.timestamp,
     learningTargetDb: domain === 'learning'
@@ -89,8 +93,8 @@ export async function completeFormalDataDomainCutover(
     || !Number.isFinite(Date.parse(parityCheckedAt))
   ) throw new Error(`formal_data_domain_cutover_precondition_invalid:${domain}`)
 
-  const results = await env.DB.batch([
-    env.DB.prepare(`
+  const results = await legacyShadowSource(env).batch([
+    legacyShadowSource(env).prepare(`
       SELECT json(CASE WHEN EXISTS (
         SELECT 1 FROM data_domain_cutovers
          WHERE domain=? AND status=? AND parity_checked_at=?
@@ -108,12 +112,12 @@ export async function completeFormalDataDomainCutover(
       domain, expectedEpoch,
       domain, expectedEpoch, parityCheckedAt,
     ),
-    env.DB.prepare(`
+    legacyShadowSource(env).prepare(`
       UPDATE data_domain_writer_epochs
          SET writer_state='cutover', updated_at=CURRENT_TIMESTAMP
        WHERE domain=? AND writer_state='open' AND epoch=?
     `).bind(domain, expectedEpoch),
-    env.DB.prepare(`
+    legacyShadowSource(env).prepare(`
       UPDATE data_domain_cutovers
          SET status='complete', updated_at=CURRENT_TIMESTAMP
        WHERE domain=? AND status=? AND parity_checked_at=?

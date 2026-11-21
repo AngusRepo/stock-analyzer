@@ -1,5 +1,6 @@
 import type { Bindings } from '../types'
 import { databaseForDataDomain, type DataDomain } from './dataDomainRegistry'
+import { optionalLegacyDatabase } from './legacyDatabase'
 
 const D1_MAX_BYTES = 10_000_000_000
 const DRAIN_UTILIZATION_PCT = 75
@@ -163,7 +164,10 @@ export async function inspectStorageAdmission(
 ): Promise<StorageAdmissionDecision> {
   try {
     const owner = storageAdmissionOwner(task)
-    const db = owner === 'legacy' ? env.DB : databaseForDataDomain(env, owner)
+    // Only the migration-era legacy-evidence-migration task is legacy-owned; an
+    // unbound legacy DB reads as unknown capacity (managed tasks stay blocked).
+    const db = owner === 'legacy' ? optionalLegacyDatabase(env) : databaseForDataDomain(env, owner)
+    if (!db) return classifyStorageAdmission(task, null)
     const probe = await db.prepare('SELECT 1 AS storage_admission_probe').all()
     const usedBytes = Number(probe.meta?.size_after)
     const utilizationPct = Number.isFinite(usedBytes) && usedBytes >= 0

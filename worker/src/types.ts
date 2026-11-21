@@ -8,7 +8,8 @@ export type Bindings = {
     tag?: string
     timestamp: string
   }
-  DB: D1Database
+  /** Frozen legacy stockvision-db. Optional: runtime code reaches it only through lib/legacyDatabase.ts. */
+  DB?: D1Database
   CORE_DB?: D1Database
   MARKET_DB?: D1Database
   LEARNING_DB?: D1Database
@@ -18,6 +19,8 @@ export type Bindings = {
   RESEARCH_DB?: D1Database
   MULTI_D1_STRICT?: string
   MULTI_D1_ACTIVE_DOMAINS?: string
+  /** Where the multi-D1 cutover control plane lives: 'legacy' (DB, default) or 'ops' (OPS_DB). */
+  DATA_DOMAIN_CONTROL_PLANE?: string
   KV: KVNamespace
   ARTIFACTS?: R2Bucket
   EVIDENCE_ARTIFACT_WRITER?: EvidenceArtifactWriter

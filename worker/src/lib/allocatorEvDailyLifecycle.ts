@@ -844,7 +844,7 @@ export async function runAllocatorEvLifecycleWatchdog(
   }
 
   const [snapshot, maturity, actionAuthority] = await Promise.all([
-    inspectAllocatorSnapshotClosure(env.DB, businessDate, {
+    inspectAllocatorSnapshotClosure(learningDb, businessDate, {
       allowPointInTimeReconstruction: true,
       learningDb,
       opsDb,

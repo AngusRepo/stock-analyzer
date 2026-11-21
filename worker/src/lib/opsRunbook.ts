@@ -1,3 +1,5 @@
+import { optionalLegacyDatabase } from './legacyDatabase'
+
 export interface OpsRunbookStep {
   id: string
   title: string
@@ -35,7 +37,7 @@ export interface OpsResourceAuditReport {
 }
 
 export interface OpsResourceAuditEnv {
-  DB: D1Database
+  DB?: D1Database
   KV: KVNamespace
 }
 
@@ -44,7 +46,8 @@ async function countKvPrefix(kv: KVNamespace, prefix: string, limit = 1000): Pro
   return listed.keys.length
 }
 
-async function firstNumber(db: D1Database, sql: string, key: string): Promise<number | null> {
+async function firstNumber(db: D1Database | null, sql: string, key: string): Promise<number | null> {
+  if (!db) return null
   const row = await db.prepare(sql).first<Record<string, unknown>>().catch(() => null)
   const value = Number(row?.[key])
   return Number.isFinite(value) ? value : null
@@ -52,8 +55,9 @@ async function firstNumber(db: D1Database, sql: string, key: string): Promise<nu
 
 export async function buildOpsResourceAudit(env: OpsResourceAuditEnv): Promise<OpsResourceAuditReport> {
   const [pageCount, freelistCount, schedulerManualKeys, oldBackupKeys, intradayWarnKeys] = await Promise.all([
-    firstNumber(env.DB, 'PRAGMA page_count', 'page_count'),
-    firstNumber(env.DB, 'PRAGMA freelist_count', 'freelist_count'),
+    // Bloat of the frozen legacy DB; reports unknown once the binding is removed.
+    firstNumber(optionalLegacyDatabase(env), 'PRAGMA page_count', 'page_count'),
+    firstNumber(optionalLegacyDatabase(env), 'PRAGMA freelist_count', 'freelist_count'),
     countKvPrefix(env.KV, 'scheduler:manual:').catch(() => -1),
     countKvPrefix(env.KV, 'backup:').catch(() => -1),
     countKvPrefix(env.KV, 'intraday:warn:').catch(() => -1),

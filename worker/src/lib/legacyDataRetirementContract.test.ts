@@ -29,7 +29,7 @@ assert.match(retirement, /destructive_step_requires_verified_artifact: true/)
 assert.match(retirement, /LEGACY_HOT_DATA_RETIREMENT_CONFIRM_PHRASE/)
 assert.match(retirement, /const dryRun = options\.dryRun !== false/)
 assert.ok(
-  retirement.indexOf('await archiveRows') < retirement.indexOf("deleteLegacyCutoverRows(env.DB, input.table"),
+  retirement.indexOf('await archiveRows') < retirement.indexOf("deleteLegacyCutoverRows(legacyShadowSource(env), input.table"),
   'archive/readback must precede generic D1 retirement deletes',
 )
 assert.match(retirement, /prediction_date_inference_forbidden: true/)

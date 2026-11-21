@@ -63,6 +63,8 @@ export async function checkpointRetentionItem(
     cursorKey?: string | number | null
     backlogRemaining: boolean
     cycleComplete?: boolean
+    /** Record the run item only; leave the dataset cursor (status, position, backlog) as it was. */
+    preserveCursor?: boolean
     evidence?: Record<string, unknown>
     error?: string | null
   },
@@ -80,7 +82,7 @@ export async function checkpointRetentionItem(
       ? 'cycle_complete'
       : 'running'
 
-  await db.batch([
+  const statements = [
     db.prepare(`
       INSERT INTO data_retention_run_items(
         run_id, dataset_id, status, scanned_rows, archived_rows, scrubbed_rows,
@@ -122,7 +124,8 @@ export async function checkpointRetentionItem(
       input.cycleComplete ? 1 : 0, scannedRows, archivedRows, scrubbedRows, deletedRows,
       input.backlogRemaining ? 1 : 0, input.runId, input.error?.slice(0, 1000) ?? null,
     ),
-  ])
+  ]
+  await db.batch(input.preserveCursor ? statements.slice(0, 1) : statements)
 }
 
 export async function finishRetentionRun(

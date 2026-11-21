@@ -50,6 +50,9 @@ const domainMigrationTransientTables = new Set([
   // routing. Registering them in dataDomainRegistry.ts changes the native bundle; wait for the next re-pin.
   'todo_cards',
   'todo_card_events',
+  // D1-M3 per-dataset drain gates (ops/0025): read through databaseForDataDomain(env,'ops') by the
+  // hot-window drain only. Registering it in dataDomainRegistry.ts changes the native bundle; next re-pin.
+  'data_retention_dataset_gates',
 ])
 const productionSqlFiles = [
   'schema.sql',

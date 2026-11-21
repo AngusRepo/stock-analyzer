@@ -2,6 +2,7 @@ import { METRIC_ROWS_CTE_SQL } from '../lib/strategyMetricSnapshots'
 import { Hono } from 'hono'
 import { twToday } from '../lib/dateUtils'
 import { requireAdminOrServiceToken } from '../lib/auth'
+import { DATASET_SNAPSHOT_COLD_READ_ERROR } from '../lib/retentionDatasetSnapshotCold'
 import { activeDataDomains, databaseForDataDomain } from '../lib/dataDomainRegistry'
 import type { Bindings, Variables } from '../types'
 
@@ -77,20 +78,30 @@ adminReadRoutes.get('/api/admin/expected-return/serving-state', async (c) => {
 })
 
 
+// D1-M3: cold-archive read failures are 503 with a stable code (details stay in the log), never a 404.
+function datasetSnapshotColdReadFailed(c: any, error: unknown) {
+  console.error('dataset_snapshot_cold_read_failed', error instanceof Error ? error.message.slice(0, 160) : 'unknown')
+  return c.json({ success: false, error: DATASET_SNAPSHOT_COLD_READ_ERROR }, 503)
+}
+
 async function handleDatasetSnapshotList(c: any) {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError
 
   const { listDatasetSnapshots } = await import('../lib/datasetSnapshots')
-  return c.json({
-    success: true,
-    snapshots: await listDatasetSnapshots(c.env, {
-      kind: c.req.query('kind'),
-      businessDate: c.req.query('date'),
-      accessTier: c.req.query('access_tier') as any,
-      limit: Number.parseInt(c.req.query('limit') ?? '50', 10),
-    }),
-  })
+  const filters = {
+    kind: c.req.query('kind'),
+    businessDate: c.req.query('date'),
+    accessTier: c.req.query('access_tier') as any,
+    limit: Number.parseInt(c.req.query('limit') ?? '50', 10),
+  }
+  const hot = await listDatasetSnapshots(c.env, filters)
+  try {
+    const { withColdDatasetSnapshots } = await import('../lib/retentionDatasetSnapshotCold')
+    return c.json({ success: true, ...await withColdDatasetSnapshots(c.env, filters, hot) })
+  } catch (error) {
+    return datasetSnapshotColdReadFailed(c, error)
+  }
 }
 
 async function handleDatasetSnapshotManifest(c: any) {
@@ -98,9 +109,17 @@ async function handleDatasetSnapshotManifest(c: any) {
   if (authError) return authError
 
   const { getDatasetSnapshotManifest } = await import('../lib/datasetSnapshots')
-  const manifest = await getDatasetSnapshotManifest(c.env, c.req.param('id'))
-  if (!manifest) return c.json({ error: 'dataset snapshot not found' }, 404)
-  return c.json({ success: true, manifest })
+  const snapshotId = c.req.param('id')
+  const manifest = await getDatasetSnapshotManifest(c.env, snapshotId)
+  if (manifest) return c.json({ success: true, manifest })
+  try {
+    const { coldDatasetSnapshotManifest } = await import('../lib/retentionDatasetSnapshotCold')
+    const cold = await coldDatasetSnapshotManifest(c.env, snapshotId)
+    if (cold) return c.json({ success: true, cold_archive: true, manifest: cold })
+  } catch (error) {
+    return datasetSnapshotColdReadFailed(c, error)
+  }
+  return c.json({ error: 'dataset snapshot not found' }, 404)
 }
 
 async function handleDatasetSnapshotPreview(c: any) {
@@ -109,7 +128,15 @@ async function handleDatasetSnapshotPreview(c: any) {
 
   const { readDatasetSnapshotPreview } = await import('../lib/datasetSnapshots')
   const bytes = Number.parseInt(c.req.query('bytes') ?? `${128 * 1024}`, 10)
-  const preview = await readDatasetSnapshotPreview(c.env, c.req.param('id'), bytes)
+  let preview = await readDatasetSnapshotPreview(c.env, c.req.param('id'), bytes)
+  if (preview.found === false) {
+    try {
+      const { coldDatasetSnapshotPreview } = await import('../lib/retentionDatasetSnapshotCold')
+      preview = await coldDatasetSnapshotPreview(c.env, c.req.param('id'), bytes) ?? preview
+    } catch (error) {
+      return datasetSnapshotColdReadFailed(c, error)
+    }
+  }
   const status = preview.found === false ? 404 : 200
   return c.json({ success: status === 200, ...preview }, status as any)
 }

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFileSync } from 'node:fs'
 import { buildStockData, scoreMultiFactor } from './marketScreener'
-import type { CanonicalScreenerChip, CanonicalScreenerPrice } from './screenerMarketData'
+import { legacyChipRowsToFallbackChips, type CanonicalScreenerChip, type CanonicalScreenerPrice } from './screenerMarketData'
 
 // NEW-1030-02: four screener reason texts were Big5-misdecoded literals. They now match the Python
 // backtest engine (ml-controller/services/backtest_engine.py), and the dead Big5 chip-name branch is gone.
@@ -52,12 +52,18 @@ test('B5-3: the Worker reason literals are the Python engine strings, with no mi
   }
 })
 
-test('B5-4: institutional nets come from the canonical English names only (legacy Chinese names are not added)', () => {
+test('B5-4: institutional nets come from the English names; a legacy-filled day now counts (NEW-1030-11)', () => {
   const chip = (name: string, buy: number): CanonicalScreenerChip => ({ date: '2026-10-29', stock_id: '2330', name, buy, sell: 0 })
-  // Same stock and date from both sources: the canonical net is kept and not double counted.
-  const both = buildStockData([], [chip('foreign', 1000), chip('外資', 500), chip('trust', 300), chip('投信', 200)])
-  assert.deepEqual([both.chips.get('2330')!.get('2026-10-29')!.foreign, both.chips.get('2330')!.get('2026-10-29')!.trust], [1000, 300])
-  // Legacy-only names stay at 0 (whether to count them is a pending owner decision, not this change).
-  const legacy = buildStockData([], [chip('外資', 500), chip('投信', 200)])
-  assert.deepEqual([legacy.chips.get('2330')!.get('2026-10-29')!.foreign, legacy.chips.get('2330')!.get('2026-10-29')!.trust], [0, 0])
+  const net = (data: ReturnType<typeof buildStockData>) =>
+    [data.chips.get('2330')!.get('2026-10-29')!.foreign, data.chips.get('2330')!.get('2026-10-29')!.trust]
+  // Canonical owns the pair: no legacy row is produced for it, so the canonical net is not double counted.
+  const legacyRow = { symbol: '2330', date: '2026-10-29', foreign_buy: 500, foreign_sell: 0, trust_buy: 200, trust_sell: 0,
+    dealer_buy: null, dealer_sell: null }
+  const covered = legacyChipRowsToFallbackChips([legacyRow], new Set(['2330|2026-10-29']), '2026-10-29')
+  assert.deepEqual(covered, [])
+  assert.deepEqual(net(buildStockData([], [chip('foreign', 1000), chip('trust', 300), ...covered])), [1000, 300])
+  // Legacy-only day: chip_data rows arrive under the English names and count.
+  const filled = legacyChipRowsToFallbackChips([legacyRow], new Set(), null)
+  assert.deepEqual(filled.map((c) => [c.name, c.source]), [['foreign', 'legacy.chip_data'], ['trust', 'legacy.chip_data']])
+  assert.deepEqual(net(buildStockData([], filled)), [500, 200])
 })

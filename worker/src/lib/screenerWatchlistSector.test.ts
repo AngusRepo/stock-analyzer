@@ -23,7 +23,7 @@ function d1() {
   return { sql, db }
 }
 
-const PLACEHOLDER = '?嗡?' // the screener's no-owner sector literal (marketScreener.ts taxonomyDisplay fallback)
+const PLACEHOLDER = '未分類' // the screener's no-owner sector literal (marketScreener.ts taxonomyDisplay fallback)
 const sectorOf = (sql: DatabaseSync, symbol: string) =>
   (sql.prepare('SELECT sector FROM stocks WHERE symbol=?').get(symbol) as { sector: string | null } | undefined)?.sector
 

@@ -433,7 +433,8 @@ export function buildAdminWorkerDomainTaskMap(
         return `strategy_learning_finalize date=${runDate} already_finalized_authority_changed run_id=${runState.canonical_run_id}`
       }
 
-      if (runState.status === 'error') {
+      const repairRetry = runState.status === 'error'
+      if (repairRetry) {
         if (c.req.query('retry_after_repair') !== '1') {
           throw new Error(`strategy_learning_terminal_requires_explicit_repair_retry:${runDate}`)
         }
@@ -530,11 +531,25 @@ export function buildAdminWorkerDomainTaskMap(
         } = await import('./eveningChainEvidenceClosure')
         const historicalPriorityDate = await resolveExpectedMatureSignalDate(c.env, runDate)
         const { drainMatureSelectionEvidence } = await import('./matureSelectionEvidenceRecovery')
-        await assertFinalizerLease('mature_recovery')
-        const matureRecovery = await drainMatureSelectionEvidence(c.env, runDate, {
-          maxRecoveryDates: 4,
-          maxBatches: 3,
+        // Same stage checkpoint as the queue finalizer: a retry of either path resumes at the failed stage.
+        // A retry after repair recomputes every stage, since cached results predate the repaired rows.
+        const { openStrategyLearningFinalizerCache } = await import('./strategyLearningFinalizerCache')
+        const finalizerCache = await openStrategyLearningFinalizerCache(c.env.KV, {
+          runDate, canonicalRunId: runState.canonical_run_id, policyMutationAllowed: currentBusinessDateRun,
+          fresh: repairRetry,
         })
+        await assertFinalizerLease('mature_recovery')
+        let matureRecovery: Awaited<ReturnType<typeof drainMatureSelectionEvidence>>
+        if (Object.prototype.hasOwnProperty.call(finalizerCache.stages, 'mature_recovery')) {
+          matureRecovery = finalizerCache.stages.mature_recovery as typeof matureRecovery
+        } else {
+          matureRecovery = await drainMatureSelectionEvidence(c.env, runDate, {
+            maxRecoveryDates: 4,
+            maxBatches: 3,
+          })
+          await assertFinalizerLease('mature_recovery')
+          await finalizerCache.persist('mature_recovery', matureRecovery)
+        }
         await assertFinalizerLease('mature_recovery')
         let closureSummary = ''
         const { decisionEvidence, historicalEvidence, labels, marginalEdge, routeBackfillEligibility, rewards, policy, productionPolicy }
@@ -543,7 +558,9 @@ export function buildAdminWorkerDomainTaskMap(
             persistPolicy: currentBusinessDateRun,
             historicalPriorityDate,
             identityDb: databaseForDataDomain(c.env, 'core'),
+            cachedStageResults: finalizerCache.stages,
             assertLease: assertFinalizerLease,
+            onStageComplete: finalizerCache.persist,
             resolveCanonicalScreenerRunIds: async (asOfDate) => {
               const { loadCanonicalScreenerRunIds } = await import('./historicalScreenerArtifactEvidence')
               return loadCanonicalScreenerRunIds(c.env, asOfDate)
@@ -575,8 +592,12 @@ export function buildAdminWorkerDomainTaskMap(
                 { requireSectorBreadth: currentBusinessDateRun },
               )
               closureSummary = summarizeEveningChainEvidenceClosure(closureAudit)
+              return closureSummary
             },
           })
+        if (!closureSummary && typeof finalizerCache.stages.before_promotion === 'string') {
+          closureSummary = finalizerCache.stages.before_promotion
+        }
         if (!closureSummary) throw new Error('evening_chain_evidence_closure_callback_missing')
         if (currentBusinessDateRun && (!policy || !productionPolicy)) {
           throw new Error(`strategy_learning_live_policy_closure_missing:${runDate}`)

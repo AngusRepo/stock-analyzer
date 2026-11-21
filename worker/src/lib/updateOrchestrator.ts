@@ -4799,25 +4799,12 @@ export async function processUpdateBatch(
         throw new Error(`strategy_learning_production_authority_denied:${triggerTime}:${authorityReason}`)
       }
       const policyMutationAllowed = productionAuthorityIntent && currentBusinessDateRun
-      const finalizerCacheMode = policyMutationAllowed ? 'policy-mutation' : 'evidence-only'
-      const finalizerCacheKey = `strategy-learning:finalizer:${triggerTime}:${canonicalRunId}:${finalizerCacheMode}:v5-known-date-publication-fence`
-      const cachedFinalizer = await env.KV.get(finalizerCacheKey, 'json') as {
-        canonical_run_id?: string
-        stages?: Record<string, unknown>
-      } | null
-      const finalizerStageResults: Record<string, unknown> = cachedFinalizer?.canonical_run_id === canonicalRunId
-        ? { ...(cachedFinalizer.stages ?? {}) }
-        : {}
-      const persistFinalizerStage = async (stage: string, result: unknown): Promise<void> => {
-        finalizerStageResults[stage] = result ?? null
-        await env.KV.put(finalizerCacheKey, JSON.stringify({
-          canonical_run_id: canonicalRunId,
-          run_date: triggerTime,
-          mode: finalizerCacheMode,
-          stages: finalizerStageResults,
-          updated_at: new Date().toISOString(),
-        }), { expirationTtl: 7 * 24 * 3600 })
-      }
+      const { openStrategyLearningFinalizerCache } = await import('./strategyLearningFinalizerCache')
+      const {
+        mode: finalizerCacheMode,
+        stages: finalizerStageResults,
+        persist: persistFinalizerStage,
+      } = await openStrategyLearningFinalizerCache(env.KV, { runDate: triggerTime, canonicalRunId, policyMutationAllowed })
       const logFinalizerStage = async (stage: string, status: 'running' | 'cached' | 'success' | 'error', reason?: string): Promise<void> => {
         await logSchedulerResult(env.KV, 'strategy-learning', {
           status: status === 'error' ? 'error' : 'running',

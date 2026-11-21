@@ -3,7 +3,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { readFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import test from 'node:test'
-import { createPostVerifyTaskCheckpoints, POST_VERIFY_RETRY_SAFE_TASKS, postVerifyOwnerAckEvidence, postVerifyAckDescriptor, type PostVerifyTaskResult } from './postVerifyTaskCheckpoint'
+import { createPostVerifyTaskCheckpoints, POST_VERIFY_FRESH_RECEIPT_SECONDS, POST_VERIFY_RETRY_SAFE_TASKS, postVerifyOwnerAckEvidence, postVerifyAckDescriptor, type PostVerifyTaskResult } from './postVerifyTaskCheckpoint'
 import { POST_VERIFY_HEAVY_TASKS, POST_VERIFY_MAX_HOPS, runPostVerifyCallbackChain } from './postMarketChain'
 import { controllerFetch } from './controllerClient'
 import { claimPipelineStage, markPipelineStageFenced, requeuePipelineStageFenced } from './pipelineStageLease'
@@ -398,6 +398,37 @@ test('unavailable readback does not invalidate receipt or allocate another produ
   await assert.rejects((await f.manager()).run('artifact',produce,{retrySafe:true,verifyResult:async()=>{throw new Error('fixture readback network unavailable')}}),/network unavailable/)
   assert.equal(calls,1)
   assert.equal((f.sqlite.prepare('SELECT state FROM post_verify_task_receipts_v1').get() as any).state,'post_verify_task_v1:success')
+  f.sqlite.close()
+})
+
+test('a later hop trusts a receipt settled within the fresh window and hop 0 re-verifies it (D1-OVL-C)',async()=>{
+  const f=fixture();let calls=0,checks=0
+  const produce=async()=>{calls++;return success('artifact')}
+  const options={retrySafe:true,verifyResult:async()=>{checks++;return true}}
+  const at=(hop:number)=>createPostVerifyTaskCheckpoints(f.env,{businessDate:date,canonicalRunId:run,leaseOwner:'lease-A',
+    productionEligible:true,assertStageLease:async()=>{},hop})
+  await (await at(0)).run('artifact',produce,options)
+  assert.equal((await (await at(2)).run('artifact',produce,options)).status,'success')
+  assert.equal(checks,0)
+  await (await at(0)).run('artifact',produce,options)
+  assert.equal(checks,1)
+  // Past the window a later hop takes the full readback again.
+  f.sqlite.prepare(`UPDATE post_verify_task_receipts_v1 SET updated_at=datetime('now',?)`).run(`-${POST_VERIFY_FRESH_RECEIPT_SECONDS+1} seconds`)
+  await (await at(3)).run('artifact',produce,options)
+  assert.equal(checks,2)
+  assert.equal(calls,1)
+  f.sqlite.close()
+})
+
+test('the fresh-receipt skip stays behind the identity and checksum checks',async()=>{
+  const f=fixture();let checks=0
+  const produce=async()=>success('artifact')
+  const at=(hop:number)=>createPostVerifyTaskCheckpoints(f.env,{businessDate:date,canonicalRunId:run,leaseOwner:'lease-A',
+    productionEligible:true,assertStageLease:async()=>{},hop})
+  await (await at(0)).run('artifact',produce)
+  f.sqlite.exec(`UPDATE post_verify_task_receipts_v1 SET receipt_json=json_set(receipt_json,'$.result.summary','tampered')`)
+  await assert.rejects((await at(1)).run('artifact',produce,{verifyResult:async()=>{checks++;return true}}),/post_verify_checkpoint_corrupt:artifact/)
+  assert.equal(checks,0)
   f.sqlite.close()
 })
 

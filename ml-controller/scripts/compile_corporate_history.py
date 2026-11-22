@@ -13,7 +13,7 @@ Spec (JSON):
                   the four finlab company event catalogs, finlab.tw_etf_dividend_events,
                   finlab.etf_split:恢復買賣日期 and official.etf_registry
   issuer_evidence symbol -> {dataset, path, fetched_at}; reviewed issuer documents
-  cash_rounding_rules / reviewed_stock_rules   optional JSON lists
+  cash_rounding_rules / reviewed_stock_rules / reviewed_subscription_rules   optional JSON lists
   extra_sources   optional [{dataset, path, fetched_at}] cited by those rules
   captured_at     optional; defaults to now (the real retrieval clock)
 
@@ -131,7 +131,9 @@ def compile_history(spec: dict, *, base: Path, captured_at: str | None = None):
             captured_at=captured, source_refs=company_refs, issuer_evidence=issuer_evidence,
             event_catalogs=catalogs,
             cash_rounding_rules=_json_list(base, spec.get('cash_rounding_rules') or [], 'cash_rounding_rules'),
-            reviewed_stock_rules=_json_list(base, spec.get('reviewed_stock_rules') or [], 'reviewed_stock_rules')))
+            reviewed_stock_rules=_json_list(base, spec.get('reviewed_stock_rules') or [], 'reviewed_stock_rules'),
+            reviewed_subscription_rules=_json_list(base, spec.get('reviewed_subscription_rules') or [],
+                                                   'reviewed_subscription_rules')))
     if etf:
         rows = _frame(raw, refs['finlab.tw_etf_dividend_events'])
         if 'symbol' not in rows.columns and 'stock_id' in rows.columns:

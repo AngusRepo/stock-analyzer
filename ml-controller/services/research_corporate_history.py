@@ -184,7 +184,7 @@ def account_history_snapshot(snapshot, required_symbols, *, outstanding_action_i
 
 def reconstruct_company_sessions(rows, *, days, symbols, captured_at, source_refs,
                                  issuer_evidence, other_events=None, cash_rounding_rules=(),
-                                 event_catalogs=None, reviewed_stock_rules=()):
+                                 event_catalogs=None, reviewed_stock_rules=(), reviewed_subscription_rules=()):
     """Compile one frozen company feed and official event census locally.
 
     The caller supplies the complete exchange census (including par changes).
@@ -248,6 +248,7 @@ def reconstruct_company_sessions(rows, *, days, symbols, captured_at, source_ref
                     snap['issuer_blocker_action_ids'].setdefault(key, {})[reason] = sorted(enriched_ids)
         snap = apply_issuer_cash_rounding(snap, cash_rounding_rules, source_refs)
         snap = apply_reviewed_stock_rules(snap, reviewed_stock_rules, source_refs)
+        snap = apply_reviewed_subscription_rules(snap, reviewed_subscription_rules, source_refs)
         snap['unverified_stock_action_ids'] = {}
         for action in snap['actions']:
             if action['kind'] == 'stock' and action.get('stock_terms_status') not in ('confirmed_schedule', 'awaiting_issuer_schedule'):
@@ -521,4 +522,49 @@ def apply_reviewed_stock_rules(snapshot, rules, source_refs):
         action.update(payable_date=payable, fractional_treatment=rule['fractional_treatment'],
             stock_terms_status='confirmed_schedule' if payable else 'awaiting_issuer_schedule',
             reviewed_history_evidence=deepcopy(rule))
+    return result
+
+
+REVIEWED_SUBSCRIPTION_SEMANTICS = ('auto_exact_match', 'issuer_event_terms_reviewed')
+
+
+def apply_reviewed_subscription_rules(snapshot, rules, source_refs):
+    """Research-only reviewed original-holder terms; the live Paper parser is unchanged.
+
+    Exact offering identity (record date, ratio, price) and sealed issuer
+    documents are mandatory. Rights are never valued or exercised: unexercised
+    original-holder rights expire, exactly as the live parser's policy states.
+    """
+    from decimal import Decimal
+    result = deepcopy(snapshot)
+    hashes = {r['sha256'] for r in source_refs}
+    for rule in rules:
+        if not rule.get('source_sha256s') or not set(rule['source_sha256s']) <= hashes:
+            raise ValueError('corporate_history_reviewed_subscription_provenance_missing')
+        if (rule.get('review_semantic') not in REVIEWED_SUBSCRIPTION_SEMANTICS
+                or rule.get('unexercised_to_specific_persons') is not True
+                or not rule['ex_date'] <= rule['payment_start'] <= rule['payment_deadline']):
+            raise ValueError('corporate_history_reviewed_subscription_rule_invalid')
+    for action in result['actions']:
+        if action['kind'] != 'subscription':
+            continue
+        rights = action['rights']
+        applicable = [rule for rule in rules if rule['symbol'] == action['symbol']
+            and rule['ex_date'] == action['ex_date'] and rule['record_date'] == action.get('record_date')
+            and Decimal(str(rule['ratio'])) == Decimal(str(rights['ratio']))
+            and Decimal(str(rule['subscription_price'])) == Decimal(str(rights['subscription_price']))
+            and rule['published_date'] < snapshot['session_date']]
+        if not applicable:
+            continue
+        latest = max(r['published_date'] for r in applicable)
+        selected = [r for r in applicable if r['published_date'] == latest]
+        if len(selected) != 1:
+            raise ValueError('corporate_history_reviewed_subscription_conflict')
+        rule = selected[0]
+        rights.update(policy='do_not_subscribe', payment_start=rule['payment_start'],
+            payment_deadline=rule['payment_deadline'], expiry_policy='unexercised_original_holder_rights_expire',
+            fair_value_per_right=None, valuation_status='unobservable',
+            fractional_policy='retain_no_automatic_pooling', promotion_eligible=False,
+            evidence_checksums=sorted(rule['source_sha256s']))
+        action['reviewed_history_evidence'] = deepcopy(rule)
     return result

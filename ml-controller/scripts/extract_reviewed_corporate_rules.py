@@ -39,19 +39,28 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import polars as pl
 
-from services.mops_corporate_terms import DATE, _date
+from services.mops_corporate_terms import DATE as ISSUER_DATE, _date
 from services.paired_nav_journal import digest
 
 FULL_WIDTH = str.maketrans('０１２３４５６７８９．', '0123456789.')
+# Never take digits from a neighbouring list number: 113/12/3⏎2.特定人 is not 12/32.
+DATE = r'(?<!\d)' + ISSUER_DATE + r'(?!\d)'
 PLAIN_DATE = re.sub(r'\(\?P<[^>]+>', '(?:', DATE)
 NUMBER = r'([0-9][0-9,]*(?:\.[0-9]+)?)'
 SEP = r'[^。；，,]'
 RANGE = r'(?:日起至|日至|起至|至|～|~|-)'
+PER_THOUSAND = r'每[壹一]?[仟千]股'
+STOCK_RATIO = (PER_THOUSAND + SEP + r'{0,12}?(?:配發|配股|配)[^0-9。；，,]{0,10}?(?P<approx>約)?' + NUMBER + '股',
+               r'配發' + PER_THOUSAND + r'(?P<approx>約)?' + NUMBER + '股')
+SUBSCRIPTION_RATIO = (PER_THOUSAND + r'(?P<approx>約)?(?:得|可|有償)?(?:約)?(?:優先)?(?:認購)?(?:新股)?(?:約)?'
+                      + NUMBER + '股')
 LAST_DIGIT_MIN_PLACES = 4  # Wei 11/22 G2'': last-digit rounding of a long per-thousand ratio
 
 
 def compact(text: str) -> str:
-    return re.sub(r'\s+', '', text).translate(FULL_WIDTH)
+    text = text.translate(FULL_WIDTH)
+    # A line break inside a number (97.408⏎26976) is no boundary; one before a list number is.
+    return re.sub(r'\s+', '', re.sub(r'(?<=\d)\s+(?=[1-9]\d?[.、](?!\d))', '|', text))
 
 
 def _number(value: str) -> Decimal:
@@ -62,6 +71,14 @@ def _places(value: Decimal) -> int:
     return max(0, -value.normalize().as_tuple().exponent)
 
 
+def _day(match) -> str | None:
+    """Issuer typos such as 115年79月3日 are no date at all."""
+    try:
+        return _date(match)
+    except ValueError:
+        return None
+
+
 def _excerpt(text: str, match) -> str:
     return text[max(0, match.start() - 30):match.end() + 30]
 
@@ -70,7 +87,8 @@ def _dates(text: str, patterns) -> dict:
     found = {}
     for pattern in patterns:
         for match in re.finditer(pattern, text):
-            found.setdefault(_date(match), _excerpt(text, match))
+            if day := _day(match):
+                found.setdefault(day, _excerpt(text, match))
     return found
 
 
@@ -83,17 +101,26 @@ def stock_record_dates(text: str) -> dict:
             label = match.groupdict().get('label') or ''
             if any(word in label for word in ('訂價', '認股', '現金增資')):
                 continue
-            found.setdefault(_date(match), _excerpt(text, match))
+            if day := _day(match):
+                found.setdefault(day, _excerpt(text, match))
     return found
+
+
+def _ratio_matches(text: str, patterns) -> tuple[dict, set]:
+    """value -> excerpt, and the values the issuer itself calls approximate (約)."""
+    found, approximate = {}, set()
+    for pattern in patterns:
+        for match in re.finditer(pattern, text):
+            value = _number(match[match.re.groups])
+            found.setdefault(value, _excerpt(text, match))
+            if '約' in match[0]:
+                approximate.add(value)
+    return found, approximate
 
 
 def stock_ratios(text: str) -> dict:
     """Shares per thousand; two labelled components may also form one total."""
-    found = {}
-    for pattern in (r'每[仟千]股' + SEP + r'{0,12}?配發(?:股票股利)?(?:普通股)?' + NUMBER + '股',
-                    r'配發每[仟千]股' + NUMBER + '股'):
-        for match in re.finditer(pattern, text):
-            found.setdefault(_number(match[1]), _excerpt(text, match))
+    found, _ = _ratio_matches(text, STOCK_RATIO)
     if len(found) == 2:
         found.setdefault(sum(found), 'sum_of_two_components')
     return found
@@ -112,9 +139,13 @@ def book_entry_fee(text: str) -> bool:
 def subscription_terms(text: str, *, previous_shares: Decimal | None) -> dict:
     record = _dates(text, (r'認股基準日' + SEP + r'{0,4}?(?:為|[:：])(?:民國)?' + DATE,
                            DATE + r'為' + SEP + r'{0,10}?認股基準日'))
-    ratios = {}
-    for match in re.finditer(r'每[仟千]股(?:得|可)?(?:優先)?認購(?:新股)?' + NUMBER + '股', text):
-        ratios.setdefault(_number(match[1]), _excerpt(text, match))
+    ratios, approximate = {}, set()
+    for match in re.finditer(SUBSCRIPTION_RATIO, text):
+        between = match[0][len(re.match(PER_THOUSAND, match[0])[0]):]
+        if '可' in between or '認購' in between or '有償' in between:  # never a stock-dividend ratio
+            ratios.setdefault(_number(match[match.re.groups]), _excerpt(text, match))
+            if '約' in between:
+                approximate.add(_number(match[match.re.groups]))
     derived = {}
     if previous_shares:
         for match in re.finditer(NUMBER + r'(仟)?股' + SEP + r'{0,8}?由原股東', text):
@@ -129,11 +160,11 @@ def subscription_terms(text: str, *, previous_shares: Decimal | None) -> dict:
     for pattern in (r'原股東' + SEP + r'{0,8}?(?:繳款|繳納)期間[:：自]?(?:民國)?(' + PLAIN_DATE + RANGE + r'(?:民國)?' + PLAIN_DATE + ')',
                     r'(' + PLAIN_DATE + RANGE + r'(?:民國)?' + PLAIN_DATE + r')(?:止)?為原股東' + SEP + r'{0,8}?(?:繳款|繳納)期間'):
         for match in re.finditer(pattern, text):
-            days = tuple(_date(m) for m in re.finditer(DATE, match[1]))
-            if len(days) == 2:
+            days = tuple(_day(m) for m in re.finditer(DATE, match[1]))
+            if len(days) == 2 and all(days):
                 periods.setdefault(days, _excerpt(text, match))
     specific = re.search(r'(?:放棄認[購股]|認購不足|未認購)[^。]{0,80}?特定人', text)
-    return {'record': record, 'ratios': ratios, 'derived': derived, 'prices': prices, 'periods': periods,
+    return {'record': record, 'ratios': ratios, 'approximate': approximate, 'derived': derived, 'prices': prices, 'periods': periods,
             'specific': _excerpt(text, specific) if specific else None}
 
 
@@ -153,12 +184,14 @@ def stock_candidates(action: dict, docs: list, source: dict) -> tuple[list, list
             continue
         seen_record.append(doc['published_date'])
         ratios = stock_ratios(text)
+        approximate = _ratio_matches(text, STOCK_RATIO)[1]
         exact = [v for v in ratios if v == expected]
         # A rounding of a long fraction (>= 4 places), never a different whole or short ratio.
         near = [v for v in ratios if v != expected and _places(v) >= LAST_DIGIT_MIN_PLACES
                 and abs(v - expected) <= Decimal(1).scaleb(-_places(v))]
         links.append({'doc': doc, 'text': text, 'records': records, 'ratios': ratios,
                       'match': 'exact' if exact else 'last_digit' if near else None,
+                      'approximate': bool(set(exact or near) & approximate),
                       'issuer_value': (exact or near or [None])[0]})
     diagnostic = {'record_date_found_in': seen_record, 'ratios_seen': sorted(str(v) for l in links for v in l['ratios'])}
     linked = [l for l in links if l['match']]
@@ -184,6 +217,8 @@ def stock_candidates(action: dict, docs: list, source: dict) -> tuple[list, list
     reasons = []
     if link['match'] != 'exact':
         reasons.append('ratio_last_digit_difference')
+    if link['approximate']:
+        reasons.append('issuer_ratio_approximate')
     if len(latest) > 1:
         reasons.append('several_documents_same_day')
     if later:
@@ -197,7 +232,9 @@ def stock_candidates(action: dict, docs: list, source: dict) -> tuple[list, list
     return [rule], [], diagnostic
 
 
-def subscription_candidates(action: dict, docs: list, source: dict, previous_shares) -> tuple[list, list, dict]:
+def subscription_candidates(action: dict, docs: list, source: dict, previous_shares,
+                            later_docs: list = ()) -> tuple[list, list, dict]:
+    """later_docs (after ex-date) never supply terms; they only send a moved record date to review."""
     rights = action['rights']
     ratio = Decimal(str(rights['ratio'])) * 1000
     price = Decimal(str(rights['subscription_price']))
@@ -214,6 +251,8 @@ def subscription_candidates(action: dict, docs: list, source: dict, previous_sha
     for doc, terms in sorted(per_doc, key=lambda item: item[0]['published_date'], reverse=True):
         if 'ratio' not in fields and ratio in terms['ratios']:
             fields['ratio'] = ('stated', terms['ratios'][ratio]); used.add(doc['published_date'])
+            if ratio in terms['approximate']:
+                reasons.append('issuer_ratio_approximate')
         if 'ratio' not in fields:
             for value, info in terms['derived'].items():
                 tolerance = Decimal('0.5') * Decimal(info['unit_shares']) * 1000 / previous_shares
@@ -250,6 +289,11 @@ def subscription_candidates(action: dict, docs: list, source: dict, previous_sha
         reasons.append('terms_spread_over_documents')
     if max(used) != latest_day:
         reasons.append('later_document_not_used')
+    for doc in later_docs:
+        if doc['published_date'] <= deadline:
+            moved = set(subscription_terms(compact(doc['body']), previous_shares=None)['record']) - {action['record_date']}
+            if moved:
+                reasons.append('record_date_moved_after_ex_date')
     if reasons:
         rule['review_semantic'] = 'issuer_event_terms_reviewed'
         return [], [{'id': _candidate_id(rule), 'kind': 'subscription', 'reasons': sorted(set(reasons)), 'rule': rule}], diagnostic
@@ -321,7 +365,9 @@ def extract(base_spec: Path, issuer_dir: Path, symbols: list[str], *, start: str
                 rules, items, diagnostic = stock_candidates(action, docs, source)
                 stock_rules += rules
             else:
-                rules, items, diagnostic = subscription_candidates(action, docs, source, _previous_shares(rows, action))
+                later = [d for d in evidence['documents'] if d['published_date'] >= action['ex_date']]
+                rules, items, diagnostic = subscription_candidates(action, docs, source, _previous_shares(rows, action),
+                                                                   later)
                 subscription_rules += rules
             queue += items
             events.append({'kind': action['kind'], 'ex_date': action['ex_date'],

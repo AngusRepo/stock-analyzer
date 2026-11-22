@@ -142,3 +142,43 @@ def test_extract_writes_a_spec_that_compiles_and_clears_the_blocker(tmp_path):
     (issuer / '2330.json').write_bytes(raw + b' ')
     with pytest.raises(ValueError, match='changed_since_fetch'):
         extractor.extract(base / 'spec.json', issuer, ['2330'], start='2026-09-01', end='2026-09-30')
+
+
+def test_list_numbers_and_issuer_typos_never_become_dates():
+    # 6225 / 5548 / 3037 real wording: a line break before the next list number, and an impossible month.
+    text = extractor.compact('1.原股東及員工之股款繳款期間:115/9/3~115/9/1\n2.特定人認股繳款期間:115/9/10~115/9/16')
+    periods = extractor.subscription_terms(text, previous_shares=None)['periods']
+    assert list(periods) == [('2026-09-03', '2026-09-01')]  # 9/1, never 9/12
+    assert extractor.stock_record_dates(extractor.compact('核准，115年79月3日為除權基準日')) == {}
+
+
+def test_record_date_moved_after_ex_date_is_never_auto():
+    # 4764 real case: the 8/1 offering was re-run with an 8/28 record date announced after the ex-date.
+    action = subscription('1449', '2025-07-29', '2025-08-04', .15519830415, 10.8)
+    moved = doc('2025-08-06', SUB_1449.replace('114年8月4日為認股基準日', '114年8月29日為認股基準日'))
+    rules, queue, _ = extractor.subscription_candidates(action, [doc('2025-07-22', SUB_1449)], SOURCE, None, [moved])
+    assert rules == [] and queue[0]['reasons'] == ['record_date_moved_after_ex_date']
+    # The ex-date's own repeat of the same terms is not a move.
+    rules, _, _ = extractor.subscription_candidates(action, [doc('2025-07-22', SUB_1449)], SOURCE, None,
+                                                    [doc('2025-07-29', SUB_1449)])
+    assert rules
+
+
+def test_real_ratio_wording_variants_and_numbers_broken_over_lines():
+    # 1229 / 2515 / 6294 / 3128 / 1295 / 3313 real wording.
+    for body, value in (('(即每壹仟股無償配發50股)', 50), ('每仟股無償配發新股50.3股', '50.3'), ('每仟股無償配60股', 60),
+                        ('每仟股無償配發97.408\n26976股', '97.40826976')):
+        assert list(extractor.stock_ratios(extractor.compact(body))) == [extractor.Decimal(value)]
+    assert extractor.stock_ratios(extractor.compact('每仟股配發現金股利1,000元')) == {}
+    for body, value in (('每仟股認購新股67.984\n4408股', '67.9844408'), ('每壹仟股認購246.48817163股', '246.48817163')):
+        assert list(extractor.subscription_terms(extractor.compact(body), previous_shares=None)['ratios']) == [
+            extractor.Decimal(value)]
+
+
+def test_approximate_issuer_ratio_is_queued_even_when_digits_match():
+    rules, queue, _ = extractor.stock_candidates(stock('1225', '2025-09-24', '2025-09-30', .055),
+        [doc('2025-09-09', STOCK_1225.replace('每仟股55股', '每仟股約55股'))], SOURCE)
+    assert rules == [] and queue[0]['reasons'] == ['issuer_ratio_approximate']
+    rules, queue, _ = extractor.subscription_candidates(subscription('1449', '2025-07-29', '2025-08-04', .15519830415, 10.8),
+        [doc('2025-07-22', SUB_1449.replace('每仟股可認購', '每仟股約可認購'))], SOURCE, None)
+    assert rules == [] and queue[0]['reasons'] == ['issuer_ratio_approximate']

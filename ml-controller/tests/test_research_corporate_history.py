@@ -378,3 +378,53 @@ def test_old_issuer_gap_scoped_to_entitlement_and_never_removed_without_map():
     del snap['issuer_blocker_action_ids']
     with pytest.raises(ValueError, match='issuer_latest_revision_not_linked'):
         account_history_snapshot(snap, {'1582'}, outstanding_action_ids=[])
+
+
+def subscription_rule(**changes):
+    return {'symbol':'2330','ex_date':'2026-09-07','record_date':'2026-09-15','ratio':.02,
+        'subscription_price':50.,'published_date':'2026-09-01','payment_start':'2026-09-20',
+        'payment_deadline':'2026-09-25','unexercised_to_specific_persons':True,
+        'review_semantic':'auto_exact_match','source_sha256s':['d'*64],**changes}
+
+
+def test_reviewed_subscription_terms_require_exact_offering_sources_and_publication_clock():
+    from services.research_corporate_history import apply_reviewed_subscription_rules
+    from services.subscription_rights import validate_rights
+    action={'kind':'subscription','symbol':'2330','ex_date':'2026-09-07','record_date':'2026-09-15',
+        'rights':{'ratio':.02,'subscription_price':50.,'issued_ratio':.02,'policy':'do_not_subscribe'}}
+    snap={'session_date':'2026-09-07','actions':[action]}
+    refs=[{'sha256':'d'*64}]
+    rights=apply_reviewed_subscription_rules(snap,[subscription_rule()],refs)['actions'][0]['rights']
+    validate_rights(rights,'2026-09-07')
+    assert rights['evidence_checksums']==['d'*64] and rights['fair_value_per_right'] is None
+    assert 'payment_start' not in action['rights']  # input snapshot untouched
+    for late in ({'published_date':'2026-09-07'},{'subscription_price':50.5},{'ratio':.0200001},
+                 {'record_date':'2026-09-16'}):
+        assert 'payment_start' not in apply_reviewed_subscription_rules(
+            snap,[subscription_rule(**late)],refs)['actions'][0]['rights']
+    with pytest.raises(ValueError,match='provenance_missing'):
+        apply_reviewed_subscription_rules(snap,[subscription_rule()],[])
+    for bad in ({'unexercised_to_specific_persons':False},{'review_semantic':'guessed'},
+                {'payment_start':'2026-09-06'},{'payment_deadline':'2026-09-19'}):
+        with pytest.raises(ValueError,match='rule_invalid'):
+            apply_reviewed_subscription_rules(snap,[subscription_rule(**bad)],refs)
+    with pytest.raises(ValueError,match='subscription_conflict'):
+        apply_reviewed_subscription_rules(snap,[subscription_rule(),subscription_rule(payment_deadline='2026-09-26')],refs)
+
+
+def test_reviewed_subscription_rule_clears_missing_original_holder_terms_in_compiler():
+    from test_finlab_corporate_actions import subscription_row
+    from services.research_corporate_history import reconstruct_company_sessions
+    refs=sample()['source_refs']+[{'dataset':'official.exchange_census','uri':'local://census.json',
+        'sha256':'c'*64,'fetched_at':'2026-10-03T00:00:00+00:00'},{'dataset':'mops.issuer:2330',
+        'uri':'local://issuer.json','sha256':'d'*64,'fetched_at':'2026-10-03T00:00:00+00:00'}]
+    rows=pl.DataFrame([subscription_row(**{'現金增資認購價(元/股)':50.})])
+    def compile_with(rules):
+        return load_history_tape(reconstruct_company_sessions(rows,days=['2026-09-07'],symbols=['2330'],
+            captured_at='2026-10-03T01:00:00+00:00',source_refs=refs,issuer_evidence={},
+            other_events={'2026-09-07':[]},reviewed_subscription_rules=rules))['2026-09-07']
+    assert compile_with([])['blockers']['2330']==['economic_terms_incomplete:subscription:KeyError']
+    day=compile_with([subscription_rule()])
+    assert day['blockers']=={}
+    [action]=day['actions']
+    assert action['kind']=='subscription' and action['rights']['payment_deadline']=='2026-09-25'

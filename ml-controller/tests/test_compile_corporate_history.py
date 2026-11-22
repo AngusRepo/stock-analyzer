@@ -114,3 +114,18 @@ def test_sessions_after_the_oldest_source_fetch_are_a_gap_not_no_action(tmp_path
     spec['sources']['finlab.capital_reduction_otc:恢復買賣日期']['fetched_at'] = '2026-09-04T00:30:00+00:00'
     _, days, _, _ = compile_history(spec, base=tmp_path, captured_at=CAPTURED)
     assert days == DAYS[:1]
+
+
+def test_driver_passes_reviewed_subscription_rules_from_spec(tmp_path, monkeypatch):
+    import compile_corporate_history as driver
+    seen = {}
+    real = driver.reconstruct_company_sessions
+    def capture(*args, **kwargs):
+        seen.update(kwargs)
+        return real(*args, **kwargs)
+    monkeypatch.setattr(driver, 'reconstruct_company_sessions', capture)
+    spec = spec_fixture(tmp_path)
+    write(tmp_path / 'subscription_rules.json', [])
+    spec['reviewed_subscription_rules'] = 'subscription_rules.json'
+    driver.compile_history(spec, base=tmp_path, captured_at=CAPTURED)
+    assert seen['reviewed_subscription_rules'] == [] and seen['reviewed_stock_rules'] == []

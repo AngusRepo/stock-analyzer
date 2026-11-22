@@ -111,6 +111,17 @@ def exclude_history_blocked_symbols(dataset, start_date, end_date):
     return report
 
 
+def adopt_corporate_history(dataset, start_date, end_date):
+    """Research-history accounting for a dataset loaded with allow_corporate_history:
+    every session must be the history tape; unresolved issuers leave the window."""
+    from services.research_corporate_history import RESEARCH_ACCOUNTING_DEFAULTS
+    if any(s.get('schema_version') != OWNER for s in dataset.corporate_sources.values()):
+        raise ValueError('corporate_history_tape_not_loaded')
+    # Search params stay untouched (nothing here can reach a KV push).
+    dataset.research_accounting = dict(RESEARCH_ACCOUNTING_DEFAULTS)
+    return exclude_history_blocked_symbols(dataset, start_date, end_date)
+
+
 def require_corporate_coverage(dataset, start_date, end_date):
     report = audit_corporate_coverage(dataset, start_date, end_date)
     if report['status'] != 'ready':

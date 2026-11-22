@@ -26,7 +26,8 @@ def tiny_universe_share_gate(request, monkeypatch):
     so each test exercises the exclusion mechanics it names.
     """
     if request.node.originalname not in ('test_more_than_a_fifth_excluded_stops_the_search',
-                                         'test_the_share_gate_stops_the_research_loader'):
+                                         'test_the_share_gate_stops_the_research_loader',
+                                         'test_the_share_gate_stops_weekly_before_replay'):
         from fractions import Fraction
         from services import research_corporate_preflight
         monkeypatch.setattr(research_corporate_preflight, 'MAX_EXCLUDED_SYMBOL_SHARE', Fraction(1))
@@ -284,3 +285,208 @@ def test_ready_history_replays_with_the_research_accounting_assumption(monkeypat
     engine.replay_period(data, days[0], days[-1], {**params, 'researchAccounting': {'cashRoundingMode': 'minus_one_twd'}},
                          initial_capital=109000.)
     assert seen == {'research_cash_mode': 'minus_one_twd', 'research_subscription_policy': 'do_not_subscribe_zero_value'}
+
+
+# ── weekly canonical backtest reads the history snapshot (Wei 11/22) ──
+
+WEEKLY_PARAMS = {'positionRiskDistribution': {'maxPerSector': 3, 'maxSingleNamePct': .18,
+    'correlationThreshold': .65, 'correlationWindow': 60, 'minCorrelationOverlap': 20}}
+
+
+def ga_manifest():
+    return {'snapshot_id': 'ga_research_dataset:2026-09-07:corporate-history', 'kind': 'ga_research_dataset',
+            'business_date': DAYS[-1], 'created_at': '2026-09-08T03:00:00Z', 'checksum': 'c' * 64,
+            'schema_version': 'backtest-dataset-parquet-v2', 'producer_run_id': 'corporate-history',
+            'primary_store': 'gcs', 'access_tier': 'compute', 'gcs_uri': 'gs://fixture', 'row_count': 0,
+            'metadata_json': {'start_date': DAYS[0], 'end_date': DAYS[-1], 'components': {
+                'signals': 'gs://fixture/signals', 'corporate_source_records': 'gs://fixture/receipts',
+                'corporate_history_records': 'gs://fixture/history'}}}
+
+
+def weekly_fixture(monkeypatch, tape, symbols=('1101', '2330')):
+    from services import weekly_evidence_service as weekly
+    seen = {'kinds': [], 'replays': []}
+    snapshot = ga_manifest()
+    def latest(**kwargs):
+        seen['kinds'].append(kwargs['kind'])
+        return snapshot if kwargs['kind'] == 'ga_research_dataset' else receipt_manifest(DAYS[-1])
+    def load(**kwargs):
+        seen['load'] = kwargs
+        return dataset(tape, symbols=symbols)
+    def replay(**kwargs):
+        seen['replays'].append(kwargs)
+        return 'metrics'
+    monkeypatch.setattr(weekly, 'latest_dataset_snapshot', latest)
+    monkeypatch.setattr(weekly.BacktestDataset, 'load_from_snapshot_manifest', load)
+    monkeypatch.setattr(weekly, 'replay_period', replay)
+    return weekly, snapshot, seen
+
+
+def test_weekly_replays_the_history_snapshot_without_unresolved_issuers(monkeypatch):
+    tape = {d: history(d) for d in DAYS}
+    tape[DAYS[2]] = history(DAYS[2], blockers={'2330': ['stock_delivery_issuer_history_unverified']},
+        actions=[{'action_id': 'stock-ev', 'symbol': '2330', 'kind': 'stock', 'ex_date': DAYS[2],
+                  'payable_date': None, 'cash_per_share': 0., 'stock_per_share': .1}])
+    tape[DAYS[2]]['unverified_stock_action_ids'] = {'2330': ['stock-ev']}
+    weekly, snapshot, seen = weekly_fixture(monkeypatch, tape)
+    assert weekly.preflight_weekly_backtest_source('2026-09-08')['corporate_source'] == 'corporate_history_records'
+    metrics, provenance = weekly._replay(as_of_date='2026-09-08', params=WEEKLY_PARAMS,
+                                         initial_capital=100, symbols=None, prefer_corporate_history=True)
+    assert metrics == 'metrics' and seen['kinds'] == ['ga_research_dataset', 'backtest_dataset'] * 2
+    assert seen['load']['allow_corporate_history'] is True
+    replayed = seen['replays'][0]['dataset']
+    assert all(replayed.get_universe_at(d) == {'1101'} for d in DAYS)
+    assert replayed.research_accounting == RESEARCH_ACCOUNTING_DEFAULTS
+    assert provenance['snapshot_id'] == snapshot['snapshot_id']
+    assert provenance['corporate_source'] == 'corporate_history_records'
+    assert provenance['research_accounting_assumption'] == RESEARCH_ACCOUNTING_DEFAULTS
+    exclusion = provenance['corporate_history_exclusion']
+    assert exclusion['excluded_count'] == 1 and exclusion['excluded_symbols'] == ['2330']
+    assert 'excluded_first_blocked_session' not in exclusion
+    assert provenance['history_freshness']['lag_sessions'] == 0  # receipt snapshot ends on the same day
+
+
+def test_the_share_gate_stops_weekly_before_replay(monkeypatch):
+    from services.research_corporate_preflight import CorporateExclusionTooHigh
+    symbols = [str(1000 + i) for i in range(10)]
+    tape = {d: history(d, symbols=symbols[3:]) for d in DAYS}  # 3/10 uncovered > 1/5
+    weekly, _, seen = weekly_fixture(monkeypatch, tape, symbols=symbols)
+    with pytest.raises(CorporateExclusionTooHigh, match=r'3/10 > 1/5'):
+        weekly._replay(as_of_date='2026-09-08', params=WEEKLY_PARAMS, initial_capital=100, symbols=None,
+                       prefer_corporate_history=True)
+    assert seen['replays'] == []
+
+
+def test_weekly_refuses_a_receipt_tape_under_the_history_component(monkeypatch):
+    tape = {d: {'session_date': d, 'covered_symbols': ['1101', '2330'], 'actions': [], 'blockers': {}} for d in DAYS}
+    weekly, _, seen = weekly_fixture(monkeypatch, tape)
+    with pytest.raises(ValueError, match='corporate_history_tape_not_loaded'):
+        weekly._replay(as_of_date='2026-09-08', params=WEEKLY_PARAMS, initial_capital=100, symbols=None,
+                       prefer_corporate_history=True)
+    assert seen['replays'] == []
+
+
+def test_weekly_history_still_blocks_a_missing_session_after_exclusion(monkeypatch):
+    tape = {d: history(d) for d in DAYS[:2]}  # last session absent from the tape
+    weekly, _, seen = weekly_fixture(monkeypatch, tape)
+    with pytest.raises(CorporateCoverageError, match='session_missing'):
+        weekly._replay(as_of_date='2026-09-08', params=WEEKLY_PARAMS, initial_capital=100, symbols=None,
+                       prefer_corporate_history=True)
+    assert seen['replays'] == []
+
+
+def test_historical_comparison_keeps_its_original_receipt_source(monkeypatch):
+    from services import weekly_evidence_service as weekly
+    kinds = []
+    def latest(**kwargs):
+        kinds.append(kwargs['kind'])
+        # A history snapshot exists, but comparison must not ask for it.
+        return ga_manifest() if kwargs['kind'] == 'ga_research_dataset' else None
+    monkeypatch.setattr(weekly, 'latest_dataset_snapshot', latest)
+    with pytest.raises(RuntimeError, match='weekly_evidence_snapshot_not_ready'):
+        weekly._replay(as_of_date='2026-09-08', params=WEEKLY_PARAMS, initial_capital=100, symbols=None)
+    assert kinds == ['backtest_dataset']
+
+
+def test_ga_snapshot_with_empty_history_reference_is_not_read_as_receipts(monkeypatch):
+    weekly, snapshot, seen = weekly_fixture(monkeypatch, {d: history(d) for d in DAYS})
+    snapshot['metadata_json']['components']['corporate_history_records'] = ''
+    with pytest.raises(RuntimeError, match='weekly_evidence_snapshot_history_component_missing'):
+        weekly._replay(as_of_date='2026-09-08', params=WEEKLY_PARAMS, initial_capital=100, symbols=None,
+                       prefer_corporate_history=True)
+    assert 'load' not in seen
+
+
+class Sessions:
+    """market_trading_sessions in sqlite, so the real SQL bounds are what is tested."""
+    def __init__(self, days):
+        import sqlite3
+        self.db, self.calls = sqlite3.connect(':memory:'), []
+        self.db.row_factory = sqlite3.Row
+        self.db.execute('CREATE TABLE market_trading_sessions (session_date TEXT PRIMARY KEY)')
+        self.db.executemany('INSERT INTO market_trading_sessions VALUES (?)', [(d,) for d in days])
+    def query(self, sql, params):
+        self.calls.append((sql, params))
+        return [dict(r) for r in self.db.execute(sql, params)]
+
+
+def receipt_manifest(end):
+    manifest = ga_manifest()
+    manifest.update(snapshot_id='backtest_dataset:' + end, kind='backtest_dataset', business_date=end)
+    manifest['metadata_json'] = {**manifest['metadata_json'], 'end_date': end}
+    return manifest
+
+
+@pytest.mark.parametrize('lagged, runs', [(5, True), (6, False)])
+def test_weekly_history_fails_closed_once_it_trails_receipts_by_more_than_five_sessions(monkeypatch, lagged, runs):
+    weekly, snapshot, seen = weekly_fixture(monkeypatch, {d: history(d) for d in DAYS})
+    later = ['2026-09-08', '2026-09-09', '2026-09-10', '2026-09-11', '2026-09-14', '2026-09-15']
+    reference_end = later[lagged - 1]
+    def latest(**kwargs):
+        seen['kinds'].append(kwargs['kind'])
+        return snapshot if kwargs['kind'] == 'ga_research_dataset' else receipt_manifest(reference_end)
+    monkeypatch.setattr(weekly, 'latest_dataset_snapshot', latest)
+    sessions = Sessions(later)
+    monkeypatch.setattr(weekly, 'MARKET', sessions)
+    as_of = '2026-09-16'
+    if runs:
+        _, provenance = weekly._replay(as_of_date=as_of, params=WEEKLY_PARAMS, initial_capital=100,
+                                       symbols=None, prefer_corporate_history=True)
+        assert provenance['history_freshness'] == {
+            'history_end': DAYS[-1], 'reference_snapshot_id': 'backtest_dataset:' + reference_end,
+            'reference_end': reference_end, 'lag_sessions': 5, 'max_lag_sessions': 5}
+        assert weekly.preflight_weekly_backtest_source(as_of)['history_freshness']['lag_sessions'] == 5
+        return
+    with pytest.raises(RuntimeError, match=r'history_stale:.*lag_sessions=6>5'):
+        weekly._replay(as_of_date=as_of, params=WEEKLY_PARAMS, initial_capital=100, symbols=None,
+                       prefer_corporate_history=True)
+    assert 'load' not in seen and seen['replays'] == []
+    blocked = weekly.preflight_weekly_backtest_source(as_of)
+    assert blocked['status'] == 'blocked' and 'history_stale' in blocked['reason']
+    assert sessions.calls[0][1] == [DAYS[-1], reference_end]
+
+
+def test_weekly_history_without_a_reference_snapshot_fails_closed(monkeypatch):
+    weekly, snapshot, seen = weekly_fixture(monkeypatch, {d: history(d) for d in DAYS})
+    monkeypatch.setattr(weekly, 'latest_dataset_snapshot',
+                        lambda **kw: snapshot if kw['kind'] == 'ga_research_dataset' else None)
+    with pytest.raises(RuntimeError, match='history_reference_missing'):
+        weekly._replay(as_of_date='2026-09-16', params=WEEKLY_PARAMS, initial_capital=100, symbols=None,
+                       prefer_corporate_history=True)
+    assert 'load' not in seen
+    assert weekly.preflight_weekly_backtest_source('2026-09-16')['status'] == 'blocked'
+
+
+def test_unobserved_sessions_cannot_make_stale_history_look_fresh(monkeypatch):
+    weekly, snapshot, seen = weekly_fixture(monkeypatch, {d: history(d) for d in DAYS})
+    monkeypatch.setattr(weekly, 'latest_dataset_snapshot', lambda **kw: snapshot
+                        if kw['kind'] == 'ga_research_dataset' else receipt_manifest('2026-11-20'))
+    monkeypatch.setattr(weekly, 'MARKET', Sessions(['2026-09-08']))  # table stops long before reference_end
+    with pytest.raises(RuntimeError, match='history_sessions_unobserved:reference_end=2026-11-20:last_session=2026-09-08'):
+        weekly._replay(as_of_date='2026-11-21', params=WEEKLY_PARAMS, initial_capital=100, symbols=None,
+                       prefer_corporate_history=True)
+    assert 'load' not in seen
+
+
+def test_canonical_weekly_asks_for_history_and_comparison_does_not(monkeypatch):
+    from services import weekly_evidence_service as weekly
+    from services import trading_config_loader
+    calls = []
+    def replay(**kwargs):
+        calls.append(kwargs.get('prefer_corporate_history', False))
+        return SimpleNamespace(trades=[], equity_curve=[], initial_capital=100), {}
+    monkeypatch.setattr(weekly, '_replay', replay)
+    monkeypatch.setattr(weekly, 'taiwan_today', lambda: '2026-09-16')
+    monkeypatch.setattr(weekly, '_with_formal_position_risk', lambda config: config)
+    monkeypatch.setattr(weekly, 'persist_replay_backtest', lambda *a, **kw: {'persisted': True})
+    monkeypatch.setattr(weekly, '_metric_summary', lambda metrics: {})
+    contract = SimpleNamespace(to_dict=lambda: {})
+    monkeypatch.setattr(trading_config_loader, 'load_merged_trading_config_with_contract',
+                        lambda: SimpleNamespace(config=dict(WEEKLY_PARAMS), contract=contract))
+    assert weekly.run_canonical_weekly_backtest('2026-09-16')['status'] == 'success'
+    monkeypatch.setattr(weekly, '_run_monte_carlo', lambda *a, **kw: pytest.skip('reached MC'))
+    with pytest.raises(pytest.skip.Exception):
+        weekly.run_historical_weekly_comparison(
+            as_of_date='2026-09-16', params=WEEKLY_PARAMS, config_version='v1',
+            config_checksum=weekly._stable_checksum(WEEKLY_PARAMS), config_effective_at='2026-09-01')
+    assert calls == [True, False]

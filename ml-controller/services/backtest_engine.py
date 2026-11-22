@@ -436,8 +436,8 @@ class BacktestDataset:
             if mode not in (None, "snapshot", "auto"):
                 # A configuration error, not a snapshot that may still arrive.
                 raise ValueError(f"corporate_history_requires_snapshot:{mode}")
-            from services.research_corporate_history import COMPONENT, OWNER, RESEARCH_ACCOUNTING_DEFAULTS
-            from services.research_corporate_preflight import exclude_history_blocked_symbols
+            from services.research_corporate_history import COMPONENT, RESEARCH_ACCOUNTING_DEFAULTS
+            from services.research_corporate_preflight import adopt_corporate_history
             data_access = resolve_research_data_access(
                 lane=lane,
                 kind="ga_research_dataset",
@@ -454,14 +454,11 @@ class BacktestDataset:
                 symbols=symbols,
                 allow_corporate_history=True,
             )
-            if any(s.get("schema_version") != OWNER for s in dataset.corporate_sources.values()):
-                raise ValueError("corporate_history_tape_not_loaded")
-            # Search params stay untouched (nothing here can reach a KV push).
-            dataset.research_accounting = dict(RESEARCH_ACCOUNTING_DEFAULTS)
+            exclusion = adopt_corporate_history(dataset, start_date, end_date)
             access = data_access.to_dict()
             access["corporate_source"] = COMPONENT
             access["research_accounting_assumption"] = dict(RESEARCH_ACCOUNTING_DEFAULTS)
-            access["corporate_history_exclusion"] = exclude_history_blocked_symbols(dataset, start_date, end_date)
+            access["corporate_history_exclusion"] = exclusion
             return dataset, access
         data_access = resolve_research_data_access(
             lane=lane,

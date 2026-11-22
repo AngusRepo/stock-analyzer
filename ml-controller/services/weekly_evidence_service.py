@@ -8,16 +8,23 @@ from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from services.backtest_engine import BacktestDataset, FormalPositionRiskParams, replay_period
+from services.backtest_engine import BacktestDataset, FormalPositionRiskParams, _snapshot_component_uris, replay_period
 from services.backtest_result_store import persist_replay_backtest
 from services.backtest_corporate_accounting import require_corporate_component
 from services.backtest_trade_evidence import build_backtest_portfolio_return_evidence
 from services.dataset_snapshots import latest_dataset_snapshot, validate_dataset_snapshot_manifest
+from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
 from services.monte_carlo_service import _run_monte_carlo
 from services.pbo_service import _run_cpcv
 
 
 TAIPEI = ZoneInfo("Asia/Taipei")
+HISTORY_COMPONENT = 'corporate_history_records'
+# Research data-quality gate (Wei 11/22): the hand-exported history snapshot may
+# trail the daily receipt snapshot by at most this many exchange sessions before
+# canonical weekly evidence fails closed. Not a trading constant: never reaches Paper/KV.
+MAX_HISTORY_LAG_SESSIONS = 5
+MARKET = client_proxy_for_domain(D1DataDomain.MARKET)
 
 
 def taiwan_today() -> str:
@@ -40,7 +47,7 @@ def _snapshot_range(snapshot: dict[str, Any]) -> tuple[str, str]:
 
 
 def _resolve_snapshot(as_of_date: str, *, prefer_corporate_history: bool = False) -> tuple[dict[str, Any], str, str]:
-    corporate_component = 'corporate_history_records' if prefer_corporate_history else 'corporate_source_records'
+    corporate_component = HISTORY_COMPONENT if prefer_corporate_history else 'corporate_source_records'
     snapshot = latest_dataset_snapshot(
         kind="ga_research_dataset" if prefer_corporate_history else "backtest_dataset",
         as_of_business_date=as_of_date,
@@ -74,6 +81,57 @@ def _resolve_snapshot(as_of_date: str, *, prefer_corporate_history: bool = False
     return snapshot, start_date, end_date
 
 
+def _corporate_source(snapshot: dict[str, Any]) -> str:
+    """Reconstructed history when the snapshot carries it, else the Paper receipts."""
+    if HISTORY_COMPONENT in _snapshot_component_uris(snapshot):
+        return HISTORY_COMPONENT
+    if snapshot.get('kind') == 'ga_research_dataset':  # selected for history, reference empty
+        raise RuntimeError('weekly_evidence_snapshot_history_component_missing:' + str(snapshot.get('snapshot_id')))
+    return 'corporate_source_records'
+
+
+def _history_freshness(history_end: str, as_of_date: str) -> dict[str, Any]:
+    """Sessions the history snapshot trails the newest daily receipt snapshot by."""
+    reference = latest_dataset_snapshot(
+        kind="backtest_dataset",
+        as_of_business_date=as_of_date,
+        access_tier="compute",
+        required_components=('signals', 'corporate_source_records'),
+        available_before=(datetime.fromisoformat(as_of_date).replace(tzinfo=TAIPEI) + timedelta(days=1)).isoformat(),
+    )
+    if reference is None:  # nothing to measure against is not evidence of freshness
+        raise RuntimeError(f"weekly_evidence_snapshot_history_reference_missing:as_of={as_of_date}")
+    reference_end = _snapshot_range(reference)[1]
+    lag = 0
+    if reference_end > history_end:
+        rows = MARKET.query(
+            "SELECT COUNT(*) AS sessions, MAX(session_date) AS last_session FROM market_trading_sessions"
+            " WHERE session_date > ? AND session_date <= ?",
+            [history_end, reference_end])
+        row = rows[0] if rows else {}
+        if row.get('last_session') != reference_end:  # sessions not observed yet: the count would undercount
+            raise RuntimeError(
+                "weekly_evidence_snapshot_history_sessions_unobserved:"
+                f"reference_end={reference_end}:last_session={row.get('last_session')}")
+        lag = int(row['sessions'])
+    freshness = {'history_end': history_end, 'reference_snapshot_id': reference.get('snapshot_id'),
+                 'reference_end': reference_end, 'lag_sessions': lag, 'max_lag_sessions': MAX_HISTORY_LAG_SESSIONS}
+    if lag > MAX_HISTORY_LAG_SESSIONS:
+        raise RuntimeError(
+            "weekly_evidence_snapshot_history_stale:"
+            f"history_end={history_end}:reference_end={reference_end}:lag_sessions={lag}>{MAX_HISTORY_LAG_SESSIONS}")
+    return freshness
+
+
+def _resolve_weekly_snapshot(
+    as_of_date: str, *, prefer_corporate_history: bool,
+) -> tuple[dict[str, Any], str, str, str, dict[str, Any] | None]:
+    snapshot, start_date, end_date = _resolve_snapshot(as_of_date, prefer_corporate_history=prefer_corporate_history)
+    corporate_source = _corporate_source(snapshot)
+    freshness = _history_freshness(end_date, as_of_date) if corporate_source == HISTORY_COMPONENT else None
+    return snapshot, start_date, end_date, corporate_source, freshness
+
+
 def preflight_weekly_backtest_source(as_of_date: str) -> dict[str, Any]:
     """Read only the chosen manifest before allocating a research Job.
 
@@ -82,15 +140,17 @@ def preflight_weekly_backtest_source(as_of_date: str) -> dict[str, Any]:
     Transport/auth failures still propagate as infrastructure failures.
     """
     try:
-        snapshot, start_date, end_date = _resolve_snapshot(as_of_date)
+        snapshot, start_date, end_date, corporate_source, freshness = _resolve_weekly_snapshot(
+            as_of_date, prefer_corporate_history=True)
     except RuntimeError as exc:
         reason = str(exc)
-        if not reason.startswith(('backtest_corporate_component_', 'weekly_evidence_snapshot_')):
+        if not reason.startswith(('backtest_corporate_component_', 'backtest_snapshot_', 'weekly_evidence_snapshot_')):
             raise
         return {'status': 'blocked', 'reason': reason, 'blockers': [reason],
                 'production_effect': False, 'heavy_compute_started': False}
     return {'status': 'ready', 'snapshot_id': snapshot['snapshot_id'],
             'snapshot_checksum': snapshot.get('checksum'),
+            'corporate_source': corporate_source, 'history_freshness': freshness,
             'start_date': start_date, 'end_date': end_date,
             'check': 'manifest_component_presence_only',
             'component_contents_verified': False, 'production_effect': False,
@@ -147,18 +207,23 @@ def _replay(
     params: dict[str, Any],
     initial_capital: float,
     symbols: list[str] | None,
+    prefer_corporate_history: bool = False,
 ) -> tuple[Any, dict[str, Any]]:
     formal_risk = params.get('positionRiskDistribution')
     if FormalPositionRiskParams.from_config(formal_risk) is None:
         raise RuntimeError('weekly_position_risk_contract_missing')
-    snapshot, start_date, end_date = _resolve_snapshot(as_of_date)
+    snapshot, start_date, end_date, corporate_source, freshness = _resolve_weekly_snapshot(
+        as_of_date, prefer_corporate_history=prefer_corporate_history)
+    history = corporate_source == HISTORY_COMPONENT
     dataset = BacktestDataset.load_from_snapshot_manifest(
         manifest=snapshot,
         start_date=start_date,
         end_date=end_date,
         symbols=symbols,
+        allow_corporate_history=history,
     )
-    from services.research_corporate_preflight import require_corporate_coverage
+    from services.research_corporate_preflight import adopt_corporate_history, require_corporate_coverage
+    exclusion = adopt_corporate_history(dataset, start_date, end_date) if history else None
     require_corporate_coverage(dataset, start_date, end_date)
     metrics = replay_period(
         dataset=dataset,
@@ -186,6 +251,14 @@ def _replay(
         "look_ahead_check": "PASS",
     }
     provenance['position_risk_contract'] = formal_risk
+    provenance['corporate_source'] = corporate_source
+    if exclusion is not None:
+        first_blocked = exclusion['excluded_first_blocked_session']
+        provenance['research_accounting_assumption'] = dict(dataset.research_accounting)
+        provenance['history_freshness'] = freshness
+        provenance['corporate_history_exclusion'] = {
+            **{k: v for k, v in exclusion.items() if k != 'excluded_first_blocked_session'},
+            'excluded_symbols': sorted(first_blocked)}
     return metrics, provenance
 
 
@@ -212,6 +285,9 @@ def run_canonical_weekly_backtest(run_date: str | None = None) -> dict[str, Any]
         params=replay_params,
         initial_capital=1_000_000,
         symbols=None,
+        # Wei 11/22: canonical weekly reads reconstructed corporate history.
+        # Historical comparison keeps replaying its original receipt source.
+        prefer_corporate_history=True,
     )
     provenance.update({
         "evidence_scope": "canonical_current",

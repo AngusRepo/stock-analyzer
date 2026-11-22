@@ -43,12 +43,17 @@ def manifest(present=True):
             'components': components, 'component_meta': {'corporate_source_records': {'row_count': 0}}}}
 
 
+def only_backtest(select):
+    """No ga_research_dataset yet: weekly falls back to the Paper-receipt tape."""
+    return lambda **kw: select() if kw['kind'] == 'backtest_dataset' else None
+
+
 @pytest.mark.parametrize('metadata_string', [False, True])
 def test_missing_component_blocks_before_dataset_download_and_replay(monkeypatch, metadata_string):
     snapshot = manifest(False)
     if metadata_string:
         snapshot['metadata_json'] = json.dumps(snapshot['metadata_json'])
-    monkeypatch.setattr(service, 'latest_dataset_snapshot', lambda **_: snapshot)
+    monkeypatch.setattr(service, 'latest_dataset_snapshot', only_backtest(lambda: snapshot))
     calls = []
     def forbidden(**kwargs):
         calls.append(kwargs)
@@ -66,7 +71,7 @@ def test_missing_component_blocks_before_dataset_download_and_replay(monkeypatch
 def test_declared_zero_row_component_is_not_absence_or_content_certification(monkeypatch):
     snapshot = manifest()
     before = deepcopy(snapshot)
-    monkeypatch.setattr(service, 'latest_dataset_snapshot', lambda **_: snapshot)
+    monkeypatch.setattr(service, 'latest_dataset_snapshot', only_backtest(lambda: snapshot))
     result = service.preflight_weekly_backtest_source('2026-08-23')
     assert result['status'] == 'ready' and result['component_contents_verified'] is False
     assert snapshot == before
@@ -83,7 +88,7 @@ def test_present_component_retains_original_replay_arguments_and_provenance(monk
         corporate_sources={'2026-08-21': {'actions': [], 'covered_symbols': ['2330'], 'blockers': {}}},
     )
     snapshot, metrics, calls = manifest(), object(), []
-    monkeypatch.setattr(service, 'latest_dataset_snapshot', lambda **_: snapshot)
+    monkeypatch.setattr(service, 'latest_dataset_snapshot', only_backtest(lambda: snapshot))
     def load(**kwargs):
         calls.append(('load', kwargs))
         return dataset
@@ -96,16 +101,19 @@ def test_present_component_retains_original_replay_arguments_and_provenance(monk
                                          initial_capital=123, symbols=['2330'])
     assert result is metrics
     assert calls == [('load', {'manifest': snapshot, 'start_date': '2025-01-01',
-        'end_date': '2026-08-21', 'symbols': ['2330']}), ('replay', {'dataset': dataset,
+        'end_date': '2026-08-21', 'symbols': ['2330'], 'allow_corporate_history': False}),
+        ('replay', {'dataset': dataset,
         'start_date': '2025-01-01', 'end_date': '2026-08-21', 'params': PARAMS,
         'initial_capital': 123, 'mode': 'B'})]
     assert provenance['snapshot_id'] == snapshot['snapshot_id']
     assert provenance['snapshot_checksum'] == snapshot['checksum']
+    assert provenance['corporate_source'] == 'corporate_source_records'
+    assert 'corporate_history_exclusion' not in provenance
 
 
 @pytest.mark.asyncio
 async def test_controller_missing_source_never_allocates_cloud_run_job(monkeypatch):
-    monkeypatch.setattr(service, 'latest_dataset_snapshot', lambda **_: manifest(False))
+    monkeypatch.setattr(service, 'latest_dataset_snapshot', only_backtest(lambda: manifest(False)))
     allocations = []
     def forbidden(**kwargs):
         allocations.append(kwargs)
@@ -124,7 +132,7 @@ async def test_controller_missing_source_never_allocates_cloud_run_job(monkeypat
 
 @pytest.mark.asyncio
 async def test_controller_valid_component_preserves_job_dispatch(monkeypatch):
-    monkeypatch.setattr(service, 'latest_dataset_snapshot', lambda **_: manifest())
+    monkeypatch.setattr(service, 'latest_dataset_snapshot', only_backtest(manifest))
     captured = []
     class Client:
         def __init__(self, *, job_name, require_source_alignment=False):
@@ -144,7 +152,7 @@ async def test_controller_valid_component_preserves_job_dispatch(monkeypatch):
 
 def test_manifest_can_change_after_dispatch_but_job_resolves_and_blocks_before_compute(monkeypatch):
     selected = [manifest(), manifest(False)]
-    monkeypatch.setattr(service, 'latest_dataset_snapshot', lambda **_: selected.pop(0))
+    monkeypatch.setattr(service, 'latest_dataset_snapshot', only_backtest(lambda: selected.pop(0)))
     assert service.preflight_weekly_backtest_source('2026-08-23')['status'] == 'ready'
     monkeypatch.setattr(service.BacktestDataset, 'load_from_snapshot_manifest',
                         lambda **_: pytest.fail('missing re-resolved source must block'))
@@ -176,7 +184,7 @@ def test_invalid_component_reference_is_not_a_presence_pass(value):
 async def test_malformed_metadata_blocks_before_range_parse_or_job_allocation(monkeypatch, metadata):
     snapshot = manifest()
     snapshot['metadata_json'] = metadata
-    monkeypatch.setattr(service, 'latest_dataset_snapshot', lambda **_: snapshot)
+    monkeypatch.setattr(service, 'latest_dataset_snapshot', only_backtest(lambda: snapshot))
     heavy_calls = []
     def forbidden(**kwargs):
         heavy_calls.append(kwargs)
@@ -207,7 +215,7 @@ async def test_readonly_preflight_route_never_allocates_or_downloads(monkeypatch
         source_reads.append(kwargs)
         if state == 'infra_error':
             raise failure
-        return manifest(state == 'ready')
+        return manifest(state == 'ready') if kwargs['kind'] == 'backtest_dataset' else None
     def forbidden(**kwargs):
         heavy_calls.append(kwargs)
         raise AssertionError('read-only preflight cannot allocate/download/replay')
@@ -227,9 +235,11 @@ async def test_readonly_preflight_route_never_allocates_or_downloads(monkeypatch
             assert result['component_contents_verified'] is False
         else:
             assert 'backtest_corporate_component_missing' in result['reason']
-    assert source_reads == [{'kind': 'backtest_dataset', 'as_of_business_date': '2026-08-23',
-                             'access_tier': 'compute', 'required_components': ('signals', 'corporate_source_records'),
-                             'available_before': '2026-08-24T00:00:00+08:00'}]
+    reads = [{'kind': kind, 'as_of_business_date': '2026-08-23', 'access_tier': 'compute',
+              'required_components': ('signals', component), 'available_before': '2026-08-24T00:00:00+08:00'}
+             for kind, component in (('ga_research_dataset', 'corporate_history_records'),
+                                     ('backtest_dataset', 'corporate_source_records'))]
+    assert source_reads == (reads[:1] if state == 'infra_error' else reads)
     assert heavy_calls == []
 
 

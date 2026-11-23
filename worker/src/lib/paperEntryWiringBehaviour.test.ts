@@ -97,7 +97,7 @@ async function nativeEntry(opts: Options = {}) {
   }
   f.kvs.set('trading:risk_config', JSON.stringify(RISK_CONFIG_FIXTURE))
   f.kvs.set('ml:adaptive_params', JSON.stringify({ ...DEFAULT_ADAPTIVE_PARAMS, recent_accuracy_30d: .6,
-    provenance: { ...DEFAULT_ADAPTIVE_PARAMS.provenance, source: 'ml-controller', fallback: false } }))
+    computed_at: S + 'T14:40:00+08:00', provenance: { ...DEFAULT_ADAPTIVE_PARAMS.provenance, source: 'ml-controller', fallback: false } }))
   const dates: string[] = []
   for (let ms = Date.parse(S + 'T00:00:00Z'); dates.length < 60; ms -= 86400000)
     if (![0, 6].includes(new Date(ms).getUTCDay())) dates.unshift(new Date(ms).toISOString().slice(0, 10))

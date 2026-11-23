@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import test from 'node:test'
-import { runRegimeCompute } from './controllerDailyWorkflows'
+import { runHmmMaintenance, runRegimeCompute } from './controllerDailyWorkflows'
 import { buildMarketRegimeState, MARKET_REGIME_STATE_KEY } from './marketRegimeState'
 import { withPaperExecutionScope } from './paperExecutionScope'
 import type { Bindings } from '../types'
@@ -55,3 +55,26 @@ async function run(mode: 'new_model' | 'cached' | 'pending') {
 test('new HMM invalidates same-date cache and immutable history before inference',()=>run('new_model'))
 test('matching model and certified input reuse inference without recomputation',()=>run('cached'))
 test('expired model stops before inference while bounded maintenance runs',()=>run('pending'))
+
+test('maintenance preflight waits through a controller cold start',async()=>{
+  const now = Date.parse('2026-10-19T12:00:00Z')
+  const store = new Map<string, string>([
+    ['market:twse_holiday_schedule:v2:2026',JSON.stringify({schemaVersion:'twse-holiday-schedule-v2',dates:['2026-10-20']})]])
+  const kv = {get:async (key:string,type?:string) => {
+    const raw=store.get(key);return raw == null ? null : type === 'json' ? JSON.parse(raw) : raw
+  },put:async ()=>assert.fail('maintenance must not write KV')}
+  const env={KV:kv,ML_CONTROLLER_URL:'https://controller.test'} as unknown as Bindings
+  const timeouts:number[]=[]
+  const original=AbortSignal.timeout
+  AbortSignal.timeout=(ms:number)=>{timeouts.push(ms);return original.call(AbortSignal,ms)}
+  try {
+    const result=await withPaperExecutionScope({environment:env,accountId:1,nowMs:now,databases:{},
+      fetchFrozen:async (url,init)=>{
+        assert(String(url).endsWith('/regime/preflight'))
+        assert.equal(JSON.parse(String(init?.body)).maintenance_only,true)
+        return Response.json({ready:true,maintenance:'not_required'})
+      }},()=>runHmmMaintenance(env))
+    assert.match(result.result,/status=success/)
+  } finally { AbortSignal.timeout=original }
+  assert.deepEqual(timeouts,[120_000])
+})

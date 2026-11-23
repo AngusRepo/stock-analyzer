@@ -20,7 +20,7 @@ async function morningWithEmergingTarget(policyV2: boolean, heldShares = 0) {
   f.ports.fetchFrozen=async(input:RequestInfo|URL)=>{assert.match(String(input),/taifex/);return new Response('',{status:503})}
   // The single-name cap is KV-owned and fails closed to 0 when missing; 0.25 is the live value.
   f.kvs.set('trading:risk_config',JSON.stringify({...DEFAULT_RISK_CONFIG,position:{...DEFAULT_RISK_CONFIG.position,maxSingleNamePct:.25}}))
-  f.kvs.set('ml:adaptive_params',JSON.stringify({...DEFAULT_ADAPTIVE_PARAMS,recent_accuracy_30d:.6,provenance:{...DEFAULT_ADAPTIVE_PARAMS.provenance,source:'ml-controller',fallback:false}}))
+  f.kvs.set('ml:adaptive_params',JSON.stringify({...DEFAULT_ADAPTIVE_PARAMS,recent_accuracy_30d:.6,computed_at:'2026-09-11T14:40:00+08:00',provenance:{...DEFAULT_ADAPTIVE_PARAMS.provenance,source:'ml-controller',fallback:false}}))
   f.sqls.core.exec("INSERT INTO market_risk(date,twii_close,risk_score,risk_level) VALUES('2026-09-11',30000,10,'green'),('2026-09-10',30000,10,'green')")
   f.sqls.market.exec("INSERT INTO market_breadth(date,advance_ratio,bull_alignment_pct) VALUES('2026-09-11',.6,60)")
   f.sqls.market.exec("INSERT INTO market_regime_factor_packets(date,schema_version,score,level,factor_json,contribution_json,source_json,freshness_json,missing_reason_json,lineage_json,generated_at) VALUES('2026-09-11','market-regime-factor-packet-v1',10,'green','[]','{}','{}','{}','{}','{}','2026-09-11T14:00:00Z')")

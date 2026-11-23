@@ -74,7 +74,7 @@ test('pipeline payload uses aggregate-only SQL and excludes heavy recommendation
 test('pipeline strategy summary projects strategy ids in SQL without full evidence blobs', () => {
   const summaryBuilder = section(routeSource, 'async function buildDailyPipelineSummaries(', 'type DailyPipelineSectorAggregateRow')
   const stageRows = fs.readFileSync(path.join(workerRoot, 'src/lib/funnelStageStrategyRows.ts'), 'utf8')
-  assert(summaryBuilder.includes("loadFunnelStageStrategyRows(opsDb, archiveEnv, latestRun.run_id, 'final_selection', archiveChunks)"))
+  assert(summaryBuilder.includes("loadFunnelStageStrategyRows(opsDb, archiveEnv, latestRun.run_id, 'final_selection', archiveReader)"))
   // Archived evidence that cannot be read back is surfaced, not silently dropped.
   assert(summaryBuilder.includes('archived_unresolved: archivedUnresolved'))
   assert(stageRows.includes('JOIN json_each('))

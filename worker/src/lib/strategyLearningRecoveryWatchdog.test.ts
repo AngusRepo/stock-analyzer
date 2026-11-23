@@ -421,7 +421,8 @@ test('a missing similarity artifact turns red after six hours and still blocks t
 
 test('a recorded failure is acknowledged only inside the watchdog lookback of four trading days', async () => {
   const holidays = new Set<string>()
-  const env = { DB: null, KV: { get: async (key: string) => holidays.has(key) ? '1' : null } } as any
+  const env = { DB: null, CORE_DB: {}, MULTI_D1_ACTIVE_DOMAINS: 'core', MULTI_D1_STRICT: 'true',
+    KV: { get: async (key: string) => holidays.has(key) ? '1' : null } } as any
   // Thursday 11/12: Wed, Tue, Mon, then Friday 11/6 (the weekend does not count).
   assert.equal(await isStrategyLearningRecoveryWindowDate(env, '2026-11-12', '2026-11-12'), true)
   assert.equal(await isStrategyLearningRecoveryWindowDate(env, '2026-11-08', '2026-11-12'), true)

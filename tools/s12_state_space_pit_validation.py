@@ -33,7 +33,8 @@ from app.state_space_v2 import build_state_space_v2_batch  # noqa: E402
 
 
 ACCOUNT_ID_DEFAULT = "619a83ac9f20847d9e2f2920823b727d"
-CORE_DB_ID_DEFAULT = "6401a5f6-5767-4fa8-a1a7-ec8d4739ac79"
+# stockvision-core-db (the old default was the frozen legacy stockvision-db).
+CORE_DB_ID_DEFAULT = "8cc0ab1f-088c-4c21-b282-bcd4c790c7da"
 MARKET_DB_ID_DEFAULT = "067bbeb0-1247-416a-96dd-138315345319"
 LEARNING_DB_ID_DEFAULT = "73599848-b73b-4bac-9144-df638b877dbc"
 S12_REPLAY_ENGINE_SIGNATURE = (

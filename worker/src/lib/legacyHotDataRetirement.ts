@@ -1,6 +1,10 @@
 import type { Bindings } from '../types'
 import { releaseArtifactHardReferencesByOwner, writeEvidenceArtifact } from './artifactLifecycle'
 import { dataDomainForTable, databaseForDataDomain } from './dataDomainRegistry'
+import { requireLegacyShadowSource } from './legacyDatabase'
+
+// Migration-era tool: reads the frozen legacy source; retired once the control plane moved to Ops.
+const legacyShadowSource = (env: Parameters<typeof requireLegacyShadowSource>[0]) => requireLegacyShadowSource(env, 'legacy_hot_data_retirement')
 
 export type LegacyHotDataTarget =
   | 'obsolete_screener_items'
@@ -164,7 +168,7 @@ async function retireObsoleteScreenerItems(
   limit: number,
   dryRun: boolean,
 ): Promise<RetirementResult> {
-  const run = await env.DB.prepare(`
+  const run = await legacyShadowSource(env).prepare(`
     SELECT r.*
       FROM screener_funnel_runs r
      WHERE NOT EXISTS (
@@ -184,7 +188,7 @@ async function retireObsoleteScreenerItems(
     return { target: 'obsolete_screener_items', candidates: 0, archived: 0, deleted: 0, artifacts: 0, backlog_remaining: false, dry_run: dryRun }
   }
   const runId = String(run.run_id)
-  const { results } = await env.DB.prepare(`
+  const { results } = await legacyShadowSource(env).prepare(`
     SELECT * FROM screener_funnel_items WHERE run_id=? ORDER BY id ASC LIMIT ?
   `).bind(runId, limit).all<Record<string, unknown>>()
   const rows = results ?? []
@@ -201,7 +205,7 @@ async function retireObsoleteScreenerItems(
       lastKey: rows[rows.length - 1].id,
       metadata: { source_run: run },
     })
-    const deleted = await deleteLegacyCutoverRows(env.DB, 'screener_funnel_items', 'id', rows.map((row) => row.id))
+    const deleted = await deleteLegacyCutoverRows(legacyShadowSource(env), 'screener_funnel_items', 'id', rows.map((row) => row.id))
     return {
       target: 'obsolete_screener_items',
       candidates: rows.length,
@@ -230,7 +234,7 @@ async function retireObsoleteScreenerItems(
     ownerType: 'legacy_screener_run',
     ownerId: runId,
   })
-  const deleted = await deleteLegacyCutoverRows(env.DB, 'screener_funnel_runs', 'run_id', [runId])
+  const deleted = await deleteLegacyCutoverRows(legacyShadowSource(env), 'screener_funnel_runs', 'run_id', [runId])
   return {
     target: 'obsolete_screener_items',
     candidates: 1,
@@ -247,7 +251,7 @@ async function retireAllocatorSnapshotStagingOrphans(
   limit: number,
   dryRun: boolean,
 ): Promise<RetirementResult> {
-  const run = await env.DB.prepare(`
+  const run = await legacyShadowSource(env).prepare(`
     SELECT *
       FROM allocator_ev_snapshot_runs
      WHERE status IN ('writing','failed')
@@ -259,7 +263,7 @@ async function retireAllocatorSnapshotStagingOrphans(
     return { target: 'allocator_snapshot_staging_orphans', candidates: 0, archived: 0, deleted: 0, artifacts: 0, backlog_remaining: false, dry_run: dryRun }
   }
   const runId = String(run.run_id)
-  const { results } = await env.DB.prepare(`
+  const { results } = await legacyShadowSource(env).prepare(`
     SELECT rowid AS staging_rowid, *
       FROM allocator_ev_feature_snapshot_staging
      WHERE run_id=?
@@ -281,7 +285,7 @@ async function retireAllocatorSnapshotStagingOrphans(
       metadata: { source_run: run, staging_only: true },
     })
     const deleted = await deleteLegacyCutoverRows(
-      env.DB,
+      legacyShadowSource(env),
       'allocator_ev_feature_snapshot_staging',
       'rowid',
       rows.map((row) => row.staging_rowid),
@@ -308,7 +312,7 @@ async function retireAllocatorSnapshotStagingOrphans(
     lastKey: 'run-final',
     metadata: { run_manifest_only: true, staging_backlog_drained: true },
   })
-  const deleted = await deleteLegacyCutoverRows(env.DB, 'allocator_ev_snapshot_runs', 'run_id', [runId])
+  const deleted = await deleteLegacyCutoverRows(legacyShadowSource(env), 'allocator_ev_snapshot_runs', 'run_id', [runId])
   return {
     target: 'allocator_snapshot_staging_orphans',
     candidates: 1,
@@ -333,7 +337,7 @@ async function retireSimpleTarget(
     metadata?: Record<string, unknown>
   },
 ): Promise<RetirementResult> {
-  const { results } = await env.DB.prepare(input.query).bind(input.limit).all<Record<string, unknown>>()
+  const { results } = await legacyShadowSource(env).prepare(input.query).bind(input.limit).all<Record<string, unknown>>()
   const rows = results ?? []
   if (!rows.length) {
     return { target: input.target, candidates: 0, archived: 0, deleted: 0, artifacts: 0, backlog_remaining: false, dry_run: input.dryRun }
@@ -351,7 +355,7 @@ async function retireSimpleTarget(
     lastKey: keys[keys.length - 1],
     metadata: input.metadata,
   })
-  const deleted = await deleteLegacyCutoverRows(env.DB, input.table, input.keyColumn, keys)
+  const deleted = await deleteLegacyCutoverRows(legacyShadowSource(env), input.table, input.keyColumn, keys)
   return {
     target: input.target,
     candidates: rows.length,

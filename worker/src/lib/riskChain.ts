@@ -99,9 +99,15 @@ export async function runPortfolioChecks(
   let momentumZone: MomentumZone | undefined
   const reasons: string[] = []
   const triggeredLayers: string[] = []
+  const evidenceNotes: string[] = []
+  const d = deps.defaults
 
   for (const [id, r] of entries) {
     if (!r) continue
+    for (const note of r.evidenceNotes ?? []) evidenceNotes.push(`[${id}] ${note}`)
+    // Annotation-only result that changes nothing is not a trigger (keeps audit severity honest).
+    if (r.evidenceNotes?.length && !r.halt && !r.reason && r.maxPositionPct >= d.maxPositionPct
+      && r.buyConfThreshold <= d.buyConfThreshold && r.sellConfThreshold <= d.sellConfThreshold) continue
     triggeredLayers.push(id)
     if (r.halt) {
       halt = true
@@ -130,6 +136,7 @@ export async function runPortfolioChecks(
     sellConfThreshold: maxSellConf,
     momentumZone,
     triggeredLayers,
+    ...(evidenceNotes.length ? { evidenceNotes } : {}),
     reason: halt ? haltReasons.join(' | ') : reasons.join(' | '),
     targetExposurePct: marketRisk.targetExposureCap,
     deRiskExistingPositions: marketRisk.deRiskExistingPositions,

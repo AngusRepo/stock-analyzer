@@ -174,8 +174,9 @@ export async function runHmmMaintenance(env: Bindings): Promise<string> {
     {requireOfficialFutureCalendar: true, nowMs: now})
   const requiredUntil = next + 'T13:30:00+08:00'
   if (Date.parse(requiredUntil) - now > 9 * 86400_000) return 'hmm=deferred next_session_beyond_9_day_horizon'
+  // Cold start reached 62 s (FG-11b); the scheduler attempt deadline is 300 s.
   const response = await controllerFetch(env, '/regime/preflight', {
-    method: 'POST', jsonBody: {required_until: requiredUntil, maintenance_only: true}, timeoutMs: 45_000,
+    method: 'POST', jsonBody: {required_until: requiredUntil, maintenance_only: true}, timeoutMs: 120_000,
   })
   if (!response.ok) throw new Error(`HMM_MAINTENANCE_HTTP_${response.status}:${(await response.text()).slice(0, 200)}`)
   const result = await response.json() as any

@@ -1,5 +1,6 @@
 import type { Bindings } from '../types'
 import { scopedPaperDatabase } from './paperExecutionScope'
+import { dataDomainControlPlaneDatabase, requireLegacyDatabase, requireLegacyShadowSource } from './legacyDatabase'
 
 export type DataDomain = 'core' | 'market' | 'learning' | 'ops' | 'execution' | 'paper' | 'research'
 
@@ -581,7 +582,10 @@ export function databaseForDataDomain(
     strictRequested: String(env.MULTI_D1_STRICT ?? '').toLowerCase() === 'true',
     routingReady: dataDomainRoutingContractReady(domain),
   })
-  if (route === 'legacy') return env.DB
+  // Inactive/non-strict routing (production runs all seven domains strict, so this is
+  // only reachable from partial envs). It reads the legacy DB while bound and
+  // fails closed once the binding is gone, never handing back a null database.
+  if (route === 'legacy') return requireLegacyDatabase(env, `data_domain_inactive_route:${domain}`)
   const selected = bindings[domain]
   if (selected) return selected
   throw new Error(`data_domain_binding_missing:${domain}`)
@@ -592,10 +596,15 @@ export function databaseForTable(
   tableName: string,
 ): D1Database {
   const table = tableName.trim().toLowerCase()
-  if (LEGACY_CONTROL_PLANE_TABLES.has(table)) return env.DB
+  if (LEGACY_CONTROL_PLANE_TABLES.has(table)) {
+    // control_revisions + its triggers exist only in legacy (migration-era).
+    return table === 'data_domain_control_revisions'
+      ? requireLegacyShadowSource(env, 'data_domain_control_revisions')
+      : dataDomainControlPlaneDatabase(env)
+  }
   const ownership = tableOwnershipMetadata(table)
   if (!ownership) throw new Error(`unowned_data_domain_table:${table}`)
-  if (!ownership.route_ready) return env.DB
+  if (!ownership.route_ready) return requireLegacyDatabase(env, `table_not_route_ready:${table}`)
   return databaseForDataDomain(env, ownership.domain)
 }
 export function assertSingleDomainOwnership(tableNames: string[]): void {

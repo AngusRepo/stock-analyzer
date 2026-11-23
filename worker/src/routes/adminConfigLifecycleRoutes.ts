@@ -3,6 +3,9 @@ import { twToday } from '../lib/dateUtils'
 import { requireServiceToken } from '../lib/auth'
 import type { Bindings, Variables } from '../types'
 import { databaseForDataDomain } from '../lib/dataDomainRegistry'
+// Promotion still reads the legacy source (unchanged behaviour); moving it to
+// Learning is the separate group C change awaiting Wei.
+import { requireLegacyDatabase } from '../lib/legacyDatabase'
 
 export const adminConfigLifecycleRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -324,7 +327,7 @@ adminConfigLifecycleRoutes.post('/api/admin/config/challenger/promote_to_prod', 
   const sourceName = ch.source.startsWith('sandbox:') ? ch.source.slice('sandbox:'.length) : ch.source
   const candidateId = body.candidate_id
     ?? (ch.source_id ? candidateIdFromSandbox(sourceName, ch.source_id) : undefined)
-  const promotionGate = await validatePromotionPacketForProd(c.env.DB, {
+  const promotionGate = await validatePromotionPacketForProd(requireLegacyDatabase(c.env, 'parameter_candidate_promotion'), {
     candidateId,
     promotionPacketId: body.promotion_packet_id,
   })
@@ -338,7 +341,7 @@ adminConfigLifecycleRoutes.post('/api/admin/config/challenger/promote_to_prod', 
     }, 400)
   }
   const overrideAudit = !promotionGate.ok
-    ? await recordProductionOverride(c.env.DB, {
+    ? await recordProductionOverride(requireLegacyDatabase(c.env, 'parameter_candidate_promotion'), {
       route: '/api/admin/config/challenger/promote_to_prod',
       reason: overrideReason,
       candidateId,

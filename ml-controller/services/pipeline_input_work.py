@@ -58,9 +58,7 @@ def observe_input_work(*, run_id, run_date, phase, store=None,
         stage = events.load_stage(store, path)
         if stage.get('oof_resume') or stage['run_id'] != run_id or stage['run_date'] != run_date:
             continue
-        stage_phase = 'input_snapshot' if stage['kind'] == 'snapshot' else (
-            'input_prep' if stage.get('resume_phase') == 'pre_l2' else 'prepare_prediction_request')
-        if stage_phase != phase or events.read(store, path.replace('request.json', 'consumed.json')) is not None:
+        if events.stage_phase(stage) != phase or events.read(store, path.replace('request.json', 'consumed.json')) is not None:
             continue
         row = {'stage_id': hashlib.sha256(path.encode()).hexdigest(), 'status': 'waiting',
                'active': 0, 'completed': 0, 'total': 1}

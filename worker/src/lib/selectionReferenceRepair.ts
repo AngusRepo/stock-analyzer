@@ -1,4 +1,5 @@
 import type { Bindings } from '../types'
+import { d1SafeInChunks } from './d1BindChunks'
 import { AUDIT_POINTER_SCHEMA, visitArchivedFunnelEvidence } from './screenerEvidenceResolver'
 
 // A canonical scoring day spans tens of retention chunks; read sequentially, one at a time.
@@ -45,15 +46,22 @@ export interface SelectionReferenceRepairResult {
 export const SELECTION_REFERENCE_RECONSTRUCTION_VERSION =
   'selection-reference-historical-reconstruction-v1'
 
+/** Domain owners: canonical run and funnel rows (ops), stocks (core), reference tables (learning). */
+export interface SelectionReferenceRepairDatabases {
+  opsDb: D1Database
+  coreDb: D1Database
+  learningDb: D1Database
+}
+
 export async function repairHistoricalSelectionReferences(
-  db: D1Database,
+  { opsDb, coreDb, learningDb }: SelectionReferenceRepairDatabases,
   signalDate: string,
   options: { dryRun?: boolean; archiveEnv?: Pick<Bindings, 'DB' | 'ARTIFACTS'> } = {},
 ): Promise<SelectionReferenceRepairResult> {
   if (signalDate.length !== 10 || Number.isNaN(Date.parse(signalDate + 'T00:00:00Z'))) {
     throw new Error('selection_reference_repair_invalid_date')
   }
-  const source = await db.prepare(`
+  const source = await opsDb.prepare(`
     SELECT h.run_id producer_run_id, sfr.candidate_count expected_rows,
            ra.artifact_id source_artifact_id, ra.checksum source_artifact_checksum,
            ra.schema_version source_artifact_schema
@@ -79,7 +87,7 @@ export async function repairHistoricalSelectionReferences(
     throw new Error(`selection_reference_repair_canonical_artifact_unavailable:${signalDate}`)
   }
 
-  const coverage = await db.prepare(`
+  const coverage = await opsDb.prepare(`
     SELECT COUNT(*) row_count, COUNT(DISTINCT symbol) symbol_count,
            SUM(CASE WHEN decision='pass' THEN 1 ELSE 0 END) pass_count,
            SUM(CASE WHEN json_valid(evidence)=1 THEN 1 ELSE 0 END) valid_evidence_count,
@@ -96,7 +104,7 @@ export async function repairHistoricalSelectionReferences(
   const archivedScoreV2 = new Map<number, string | null>()
   if (Number(coverage?.archived_count ?? 0) > 0) {
     if (!options.archiveEnv) throw new Error(`selection_reference_repair_archived_evidence_unavailable:${signalDate}`)
-    const archived = await db.prepare(`
+    const archived = await opsDb.prepare(`
       SELECT id, run_id, stage, symbol, evidence
         FROM screener_funnel_items
        WHERE run_id=? AND date=? AND stage='scoring'
@@ -118,7 +126,7 @@ export async function repairHistoricalSelectionReferences(
     throw new Error(`selection_reference_repair_scoring_coverage_mismatch:${coverageCounts.join('/')}/${expectedRows}`)
   }
 
-  const existing = await db.prepare(`
+  const existing = await learningDb.prepare(`
     SELECT COUNT(*) row_count, COUNT(DISTINCT producer_run_id) run_count,
            COUNT(DISTINCT source_artifact_checksum) checksum_count,
            SUM(CASE WHEN stock_id IS NOT NULL THEN 1 ELSE 0 END) identity_count,
@@ -162,7 +170,7 @@ export async function repairHistoricalSelectionReferences(
   }
   if (options.dryRun) return result
 
-  await db.prepare(`
+  await learningDb.prepare(`
     INSERT INTO selection_reference_repair_runs_v1 (
       signal_date, producer_run_id, status, expected_rows, persisted_rows,
       source_artifact_id, source_artifact_checksum, source_artifact_schema, strategy_matrix_status
@@ -175,25 +183,26 @@ export async function repairHistoricalSelectionReferences(
     let afterId = 0
     let sourceRows = 0
     for (;;) {
-      const page = await db.prepare(`
-        SELECT i.id, i.symbol, i.name, i.score_after, i.evidence,
-               st.id stock_id, st.market market_segment, st.sector,
-               EXISTS (
-                 SELECT 1 FROM stock_prices sp
-                  WHERE sp.stock_id=st.id AND date(sp.date)=date(i.date)
-                    AND sp.open>0 AND sp.high>0 AND sp.low>0 AND sp.close>0
-               ) price_available
-          FROM screener_funnel_items i
-          LEFT JOIN stocks st ON st.symbol=i.symbol
-         WHERE i.run_id=? AND i.date=? AND i.stage='scoring'
-           AND i.decision='pass' AND i.id>?
-         ORDER BY i.id
+      const page = await opsDb.prepare(`
+        SELECT id, symbol, name, score_after, evidence
+          FROM screener_funnel_items
+         WHERE run_id=? AND date=? AND stage='scoring'
+           AND decision='pass' AND id>?
+         ORDER BY id
          LIMIT 150
       `).bind(producerRunId, signalDate, afterId).all<any>()
       const rows = page.results ?? []
       if (!rows.length) break
+      const stocks = new Map<string, any>()
+      for (const symbols of d1SafeInChunks([...new Set(rows.map((row: any) => String(row.symbol)))])) {
+        const found = await coreDb.prepare(`
+          SELECT id, symbol, market, sector FROM stocks WHERE symbol IN (${symbols.map(() => '?').join(',')})
+        `).bind(...symbols).all<any>()
+        for (const stock of found.results ?? []) stocks.set(String(stock.symbol), stock)
+      }
       const statements = rows.map((row: any) => {
-        const stockId = Number(row.stock_id)
+        const stock = stocks.get(String(row.symbol))
+        const stockId = Number(stock?.id)
         if (!Number.isInteger(stockId) || stockId <= 0) {
           throw new Error(`selection_reference_repair_stock_identity_missing:${row.symbol}`)
         }
@@ -207,7 +216,7 @@ export async function repairHistoricalSelectionReferences(
           }
           scoreComponents = canonicalRepairScoreV2(evidence?.score_components)
         }
-        return db.prepare(`
+        return learningDb.prepare(`
           INSERT OR IGNORE INTO selection_reference_snapshots_v1 (
             signal_date, symbol, producer_run_id, stock_id, name, market_segment, sector,
             hard_gate_passed, hard_gate_reason, feature_available, feature_rejection_reason,
@@ -226,20 +235,20 @@ export async function repairHistoricalSelectionReferences(
                     'canonical_l0_preserved_but_v4_strategy_vectors_absent', ?)
         `).bind(
           signalDate, cleanRepairValue(row.symbol), producerRunId, stockId,
-          cleanRepairValue(row.name) || null, cleanRepairValue(row.market_segment) || null,
-          cleanRepairValue(row.sector) || null, scoreComponents ? 1 : 0,
+          cleanRepairValue(row.name) || null, cleanRepairValue(stock.market) || null,
+          cleanRepairValue(stock.sector) || null, scoreComponents ? 1 : 0,
           scoreComponents ? null : 'score_v2_components_missing_or_invalid',
           Number.isFinite(Number(row.score_after)) ? Number(row.score_after) : null,
           scoreComponents, SELECTION_REFERENCE_RECONSTRUCTION_VERSION,
           artifactId, artifactChecksum,
         )
       })
-      await db.batch(statements)
+      await learningDb.batch(statements)
       sourceRows += rows.length
       afterId = Number(rows.at(-1).id)
       if (rows.length < 150) break
     }
-    const finalCount = await db.prepare(`
+    const finalCount = await learningDb.prepare(`
       SELECT COUNT(*) row_count
         FROM selection_reference_snapshots_v1
        WHERE signal_date=? AND producer_run_id=?
@@ -251,14 +260,14 @@ export async function repairHistoricalSelectionReferences(
     if (sourceRows !== expectedRows || persistedRows !== expectedRows) {
       throw new Error(`selection_reference_repair_persisted_coverage_mismatch:${sourceRows}/${persistedRows}/${expectedRows}`)
     }
-    await db.prepare(`
+    await learningDb.prepare(`
       UPDATE selection_reference_repair_runs_v1
          SET status='ready', persisted_rows=?, updated_at=CURRENT_TIMESTAMP
        WHERE signal_date=? AND producer_run_id=? AND status='writing'
     `).bind(persistedRows, signalDate, producerRunId).run()
     return { ...result, persisted_rows: persistedRows, dry_run: false }
   } catch (error) {
-    await db.prepare(`
+    await learningDb.prepare(`
       UPDATE selection_reference_repair_runs_v1
          SET status='failed', error_code=?, updated_at=CURRENT_TIMESTAMP
        WHERE signal_date=? AND producer_run_id=?

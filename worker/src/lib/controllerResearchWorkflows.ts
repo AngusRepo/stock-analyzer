@@ -781,7 +781,7 @@ export async function runAllocatorEvFeatureSnapshotBackfill(
       inspectAllocatorSnapshotClosure,
       recordAllocatorEvLifecycle,
     } = await import('./allocatorEvDailyLifecycle')
-    const closure = await inspectAllocatorSnapshotClosure(env.DB, params.startDate, {
+    const closure = await inspectAllocatorSnapshotClosure(databaseForDataDomain(env, 'learning'), params.startDate, {
       allowPointInTimeReconstruction: true,
       learningDb: databaseForDataDomain(env, 'learning'),
       opsDb: databaseForDataDomain(env, 'ops'),

@@ -81,8 +81,10 @@ def load_current_registry(bucket,*,cutoff):
     if not candidates:return [],dict(status='no_daily_registry',latest_observed_signal_date=None,latest_training_eligible_date=None)
     _,name,latest=max(candidates,key=lambda r:(r[0],r[1]))
     if latest['status']=='failed':raise ValueError('l4_forward_latest_refresh_failed')
-    bodies=[]
+    bodies=[];excluded=[]
     for item in latest['items']:
+        if item['status']=='excluded':
+            excluded.append({k:item[k] for k in ('snapshot_id','signal_date','reason')});continue
         ref=item['materialization'];raw=bucket.blob(ref['path']).download_as_bytes()
         if (not ref['path'].startswith(PREFIX+'materializations/')
                 or hashlib.sha256(raw).hexdigest()!=ref['sha256']):raise ValueError('l4_forward_materialization_checksum')
@@ -92,4 +94,4 @@ def load_current_registry(bucket,*,cutoff):
         bodies.append(body)
     return bodies,dict(status='verified',registry_path=name,cutoff=latest['cutoff'],
         latest_observed_signal_date=latest['latest_observed_signal_date'],
-        latest_training_eligible_date=latest['latest_training_eligible_date'])
+        latest_training_eligible_date=latest['latest_training_eligible_date'],excluded=excluded)

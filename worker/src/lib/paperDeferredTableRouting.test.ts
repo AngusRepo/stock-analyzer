@@ -11,7 +11,7 @@ const dashboard = fs.readFileSync('src/routes/dashboardReadRoutes.ts', 'utf8')
 const adminTasks = fs.readFileSync('src/lib/adminTriggerWorkerDomainTasks.ts', 'utf8')
 const cronTasks = fs.readFileSync('src/lib/cronWorkerDomainTasks.ts', 'utf8')
 
-assert(registry.includes('if (!ownership.route_ready) return env.DB'))
+assert(registry.includes('if (!ownership.route_ready) return requireLegacyDatabase(env, `table_not_route_ready:${table}`)'))
 for (const table of [
   'debate_memory', 'decision_logs', 'exit_shadow_log', 'pending_buy_filter_audit',
   'pending_buy_items', 'pending_buy_runs', 'promotion_audit_events',

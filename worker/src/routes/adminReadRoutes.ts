@@ -3,6 +3,7 @@ import { Hono } from 'hono'
 import { twToday } from '../lib/dateUtils'
 import { requireAdminOrServiceToken } from '../lib/auth'
 import { activeDataDomains, databaseForDataDomain } from '../lib/dataDomainRegistry'
+import { verifiedDataDomainControlPlaneDatabase } from '../lib/legacyDatabase'
 import type { Bindings, Variables } from '../types'
 
 export const adminReadRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
@@ -912,7 +913,8 @@ adminReadRoutes.get('/api/admin/costs/today', async (c) => {
   if (authError) return authError
 
   const date = c.req.query('date') ?? twToday()
-  const { results } = await c.env.DB.prepare(
+  // cost_daily is the Ops view over cost_events (same owner as /costs/month).
+  const { results } = await databaseForDataDomain(c.env, 'ops').prepare(
     `SELECT source, provider, model, calls, tokens_in_total, tokens_out_total,
             compute_sec_total, est_usd_total
      FROM cost_daily WHERE date = ? ORDER BY est_usd_total DESC`
@@ -975,7 +977,7 @@ adminReadRoutes.get('/api/admin/data-domains/cutover-readiness', async (c) => {
   ])
   const opsDb = databaseForDataDomain(c.env, 'ops')
   const [latestEveningChain, capacityRows, archivePolicyResult, capacityHistory, backfillBaselines] = await Promise.all([
-    inspectLatestEveningChainClosure(c.env.KV, c.env.DB),
+    inspectLatestEveningChainClosure(c.env.KV, c.env),
     inspectStorageCapacityTelemetry(c.env),
     opsDb.prepare(
       `WITH ranked_runs AS (
@@ -1043,9 +1045,10 @@ adminReadRoutes.get('/api/admin/data-domains/cutover-readiness', async (c) => {
     parityNotBefore: latestEveningChain.timestamp,
     learningTargetDb: c.env.LEARNING_DB,
   }
-  const report = await inspectDataDomainCutoverReadiness(c.env.DB, requestedDomain, readinessContext)
+  const controlPlaneDb = await verifiedDataDomainControlPlaneDatabase(c.env)
+  const report = await inspectDataDomainCutoverReadiness(controlPlaneDb, requestedDomain, readinessContext)
   const closureReport = requestedDomain
-    ? await inspectDataDomainCutoverReadiness(c.env.DB, null, readinessContext)
+    ? await inspectDataDomainCutoverReadiness(controlPlaneDb, null, readinessContext)
     : report
   const activeDomains = [...activeDataDomains(c.env)].sort()
   const capacityForecasts = capacityRows.map((row) => {
@@ -1102,5 +1105,5 @@ adminReadRoutes.get('/api/admin/data-domains/backfill-retirement-readiness', asy
   const { inspectDataDomainBackfillRetirementReadiness } = await import(
     '../lib/dataDomainBackfillRetirementReadiness'
   )
-  return c.json(await inspectDataDomainBackfillRetirementReadiness(c.env.DB, c.env.KV, databaseForDataDomain(c.env, 'ops')))
+  return c.json(await inspectDataDomainBackfillRetirementReadiness(await verifiedDataDomainControlPlaneDatabase(c.env), c.env.KV, databaseForDataDomain(c.env, 'ops')))
 })

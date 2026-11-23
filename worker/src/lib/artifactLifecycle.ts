@@ -2,6 +2,7 @@ import { sweepExpiredArtifacts, type ArtifactExpiryOptions, type ArtifactExpiryR
 import { paperExecutionDate, scopedPaperDatabase } from './paperExecutionScope'
 import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
+import { legacyDatabaseFrozen, optionalLegacyDatabase } from './legacyDatabase'
 import { resolveExpectedCompletedDataDate } from './dataQualityMonitor'
 import { sha256Text } from './datasetSnapshots'
 import {
@@ -54,8 +55,8 @@ export const STORAGE_LIFECYCLE_SCHEDULE = [
   { task: 'retention-archive-only', cron: '37,52 2-6 * * *', timezone: 'Asia/Taipei' },
   { task: 'retention-hot-window-drain', cron: '35 2 * * *', timezone: 'Asia/Taipei' },
   { task: 'artifact-reconcile', cron: '5 2 * * *', timezone: 'Asia/Taipei' },
-  { task: 'r2-retention-sweep', cron: '40 2 * * *', timezone: 'Asia/Taipei' },
-  { task: 'orphan-reachability-gc', cron: '0 3 * * *', timezone: 'Asia/Taipei' },
+  { task: 'r2-retention-sweep', cron: '40 2-5 * * *', timezone: 'Asia/Taipei' },
+  { task: 'orphan-reachability-gc', cron: '20 3 * * *', timezone: 'Asia/Taipei' },
   { task: 'storage-health-check', cron: '45 6 * * *', timezone: 'Asia/Taipei' },
   { task: 'learning-retention-readiness', cron: '20 2 * * *', timezone: 'Asia/Taipei' },
   { task: 'legacy-learning-deletion-readiness', cron: '50 6 * * *', timezone: 'Asia/Taipei' },
@@ -690,6 +691,7 @@ export interface StorageHealthResult {
   legacy_retention_backlog_cohorts: number
   legacy_retention_progress_24h: number
   legacy_retention_stalled: boolean
+  legacy_retention_audit: 'measured' | 'skipped_frozen_rollback_source' | 'skipped_legacy_unbound'
   d1_bytes: number | null
   d1_utilization: number | null
   capacity_status: StorageCapacityRow['status'] | 'unknown'
@@ -801,9 +803,20 @@ export async function runStorageHealthCheck(
       if (row.domain === 'paper_daily_closure') paperLineageReady = ready
     }
   }
+  // Cutover and writer-epoch authority lives in the control plane
+  // (DATA_DOMAIN_CONTROL_PLANE). The Ops copy is authoritative only after the
+  // control-plane copy; the location var never falls back silently.
+  const legacyFrozenRollbackSource = await legacyDatabaseFrozen(env)
+  // The legacy retirement backlog is only measured while the legacy DB is
+  // still an active source. A frozen rollback source receives no writes, so
+  // its full-table EXISTS scans would only re-read the same frozen rows.
+  const legacyDb = optionalLegacyDatabase(env)
+  const legacyRetentionAudit: StorageHealthResult['legacy_retention_audit'] = !legacyDb
+    ? 'skipped_legacy_unbound'
+    : legacyFrozenRollbackSource ? 'skipped_frozen_rollback_source' : 'measured'
   // multi-d1-intentional-legacy-source: this audit measures the retirement
   // backlog remaining in DB; it must not read already-routed domain shards.
-  const legacyRetention = await env.DB.prepare(`
+  const legacyRetention = legacyRetentionAudit !== 'measured' ? null : await legacyDb!.prepare(`
     SELECT
       (
         CASE WHEN EXISTS (SELECT 1 FROM strategy_decision_log WHERE context_id IS NULL LIMIT 1) THEN 1 ELSE 0 END +
@@ -874,23 +887,11 @@ export async function runStorageHealthCheck(
            AND status='ready'
            AND created_at >= datetime('now','-24 hours'))) AS progress_24h
   `).first<any>()
-  // Cutover and writer-epoch authority is anchored in the legacy source DB.
-  // OPS_DB may contain only a stale pre-cutover mirror and must not reclassify
-  // the frozen rollback source as an active capacity blocker.
-  const frozenDomainReceipt = await env.DB.prepare(`
-    SELECT COUNT(DISTINCT c.domain) AS frozen_domains
-      FROM data_domain_cutovers c
-      JOIN data_domain_writer_epochs w ON w.domain=c.domain
-     WHERE c.domain IN ('core','market','learning','ops','execution','paper','research')
-       AND c.status='complete'
-       AND w.writer_state='cutover'
-  `).first<{ frozen_domains?: number }>()
 
   const legacyCapacity = capacityRows.find((row) => row.domain === 'legacy' && row.binding_name === 'DB')
   const d1Bytes = legacyCapacity?.used_bytes ?? null
   const utilization = d1Bytes == null ? null : d1Bytes / 10_000_000_000
   const capacityStatus = legacyCapacity?.status ?? 'unknown'
-  const legacyFrozenRollbackSource = Number(frozenDomainReceipt?.frozen_domains ?? 0) === 7
   // A frozen legacy rollback source is reported but never judged with the live domains.
   const judgedDomain = (domain: string) => !(domain === 'legacy' && legacyFrozenRollbackSource)
   const blockingCapacityDomains = capacityRows
@@ -946,6 +947,7 @@ export async function runStorageHealthCheck(
     legacy_retention_backlog_cohorts: legacyRetentionBacklog,
     legacy_retention_progress_24h: legacyRetentionProgress24h,
     legacy_retention_stalled: legacyRetentionStalled,
+    legacy_retention_audit: legacyRetentionAudit,
     d1_bytes: d1Bytes,
     d1_utilization: utilization,
     capacity_status: capacityStatus,

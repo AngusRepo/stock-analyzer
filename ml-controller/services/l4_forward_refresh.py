@@ -39,6 +39,20 @@ class CachedProjectionFailure(Exception):
     def __init__(self,record):
         self.record=record;super().__init__(record['error_summary'])
 
+class R33ProjectionExcluded(Exception):
+    """Phase 0: R33 snapshots are kept out of the legacy projection until their own exists."""
+    reason='r33_forward_projection_not_implemented'
+
+def _is_r33_snapshot(runtime,predictions):
+    """Both sealed schema markers, never dates, roster names or model counts; one alone fails closed."""
+    from services.r33_ensemble import RUNTIME_SCHEMA
+    from services.r33_rank_pool import SNAPSHOT_SCHEMA
+    pool=(runtime.get('r33_rank_pool') or {}).get('schema_version')==SNAPSHOT_SCHEMA
+    marks={(p.get('ensemble_v2') or {}).get('schema_version')==RUNTIME_SCHEMA for p in predictions.values()}
+    if pool and marks=={True}:return True
+    if not pool and True not in marks:return False
+    raise ValueError('l4_forward_r33_snapshot_inconsistent')
+
 
 def publish(bucket,kind,value):
     raw=json.dumps(value,sort_keys=True,separators=(',',':'),allow_nan=False).encode()
@@ -60,6 +74,7 @@ def project(frozen):
     if manifest['snapshot_kind']!='allocation_context':raise ValueError('l4_forward_snapshot_kind')
     policy=content['inputs']['alpha_policy']['l4Distribution'];runtime=policy['runtime']
     identity=runtime['l3_identity'];predictions=content.get('model_predictions') or runtime['predictions']
+    if _is_r33_snapshot(runtime,predictions):raise R33ProjectionExcluded()
     rows=[];excluded=[]
     for symbol,prediction in sorted(predictions.items()):
         reasons=missing_l3_evidence(prediction,identity,manifest['signal_date'])
@@ -142,13 +157,21 @@ def refresh(*,query,bucket,price_capture,expected_identity,cutoff,lookback_days=
                 # is remembered per deploy so retries skip the multi-GB cold read; any new
                 # deploy or manifest row retries. Read errors are never remembered.
                 source_sha=os.environ.get('STOCKVISION_SOURCE_SHA','').strip()
-                failure=(bucket.blob(PREFIX+'projection_failures/'+digest(dict(manifest=manifest,source_sha=source_sha))+'.json')
-                         if source_sha else None)
+                marker=digest(dict(manifest=manifest,source_sha=source_sha))+'.json'
+                failure=bucket.blob(PREFIX+'projection_failures/'+marker) if source_sha else None
+                # An exclusion is remembered the same way, so a deploy with an R33 projection re-reads it.
+                exclusion=bucket.blob(PREFIX+'projection_exclusions/'+marker) if source_sha else None
                 if failure is not None and failure.exists():
                     raise CachedProjectionFailure(json.loads(failure.download_as_bytes()))
+                if exclusion is not None and exclusion.exists():raise R33ProjectionExcluded()
                 frozen=reader(manifest['snapshot_id'])
                 if frozen['manifest']!=manifest:raise ValueError('l4_forward_manifest_changed')
                 try:snapshot=project(frozen)
+                except R33ProjectionExcluded as exc:
+                    if exclusion is not None:
+                        try:exclusion.upload_from_string(json.dumps(dict(reason=exc.reason)),content_type='application/json',if_generation_match=0)
+                        except Exception:pass  # best effort, as for failures
+                    raise
                 except Exception as exc:
                     if failure is not None and not isinstance(exc,(MemoryError,RecursionError)):
                         record=dict(error_type=type(exc).__name__,error_summary=error_summary(exc))
@@ -167,6 +190,8 @@ def refresh(*,query,bucket,price_capture,expected_identity,cutoff,lookback_days=
             body=dict(rows=rows,receipt=receipt,projection=ref,price_proof=price_proof)
             record=publisher(bucket,'materializations',body)
             items.append({**item,**receipt,'materialization':record})
+        except R33ProjectionExcluded as exc:
+            items.append({**item,'status':'excluded','reason':exc.reason,'training_eligible':False})
         except Exception as exc:
             recorded=({k:str(exc.record.get(k,'')) for k in ('error_type','error_summary')}
                 if isinstance(exc,CachedProjectionFailure) else dict(error_type=type(exc).__name__,error_summary=error_summary(exc)))
@@ -184,10 +209,17 @@ def refresh(*,query,bucket,price_capture,expected_identity,cutoff,lookback_days=
                     'error_type':type(exc).__name__,'error_summary':error_summary(exc),'training_eligible':False})
     eligible=[r['signal_date'] for r in items if r['training_eligible']]
     ready=[r['signal_date'] for r in items if r['status']=='ready']
-    result=dict(schema_version='l4-forward-refresh-v1',cutoff=cutoff,status='failed' if any(r['status']=='failed' for r in items) else 'refreshed',
+    excluded=[r for r in items if r['status']=='excluded']
+    # Excluded is neither failed nor refreshed: those dates were not collected.
+    status='failed' if any(r['status']=='failed' for r in items) else 'refreshed_with_exclusions' if excluded else 'refreshed'
+    result=dict(schema_version='l4-forward-refresh-v1',cutoff=cutoff,status=status,
         latest_observed_signal_date=max((r['signal_date'] for r in items),default=None),
         latest_mature_evaluation_date=max(ready,default=None),latest_training_eligible_date=max(eligible,default=None),
         source_count=len(items),items=items,price_proof=price_proof,training_dispatched=False,promoted=False)
+    if excluded:
+        from collections import Counter
+        result.update(excluded_signal_dates=sorted({r['signal_date'] for r in excluded}),
+            excluded_counts=dict(Counter(r['reason'] for r in excluded)))
     result['registry_receipt']=publisher(bucket,'refreshes',result.copy())
     return result
 
@@ -314,7 +346,8 @@ def callback_summary(result):
     from collections import Counter
     return {k:result[k] for k in ('status','reason','error_type','error_summary','business_date','cutoff',
         'latest_observed_signal_date','latest_mature_evaluation_date','latest_training_eligible_date',
-        'source_count','registry_receipt','training_dispatched','promoted','native_observation','r2_shadow','r2_evaluation','r2_paired') if k in result} | {
+        'source_count','registry_receipt','training_dispatched','promoted','native_observation','r2_shadow','r2_evaluation','r2_paired',
+        'excluded_signal_dates','excluded_counts') if k in result} | {
         'status_counts':dict(Counter(r['status'] for r in result.get('items',[]))),
         'failure_samples':[{k:r.get(k) for k in ('signal_date','reason','error_type','error_summary')}
             for r in result.get('items',[]) if r['status']=='failed'][:3],

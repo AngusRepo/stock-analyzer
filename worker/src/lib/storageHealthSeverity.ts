@@ -77,3 +77,56 @@ export async function reportStorageHealthSeverity(
   })
   return `warning ${parts.join(' ')} `
 }
+
+export type StorageCapacityRunwayJudgement = {
+  domain: string
+  role: 'live' | 'frozen_rollback_source'
+  judged: boolean
+  days_to_90pct: number | null
+  alert: boolean
+}
+
+export type StorageCapacityRunwaySummary = {
+  alert_days: number
+  alert_domains: string[]
+  domains: StorageCapacityRunwayJudgement[]
+}
+
+/**
+ * M4: per-database days to the 90% line for storage-capacity-report. The alert
+ * decision has one owner, runStorageHealthCheck (capacity_runway_alert_domains:
+ * live domains under STORAGE_CAPACITY_RUNWAY_ALERT_DAYS, the frozen legacy
+ * rollback source never judged); this only labels each row with it, so the
+ * report cannot disagree with the health check or repeat its runway rows.
+ */
+export function summarizeStorageCapacityRunway(
+  health: Pick<StorageHealthResult,
+    'capacity_runway' | 'capacity_runway_alert_days' | 'capacity_runway_alert_domains' | 'legacy_capacity_role'>,
+): StorageCapacityRunwaySummary {
+  const alertDomains = new Set(health.capacity_runway_alert_domains ?? [])
+  const legacyFrozen = health.legacy_capacity_role === 'frozen_rollback_source'
+  const domains = (health.capacity_runway ?? []).map((row): StorageCapacityRunwayJudgement => {
+    const frozen = row.domain === 'legacy' && legacyFrozen
+    return {
+      domain: row.domain,
+      role: frozen ? 'frozen_rollback_source' : 'live',
+      judged: !frozen,
+      days_to_90pct: row.projected_days_to_critical_90pct,
+      alert: !frozen && alertDomains.has(row.domain),
+    }
+  })
+  return {
+    alert_days: health.capacity_runway_alert_days,
+    alert_domains: domains.filter((row) => row.alert).map((row) => row.domain),
+    domains,
+  }
+}
+
+/**
+ * Summary prefix for storage-capacity-report. The system-log warning for the
+ * same runway alert is written once, by storage-health-check through
+ * reportStorageHealthSeverity (its runway_alert_domains), not again here.
+ */
+export function capacityRunwayWarningPrefix(summary: StorageCapacityRunwaySummary): string {
+  return summary.alert_domains.length ? `warning capacity_runway_alert=${summary.alert_domains.join(',')} ` : ''
+}

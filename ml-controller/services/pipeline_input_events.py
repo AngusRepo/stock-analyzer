@@ -121,6 +121,13 @@ def seal_pre_l2_checkpoint(state):
     return seal_checkpoint(state, raw)
 
 
+def stage_phase(stage):
+    """Progress phase of a detached stage (child-work observation, consumption receipt)."""
+    if stage['kind'] == 'snapshot':
+        return 'input_snapshot'
+    return 'input_prep' if stage.get('resume_phase') == 'pre_l2' else 'prepare_prediction_request'
+
+
 class InputDeferred(Exception):
     def __init__(self, path, kind):
         self.path, self.kind = path, kind
@@ -543,7 +550,26 @@ def claim_consumption(path):
             'created_at': datetime.now(timezone.utc).isoformat()}), content_type='application/json', if_generation_match=0)
     except PreconditionFailed:
         raise InputDeferred(path, 'continuation_in_progress')
+    _record_stage_receipt(store, path)
     return None
+
+
+def _record_stage_receipt(store, path):
+    """Telemetry only: the detached snapshot / pre-L2 prep work becomes one phase receipt of the
+    execution consuming it, from the stage's registration (request.json is written once, so GCS
+    time_created is the deferral time) to this claim. Never controls continuation."""
+    try:
+        phase = stage_phase(load_stage(store, path))
+        # prepare_prediction_request is also the controller's own phase; its wait stays unnamed.
+        if phase not in ('input_snapshot', 'input_prep'):
+            return
+        now = datetime.now(timezone.utc)
+        # GCS server clock vs this host: a receipt never starts after it completes.
+        registered = min(store.get_blob(path).time_created, now)
+        from services.pipeline_progress import completed
+        completed(phase, (now - registered).total_seconds() * 1000, started_at=registered.isoformat())
+    except Exception as exc:
+        logging.getLogger(__name__).warning('Input stage receipt unavailable: %s', type(exc).__name__)
 
 
 def finish_consumption(path, result):

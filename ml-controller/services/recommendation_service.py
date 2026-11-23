@@ -17,7 +17,7 @@ from datetime import datetime, timedelta, timezone
 from numbers import Integral, Real
 from typing import Any, Callable, Optional
 
-from services.alpha_model_roster import model_order
+from services.alpha_model_roster import model_order, validate_order
 from services import d1_client
 from services.d1_domain_client import D1DataDomain, client_for_domain, client_proxy_for_domain
 from services._predictions_schema import (
@@ -551,18 +551,17 @@ def _forecast_fraction_to_pct(raw: Any) -> float | None:
 def build_ml_vote_summary_data(ml: dict | None, legacy_counts: dict[str, int]) -> dict[str, Any]:
     """Expose normalized base evidence and the learned ensemble without hand transforms."""
     ev2 = (ml or {}).get("ensemble_v2") or {}
-    tracked = [
-        "XGBoost", "ExtraTrees", "LightGBM", "TabM", "GNN",
-        "DLinear", "PatchTST", "iTransformer",
-    ]
+    raw_scores = (ml or {}).get("rank_scores")
+    raw_scores = raw_scores if isinstance(raw_scores, dict) else {}
+    # The prediction's own ensemble model_order is the served roster; legacy rows declare none.
+    declared = ev2.get("model_order")
+    tracked = validate_order(declared) if declared else model_order(raw_scores)
     weights = ev2.get("weights") if isinstance(ev2.get("weights"), dict) else {}
     model_scores: dict[str, float] = {}
-    raw_scores = (ml or {}).get("rank_scores") or {}
-    if isinstance(raw_scores, dict):
-        for name in tracked:
-            score = _finite_float_or_none(raw_scores.get(name))
-            if score is not None:
-                model_scores[name] = score
+    for name in tracked:
+        score = _finite_float_or_none(raw_scores.get(name))
+        if score is not None:
+            model_scores[name] = score
     bullish = sum(value > 0.5 for value in model_scores.values())
     bearish = sum(value < 0.5 for value in model_scores.values())
     flat = len(model_scores) - bullish - bearish

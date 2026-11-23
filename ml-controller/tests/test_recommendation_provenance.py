@@ -2044,6 +2044,50 @@ def test_ml_vote_summary_counts_weight_gated_models_as_reported():
     assert summary["zeroWeightModels"] == ["TabM", "DLinear"]
 
 
+_SERVED_ROSTERS = (
+    ("GNN",),
+    ("LightGBM", "ExtraTrees", "TabM", "GNN"),
+    ("LightGBM", "ExtraTrees", "TabM", "GNN", "TimeXer", "PatchTST", "iTransformer"),
+    ("LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN", "DLinear", "PatchTST", "iTransformer"),
+)
+
+
+def _served_roster_prediction(roster):
+    stale = {} if "XGBoost" in roster else {"XGBoost": 0.9}
+    return {
+        "rank_scores": {**stale, **{name: 0.3 + 0.1 * index for index, name in enumerate(roster)}},
+        "ensemble_v2": {
+            "model_order": list(roster),
+            "weights": {name: round(1 / len(roster), 8) for name in roster},
+            "contributing_models": list(roster),
+        },
+    }
+
+
+@pytest.mark.parametrize("roster", _SERVED_ROSTERS, ids=lambda roster: f"{len(roster)}_models")
+def test_ml_vote_summary_tracks_the_served_ensemble_roster(roster):
+    summary = build_ml_vote_summary_data(_served_roster_prediction(roster), {"up": 0, "down": 0, "total": 0})
+
+    assert summary["total"] == len(roster)
+    assert summary["reported"] == len(roster)
+    assert summary["missing"] == 0
+    assert summary["bullish"] + summary["bearish"] + summary["flat"] == len(roster)
+    assert summary["activeWeightCount"] == len(roster)
+    assert summary["contributingModels"] == list(roster)
+
+
+def test_ml_vote_summary_roster_does_not_follow_the_checkout_r33_constant(monkeypatch):
+    from services import alpha_model_roster
+
+    core4 = ("LightGBM", "ExtraTrees", "TabM", "GNN")
+    monkeypatch.setattr(alpha_model_roster, "R33_MODELS", ("GNN",))
+    summary = build_ml_vote_summary_data(_served_roster_prediction(core4), {"up": 0, "down": 0, "total": 0})
+
+    assert summary["total"] == 4
+    assert summary["missing"] == 0
+    assert summary["contributingModels"] == list(core4)
+
+
 def test_core_family_vote_deduplicates_exact_same_model_scores_within_family():
     vote = build_core_family_vote(
         {

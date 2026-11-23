@@ -368,6 +368,45 @@ export function resolveAdaptiveParamsForRegime(
   }
 }
 
+export interface AdaptiveParamsFreshness {
+  status: 'fresh' | 'stale' | 'undated' | 'lookahead'
+  computed_date: string | null
+  as_of_date: string
+  age_days: number | null
+  max_age_days: number
+}
+
+const TW_OFFSET_MS = 8 * 3600_000
+const twDate = (ms: number): string => new Date(ms + TW_OFFSET_MS).toISOString().slice(0, 10)
+
+/**
+ * FG-02/03: calendar-day age of computed_at in Taipei dates (the controller's ML threshold
+ * overlay guard uses the same rule). Callers apply it after regime override resolution:
+ * anything but 'fresh' retires confidence_delta to 0 and keeps P2 off recent_accuracy_30d.
+ */
+export function adaptiveParamsFreshness(
+  params: Pick<AdaptiveParams, 'computed_at'>,
+  maxAgeDays: number,
+  nowMs: number = paperExecutionNow(),
+): AdaptiveParamsFreshness {
+  if (!Number.isInteger(maxAgeDays) || maxAgeDays < 1) {
+    throw new Error(`adaptive params max age invalid: ${maxAgeDays}`)
+  }
+  const asOf = twDate(nowMs)
+  const computedMs = Date.parse(String(params.computed_at ?? ''))
+  if (!Number.isFinite(computedMs)) {
+    return { status: 'undated', computed_date: null, as_of_date: asOf, age_days: null, max_age_days: maxAgeDays }
+  }
+  const computed = twDate(computedMs)
+  const age = Math.round((Date.parse(asOf) - Date.parse(computed)) / 86_400_000)
+  const status = age < 0 ? 'lookahead' : age > maxAgeDays ? 'stale' : 'fresh'
+  return { status, computed_date: computed, as_of_date: asOf, age_days: age, max_age_days: maxAgeDays }
+}
+
+export function describeAdaptiveFreshness(f: AdaptiveParamsFreshness): string {
+  return `${f.status} computed=${f.computed_date ?? 'missing'} as_of=${f.as_of_date} age_days=${f.age_days ?? 'n/a'} max_age_days=${f.max_age_days}`
+}
+
 export async function getAdaptiveParams(kv: KVNamespace): Promise<AdaptiveParams> {
   const cached = configCache.get(kv)
   if (cached && paperExecutionNow() - cached.at < CACHE_TTL_MS) return cached.value

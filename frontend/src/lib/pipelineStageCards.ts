@@ -4,8 +4,12 @@ export const PIPELINE_STAGE_CARDS = [
   // legacyEnd: runs from controllers before node_prepare_l2_inputs existed end at market env.
   { id: 'pipeline-inputs', label: '輸入凍結', phases: ['node_load_inputs','node_load_market_env','node_attach_serving_context','node_prepare_l2_inputs'],
     end: 'node_prepare_l2_inputs', legacyEnd: 'node_load_market_env' },
-  // node_resume_l2_inputs re-verifies frozen inputs after the feature wait; it never reopens the first card.
-  { id: 'pipeline-features', label: '快照與特徵準備', phases: ['node_build_payloads','input_snapshot','input_prep','feature_preparation','node_resume_l2_inputs'], end: 'node_build_payloads' },
+  // Detached sub-jobs: the controller execution that consumes one records it as a receipt
+  // (registration -> consumption). A run that dispatches none leaves these cards empty.
+  { id: 'pipeline-snapshot', label: '輸入快照匯出', phases: ['input_snapshot'], end: 'input_snapshot', subJob: true },
+  { id: 'pipeline-feature-batches', label: '特徵批次', phases: ['input_prep','feature_preparation'], end: 'input_prep', subJob: true },
+  // node_resume_l2_inputs re-verifies frozen inputs after a sub-job; it never reopens the first card.
+  { id: 'pipeline-features', label: '特徵與推論輸入組裝', phases: ['node_build_payloads','node_resume_l2_inputs'], end: 'node_build_payloads' },
   // node_prepare_sequence_inputs owns the L2 sub-phases below; while it runs the L2 card is active, not unstarted.
   { id: 'pipeline-l2', label: 'L2 特徵增強', phases: ['node_prepare_sequence_inputs','node_l2_timesfm_enrich','seal_l2_inputs','prepare_prediction_request'], end: 'prepare_prediction_request' },
   { id: 'pipeline-l3', label: 'L3 預測與封存', phases: ['dispatch_prediction','modal_prediction','modal_inference','node_l3_formal_predict','seal_l3_results'], end: 'seal_l3_results' },
@@ -29,27 +33,10 @@ const PHASE_NAMES: Record<string,string> = {
 export const pipelinePhaseName = (phase: string): string => PHASE_NAMES[phase] ?? phase
 
 type Progress = NonNullable<SchedulerJob['pipelineProgress']>
+const ASSEMBLY_INDEX=PIPELINE_STAGE_CARDS.findIndex(c=>c.id==='pipeline-features')
 // FU8-A: progress belongs to the canonical run; the ticket runId is only a fallback for older payloads.
 const progressRunId = (parent: SchedulerJob) => parent.canonicalRunId ?? parent.runId
 const runHistory = (p: Progress) => Object.values(p.executions ?? {legacy:p.completed}).flat()
-/** Sub-job time (snapshot/prep) between controller executions: from an execution that yielded with a
- *  'waiting' receipt to the next execution, only when that one resumes inside this card. The executions
- *  map is already one run/date (Worker merges per canonical run; the caller checks run_id/run_date). */
-function subJobWaitMs(p: Progress, belongs: (phase: string) => boolean): number {
-  const ms=(v?: string|null)=>{const t=Date.parse(v??'');return Number.isFinite(t)?t:undefined}
-  const runs=Object.values(p.executions ?? {}).map(rows=>{
-    const first=rows.filter(r=>ms(r.started_at)!==undefined).sort((a,b)=>ms(a.started_at)!-ms(b.started_at)!)[0]
-    const last=rows.filter(r=>ms(r.completed_at)!==undefined).sort((a,b)=>ms(b.completed_at)!-ms(a.completed_at)!)[0]
-    return {first,last,key:ms(first?.started_at) ?? ms(last?.completed_at)}
-  }).filter(r=>r.key!==undefined).sort((a,b)=>a.key!-b.key!)
-  let total=0
-  for (let i=1;i<runs.length;i++) {
-    const prev=runs[i-1].last,next=runs[i].first
-    if (prev?.status!=='waiting' || !next || !belongs(next.phase)) continue
-    total+=Math.max(0,ms(next.started_at)!-ms(prev.completed_at)!)
-  }
-  return total
-}
 const isSealed = (parent: SchedulerJob) => /\bawaiting_premarket\b/.test(parent.summary) && /\bl3_sealed=true\b/.test(parent.summary)
 const isTerminal = (parent: SchedulerJob) => isSealed(parent) || ['failed','blocked','success'].includes(parent.lastStatus)
 /** A finished run's clocks stop at its last evidence instead of following the browser clock. */
@@ -66,6 +53,9 @@ export function pipelineStageCards(parent?: SchedulerJob, now=Date.now()): Sched
   const history=progress ? runHistory(progress) : []
   const sealed=isSealed(parent)
   const currentIndex=progress ? PIPELINE_STAGE_CARDS.findIndex(c=>(c.phases as readonly string[]).includes(progress.phase)) : -1
+  // Only this run's progress can prove assembly ended; a sealed parent with another run's progress proves nothing.
+  const assemblyDone=Boolean(progress) && (sealed || currentIndex>ASSEMBLY_INDEX
+    || history.some(row=>row.phase==='node_build_payloads' && row.status==='completed'))
   const chainActive=Boolean(progress && ['running','waiting'].includes(parent.lastStatus) && !sealed)
   const parentFailed=['failed','blocked'].includes(parent.lastStatus)
   const clock=progress ? runClock(parent,progress,now) : now
@@ -76,6 +66,7 @@ export function pipelineStageCards(parent?: SchedulerJob, now=Date.now()): Sched
     && candidate.phase===progress.phase && workAge>=-60_000 && workAge<=90_000 ? candidate : undefined
   return PIPELINE_STAGE_CARDS.map((card,index) => {
     const belongs=(phase:string)=>(card.phases as readonly string[]).includes(phase)
+    const subJob='subJob' in card
     const rows=history.filter(row=>belongs(row.phase))
     const latest=[...rows].sort((a,b)=>Date.parse(b.completed_at??'')-Date.parse(a.completed_at??''))[0]
     const active=Boolean(progress && belongs(progress.phase))
@@ -104,24 +95,28 @@ export function pipelineStageCards(parent?: SchedulerJob, now=Date.now()): Sched
     const observed=Math.max(Date.parse(progress?.observed_at??'')||0,Date.parse(batches?.observed_at??'')||0,
       active && work?.status!=='unknown' ? Date.parse(work?.observed_at??'')||0 : 0)
     const stale=chainActive && active && !complete && !failed && now-observed>15*60_000
-    const missingEarlier=rows.length===0 && progress && PIPELINE_STAGE_CARDS.findIndex(c=>(c.phases as readonly string[]).includes(progress.phase))>index
+    // A sub-job is optional and dispatched from the assembly card: once assembly is done, no receipt means none ran.
+    // A sealed or post-L3 run reports a phase outside every card (awaiting_premarket, node_write_d1), so the
+    // assembly receipt or the seal decides, not only the current card.
+    const noSubJob=subJob && rows.length===0 && !active && assemblyDone
+    const missingEarlier=!subJob && rows.length===0 && progress && PIPELINE_STAGE_CARDS.findIndex(c=>(c.phases as readonly string[]).includes(progress.phase))>index
     const downstream=chainActive && currentIndex>=0 && index>currentIndex
     const upstreamBlocked=currentIndex>=0 && index>currentIndex && (['failed','blocked'].includes(parent.lastStatus)
       || ['failed','blocked'].includes(progress?.status??'') || work?.status==='failed')
-    const visual: NonNullable<SchedulerJob['stageVisualStatus']>=complete?'completed':failed||upstreamBlocked?'blocked':stale||missingEarlier?'stale'
+    const visual: NonNullable<SchedulerJob['stageVisualStatus']>=complete?'completed':noSubJob?'noop':failed||upstreamBlocked?'blocked':stale||missingEarlier?'stale'
       :childRunning?'running':queued||downstream?'waiting':chainActive && active && progress!.status==='running'?'running':rows.length?'waiting':'not_started'
-    const summary=(enrichmentIssue?`TimesFM ${enrichment.status==='blocked'?'條件未滿足':'執行失敗'}；流程已接續`:complete?'階段已完成':failed?'階段失敗／條件未滿足':upstreamBlocked?'上游失敗／條件未滿足，尚未執行':missingEarlier?'缺少本輪階段紀錄':stale?'觀測超過 15 分鐘，待確認'
+    const summary=(enrichmentIssue?`TimesFM ${enrichment.status==='blocked'?'條件未滿足':'執行失敗'}；流程已接續`:complete?'階段已完成':noSubJob?'本輪無子作業紀錄':failed?'階段失敗／條件未滿足':upstreamBlocked?'上游失敗／條件未滿足，尚未執行':missingEarlier?'缺少本輪階段紀錄':stale?'觀測超過 15 分鐘，待確認'
       :childRunning?(progress!.phase==='input_snapshot'?'快照匯出中':'特徵批次執行中')
-      :active?pipelinePhaseName(progress!.phase):downstream?`等待${PIPELINE_STAGE_CARDS[index-1].label}完成`:rows.length?'等待接續回報':'本輪尚未開始'
+      :active?pipelinePhaseName(progress!.phase):downstream?`等待${PIPELINE_STAGE_CARDS[index-1].label}完成`:rows.length?'等待接續回報'
+      // Before assembly ends a sub-job may still be dispatched; it is only empty so far, never missing.
+      :subJob && (noSubJob || currentIndex>index)?'本輪無子作業紀錄':'本輪尚未開始'
       )+(active && work && work.total>1?` · 已完成 ${work.completed}/${work.total} · 執行中 ${work.active}`:batches?` · 特徵批次 ${batches.completed}/${batches.total}`:'')
-    // Interim (pre stage split): the feature card also counts sub-job waits between its executions.
-    const subJobWait=card.id==='pipeline-features' && progress ? subJobWaitMs(progress,belongs) : 0
-    const elapsed=rows.reduce((n,r)=>n+r.elapsed_ms,0) + subJobWait + (visual==='running' ? Math.max(0,clock-Date.parse(progress!.phase_started_at)) : 0)
+    const elapsed=rows.reduce((n,r)=>n+r.elapsed_ms,0) + (visual==='running' ? Math.max(0,clock-Date.parse(progress!.phase_started_at)) : 0)
     const ended=complete || (enrichmentIssue && end?.status==='completed')?end?.completed_at:failed?latest?.completed_at:undefined
     const wall=started && (!complete || ended) ? duration(Math.max(0,(ended?Date.parse(ended):clock)-Date.parse(started))) : undefined
     return {...parent,id:card.id,name:card.label,stageVisualStatus:visual,stageCard:true,
-      stageElapsed:wall,stageSubJobWait:subJobWait>0 ? duration(subJobWait) : undefined,
-      lastStatus:visual==='completed'?'success':upstreamBlocked?'blocked':visual==='blocked'?'failed':visual==='running'?'running':'waiting',
+      stageElapsed:wall,
+      lastStatus:visual==='completed'?'success':visual==='noop'?'skip':upstreamBlocked?'blocked':visual==='blocked'?'failed':visual==='running'?'running':'waiting',
       summary,details:[summary],displayNote:summary,lastError:failed?parent.lastError:undefined,
       lastRunAt:started,lastRun:started??'N/A',lastRunBasis:'started',lastAttemptAt:null,lastEffectiveRunAt:null,
       lastAttemptStatus:undefined,lastEffectiveStatus:undefined,recoveredFromStatus:null,

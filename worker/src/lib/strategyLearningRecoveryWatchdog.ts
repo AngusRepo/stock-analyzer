@@ -160,13 +160,14 @@ const RECOVERY_RUN_COLUMNS = `
 
 /** RECOVERY_LOOKBACK_DAYS trading days before today (weekends and holiday:* closures do not count). */
 export async function strategyLearningRecoveryWindowStart(
-  env: Pick<Bindings, 'DB' | 'KV'>,
+  env: Pick<Bindings, 'DB' | 'KV'> & Partial<Bindings>,
   today = twToday(),
 ): Promise<string> {
   const { getPrevTradingDay } = await import('./paperMarketData')
+  const core = databaseForDataDomain(env, 'core')
   let start = today
   for (let day = 0; day < RECOVERY_LOOKBACK_DAYS; day += 1) {
-    start = await getPrevTradingDay(env.DB, env.KV, start)
+    start = await getPrevTradingDay(core, env.KV, start)
   }
   return start
 }

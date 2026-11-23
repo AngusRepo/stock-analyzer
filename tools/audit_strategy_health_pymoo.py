@@ -37,6 +37,7 @@ S12_REPLAY_SIGNATURE = (
     "five_session_price_domain:v2"
 )
 ROUNDTRIP_COST_BPS = 18
+LEARNING_DB_ID_DEFAULT = "73599848-b73b-4bac-9144-df638b877dbc"
 
 
 def run_d1(worker_dir: Path, sql: str) -> list[dict[str, Any]]:
@@ -46,7 +47,10 @@ def run_d1(worker_dir: Path, sql: str) -> list[dict[str, Any]]:
     if not match:
         raise RuntimeError("wrangler_oauth_token_not_found")
     request = Request(
-        "https://api.cloudflare.com/client/v4/accounts/619a83ac9f20847d9e2f2920823b727d/d1/database/6401a5f6-5767-4fa8-a1a7-ec8d4739ac79/query",
+        # strategy_spec_registry / strategy_learning_daily_stats / s12_replay_trade_outcomes are
+        # Learning-owned; the frozen legacy stockvision-db copy stopped updating at cutover.
+        "https://api.cloudflare.com/client/v4/accounts/619a83ac9f20847d9e2f2920823b727d/d1/database/"
+        f"{os.environ.get('CF_D1_LEARNING_DB_ID', LEARNING_DB_ID_DEFAULT)}/query",
         data=json.dumps({"sql": sql, "params": []}).encode("utf-8"),
         headers={"Authorization": f"Bearer {match.group(1)}", "Content-Type": "application/json"},
         method="POST",

@@ -112,7 +112,7 @@ void (async () => {
   )
   assert.match(adminTaskSource, /X-Confirm-Data-Domain-Control-Revision/)
   assert.match(adminTaskSource, /shadowDatabaseForDataDomain\(c\.env, 'learning'\)/)
-  assert.match(adminTaskSource, /installDataDomainControlRevisionTriggers\(c\.env\.DB\)/)
+  assert.match(adminTaskSource, /installDataDomainControlRevisionTriggers\(requireLegacyShadowSource\(c\.env, 'data_domain_control_revision_trigger_install'\)\)/)
   assert.match(adminTaskSource, /installDataDomainControlRevisionTriggers\(learningDb\)/)
   assert.match(adminRouteSource, /'data-domain-control-revision-trigger-install'/)
 

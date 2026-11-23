@@ -4,13 +4,13 @@
   "source_equivalence": false,
   "maturity_transfer": false,
   "production_baseline_verified": true,
-  "production_baseline_source": "db0f911e18756c3bbd75a2b507de16dbd1ad7443",
-  "production_baseline_receipt_checksum": "238894ef978980142ed7c051b1c0c6a03e29a8ae8afd18c70c17bcbac2df91ab",
-  "prior_approval_checksum": "1c98dfadea6843013be79d9f41ec63f5dbddc8d75dcdb7ea06c388f57decf335",
-  "prior_configuration_checksum": "c5c89684effbca18bc3dffde31f1abe1f95d28810d4b550c2f38c101bc85fb2e",
+  "production_baseline_source": "ea10784f2b8d2e174b62514a38c49402a7a5f37f",
+  "production_baseline_receipt_checksum": "24bf843f77e644b19b8e05cafbfee9841c7f9b11cb03347dfde875ebc330088e",
+  "prior_approval_checksum": "7c15f2432769c610d757e8368dd953efe25b9fb13cd0876b28570303e7f0eec4",
+  "prior_configuration_checksum": "b106987a51601072e24d7f94300a844c3050b3265ca7e6f7ceddc67374f47c79",
   "approved_sources": {
     "allocator_source_identity": {
-      "recommendation_service.py": "6d4984528ff3e5eb8e13c7c963209788b4ec5e6be37f06ca91cbf3c2da786b1a",
+      "recommendation_service.py": "8a025dd3a900427663add0b912bed3c45e5a5a15461de05d496ce980cabc420d",
       "portfolio_allocation.py": "2016860b0083b4b23172c10b30b8937009fe7a0a7e152acd066a99519b870a67",
       "online_portfolio_bandit.py": "4f802541c026a61272f3f0d6bc93aaa58a200f9a0ed1486cd2cff876e36a2525",
       "alpha_framework.py": "955507e02c65a84c95f606ae4d7a2dd7870a5514ac7f9e4b20f844c04ff9546b",
@@ -22,8 +22,8 @@
       "active_model_policy.py": "3d51ff740bbd312533379f43dc0e313941b9d7b647feaf8719e8498d0b21aeb6",
       "paired_nav_collection.py": "6dfc7ea4d9496479ac3084b7a02683d754c7070c6d2259117e13bb01c423eca9",
       "paired_nav_opb_prior.py": "1a562eff2121c4bab8d5cfb7b13db4ea0aa769ea239bc27d5a7004a3bc0ca590",
-      "opb_nav_control.py": "6706a7441cac2fa56ec11690747d559f85894f8a0ec366ab3b41a0eb0df59204",
-      "opb_nav_serving_source.json": "9bd8eda868edbafdb735af72d61ee27bb7f8db0913862717c3165be1e1231543",
+      "opb_nav_control.py": "27d1875e1754a7f7eba142016422588596b7ba7100fecd82bf835bb954084136",
+      "opb_nav_serving_source.json": "7f1fd9a3be8e2b383b77e12452ebcb2e449e7e46c43ab94138153092a9c4930d",
       "l4_distribution.py": "cc2fb5d4bc29771ddfdea624f6f6a4001f11665142a10cf84b45874083d3f8be",
       "l4_model_cutover.py": "03f683d5078aaf0249f8507af5b720e6d1152194d5fe6b28cf7a594a3ffaa2dd",
       "l4_mlp_weights.py": "1026defc518a04aac776ac4bff1bc974f3f316bae023a4b9ebc7c324f02460f1",
@@ -40,7 +40,7 @@
       "l4_risk_history.py": "036ab0a81d05931c0d48b59d1bff6177b71b8d4270d8cd85281466f38b0fede3",
       "l4_dated_risk.py": "f10c43919802a8e86b0fd15e8db744a411cf3a9c6e94a117add5b5fd1ce84ada",
       "l4_allocation_contract.py": "547f8d2ab4654a46938ee77c6f234c3615923597514be9c26fac111ecdd73022",
-      "similarity_evidence.py": "517936b9592085ebc418c2f23da06d47020c1ffbff2ac3e8e9262c3698728a40",
+      "similarity_evidence.py": "900f6cf5983bfc2e6ff1f445bc67c83ab2271dca7fc45746c19490130003c9cd",
       "l4_position_constraints.py": "2725cde4fdb0802efb2aad6fe8a09e5b238ece875557a474f5933ade31c2f1e0",
       "l4_sealed_execution.py": "5f090d8a451d4dfa1220fa5aae3c187c8347c229ec3ce6e406a6d8f37faa54e1",
       "l4_execution_evidence.py": "46346b4c003e822b5dff719ccebfd8bcfe1577fafa00f6bf758d021559f5578d",
@@ -60,7 +60,7 @@
       "paired_nav_l3_candidate.py": "e63dc44b6598c40c8b4383800180d4cfc49e764f3d6f0ca9b7559fa292a4a454",
       "paired_nav_l3_dispatch.py": "19bdfef7cff0231db33a76f76772bdded13ed8f96d35587bf6d0dbff76010f48",
       "paired_nav_strategy_bundle.py": "2e6fefa7f2f20e487c6d5cc5cae67e629a743e7e7d21513e84d8aadda64c673a",
-      "recommendation_service.py": "6d4984528ff3e5eb8e13c7c963209788b4ec5e6be37f06ca91cbf3c2da786b1a",
+      "recommendation_service.py": "8a025dd3a900427663add0b912bed3c45e5a5a15461de05d496ce980cabc420d",
       "active8_paper_admission.py": "2520438ade9dd68645a8cb252d31df77ec69ebb8b92457477d3286a891955cd8",
       "strategy_nav_runtime_approval.py": "98086fe5f7517ed8ec96f3fad29d7f5df8abb1e82e9e9653523b9037cd1280d8",
       "active8_nav_adoption.py": "d43f734af091d0665bbc40fa0618f3924b9b2ec9bd931bf0f7d081186c6110d1",
@@ -99,24 +99,6 @@
       "alpha_model_roster.py": "e38d7cf80060bef1b79e72f27079f7e2a04a6638b2e84888985de83b8491fe89"
     }
   },
-  "execution_owner_version": "native-paper-v1:2ab874abac6141442d1be048d6a6bf7f2389e14b8bb88cca899465da16e9fb17",
-  "review": "output/herdr-handoff-20261018/sys-cleanup-20261028/runbook_k20_repin_grant.md",
-  "policy_activations": [
-    {
-      "schema_version": "l4-policy-risk-change-v1",
-      "scope": "paper",
-      "maturity_transfer": false,
-      "account_reset": false,
-      "risk_config_added_fields": {
-        "position.minCorrelationOverlap": 20
-      },
-      "previous_policy_checksum": "c01ba9e3425aa5c85896ca893039a3c92011fd89633729e079735d312aadb338",
-      "next_policy_checksum": "c01ba9e3425aa5c85896ca893039a3c92011fd89633729e079735d312aadb338",
-      "next_policy_identity": "7436aec8fdf347e0b81a740fb6401f440b7fed3dd381d0159aa599608615fa58",
-      "previous_risk_config_checksum": "40f866656c7f986a69fbe886d0ee3f97e7f24d798c2714be5c2fbca97a08c613",
-      "next_risk_config_checksum": "86a5bcfc0246124669ccbafbd040c37bfa9d943ed265c377dfabed2061855a24",
-      "engineering_receipt_checksum": "dad04d19331a640ff9d2c9a1ecb1a4d7783bba91a91c964dd855872dd82f80e6",
-      "source_reference": "slicea-20261116 release P1' C-1; 同意，進度往下推（Wei，2026-11-16（一）08:14 TW，Slice A 11/16 盤後上線）"
-    }
-  ]
+  "execution_owner_version": "native-paper-v1:99d67b5967f57f4e8505ff932623263994ab5b23c53d1834e725b40c2bd78c28",
+  "review": "output/herdr-handoff-20261018/sys-cleanup-20261028/runbook_k20_repin_grant.md"
 }

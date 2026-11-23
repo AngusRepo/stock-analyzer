@@ -189,6 +189,7 @@ async function buildMarketRiskFallback(reason: string) {
 
 import type { Bindings, Variables } from '../types'
 import { databaseForDataDomain } from '../lib/dataDomainRegistry'
+import { optionalLegacyDatabase } from '../lib/legacyDatabase'
 import { loadPitFactorFlowMap } from '../lib/pitFactorFlowMap'
 import { authMiddleware, adminMiddleware } from '../lib/auth'
 import { rateLimitMiddleware } from '../lib/rateLimit'
@@ -208,7 +209,7 @@ import {
 import { getTradingConfig } from '../lib/tradingConfig'
 import { classifyBoard, resolveRecommendationGovernance } from '../lib/boardTradability'
 import { summarizeScreenerFunnelRows, summarizeStrategyPortfolioIntelligenceHealth } from '../lib/screenerFunnelEvidence'
-import { type FunnelArchiveChunkCache, isAuditPointerEvidence, restoreArchivedFunnelEvidence } from '../lib/screenerEvidenceResolver'
+import { FunnelArchiveReader, isAuditPointerEvidence, visitArchivedFunnelEvidence } from '../lib/screenerEvidenceResolver'
 import { loadFunnelStageStrategyRows } from '../lib/funnelStageStrategyRows'
 import { readMarketRegimeState } from '../lib/marketRegimeState'
 import { loadMarketRegimeFactorPacket } from '../lib/marketRegimeFactorPacket'
@@ -2530,7 +2531,9 @@ market.get('/risk', async (c) => {
   const twiiBias = numberOrNull(row.twii_bias)
   const foreignNet5d = numberOrNull(row.foreign_net_5d)
   const marginRatio = numberOrNull(row.margin_ratio)
-  const limitDownPct = numberOrNull(row.limit_down_pct)
+  // market_risk.limit_down_pct is a fraction of the breadth sample; the factor shows percent.
+  const limitDownFraction = numberOrNull(row.limit_down_pct)
+  const limitDownPct = limitDownFraction == null ? null : limitDownFraction * 100
   const regimeSurface = regimeState?.regime_surface ?? {}
   const monitors = regimeState?.monitors ?? {}
   const transitionGuard = regimeState?.transition_guard ?? {}
@@ -2994,7 +2997,8 @@ system.get('/status', async (c) => {
     coreDb.prepare('SELECT date, risk_level, risk_score, calculated_at FROM market_risk ORDER BY date DESC LIMIT 1').first<any>(),
     coreDb.prepare('SELECT COUNT(*) as cnt FROM stocks WHERE in_current_watchlist=1').first<any>(),
     marketDb.prepare('SELECT COUNT(*) as cnt FROM news').first<any>(),
-    c.env.DB.prepare("SELECT SUM(pgsize * ncell) as sz FROM dbstat").first<any>().catch(() => null),
+    // Size of the frozen legacy DB while it is still bound; null after retirement.
+    (optionalLegacyDatabase(c.env)?.prepare("SELECT SUM(pgsize * ncell) as sz FROM dbstat").first<any>() ?? Promise.resolve(null)).catch(() => null),
   ])
 
   // 判斷各資料是否為今日（台灣交易日）
@@ -3237,7 +3241,7 @@ async function buildDailyPipelineSummaries(
   learningDb: Bindings['DB'],
   date: string,
   archiveEnv: Pick<Bindings, 'DB' | 'ARTIFACTS'> | null = null,
-  archiveChunks: FunnelArchiveChunkCache = new Map(),
+  archiveReader: FunnelArchiveReader | null = archiveEnv ? new FunnelArchiveReader(archiveEnv) : null,
 ): Promise<Record<string, any>> {
   const latestRun = await opsDb.prepare(`
     SELECT run_id, date, status, universe_count, candidate_count, final_count, emerging_count, metadata, created_at
@@ -3339,8 +3343,8 @@ async function buildDailyPipelineSummaries(
   // Archived (pointer) evidence of older dates is read back from R2 for display; rows it
   // cannot read back are reported in strategy_summary.archived_unresolved, not hidden.
   const [routerStage, finalStage] = await Promise.all([
-    loadFunnelStageStrategyRows(opsDb, archiveEnv, latestRun.run_id, 'l1_candidate_seed_after_overlay', archiveChunks),
-    loadFunnelStageStrategyRows(opsDb, archiveEnv, latestRun.run_id, 'final_selection', archiveChunks),
+    loadFunnelStageStrategyRows(opsDb, archiveEnv, latestRun.run_id, 'l1_candidate_seed_after_overlay', archiveReader),
+    loadFunnelStageStrategyRows(opsDb, archiveEnv, latestRun.run_id, 'final_selection', archiveReader),
   ])
   const routerRows = routerStage.rows
   const finalRows = finalStage.rows
@@ -3939,8 +3943,8 @@ recommendations.get('/daily', async (c) => {
   const screenerFunnelBySymbol = new Map<string, any>()
   // Per symbol: funnel rows whose archived evidence could not be read back (still pointers).
   const screenerFunnelArchivedUnresolved = new Map<string, number>()
-  // Request-scoped: symbol chunks and both pipeline stages share verified R2 chunks.
-  const archiveChunks: FunnelArchiveChunkCache = new Map()
+  // Request-scoped: one read per R2 chunk for all symbol slices and both pipeline stages.
+  const archiveReader = new FunnelArchiveReader(c.env)
   const resultSymbols = [...new Set((results ?? [])
     .map((r: any) => String(r.symbol ?? '').trim())
     .filter(Boolean))]
@@ -4040,6 +4044,7 @@ recommendations.get('/daily', async (c) => {
     }
   }
   if (resultSymbols.length > 0 && view !== 'card') {
+    const archivedFunnelRows: any[] = []
     for (const resultSymbolChunk of d1SafeInChunks(resultSymbols)) {
       try {
         const placeholders = resultSymbolChunk.map(() => '?').join(',')
@@ -4073,21 +4078,37 @@ recommendations.get('/daily', async (c) => {
            )
          ORDER BY symbol ASC, created_at ASC
       `).bind(date, ...resultSymbolChunk).all<any>()
-      // Dates past audit-json retention keep pointers in D1; show the verified R2 originals.
-      const traceRows = await restoreArchivedFunnelEvidence(c.env, funnelRows ?? [], { chunks: archiveChunks }).catch((e) => {
-        console.warn('[recommendations/daily] archived screener funnel evidence unavailable:', e)
-        for (const row of funnelRows ?? []) {
-          if (!isAuditPointerEvidence(row.evidence)) continue
-          const symbol = String(row.symbol ?? '').trim()
-          screenerFunnelArchivedUnresolved.set(symbol, (screenerFunnelArchivedUnresolved.get(symbol) ?? 0) + 1)
-        }
-        return funnelRows ?? []
-      })
-      for (const [symbol, summary] of summarizeScreenerFunnelRows(traceRows)) {
+      // Dates past audit-json retention keep pointers in D1: those slices are restored together
+      // below, so each R2 chunk is read once for all slices instead of once per slice.
+      if ((funnelRows ?? []).some((row: any) => isAuditPointerEvidence(row.evidence))) {
+        archivedFunnelRows.push(...(funnelRows ?? []))
+        continue
+      }
+      for (const [symbol, summary] of summarizeScreenerFunnelRows(funnelRows ?? [])) {
         screenerFunnelBySymbol.set(symbol, summary)
       }
       } catch (e) {
         console.warn('[recommendations/daily] screener funnel evidence unavailable:', e)
+      }
+    }
+    if (archivedFunnelRows.length) {
+      // Verified R2 originals, one chunk at a time; only the parsed evidence of these rows is kept.
+      let traceRows: any[] = archivedFunnelRows.slice()
+      try {
+        await visitArchivedFunnelEvidence(c.env, archivedFunnelRows, (index, row, _text, evidence) => {
+          traceRows[index] = { ...row, evidence }
+        }, { reader: archiveReader })
+      } catch (e) {
+        console.warn('[recommendations/daily] archived screener funnel evidence unavailable:', e)
+        traceRows = archivedFunnelRows
+        for (const row of archivedFunnelRows) {
+          if (!isAuditPointerEvidence(row.evidence)) continue
+          const symbol = String(row.symbol ?? '').trim()
+          screenerFunnelArchivedUnresolved.set(symbol, (screenerFunnelArchivedUnresolved.get(symbol) ?? 0) + 1)
+        }
+      }
+      for (const [symbol, summary] of summarizeScreenerFunnelRows(traceRows)) {
+        screenerFunnelBySymbol.set(symbol, summary)
       }
     }
   }
@@ -4269,7 +4290,7 @@ recommendations.get('/daily', async (c) => {
       databaseForDataDomain(c.env, 'learning'),
       String(date),
       c.env,
-      archiveChunks,
+      archiveReader,
     )
     } catch (e) {
       console.warn('[recommendations/daily] daily pipeline summaries unavailable:', e)

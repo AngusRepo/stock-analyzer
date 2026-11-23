@@ -33,7 +33,7 @@ assert.doesNotMatch(adminControl, /closeOptunaRunD1Lock\(c\.env\.DB/)
 assert.match(fs.readFileSync('src/lib/adaptiveEngine.ts', 'utf8'), /evaluateGaPromotion\(latest\)/)
 
 const lifecycle = fs.readFileSync('src/lib/artifactLifecycle.ts', 'utf8')
-assert.match(lifecycle, /frozenDomainReceipt = await env\.DB\.prepare/)
+assert.match(lifecycle, /const legacyFrozenRollbackSource = await legacyDatabaseFrozen\(env\)/)
 assert.match(lifecycle, /\(!legacyRetentionStalled \|\| legacyFrozenRollbackSource\)/)
 
 const twse = fs.readFileSync('src/lib/twseApi.ts', 'utf8')

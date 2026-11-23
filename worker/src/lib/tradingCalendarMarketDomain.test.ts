@@ -73,7 +73,7 @@ test('NEW-84: allocator snapshot closure bounds causal predictions by the Market
 test('NEW-84: every allocator snapshot closure caller passes the Market D1', () => {
   for (const file of ['allocatorEvDailyLifecycle.ts', 'controllerResearchWorkflows.ts', 'postMarketChain.ts']) {
     const source = readFileSync(new URL(`./${file}`, import.meta.url), 'utf8')
-    const calls = source.split('inspectAllocatorSnapshotClosure(env.DB,').slice(1)
+    const calls = source.split(/inspectAllocatorSnapshotClosure\((?:learningDb|databaseForDataDomain\(env, 'learning'\)),/).slice(1)
     assert.ok(calls.length > 0, file)
     for (const call of calls) {
       assert.match(call.slice(0, call.indexOf('})')), /marketDb: databaseForDataDomain\(env, 'market'\)/, file)

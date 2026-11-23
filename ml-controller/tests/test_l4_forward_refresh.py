@@ -5,9 +5,10 @@ from services import l4_forward_refresh as module
 from services.l4_forward_materialization import digest
 
 class Blob:
-    def __init__(self,owner,key):self.owner,self.key=owner,key
+    generation=1
+    def __init__(self,owner,key):self.owner,self.key,self.name=owner,key,key
     def exists(self):return self.key in self.owner.data
-    def download_as_bytes(self):return self.owner.data[self.key]
+    def download_as_bytes(self,**kwargs):return self.owner.data[self.key]
     def upload_from_string(self,raw,**kwargs):
         if self.exists():
             from google.api_core.exceptions import PreconditionFailed
@@ -16,6 +17,7 @@ class Blob:
 class Bucket:
     def __init__(self):self.data={}
     def blob(self,key):return Blob(self,key)
+    def list_blobs(self,prefix):return [Blob(self,k) for k in sorted(self.data) if k.startswith(prefix)]
 
 class RefreshTests(unittest.TestCase):
     def setUp(self):
@@ -26,6 +28,7 @@ class RefreshTests(unittest.TestCase):
             feature_rows=rows,features_checksum=digest(rows),eligible_symbols=['1101'],
             l3_identity={'id':1},pool_contract=module.NATIVE_POOL,feature_schema='test',coverage_exclusions=[],source_manifest=self.manifest,
             l3_training_label_known_max='2026-09-30')
+        self.r33_manifest=dict(snapshot_id='r33',signal_date='2026-10-02',snapshot_kind='allocation_context',payload_checksum='c'*64)
         self.calendar=['2026-10-01','2026-10-02','2026-10-05','2026-10-06','2026-10-07','2026-10-08']
         self.prices={('2026-10-02','1101'):dict(adj_open=100,source_sha256='b'*64),('2026-10-08','1101'):dict(adj_close=110,source_sha256='b'*64)}
         self.bucket=Bucket();self.reads=0
@@ -65,6 +68,10 @@ class RefreshTests(unittest.TestCase):
         result=module.attach_daily_result({'status':'native_l4_daily_accounted'}, {},'2026-10-09',runner=fail)
         self.assertEqual(result['status'],'failed');self.assertTrue(result['dependency_retry_required'])
         self.assertEqual(result['forward_learning_data']['reason'],'l4_forward_daily_price_source_missing')
+    def test_excluded_refresh_leaves_daily_closure_alone(self):
+        result=module.attach_daily_result({'status':'native_l4_daily_accounted'},{},'2026-11-20',
+            runner=lambda *a:{'status':'refreshed_with_exclusions','excluded_signal_dates':['2026-11-20']})
+        self.assertEqual(result['status'],'native_l4_daily_accounted');self.assertNotIn('dependency_retry_required',result)
     def test_callback_keeps_separate_dates_without_full_training_rows(self):
         self.snapshot['pool_contract']=module.ROUTED_POOL
         summary=module.callback_summary(self.run_refresh())
@@ -146,5 +153,60 @@ class RefreshTests(unittest.TestCase):
         import time
         started=time.monotonic();text=module.error_summary(RuntimeError('A1'*30000))
         self.assertLess(time.monotonic()-started,1.0);self.assertLessEqual(len(text),300)
+    def r33_frozen(self,*,pool=True,runtime=2):
+        """Sealed markers only; the roster is deliberately not core4 and not R33_MODELS."""
+        predictions={s:dict(ensemble_v2=dict(schema_version='r33-roster-runtime-v1' if i<runtime else 'active8-v2',model_order=['GNN']))
+            for i,s in enumerate(('2317','2330'))}
+        state=dict(l3_identity={'id':2},predictions=predictions)
+        if pool:state['r33_rank_pool']=dict(schema_version='r33-attested-rank-pool-v1')
+        return dict(manifest=self.r33_manifest,payload=dict(content=dict(model_predictions=predictions,
+            inputs=dict(alpha_policy=dict(l4Distribution=dict(runtime=state))))))
+    def run_mixed(self,sha='sha1',frozen=None):
+        frozen=frozen or self.r33_frozen();real=module.project;self.r33_reads=0
+        def reader(sid):
+            if sid!='r33':return self.reader(sid)
+            self.r33_reads+=1;return frozen
+        def project(value):  # R33 goes through the real projection; legacy keeps its fixture
+            return real(value) if value['manifest']['snapshot_id']=='r33' else copy.deepcopy(self.snapshot)
+        with patch.dict('os.environ',{'STOCKVISION_SOURCE_SHA':sha}),patch.object(module,'project',project):
+            return module.refresh(query=lambda *a:[self.manifest,self.r33_manifest],bucket=self.bucket,price_capture={},
+                expected_identity={'id':1},cutoff='2026-10-09T10:00:00+08:00',snapshot_reader=reader,
+                price_loader=lambda *a,**k:(self.calendar,self.prices,{'verified':True}))
+    def keys(self,kind):return [k for k in self.bucket.data if '/'+kind+'/' in k]
+    def test_r33_snapshot_is_excluded_not_failed(self):
+        legacy=self.run_refresh()['items'][0];self.bucket=Bucket()
+        r=self.run_mixed();by={i['snapshot_id']:i for i in r['items']}
+        self.assertEqual(r['status'],'refreshed_with_exclusions')
+        self.assertEqual(by['r33'],dict(snapshot_id='r33',signal_date='2026-10-02',status='excluded',
+            reason='r33_forward_projection_not_implemented',training_eligible=False))
+        self.assertEqual(by['test'],legacy);self.assertEqual(r['latest_training_eligible_date'],'2026-10-01')
+        self.assertEqual((r['excluded_signal_dates'],r['excluded_counts']),(['2026-10-02'],{'r33_forward_projection_not_implemented':1}))
+        self.assertFalse(self.keys('projection_failures'));self.assertEqual(len(self.keys('projection_index')),1)
+        self.assertEqual(len(self.keys('projection_exclusions')),1)
+        summary=module.callback_summary(r)
+        self.assertEqual((summary['status'],summary['excluded_signal_dates']),('refreshed_with_exclusions',['2026-10-02']))
+        self.assertEqual(summary['status_counts'],{'ready':1,'excluded':1})
+        from oof_materialize_job_main import _summary
+        line=_summary('r',{'status':'native_l4_daily_accounted','forward_learning_data':r},mode='oof_lifecycle')
+        self.assertIn('forward_data=refreshed_with_exclusions',line);self.assertIn('forward_excluded=2026-10-02',line)
+    def test_r33_marker_inconsistency_fails_closed(self):
+        for frozen in (self.r33_frozen(runtime=0),self.r33_frozen(runtime=1),self.r33_frozen(pool=False)):
+            self.bucket=Bucket();r=self.run_mixed(frozen=frozen);item=r['items'][1]
+            self.assertEqual(r['status'],'failed')
+            self.assertEqual((item['status'],item['error_summary']),('failed','l4_forward_r33_snapshot_inconsistent'))
+            self.assertFalse(self.keys('projection_exclusions'))
+        self.assertFalse(module._is_r33_snapshot({},{'1101':dict(ensemble_v2=dict(schema_version='active8-v2'))}))
+    def test_registry_reader_skips_excluded_items(self):
+        from services.l4_forward_training import load_current_registry
+        self.run_mixed()
+        bodies,registry=load_current_registry(self.bucket,cutoff='2026-10-09T10:00:00+08:00')
+        self.assertEqual([b['receipt']['snapshot_id'] for b in bodies],['test'])
+        self.assertEqual(registry['excluded'],[dict(snapshot_id='r33',signal_date='2026-10-02',reason='r33_forward_projection_not_implemented')])
+    def test_exclusion_cache_retries_on_new_deploy(self):
+        self.run_mixed('sha1');r=self.run_mixed('sha1')
+        self.assertEqual(self.r33_reads,0);self.assertEqual(r['items'][1]['status'],'excluded')
+        self.run_mixed('sha2');self.assertEqual(self.r33_reads,1)  # a new deploy may carry the R33 projection
+        self.run_mixed('');self.assertEqual(self.r33_reads,1)
+        self.assertEqual(len(self.keys('projection_exclusions')),2)
 
 if __name__=='__main__':unittest.main()

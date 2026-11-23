@@ -6,6 +6,7 @@ on every read. Each request still opens its own read-only connection and
 applies its own patches; nothing read is kept between requests.
 """
 import json
+import os
 import sqlite3
 import sys
 import traceback
@@ -48,6 +49,13 @@ def handle(request):
             scope.enter_context(patch.object(authority, 'current_execution_configuration', return_value=request['current']))
             scope.enter_context(patch.object(authority, 'datetime', Clock))
             scope.enter_context(patch.object(registry, 'd1_client', SimpleNamespace(query=query)))
+            if os.environ.get('NAV_COLD_OBJECTS_DIR'):
+                from pathlib import Path
+                from services import paired_nav_cold as cold
+                class Objects:  # Read-only copy of the fixture's cold objects.
+                    def download(self, key, path):
+                        Path(path).write_bytes((Path(os.environ['NAV_COLD_OBJECTS_DIR']) / key).read_bytes())
+                scope.enter_context(patch.object(cold, 'production_store', return_value=Objects()))
             scope.enter_context(patch('socket.socket.connect', side_effect=AssertionError('private verifier cannot access network')))
             if request['mode'] == 'baseline':
                 return read_committed_nav_baseline(formal=request['formal'], query=query, now=clock)

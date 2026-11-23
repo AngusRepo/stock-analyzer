@@ -45,7 +45,18 @@ def mature_ev_after_l3(environment, ready, monkeypatch):
         ('artifact_id', 'cohort_id', 'payload_checksum', 'base_artifact_set_checksum')}}
     days = ['2026-09-22', '2026-09-23', '2026-09-24', '2026-09-25', '2026-09-28',
         '2026-09-29', '2026-09-30', '2026-10-01', '2026-10-02', '2026-10-05', '2026-10-06']
+    from services import paired_nav_cold as cold
+    from test_paired_nav_cold import Objects
+    migration = Path(__file__).parents[2] / 'worker/domain-migrations/learning/0048_paired_nav_cold_storage.sql'
+    db.conn.executescript(migration.read_text(encoding='utf-8'))
+    objects = Objects()
+    monkeypatch.setattr(cold, 'production_store', lambda: objects)
+    for row in client.query('SELECT snapshot_id FROM paired_nav_frozen_manifests_v1', []):
+        cold.migrate_snapshot(query=client.query, writer=db.writer, snapshot_id=row['snapshot_id'], store=objects)
+    from services.paired_nav_scan_once import scan_each_snapshot_once
+    from services.paired_nav_evidence import reuse_verified_nav_evidence
     for index, (signal, session) in enumerate(zip(days, days[1:])):
+      with scan_each_snapshot_once(), reuse_verified_nav_evidence():
         clock = datetime.fromisoformat(signal + 'T14:00:00+00:00')
         context = {key: deepcopy(config[key]) for key in ('trading_config', 'risk_config', 'allocator_source_identity')}
         context.update(inputs=deepcopy(inputs), formal_output=deepcopy(baseline['output']),
@@ -79,15 +90,16 @@ def mature_ev_after_l3(environment, ready, monkeypatch):
         lifecycle.close_changed_comparisons(plans=collected['plans'], signal_date=signal,
             query=client.query, writer=db.writer, now=clock)
         mature_staged_pairs(business_date=session, query=client.query, writer=db.writer, now=end)
-    reviews = run_daily_nav_reviews(business_date=days[-1], query=client.query, writer=db.writer, now=end)
-    assert not reviews['failures'], reviews
-    candidates = []
-    result = refresh_registered_ev_nav_decisions(business_date=days[-1], query=client.query, writer=db.writer,
-        bucket_factory=lambda: bucket, now=end, adoption_candidates=candidates)
+    with scan_each_snapshot_once(), reuse_verified_nav_evidence():
+        reviews = run_daily_nav_reviews(business_date=days[-1], query=client.query, writer=db.writer, now=end)
+        assert not reviews['failures'], reviews
+        candidates = []
+        result = refresh_registered_ev_nav_decisions(business_date=days[-1], query=client.query, writer=db.writer,
+            bucket_factory=lambda: bucket, now=end, adoption_candidates=candidates)
     assert not result['failures'], result
     assert len(candidates) == 2 and all(item['payload']['prospective_validation']['decision'] == 'PASS'
                                       for item in candidates), candidates
-    return candidates, end
+    return candidates, end, objects
 
 
 @pytest.mark.parametrize('ready', [True], indirect=True)
@@ -95,7 +107,7 @@ def test_original_l3_then_ev_publication_keeps_l3_serving(ready, environment, mo
     assert publish(ready)['readback_verified']
     client = ready[0]
     original_l3 = client.query('SELECT * FROM active8_ensemble_pointer_v1')[0]
-    candidates, clock = mature_ev_after_l3(environment, ready, monkeypatch)
+    candidates, clock, objects = mature_ev_after_l3(environment, ready, monkeypatch)
     root = Path(__file__).parents[2]
     schema = (root / 'worker/domain-schemas/learning.sql').read_text(encoding='utf-8')
     for table in ('expected_return_artifact_payloads', 'expected_return_owner_state_v2', 'expected_return_forward_guard_state'):
@@ -127,7 +139,11 @@ def test_original_l3_then_ev_publication_keeps_l3_serving(ready, environment, mo
         'payloads': {item['owner']: item['payload'] for item in candidates},
         'l3_pointer': original_l3, 'now': (clock + timedelta(seconds=1)).isoformat(),
         'python': sys.executable}), encoding='utf-8')
-    env = {**os.environ, 'NAV_L3_EV_FIXTURE': str(fixture)}
+    cold_dir = tmp_path / 'cold-objects'
+    for key, data in objects.data.items():
+        (cold_dir / key).parent.mkdir(parents=True, exist_ok=True)
+        (cold_dir / key).write_bytes(data)
+    env = {**os.environ, 'NAV_L3_EV_FIXTURE': str(fixture), 'NAV_COLD_OBJECTS_DIR': str(cold_dir)}
     env.pop('NODE_TEST_CONTEXT', None)
     result = subprocess.run(['node', '--import', 'tsx', '--test', 'src/lib/navL3EvHandoff.test.ts'],
         cwd=root / 'worker', env=env, capture_output=True, text=True, encoding='utf-8', timeout=180)

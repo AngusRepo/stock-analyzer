@@ -85,6 +85,7 @@ def load_training_price_capture(bucket, *, sequence_gcs_prefix: str, stock_rows:
     frame=frame.with_columns(pl.when(pl.col("volume")>0).then(pl.col("value")/pl.col("volume")).otherwise(None).alias("avg_price"))
     frame=frame.sort("symbol","date").group_by("symbol",maintain_order=True).tail(prices_lookback)
     grouped=frame.partition_by("symbol",as_dict=True)
+    sessions=set(frame["date"].to_list())
     prices={};indicators=dict(prior_indicators);recomputed=[];unavailable=[]
     for symbol,stock_id in ids.items():
         part=grouped.get((symbol,))
@@ -93,7 +94,7 @@ def load_training_price_capture(bucket, *, sequence_gcs_prefix: str, stock_rows:
         previous_count = len(previous)
         if symbol in venue_entries:
             previous_count, comparison = compare_prior_scope(venue_entries[symbol], symbol=symbol,
-                market=stock_markets[symbol], previous=previous, rows=rows)
+                market=stock_markets[symbol], previous=previous, rows=rows, sessions=sessions)
             venue_comparisons.append(comparison)
         if previous_count>=60 and len(rows)<60:
             raise ValueError(f"root_price_capture_lost_eligible_symbol:{symbol}")

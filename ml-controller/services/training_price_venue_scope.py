@@ -63,7 +63,7 @@ def verify_scope(scope, manifest):
                      and f"自{native_date}起終止" in content)
         else:
             valid = ("初次申請上櫃" in subject and "自同日起終止該興櫃" in subject
-                     and f"上櫃股票開始買賣日期：{native_date}。" in content
+                     and re.search("上櫃股票開始買賣日期[：:]" + native_date + "。", content)
                      and re.search(r"原興櫃股票代號及簡稱：.*?代號：" + re.escape(symbol) + r"。", content)
                      and f"今訂於{native_date}起開始以一般類股" in content
                      and "自同日起終止該興櫃股票" in content)
@@ -73,14 +73,18 @@ def verify_scope(scope, manifest):
     return result
 
 
-def compare_prior_scope(entry, *, symbol, market, previous, rows):
-    """Only remove pre-listing rows from the eligibility comparison, not the raw data."""
+def compare_prior_scope(entry, *, symbol, market, previous, rows, sessions=None):
+    """Only remove pre-listing rows from the eligibility comparison, not the raw data.
+
+    `sessions` is the capture's market calendar: an official start that falls on a
+    market holiday (6898/6938, 2026-10-23) opens on the next session."""
     start = entry["listed_from"]
     if entry["symbol"] != symbol or entry["market"] != market:
         raise ValueError("price_venue_requested_owner_mismatch")
     current_dates = [_date(str(row["date"])) for row in rows]
     prior_dates = [_date(str(row["date"])) for row in previous]
-    if (not current_dates or min(current_dates) != start
+    first_session = start if sessions is None else min((day for day in sessions if day >= start), default=None)
+    if (not current_dates or min(current_dates) != first_session
             or len(set(current_dates)) != len(current_dates)
             or len(set(prior_dates)) != len(prior_dates)):
         raise ValueError("price_venue_bar_dates_invalid")
@@ -124,24 +128,48 @@ def scope_from_manifest(manifest):
 
 # Reviewed official announcements are shared by daily captures; they contain
 # no prices and never certify pre-listing bars as current-market history.
-REGISTRY_SHA256 = "b25b23653875b896c6acf969298421ce721f091bb1f9b34589ad37be9c3b947e"
+REGISTRY_SHA256 = "4454acc297c38ad3a7b716a6f9b2b9b4a027aeb7ce140dccc0cae467703a63b8"
 
 
-def resolve_scope(manifest):
-    """Prefer capture-sealed scope, otherwise bind reviewed evidence to its bytes."""
-    entries, scope_sha = scope_from_manifest(manifest)
-    if scope_sha is not None:
-        return entries, scope_sha
+def _registry():
     raw = Path(__file__).with_name("price_venue_registry.json").read_bytes()
     if hashlib.sha256(raw).hexdigest() != REGISTRY_SHA256:
         raise ValueError("price_venue_registry_checksum_mismatch")
     registry = json.loads(raw)
     if registry.get("schema") != "official-price-venue-registry-v1":
         raise ValueError("price_venue_registry_schema_invalid")
+    return registry
+
+
+def _supplement_entries(registry, end):
+    """Entries reviewed after captures were already sealed. They bind only captures
+    ending on or after their effective_from, so older captures keep their scope sha."""
+    return [e for s in registry.get("supplements", []) if _date(s["effective_from"]) <= end
+            for e in s["entries"] if _date(e["listed_from"]) <= end]
+
+
+def resolve_scope(manifest):
+    """Prefer capture-sealed scope, otherwise bind reviewed evidence to its bytes."""
+    entries, scope_sha = scope_from_manifest(manifest)
+    if scope_sha is not None:
+        registry = _registry()
+        sealed = manifest["prior_venue_scope"]
+        added = []
+        for entry in _supplement_entries(registry, _date(manifest["end_date"])):
+            if entry["symbol"] not in entries:
+                added.append(entry)
+            elif entries[entry["symbol"]] != entry:
+                raise ValueError("price_venue_supplement_conflicts_sealed_scope")
+        if not added:
+            return entries, scope_sha
+        scope = {**sealed, "entries": [*sealed["entries"], *added]}
+        return verify_scope(scope, manifest), digest(scope)
+    registry = _registry()
     end = _date(manifest["end_date"])
     if end < _date(registry["effective_from"]):
         return {}, None
     selected = [e for e in registry["entries"] if _date(e["listed_from"]) <= end]
+    selected += [e for e in _supplement_entries(registry, end) if e["symbol"] not in {x["symbol"] for x in selected}]
     if not selected:
         return {}, None
     scope = {"schema": "price-prior-venue-scope-v1",

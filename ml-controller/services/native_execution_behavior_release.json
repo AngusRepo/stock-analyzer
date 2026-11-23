@@ -1,14 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:2ab874abac6141442d1be048d6a6bf7f2389e14b8bb88cca899465da16e9fb17",
+  "execution_owner_version": "native-paper-v1:99d67b5967f57f4e8505ff932623263994ab5b23c53d1834e725b40c2bd78c28",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "同意，進度往下推（Wei，2026-11-16（一）08:14 TW，Slice A 11/16 盤後上線）",
+  "authorization": "Wei 2026-11-23 17:5x TW：go：①②③ 本機做（不 push）；IDREL 時程：等 Phase 0 驗完，今晚一起上",
   "review": "output/herdr-handoff-20261018/sys-cleanup-20261028/runbook_k20_repin_grant.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:slicea-20261116",
-  "policy_runtime_admissions": [
-    "ml:active8:paper_runtime_approval:v1:slicea-20261116-p1"
-  ]
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:idrel-20261123"
 }

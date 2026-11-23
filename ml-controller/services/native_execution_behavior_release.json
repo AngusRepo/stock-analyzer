@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:99d67b5967f57f4e8505ff932623263994ab5b23c53d1834e725b40c2bd78c28",
+  "execution_owner_version": "native-paper-v1:0112bf42de611eeaf6dd7ad0cf4b62b121802d5924ffdabd13bdb6b225b3e68d",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei 2026-11-23 17:5x TW：go：①②③ 本機做（不 push）；IDREL 時程：等 Phase 0 驗完，今晚一起上",
+  "authorization": "Wei 2026-11-23 20:2x TW：今晚搶，現在開工（IDREL re-pin after FG-02 default fix）",
   "review": "output/herdr-handoff-20261018/sys-cleanup-20261028/runbook_k20_repin_grant.md",
   "runtime_admission": "ml:active8:paper_runtime_approval:v1:idrel-20261123"
 }

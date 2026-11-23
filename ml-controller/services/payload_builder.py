@@ -322,10 +322,11 @@ def load_market_env(
             "market_return_5d": (close - prev5) / prev5 if prev5 else 0.0,
             "foreign_consecutive_sell": row.get("foreign_consecutive_sell", 0),
             "foreign_net_5d_market": row.get("foreign_net_5d", 0),
-            "limit_down_count": row.get("limit_down_count", 0),
-            "limit_down_pct": row.get("limit_down_pct", 0),
-            "adl_value": row.get("adl_value", 0),
-            "adl_trend_numeric": adl_trend_map.get(str(row.get("adl_trend") or "flat"), 0.0),
+            # NULL stays None so the breadth fallback below can fill it; 0 is a real value.
+            "limit_down_count": row.get("limit_down_count"),
+            "limit_down_pct": row.get("limit_down_pct"),
+            "adl_value": row.get("adl_value"),
+            "adl_trend_numeric": adl_trend_map.get(str(row.get("adl_trend") or "")),
         }
         valid_twii_closes.append(close)
     us_history_by_date: dict[str, dict] = {}
@@ -349,62 +350,52 @@ def load_market_env(
     # 3c. ADL (Advance/Decline Line) ??瘥銝撞摰嗆 - 銝?摰嗆?敞蝛?
     # 敺撣 stock_prices 蝞?銝?鞈?market_risk 銵?
     adl_rows = MARKET_D1_CLIENT.query(
-        "SELECT date, advance_count AS advances, decline_count AS declines "
+        "SELECT date, advance_count AS advances, decline_count AS declines, bull_alignment_pct "
         "FROM market_breadth WHERE date <= ? ORDER BY date ASC",
         [run_date],
     )
-    # 蝝舐? ADL + 5d trend + advance_ratio
+    # ADL in the unit market_risk.adl_value stores (Worker marketRisk.ts fetchADL): net advances
+    # summed over the last 5 market_breadth sessions; trend = S5 - S1 beyond +/-50.
+    # Under 5 sessions or a NULL count in the window leaves the date absent, never 0.
     adl_by_date: dict[str, tuple[float, float]] = {}  # {date: (adl_value, adl_trend_numeric)}
     advance_ratio_by_date: dict[str, float] = {}  # {date: advance_ratio}
+    bull_by_date: dict[str, float] = {}  # {date: market_breadth.bull_alignment_pct (%)}
     if adl_rows:
-        cumulative_adl = 0.0
-        adl_history = []
+        net_history: list[float | None] = []
         for row in adl_rows:
             advances = row.get("advances") or 0
             declines = row.get("declines") or 0
-            daily_ad = advances - declines
-            cumulative_adl += daily_ad
-            adl_history.append(cumulative_adl)
-            # trend: 5d direction (1=up, 0=flat, -1=down)
-            if len(adl_history) >= 5:
-                trend = 1.0 if cumulative_adl > adl_history[-5] else (-1.0 if cumulative_adl < adl_history[-5] else 0.0)
-            else:
-                trend = 0.0
-            # normalize ADL to ~[-1, 1] range (divide by typical daily count ~2000)
-            adl_by_date[row["date"]] = (round(cumulative_adl / 2000, 4), trend)
+            known = row.get("advances") is not None and row.get("declines") is not None
+            net_history.append(float(advances - declines) if known else None)
+            window = net_history[-5:]
+            if len(window) == 5 and None not in window:
+                adl_value = sum(window)
+                diff = adl_value - window[0]
+                trend = 1.0 if diff > 50 else (-1.0 if diff < -50 else 0.0)
+                adl_by_date[row["date"]] = (adl_value, trend)
+            if row.get("bull_alignment_pct") is not None:
+                bull_by_date[row["date"]] = float(row["bull_alignment_pct"])
             # advance_ratio for Wave 2 time-series
             total = advances + declines
             advance_ratio_by_date[row["date"]] = round(advances / total, 4) if total > 0 else 0.5
         logger.info(f"[payload_builder] ADL computed for {len(adl_by_date)} dates from stock_prices")
 
-    # 3d. Bull alignment + Limit down from stock_prices
-    # bull_alignment = % of stocks where MA5 > MA20 (proxy for MA5>10>20>60 requires more data)
-    # limit_down = stocks hitting -10% daily limit
+    # 3d. Limit down from market_breadth; a NULL count or sample size stays None.
     breadth_rows = MARKET_D1_CLIENT.query(
         "SELECT date, "
         "  COALESCE(sample_size, advance_count + decline_count + unchanged_count) AS total, "
-        "  COALESCE(limit_down_count, 0) AS limit_down_count "
+        "  limit_down_count "
         "FROM market_breadth WHERE date >= '2023-01-01' AND date <= ? ORDER BY date ASC",
         [run_date],
     )
     breadth_by_date: dict[str, tuple[float, float]] = {}  # {date: (limit_down_count, limit_down_pct)}
     if breadth_rows:
         for row in breadth_rows:
-            total = row.get("total", 1) or 1
-            ld_count = row.get("limit_down_count", 0) or 0
-            ld_pct = round(ld_count / total, 4)
+            total = row.get("total")
+            ld_count = row.get("limit_down_count")
+            ld_pct = round(ld_count / total, 4) if ld_count is not None and total else None
             breadth_by_date[row["date"]] = (ld_count, ld_pct)
         logger.info(f"[payload_builder] Breadth computed for {len(breadth_by_date)} dates")
-
-    # bull_alignment: ?閬?MA 鞈?嚗? 0050 ETF ?隅?Ｖ? proxy
-    # 0050 ??MA20 銋? = 憭抒憭?? proxy (1.0 or 0.0)
-    bull_by_date: dict[str, float] = {}
-    if etf_rows and len(etf_rows) >= 20:
-        for i in range(20, len(etf_rows)):
-            ma20 = sum(float(etf_rows[j]["close"]) for j in range(i - 19, i + 1)) / 20
-            ma5 = sum(float(etf_rows[j]["close"]) for j in range(i - 4, i + 1)) / 5
-            # proxy: ma5 > ma20 = bullish alignment
-            bull_by_date[etf_rows[i]["date"]] = 1.0 if ma5 > ma20 else 0.0
 
     if etf_rows:
         for i, row in enumerate(etf_rows):
@@ -419,8 +410,8 @@ def load_market_env(
                 bias_20d = 0.0
             market_return_1d = (close - prev1_close) / prev1_close if prev1_close else 0.0
             market_return_5d = (close - prev5_close) / prev5_close if prev5_close else 0.0
-            adl_val, adl_trend = adl_by_date.get(date_str, (0, 0))
-            ld_count, ld_pct = breadth_by_date.get(date_str, (0, 0))
+            adl_val, adl_trend = adl_by_date.get(date_str, (None, None))
+            ld_count, ld_pct = breadth_by_date.get(date_str, (None, None))
 
             if date_str in history_map:
                 existing = history_map[date_str]
@@ -430,13 +421,13 @@ def load_market_env(
                     existing["market_return_1d"] = round(market_return_1d, 6)
                 if existing.get("market_return_5d") is None:
                     existing["market_return_5d"] = round(market_return_5d, 6)
-                if existing.get("adl_value", 0) == 0:
+                if existing.get("adl_value") is None:
                     existing["adl_value"] = adl_val
                     existing["adl_trend_numeric"] = adl_trend
-                if existing.get("limit_down_count", 0) == 0:
+                if existing.get("limit_down_count") is None:
                     existing["limit_down_count"] = ld_count
                     existing["limit_down_pct"] = ld_pct
-                existing.setdefault("bull_alignment_pct", bull_by_date.get(date_str, 0))
+                existing.setdefault("bull_alignment_pct", bull_by_date.get(date_str))
                 continue
 
             risk_score = 0
@@ -450,10 +441,11 @@ def load_market_env(
             if absolute_bias_pct >= 10: risk_score += 15
             elif absolute_bias_pct >= 6: risk_score += 8
             elif absolute_bias_pct >= 3: risk_score += 3
-            if adl_trend < 0: risk_score += 8
-            bull_alignment = bull_by_date.get(date_str, 0.5)
-            if bull_alignment < 0.2: risk_score += 8
-            elif bull_alignment < 0.3: risk_score += 4
+            # Worker calcRiskScore: ADL down +8; bull alignment (%) <20 +8, <30 +4; missing adds nothing.
+            if adl_trend is not None and adl_trend < 0: risk_score += 8
+            bull_alignment = bull_by_date.get(date_str)
+            if bull_alignment is not None and bull_alignment < 20: risk_score += 8
+            elif bull_alignment is not None and bull_alignment < 30: risk_score += 4
             risk_score = min(100, risk_score)
             risk_level = "green" if risk_score <= 25 else "yellow" if risk_score <= 45 else "orange" if risk_score <= 65 else "red" if risk_score <= 85 else "black"
 
@@ -471,7 +463,7 @@ def load_market_env(
                 "limit_down_pct": ld_pct,
                 "adl_value": adl_val,
                 "adl_trend_numeric": adl_trend,
-                "bull_alignment_pct": bull_by_date.get(date_str, 0),
+                "bull_alignment_pct": bull_by_date.get(date_str),
             }
         logger.info(
             "[payload_builder] Market history: %s valid TAIEX rows + %s 0050 rows = %s total dates",

@@ -455,6 +455,19 @@ function linUcbScalar(...values: unknown[]): string | number | null {
   return typeof value === 'string' && value.trim() ? value : null
 }
 
+// The bound is compared as a bare string, so it must be the YYYY-MM-DD that SQLite date(?) produced.
+// A time suffix is dropped as date() did; a value date() turned into NULL (silently an empty window)
+// now throws instead.
+function normalizeLinUcbSourceDate(value: string, field: 'startDate' | 'endDate'): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?Z?)?$/.exec(String(value).trim())
+  if (match) {
+    const day = `${match[1]}-${match[2]}-${match[3]}`
+    const parsed = new Date(`${day}T00:00:00Z`)
+    if (!Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === day) return day
+  }
+  throw new Error(`linucb_source_invalid_${field}:${String(value)}`)
+}
+
 export async function listLinUcbRewardSourceRowsAcrossDomains(
   predictionDb: D1Database,
   recommendationDb: D1Database,
@@ -465,13 +478,18 @@ export async function listLinUcbRewardSourceRowsAcrossDomains(
     ? []
     : ['(p.trade_pnl_pct IS NOT NULL OR p.actual_return_pct IS NOT NULL)']
   const binds: unknown[] = []
+  // Bare prediction_date range so the read SEARCHes idx_pred_date_stock_model_generated; the
+  // date(p.prediction_date) form was SCAN p + TEMP B-TREE (~25 s, ~0.67M rows on learning-db).
+  // Same rows and order: every stored prediction_date is canonical YYYY-MM-DD (date(x) IS x on all
+  // rows, checked 2026-11-23), the binds are normalized below, and '< end + 1 day' keeps the
+  // end date inclusive.
   if (options.startDate) {
-    clauses.push('date(p.prediction_date) >= date(?)')
-    binds.push(options.startDate)
+    clauses.push('p.prediction_date >= ?')
+    binds.push(normalizeLinUcbSourceDate(options.startDate, 'startDate'))
   }
   if (options.endDate) {
-    clauses.push('date(p.prediction_date) <= date(?)')
-    binds.push(options.endDate)
+    clauses.push("p.prediction_date < date(?, '+1 day')")
+    binds.push(normalizeLinUcbSourceDate(options.endDate, 'endDate'))
   }
   binds.push(limit)
   const whereClause = clauses.length ? clauses.join(' AND ') : '1=1'
@@ -486,7 +504,7 @@ export async function listLinUcbRewardSourceRowsAcrossDomains(
            p.market_risk_score, p.trade_pnl_pct, p.actual_return_pct
       FROM predictions p
      WHERE ${whereClause}
-     ORDER BY date(p.prediction_date) DESC, p.stock_id DESC, p.model_name DESC
+     ORDER BY p.prediction_date DESC, p.stock_id DESC, p.model_name DESC
      LIMIT ?
   `).bind(...binds).all<LinUcbRewardSourceRow & { market_risk_score?: number | string | null }>()
   const predictions = predictionResult.results ?? []

@@ -20,14 +20,6 @@ except Exception as exc:  # pragma: no cover - exercised only in broken runtime.
 else:
     _NETWORKX_IMPORT_ERROR = None
 
-try:  # Official covariance shrinkage implementation; no local fallback.
-    from sklearn.covariance import LedoitWolf
-except Exception as exc:  # pragma: no cover - exercised only in broken runtime.
-    LedoitWolf = None  # type: ignore[assignment]
-    _LEDOIT_WOLF_IMPORT_ERROR: Exception | None = exc
-else:
-    _LEDOIT_WOLF_IMPORT_ERROR = None
-
 
 SIMILARITY_EVIDENCE_VERSION = "similarity-evidence-v1"
 HDBSCAN_RESEARCH_AUDIT_VERSION = "hdbscan-research-audit-v1"
@@ -40,8 +32,12 @@ def _require_networkx() -> Any:
 
 
 def _require_ledoit_wolf() -> Any:
-    if LedoitWolf is None:
-        raise RuntimeError(f"sklearn_ledoit_wolf_unavailable: {_LEDOIT_WOLF_IMPORT_ERROR}")
+    # Official covariance shrinkage implementation; no local fallback. Imported on first use:
+    # sklearn (with scipy and pandas) is about a quarter of the controller's cold start (FG-11b).
+    try:
+        from sklearn.covariance import LedoitWolf
+    except Exception as exc:  # pragma: no cover - exercised only in broken runtime.
+        raise RuntimeError(f"sklearn_ledoit_wolf_unavailable: {exc}") from exc
     return LedoitWolf
 
 

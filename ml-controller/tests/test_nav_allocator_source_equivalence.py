@@ -46,9 +46,14 @@ def test_old_read_only_certificate_never_attests_new_l4_allocator():
     archive = FIXTURE.parent / 'source-before-handoff'
     for name in ('paired_nav_collection.py','opb_nav_control.py','opb_nav_serving_source.json'):
         assert hashlib.sha256((archive/(name+'.txt')).read_bytes()).hexdigest() == cert['policy_source_identity'][name]
-    # Historical control SQL remains available, with its original EV fence.
+    # Historical control SQL remains available, with its original EV fence. The live fence only
+    # wraps its two subqueries in json() (SQLite JSON subtype fix); the queried rows are unchanged.
     old_sql=json.loads((archive/'opb_nav_serving_source.json.txt').read_text())
-    assert old_sql['ev_fence_sql']==json.loads((base/'opb_nav_serving_source.json').read_text())['ev_fence_sql']
+    current=json.loads((base/'opb_nav_serving_source.json').read_text())['ev_fence_sql']
+    unwrapped=(current.replace('  json((SELECT', '  (SELECT')
+        .replace("ORDER BY p.model_name))),", "ORDER BY p.model_name)),")
+        .replace("WHERE model_name='allocator_ev_fusion'))\n)", "WHERE model_name='allocator_ev_fusion')\n)"))
+    assert current != old_sql['ev_fence_sql'] and old_sql['ev_fence_sql']==unwrapped
 
 
 def test_new_capture_records_runtime_but_legacy_retry_does_not_rewrite_snapshot(monkeypatch):

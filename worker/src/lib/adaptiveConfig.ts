@@ -384,11 +384,14 @@ const twDate = (ms: number): string => new Date(ms + TW_OFFSET_MS).toISOString()
  * overlay guard uses the same rule). Callers apply it after regime override resolution:
  * anything but 'fresh' retires confidence_delta to 0 and keeps P2 off recent_accuracy_30d.
  */
+export const ADAPTIVE_PARAMS_MAX_AGE_DAYS_DEFAULT = 7
+
 export function adaptiveParamsFreshness(
   params: Pick<AdaptiveParams, 'computed_at'>,
-  maxAgeDays: number,
+  configuredMaxAgeDays: number | undefined,
   nowMs: number = paperExecutionNow(),
 ): AdaptiveParamsFreshness {
+  const maxAgeDays = configuredMaxAgeDays ?? ADAPTIVE_PARAMS_MAX_AGE_DAYS_DEFAULT
   if (!Number.isInteger(maxAgeDays) || maxAgeDays < 1) {
     throw new Error(`adaptive params max age invalid: ${maxAgeDays}`)
   }

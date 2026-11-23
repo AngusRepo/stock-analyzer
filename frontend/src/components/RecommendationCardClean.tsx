@@ -599,7 +599,7 @@ function coreFamilyVoteBadgeText(summary: MlVoteSummary | null): string | null {
   const vote = parseObject(summary?.coreFamilyVote)
   if (!vote) return null
   const score = Number(vote.family_score ?? vote.familyScore ?? NaN)
-  const total = Math.max(DIRECT_ALPHA_VOTE_MODEL_NAMES.length, Number(summary?.total ?? 0))
+  const total = Number(summary?.total ?? 0)
   const reported = Number(summary?.reported ?? 0)
   const zeroWeightCount = Array.isArray(summary?.zeroWeightModels) ? summary.zeroWeightModels.length : null
   const activeWeight = Number(summary?.activeWeightCount ?? (zeroWeightCount != null ? total - zeroWeightCount : NaN))

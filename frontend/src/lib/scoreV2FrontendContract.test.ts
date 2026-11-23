@@ -93,6 +93,14 @@ assert(
     && recommendationCard.includes('coreFamilyVote'),
   'Recommendation card should surface Layer3 core family vote evidence in the ML badge',
 )
+const familyBadge = recommendationCard.slice(
+  recommendationCard.indexOf('function coreFamilyVoteBadgeText'),
+  recommendationCard.indexOf('function', recommendationCard.indexOf('function coreFamilyVoteBadgeText') + 1),
+)
+assert(
+  familyBadge.includes('const total = Number(summary?.total ?? 0)') && !familyBadge.includes('MODEL_NAMES.length'),
+  'ML family vote badge denominator must be the served roster size from ml_vote_summary.total, never a fixed model list length',
+)
 
 for (const text of ['推薦理由 / Alpha 交易計劃', '盤勢判讀', '風控規則', 'Alpha 規則引擎']) {
   assert(scoreBreakdown.includes(text), `Recommendation card trading-plan narrative should render: ${text}`)

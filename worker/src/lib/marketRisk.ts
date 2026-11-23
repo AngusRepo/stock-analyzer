@@ -244,17 +244,28 @@ async function fetchMarginRatio(db:D1Database,runDate:string,controllerUrl?:stri
 async function fetchADL(db: D1Database, runDate: string): Promise<{
   adlValue: number | null
   adlTrend: 'up' | 'down' | 'flat' | null
+  limitDownCount: number | null
+  limitDownPct: number | null
 }> {
+  const empty = { adlValue: null, adlTrend: null, limitDownCount: null, limitDownPct: null }
   try {
     const { results } = await db.prepare(`
-      SELECT date, advance_count, decline_count
+      SELECT date, advance_count, decline_count, unchanged_count, sample_size, limit_down_count
       FROM market_breadth
       WHERE date IN (SELECT session_date FROM market_trading_sessions WHERE session_date<=? ORDER BY session_date DESC LIMIT 5)
       ORDER BY date DESC
       LIMIT 5
-    `).bind(runDate).all<{ date: string; advance_count: number; decline_count: number }>()
+    `).bind(runDate).all<{ date: string; advance_count: number; decline_count: number; unchanged_count?: number | null; sample_size?: number | null; limit_down_count?: number | null }>()
 
-    if (!results?.length || results.length < 5 || results[0].date !== runDate || results.some(row=>row.advance_count==null||row.decline_count==null||!Number.isFinite(Number(row.advance_count))||!Number.isFinite(Number(row.decline_count)))) return { adlValue: null, adlTrend: null }
+    // Same-day limit-down from market_breadth; pct is a fraction of the breadth sample (payload_builder unit).
+    const today = results?.[0]?.date === runDate ? results[0] : null
+    const limitDownCount = today?.limit_down_count == null ? null : Number(today.limit_down_count)
+    const breadthSample = Number(today?.sample_size ?? (Number(today?.advance_count) + Number(today?.decline_count) + Number(today?.unchanged_count)))
+    const limitDown = limitDownCount != null && Number.isFinite(limitDownCount) && limitDownCount >= 0
+      ? { limitDownCount, limitDownPct: Number.isFinite(breadthSample) && breadthSample > 0 ? Math.round(limitDownCount / breadthSample * 10000) / 10000 : null }
+      : { limitDownCount: null, limitDownPct: null }
+
+    if (!results?.length || results.length < 5 || results[0].date !== runDate || results.some(row=>row.advance_count==null||row.decline_count==null||!Number.isFinite(Number(row.advance_count))||!Number.isFinite(Number(row.decline_count)))) return { ...empty, ...limitDown }
 
     const sorted = [...results].sort((a, b) => a.date.localeCompare(b.date))
 
@@ -273,8 +284,8 @@ async function fetchADL(db: D1Database, runDate: string): Promise<{
       else if (diff < -50) adlTrend = 'down'
     }
 
-    return { adlValue, adlTrend }
-  } catch { return { adlValue: null, adlTrend: null } }
+    return { adlValue, adlTrend, ...limitDown }
+  } catch { return empty }
 }
 
 // ── 7. 多空排列家數（D1 stock_prices 計算 MA5/MA20/MA60）───────────────────
@@ -440,8 +451,8 @@ export async function calcMarketRisk(
     foreignConsecutiveSell: foreignChip.consecutiveSell,
     foreignNet5d: foreignChip.net5d,
     marginRatio,
-    limitDownCount: null,   // 需要付費資料，先留 null
-    limitDownPct: null,
+    limitDownCount: adlData.limitDownCount,
+    limitDownPct: adlData.limitDownPct,
     adlValue: adlData.adlValue,
     adlTrend: adlData.adlTrend,
     bullAlignmentCount: bullAlignment.count,

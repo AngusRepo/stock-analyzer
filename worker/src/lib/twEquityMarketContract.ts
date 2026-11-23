@@ -82,6 +82,17 @@ export function resolveTwEquityPriceBand(
   }
 }
 
+/** Closed at or below the session's down-limit price (reference band, ceil to tick). */
+export function isTwEquityLimitDownClose(
+  close: number,
+  referencePrice: number,
+  options: { limitPct?: number; unrestricted?: boolean } = {},
+): boolean {
+  const price = Number(close)
+  const limitDown = resolveTwEquityPriceBand(referencePrice, options).limitDown
+  return limitDown != null && Number.isFinite(price) && price > 0 && price <= limitDown
+}
+
 export function normalizeTwEquityStopPrice(price: number, band?: TwEquityPriceBand | null): number {
   const normalized = snapToTwPriceTick(price, 'floor')
   if (!band || band.unrestricted) return normalized

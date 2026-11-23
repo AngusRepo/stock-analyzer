@@ -2530,7 +2530,9 @@ market.get('/risk', async (c) => {
   const twiiBias = numberOrNull(row.twii_bias)
   const foreignNet5d = numberOrNull(row.foreign_net_5d)
   const marginRatio = numberOrNull(row.margin_ratio)
-  const limitDownPct = numberOrNull(row.limit_down_pct)
+  // market_risk.limit_down_pct is a fraction of the breadth sample; the factor shows percent.
+  const limitDownFraction = numberOrNull(row.limit_down_pct)
+  const limitDownPct = limitDownFraction == null ? null : limitDownFraction * 100
   const regimeSurface = regimeState?.regime_surface ?? {}
   const monitors = regimeState?.monitors ?? {}
   const transitionGuard = regimeState?.transition_guard ?? {}

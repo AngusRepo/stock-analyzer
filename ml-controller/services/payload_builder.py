@@ -616,15 +616,23 @@ def _bulk_load_prices(
             timeout=120.0,
         ))
     grouped: dict[int, list[dict]] = {sid: [] for sid in stock_ids}
+    dropped_null_close = 0
     for r in rows:
         sid = r["stock_id"]
         if sid in grouped:
+            # A session without an observed close is absent, not a bar: keeping it
+            # turns rolling windows null and forward_fill then serves stale values.
+            if r.get("close") is None:
+                dropped_null_close += 1
+                continue
             grouped[sid].append({
                 "date": r["date"],
                 "open": r["open"], "high": r["high"], "low": r["low"],
                 "close": r["close"], "volume": r["volume"],
                 "adj_close": r.get("adj_close"), "avg_price": r.get("avg_price"),
             })
+    if dropped_null_close:
+        logger.warning("[payload_builder] dropped %d stock_prices rows with NULL close", dropped_null_close)
     if stock_symbols:
         # A legacy mirror can retain raw-close substitutes from older writes.
         # Prefer the observable canonical adjustment without rebasing the series.

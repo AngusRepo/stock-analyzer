@@ -19,6 +19,7 @@ GCP Scheduler monthly groc `first saturday of month 16:00` 會 call 這個路徑
 from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import logging
+import math
 import os
 import re
 import sys
@@ -310,6 +311,12 @@ def _optuna_data_access_meta(
     return resolve_research_data_access(lane=lane, kind=kind, mode=mode).to_dict()
 
 
+def _observed_closes(values: list[Any]) -> list[float]:
+    """Drop sessions without an observed close (NULL/NaN) instead of crashing or feeding NaN."""
+    closes = [float(v) for v in values if v is not None]
+    return [c for c in closes if math.isfinite(c)]
+
+
 def _load_rrg_inputs_from_snapshot(
     manifest: dict[str, Any],
     *,
@@ -340,7 +347,7 @@ def _load_rrg_inputs_from_snapshot(
     )
     prices_by_stock: dict[str, list[float]] = {}
     for symbol in counts.get_column("symbol").to_list():
-        closes = (
+        closes = _observed_closes(
             prices
             .filter(pl.col("symbol") == symbol)
             .sort("date")
@@ -873,10 +880,13 @@ def run_rrg(req: OptunaReq = Body(default=OptunaReq())):
             top_n=policy.rrg_top_stock_count,
             limit_per_stock=policy.rrg_stock_price_limit,
         )
-        prices_by_stock = {
-            str(stock["symbol"]): [float(row["close"]) for row in stock["rows"]]
+        observed = {
+            str(stock["symbol"]): _observed_closes([row.get("close") for row in stock["rows"]])
             for stock in top_stocks
-            if len(stock["rows"]) >= policy.rrg_top_stock_min_rows
+        }
+        prices_by_stock = {
+            symbol: closes for symbol, closes in observed.items()
+            if len(closes) >= policy.rrg_top_stock_min_rows
         }
 
     if not prices_by_stock:

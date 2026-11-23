@@ -393,7 +393,7 @@ def test_gnn_wrapper_still_raises_and_carries_container_time_through_pickle(monk
 
 def test_champion_tabm_oof_is_unchanged_through_the_modal_wrapper(monkeypatch):
     from app import tabm_training
-    from tests.test_market_conditioner import Bucket as OofBucket, CHAMPION_TABM_OOF, DAYS, _oof_digest, panel
+    from tests.test_market_conditioner import Bucket as OofBucket, DAYS, _oof_digest, panel
     from app.formal_feature_contract import FEATURE131_SEMANTIC, FEATURES131
     bucket = OofBucket()
     monkeypatch.setattr(tabm_training, "_get_bucket", lambda: bucket)
@@ -402,13 +402,18 @@ def test_champion_tabm_oof_is_unchanged_through_the_modal_wrapper(monkeypatch):
     monkeypatch.setattr(modal_app, "_prepare_training_input_cache_for_payload", lambda payload: {"status": "skipped"})
     monkeypatch.setenv("STOCKVISION_SOURCE_SHA", "f" * 40)
     data = panel()
-    result = _wrapper("train_tabm_universal")({
+    payload = lambda: {
         "window_id": 1, "train_start": DAYS[0], "train_end": DAYS[39], "test_start": DAYS[45], "test_end": DAYS[59],
         "feature_semantic_version": FEATURE131_SEMANTIC, "generation_mode": "purged_oof", "cohort_id": "c",
         "fold_id": "w1", "output_model_version": "c-w1", "gcs_prefix": "universal", "epochs": 1,
         "feature_release_mode": "approved_full131_v1",
         "tabular_dataset": {**{k: data[k] for k in ("X", "y", "target_returns", "dates", "symbols", "markets",
-                                                    "label_known_dates", "sectors")}, "feature_names": list(FEATURES131)}})
+                                                    "label_known_dates", "sectors")}, "feature_names": list(FEATURES131)}}
+    # The wrapper must not change the champion's OOF: compare against a direct call on the same host,
+    # since the pinned CHAMPION_TABM_OOF digest is only reproducible on the platform that recorded it.
+    tabm_training.train_tabm_universal(payload())
+    direct = _oof_digest(bucket.values.pop("universal/oof/c/w1/tabm.npz"))
+    result = _wrapper("train_tabm_universal")(payload())
     assert not result.get("error"), result
-    assert _oof_digest(bucket.values["universal/oof/c/w1/tabm.npz"]) == CHAMPION_TABM_OOF
+    assert _oof_digest(bucket.values["universal/oof/c/w1/tabm.npz"]) == direct
     assert result["container_elapsed_s"] >= 0

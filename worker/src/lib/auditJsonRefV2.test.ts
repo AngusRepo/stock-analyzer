@@ -701,7 +701,7 @@ test('every d1_heavy_maintenance lease and lease probe uses the Ops D1 owner', (
   for (const source of [sources.admin, sources.adminRead]) {
     const probes = source.match(/inspectDataDomainBackfillRetirementReadiness\([^)]*\)[^)]*\)/g) ?? []
     assert(probes.length > 0)
-    for (const probe of probes) assert.match(probe, /c\.env\.DB, c\.env\.KV, databaseForDataDomain\(c\.env, 'ops'\)/)
+    for (const probe of probes) assert.match(probe, /await verifiedDataDomainControlPlaneDatabase\(c\.env\), c\.env\.KV, databaseForDataDomain\(c\.env, 'ops'\)/)
   }
 })
 

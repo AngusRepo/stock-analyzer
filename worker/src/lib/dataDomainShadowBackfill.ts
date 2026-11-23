@@ -45,6 +45,10 @@ import {
   type ExpectedReturnPointerShadowGuard,
 } from './expectedReturnPointerShadowGuard'
 import { validateExpectedReturnControlSemanticPage } from './expectedReturnControlTableSemanticValidation'
+import { requireLegacyShadowSource } from './legacyDatabase'
+
+// Migration-era tool: reads the frozen legacy source; retired once the control plane moved to Ops.
+const legacyShadowSource = (env: Parameters<typeof requireLegacyShadowSource>[0]) => requireLegacyShadowSource(env, 'data_domain_shadow_backfill')
 
 export const DATA_DOMAIN_SHADOW_SCHEMA_VERSION = 'data-domain-shadow-backfill-v1'
 
@@ -949,7 +953,7 @@ export async function backfillDataDomainTableShadow(
     throw new Error(`data_domain_shadow_active_domain_invalid:${invalidDomains.sort().join(',')}`)
   }
   const domainActive = activeDataDomains(env).has(domain)
-  const shadowCutover = await env.DB.prepare(`
+  const shadowCutover = await legacyShadowSource(env).prepare(`
     SELECT c.status, w.writer_state
       FROM data_domain_cutovers c
       LEFT JOIN data_domain_writer_epochs w ON w.domain=c.domain
@@ -977,7 +981,7 @@ export async function backfillDataDomainTableShadow(
       : null
   const target = shadowDatabaseForDataDomain(env, domain)
   if (!target) throw new Error(`data_domain_shadow_binding_missing:${domain}`)
-  const sourceColumns = await tableColumns(env.DB, table)
+  const sourceColumns = await tableColumns(legacyShadowSource(env), table)
   const targetColumns = await tableColumns(target, table)
   assertSchemaParity(sourceColumns, targetColumns, table)
   const primaryKeys = sourceColumns.filter((column) => Number(column.pk) > 0)
@@ -989,14 +993,14 @@ export async function backfillDataDomainTableShadow(
     domain === 'learning' && table === 'model_champion_pointers'
       ? await beginExpectedReturnPointerShadowGuard(env, target, options.parityNotBefore)
       : null
-  const cursorRow = options.reset ? null : await env.DB.prepare(`
+  const cursorRow = options.reset ? null : await legacyShadowSource(env).prepare(`
     SELECT cursor_json, status FROM data_domain_backfill_cursors WHERE domain=? AND table_name=?
   `).bind(domain, table).first<{ cursor_json?: string | null; status?: string | null }>()
   const cursor = parseDomainBackfillCursor(cursorRow?.cursor_json)
   const keyset = domainBackfillKeysetWhere(primaryKeys, cursor)
   const limit = dataDomainManifestPageLimit(table, domainBackfillBatchLimit(options.limit, table))
   const order = primaryKeys.map(identifier).join(", ")
-  const selected = await env.DB.prepare(`
+  const selected = await legacyShadowSource(env).prepare(`
     SELECT ${columns.map(identifier).join(", ")}
       FROM ${identifier(table)}
       ${keyset.sql}
@@ -1007,28 +1011,28 @@ export async function backfillDataDomainTableShadow(
   assertExpectedReturnCandidateIdentityBackfillRows(domain, table, rows)
   if (rows.length) {
     if (domain === 'learning' && isDataDomainControlTable(table)) {
-      await invalidateControlTableClosure(env.DB, {
+      await invalidateControlTableClosure(legacyShadowSource(env), {
         changedTables: [table],
         preserveCursorTables: [table],
         reason: `control_table_source_rows_changed:${table}`,
         authority: learningAuthority!,
       })
     }
-    await env.DB.prepare(`
+    await legacyShadowSource(env).prepare(`
       UPDATE data_domain_cutovers
          SET status='legacy', source_row_count=NULL, target_row_count=NULL,
              source_checksum=NULL, target_checksum=NULL, parity_checked_at=NULL,
              updated_at=CURRENT_TIMESTAMP
        WHERE domain=? AND status='shadow'
     `).bind(domain).run()
-    await env.DB.prepare(`
+    await legacyShadowSource(env).prepare(`
       UPDATE data_domain_parity_checks
          SET status='blocked',
              evidence_json=json_set(evidence_json, '$.invalidated_reason', 'source_rows_changed'),
              checked_at=CURRENT_TIMESTAMP
        WHERE domain=? AND table_name=? AND check_kind='full_table'
     `).bind(domain, table).run()
-    await env.DB.prepare(`
+    await legacyShadowSource(env).prepare(`
       DELETE FROM data_domain_parity_checks
        WHERE check_id IN (?, ?)
     `).bind(
@@ -1037,18 +1041,18 @@ export async function backfillDataDomainTableShadow(
     ).run()
   }
   if (!rows.length) {
-    const sourceCount = await env.DB.prepare(`SELECT COUNT(*) count FROM ${identifier(table)}`).first<{ count: number | string }>()
+    const sourceCount = await legacyShadowSource(env).prepare(`SELECT COUNT(*) count FROM ${identifier(table)}`).first<{ count: number | string }>()
     const targetCount = await target.prepare(`SELECT COUNT(*) count FROM ${identifier(table)}`).first<{ count: number | string }>()
     let sourceRows = Number(sourceCount?.count ?? 0)
     let targetRows = Number(targetCount?.count ?? 0)
     const deleteProgressId = `domain-parity:${domain}:${table}:delete-progress`
     if (targetRows > sourceRows) {
-      const progressRow = await env.DB.prepare(`
+      const progressRow = await legacyShadowSource(env).prepare(`
         SELECT evidence_json FROM data_domain_parity_checks WHERE check_id=?
       `).bind(deleteProgressId).first<{ evidence_json?: string | null }>()
       if (!progressRow) {
         if (domain === 'learning' && isDataDomainControlTable(table)) {
-          await invalidateControlTableClosure(env.DB, {
+          await invalidateControlTableClosure(legacyShadowSource(env), {
             changedTables: [table],
             preserveCursorTables: [table],
             reason: `target_only_delete_reconciliation_started:${table}`,
@@ -1056,7 +1060,7 @@ export async function backfillDataDomainTableShadow(
           })
         } else {
           await invalidateGenericManifestProgress(
-            env.DB,
+            legacyShadowSource(env),
             domain,
             table,
             `target_only_delete_reconciliation_started:${domain}:${table}`,
@@ -1065,7 +1069,7 @@ export async function backfillDataDomainTableShadow(
       }
       const progress = parseManifestProgress(progressRow?.evidence_json)
       const reconciliation = await reconcileTargetOnlyPage(
-        env.DB,
+        legacyShadowSource(env),
         target,
         domain,
         table,
@@ -1080,13 +1084,13 @@ export async function backfillDataDomainTableShadow(
         )
         const reason = `target_only_delete_dependency_reset:${blockers.join('|')}`.slice(0, 1000)
         await resetTargetOnlyDependentTables(
-          env.DB,
+          legacyShadowSource(env),
           domain,
           reconciliation.blockedTables,
           reason,
           learningAuthority,
         )
-        await deferTargetOnlyDeleteReconciliation(env.DB, {
+        await deferTargetOnlyDeleteReconciliation(legacyShadowSource(env), {
           domain,
           table,
           cursor: Array.isArray(progress.cursor) ? progress.cursor : null,
@@ -1111,7 +1115,7 @@ export async function backfillDataDomainTableShadow(
       const scanned = Math.max(0, Number(progress.rows_scanned ?? 0)) + reconciliation.scanned
       const deleted = Math.max(0, Number(progress.repaired_rows ?? 0)) + reconciliation.deleted
       if (!reconciliation.done) {
-        await env.DB.prepare(`
+        await legacyShadowSource(env).prepare(`
           INSERT INTO data_domain_parity_checks(
             check_id, domain, table_name, check_kind, status, source_count, target_count,
             source_checksum, target_checksum, evidence_json
@@ -1146,10 +1150,10 @@ export async function backfillDataDomainTableShadow(
           reconciliation_rows_deleted: deleted,
         }
       }
-      await env.DB.prepare('DELETE FROM data_domain_parity_checks WHERE check_id=?')
+      await legacyShadowSource(env).prepare('DELETE FROM data_domain_parity_checks WHERE check_id=?')
         .bind(deleteProgressId).run()
       const [sourceAfter, targetAfter] = await Promise.all([
-        env.DB.prepare(`SELECT COUNT(*) count FROM ${identifier(table)}`).first<{ count: number | string }>(),
+        legacyShadowSource(env).prepare(`SELECT COUNT(*) count FROM ${identifier(table)}`).first<{ count: number | string }>(),
         target.prepare(`SELECT COUNT(*) count FROM ${identifier(table)}`).first<{ count: number | string }>(),
       ])
       sourceRows = Number(sourceAfter?.count ?? 0)
@@ -1157,15 +1161,15 @@ export async function backfillDataDomainTableShadow(
     }
     if (targetRows < sourceRows) {
       await assertExpectedReturnPointerSourceStable(env, pointerGuard)
-      await env.DB.batch([
-        env.DB.prepare(`
+      await legacyShadowSource(env).batch([
+        legacyShadowSource(env).prepare(`
           UPDATE data_domain_backfill_cursors
              SET status='running', cursor_json=NULL, rows_copied=0, last_batch_rows=0,
                  last_source_checksum=NULL, last_target_checksum=NULL,
                  error_code='source_growth_recopy_required', updated_at=CURRENT_TIMESTAMP
            WHERE domain=? AND table_name=?
         `).bind(domain, table),
-        env.DB.prepare(`DELETE FROM data_domain_parity_checks WHERE check_id IN (?, ?)`)
+        legacyShadowSource(env).prepare(`DELETE FROM data_domain_parity_checks WHERE check_id IN (?, ?)`)
           .bind(`domain-parity:${domain}:${table}:manifest-progress`, deleteProgressId),
       ])
       return {
@@ -1208,7 +1212,7 @@ export async function backfillDataDomainTableShadow(
         domainBackfillParityBatchLimit(limit),
       )
       const sourceFull = await boundedDataDomainTableManifest({
-        db: env.DB, table, columns, primaryKeys,
+        db: legacyShadowSource(env), table, columns, primaryKeys,
         pageLimit: actualManifestPageLimit, mode: 'canonical',
       })
       const targetFull = await boundedDataDomainTableManifest({
@@ -1217,7 +1221,7 @@ export async function backfillDataDomainTableShadow(
       })
       if (sourceFull.rowCount !== sourceRows || targetFull.rowCount !== targetRows) {
         await resetGenericTableForFullRecopy(
-          env.DB, domain, table,
+          legacyShadowSource(env), domain, table,
           `domain_shadow_source_changed_during_parity:${domain}:${table}`,
         )
         return {
@@ -1229,7 +1233,7 @@ export async function backfillDataDomainTableShadow(
       targetFullChecksum = targetFull.checksum
       if (sourceFullChecksum !== targetFullChecksum) {
         await resetGenericTableForFullRecopy(
-          env.DB, domain, table,
+          legacyShadowSource(env), domain, table,
           `domain_shadow_full_checksum_recopy_required:${domain}:${table}`,
         )
         return {
@@ -1240,7 +1244,7 @@ export async function backfillDataDomainTableShadow(
       parityStatus = 'pass'
     } else {
       const progressId = `domain-parity:${domain}:${table}:manifest-progress`
-      const progressRow = await env.DB.prepare(`
+      const progressRow = await legacyShadowSource(env).prepare(`
         SELECT evidence_json
           FROM data_domain_parity_checks
          WHERE check_id=?
@@ -1257,7 +1261,7 @@ export async function backfillDataDomainTableShadow(
         || (progress.expected_target_rows !== undefined && Number(progress.expected_target_rows) !== targetRows)
       ) {
         if (controlTableRolling) {
-          await invalidateControlTableClosure(env.DB, {
+          await invalidateControlTableClosure(legacyShadowSource(env), {
             changedTables: [table],
             reason: `control_table_source_count_changed:${table}`,
             authority: learningAuthority!,
@@ -1268,7 +1272,7 @@ export async function backfillDataDomainTableShadow(
           }
         }
         await invalidateGenericManifestProgress(
-          env.DB,
+          legacyShadowSource(env),
           domain,
           table,
           `domain_shadow_source_changed_during_parity:${domain}:${table}`,
@@ -1294,7 +1298,7 @@ export async function backfillDataDomainTableShadow(
         ? DATA_DOMAIN_CONTROL_PROGRESS_SCHEMA_VERSION
         : DATA_DOMAIN_SHADOW_SCHEMA_VERSION
       const revisionBeforePage = controlTableRolling
-        ? await loadDataDomainControlRevisionPair(env.DB, target, table)
+        ? await loadDataDomainControlRevisionPair(legacyShadowSource(env), target, table)
         : null
       const recordedSourceRevision = strictDataDomainControlRevision(
         progress.source_revision_start,
@@ -1340,7 +1344,7 @@ export async function backfillDataDomainTableShadow(
       )
       if (invalidProgress) {
         if (controlTableRolling) {
-          await invalidateControlTableClosure(env.DB, {
+          await invalidateControlTableClosure(legacyShadowSource(env), {
             changedTables: [table],
             preserveCursorTables: [table],
             reason: `control_table_manifest_progress_invalid:${table}`,
@@ -1353,7 +1357,7 @@ export async function backfillDataDomainTableShadow(
           }
         }
         await invalidateGenericManifestProgress(
-          env.DB,
+          legacyShadowSource(env),
           domain,
           table,
           `domain_shadow_manifest_progress_invalid:${domain}:${table}`,
@@ -1376,7 +1380,7 @@ export async function backfillDataDomainTableShadow(
         requestedParityLimit,
       )
       actualManifestPageLimit = parityLimit
-      const sourcePageResult = await env.DB.prepare(`
+      const sourcePageResult = await legacyShadowSource(env).prepare(`
         SELECT ${columnSql}
           FROM ${identifier(table)}
           ${manifestKeyset.sql}
@@ -1389,7 +1393,7 @@ export async function backfillDataDomainTableShadow(
 
       if (sourcePage.length) {
         const semanticPage = await validateExpectedReturnControlSemanticPage(
-          env.DB,
+          legacyShadowSource(env),
           table,
           sourcePage,
         )
@@ -1423,7 +1427,7 @@ export async function backfillDataDomainTableShadow(
         }
         await assertExpectedReturnPointerSourceStable(env, pointerGuard)
         const revisionAfterPage = controlTableRolling
-          ? await loadDataDomainControlRevisionPair(env.DB, target, table)
+          ? await loadDataDomainControlRevisionPair(legacyShadowSource(env), target, table)
           : null
         if (controlTableRolling) {
           const expectedTargetRevision = revisionBeforePage!.targetRevision
@@ -1432,7 +1436,7 @@ export async function backfillDataDomainTableShadow(
             revisionAfterPage!.sourceRevision !== sourceRevisionStart
             || revisionAfterPage!.targetRevision !== expectedTargetRevision
           ) {
-            await invalidateControlTableClosure(env.DB, {
+            await invalidateControlTableClosure(legacyShadowSource(env), {
               changedTables: [table],
               preserveCursorTables: [table],
               reason: `control_table_revision_drift_during_manifest:${table}:${sourceRevisionStart}/${revisionAfterPage!.sourceRevision}:${expectedTargetRevision}/${revisionAfterPage!.targetRevision}`,
@@ -1484,7 +1488,7 @@ export async function backfillDataDomainTableShadow(
               + semanticPage.rowsValidated,
           } : {}),
         }
-        await env.DB.prepare(`
+        await legacyShadowSource(env).prepare(`
           INSERT INTO data_domain_parity_checks(
             check_id, domain, table_name, check_kind, status, source_count, target_count,
             source_checksum, target_checksum, evidence_json
@@ -1529,10 +1533,10 @@ export async function backfillDataDomainTableShadow(
         }
       }
       const revisionBeforeFinalCounts = controlTableRolling
-        ? await loadDataDomainControlRevisionPair(env.DB, target, table)
+        ? await loadDataDomainControlRevisionPair(legacyShadowSource(env), target, table)
         : null
       const [sourceCountAfterManifest, targetCountAfterManifest] = await Promise.all([
-        env.DB.prepare(`SELECT COUNT(*) count FROM ${identifier(table)}`)
+        legacyShadowSource(env).prepare(`SELECT COUNT(*) count FROM ${identifier(table)}`)
           .first<{ count?: number | string }>(),
         target.prepare(`SELECT COUNT(*) count FROM ${identifier(table)}`)
           .first<{ count?: number | string }>(),
@@ -1540,7 +1544,7 @@ export async function backfillDataDomainTableShadow(
       const finalSourceCount = nonnegativeSafeInteger(sourceCountAfterManifest?.count)
       const finalTargetCount = nonnegativeSafeInteger(targetCountAfterManifest?.count)
       const revisionAfterFinalCounts = controlTableRolling
-        ? await loadDataDomainControlRevisionPair(env.DB, target, table)
+        ? await loadDataDomainControlRevisionPair(legacyShadowSource(env), target, table)
         : null
       const revisionDrift = controlTableRolling && (
         revisionBeforeFinalCounts!.sourceRevision !== sourceRevisionStart
@@ -1562,14 +1566,14 @@ export async function backfillDataDomainTableShadow(
           ] : []),
         ].join('|')
         if (controlTableRolling) {
-          await invalidateControlTableClosure(env.DB, {
+          await invalidateControlTableClosure(legacyShadowSource(env), {
             changedTables: [table],
             preserveCursorTables: [table],
             reason,
             authority: learningAuthority!,
           })
         } else {
-          await invalidateGenericManifestProgress(env.DB, domain, table, reason)
+          await invalidateGenericManifestProgress(legacyShadowSource(env), domain, table, reason)
         }
         return {
           domain, table, status: 'shadow_parity_progress', source_rows: sourceRows,
@@ -1611,7 +1615,7 @@ export async function backfillDataDomainTableShadow(
       sourceFullChecksum = progress.source_manifest
       targetFullChecksum = progress.target_manifest
       actualManifestPageLimit = parityLimit
-      await env.DB.prepare(`
+      await legacyShadowSource(env).prepare(`
         UPDATE data_domain_parity_checks
            SET status='pass', source_count=?, target_count=?,
                source_checksum=?, target_checksum=?, checked_at=CURRENT_TIMESTAMP
@@ -1620,7 +1624,7 @@ export async function backfillDataDomainTableShadow(
       parityStatus = 'pass'
     }
 
-    await env.DB.prepare(`
+    await legacyShadowSource(env).prepare(`
       INSERT INTO data_domain_parity_checks(
         check_id, domain, table_name, check_kind, status, source_count, target_count,
         source_checksum, target_checksum, evidence_json
@@ -1656,7 +1660,7 @@ export async function backfillDataDomainTableShadow(
       }),
     ).run()
 
-    await env.DB.prepare(`
+    await legacyShadowSource(env).prepare(`
       INSERT INTO data_domain_backfill_cursors(
         domain, table_name, status, cursor_json, rows_copied, last_batch_rows,
         last_source_checksum, last_target_checksum, updated_at
@@ -1669,7 +1673,7 @@ export async function backfillDataDomainTableShadow(
       domain, table, JSON.stringify(cursor), sourceRows, sourceFullChecksum, targetFullChecksum,
     ).run()
     if (controlTableRolling) {
-      const postReceiptRevision = await loadDataDomainControlRevisionPair(env.DB, target, table)
+      const postReceiptRevision = await loadDataDomainControlRevisionPair(legacyShadowSource(env), target, table)
       const revisionBlockers = dataDomainControlRevisionBlockers({
         receipt: {
           evidence_json: JSON.stringify(dataDomainControlRevisionEvidence(
@@ -1679,7 +1683,7 @@ export async function backfillDataDomainTableShadow(
         live: postReceiptRevision,
       })
       if (revisionBlockers.length) {
-        await invalidateControlTableClosure(env.DB, {
+        await invalidateControlTableClosure(legacyShadowSource(env), {
           changedTables: [table],
           preserveCursorTables: [table],
           reason: `control_table_revision_drift_after_receipt:${table}:${revisionBlockers.join('|')}`,
@@ -1693,12 +1697,12 @@ export async function backfillDataDomainTableShadow(
       }
     }
     const ownedTables = tablesForDataDomainShadowBackfill(domain)
-    const completedResult = await env.DB.prepare(`
+    const completedResult = await legacyShadowSource(env).prepare(`
       SELECT table_name
         FROM data_domain_backfill_cursors
        WHERE domain=? AND status='complete'
     `).bind(domain).all<{ table_name: string }>()
-    const parityResult = await env.DB.prepare(`
+    const parityResult = await legacyShadowSource(env).prepare(`
       SELECT table_name, status, source_count, target_count, source_checksum, target_checksum,
              evidence_json, checked_at
         FROM data_domain_parity_checks
@@ -1727,7 +1731,7 @@ export async function backfillDataDomainTableShadow(
       for (const controlTable of ownedTables.filter(isDataDomainControlTable)) {
         const receipt = parityRows.find((row) => row.table_name === controlTable)
         if (!receipt) continue
-        const live = await loadDataDomainControlRevisionPair(env.DB, target, controlTable)
+        const live = await loadDataDomainControlRevisionPair(legacyShadowSource(env), target, controlTable)
         if (!dataDomainControlRevisionBlockers({ receipt, live }).length) {
           liveRevisionReady.add(controlTable)
         }
@@ -1760,14 +1764,14 @@ export async function backfillDataDomainTableShadow(
       aggregateSnapshot
       && aggregateSnapshot.source_checksum === aggregateSnapshot.target_checksum,
     )
-    const currentCutover = await env.DB.prepare(`
+    const currentCutover = await legacyShadowSource(env).prepare(`
       SELECT status FROM data_domain_cutovers WHERE domain=?
     `).bind(domain).first<{ status?: string }>()
     if (!domainShadowReady && currentCutover?.status && !['legacy', 'shadow'].includes(currentCutover.status)) {
       throw new Error(`domain_cutover_inconsistent:${domain}:${currentCutover.status}`)
     }
     const aggregateCheckedAt = domainShadowReady ? new Date().toISOString() : null
-    await env.DB.prepare(`
+    await legacyShadowSource(env).prepare(`
       INSERT INTO data_domain_cutovers(
         domain, status, source_binding, target_binding,
         source_row_count, target_row_count, source_checksum, target_checksum, parity_checked_at
@@ -1809,7 +1813,7 @@ export async function backfillDataDomainTableShadow(
   const columnSql = columns.map(identifier).join(", ")
   const invalidatedAncestors = new Set<string>()
   await syncForeignKeyAncestors(
-    env.DB,
+    legacyShadowSource(env),
     target,
     domain,
     table,
@@ -1819,7 +1823,7 @@ export async function backfillDataDomainTableShadow(
       if (invalidatedAncestors.has(ancestorTable)) return
       invalidatedAncestors.add(ancestorTable)
       if (domain === 'learning' && isDataDomainControlTable(ancestorTable)) {
-        await invalidateControlTableClosure(env.DB, {
+        await invalidateControlTableClosure(legacyShadowSource(env), {
           changedTables: [ancestorTable],
           preserveCursorTables: [ancestorTable],
           reason: `foreign_key_ancestor_sync:${table}:${ancestorTable}`,
@@ -1827,7 +1831,7 @@ export async function backfillDataDomainTableShadow(
         })
       } else {
         await invalidateGenericManifestProgress(
-          env.DB,
+          legacyShadowSource(env),
           domain,
           ancestorTable,
           `foreign_key_ancestor_sync:${table}:${ancestorTable}`,
@@ -1862,7 +1866,7 @@ export async function backfillDataDomainTableShadow(
   await assertExpectedReturnPointerSourceStable(env, pointerGuard)
   const last = rows.at(-1)!
   const nextCursor = primaryKeys.map((column) => last[column] ?? null)
-  await env.DB.prepare(`
+  await legacyShadowSource(env).prepare(`
     INSERT INTO data_domain_backfill_cursors(
       domain, table_name, status, cursor_json, rows_copied, last_batch_rows,
       last_source_checksum, last_target_checksum, updated_at
@@ -1873,7 +1877,7 @@ export async function backfillDataDomainTableShadow(
       last_batch_rows=excluded.last_batch_rows, last_source_checksum=excluded.last_source_checksum,
       last_target_checksum=excluded.last_target_checksum, error_code=NULL, updated_at=CURRENT_TIMESTAMP
   `).bind(domain, table, JSON.stringify(nextCursor), rows.length, rows.length, sourceChecksum, targetChecksum).run()
-  await env.DB.prepare(`
+  await legacyShadowSource(env).prepare(`
     INSERT INTO data_domain_parity_checks(
       check_id, domain, table_name, check_kind, status, source_count, target_count,
       source_checksum, target_checksum, evidence_json

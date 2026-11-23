@@ -607,6 +607,11 @@ export class RestD1Database implements D1Database {
     })
   }
 
+  /** The retired legacy binding: absent once CF_D1_DB_ID is removed from the job env. */
+  static optionalFromEnv(databaseIdEnv = 'CF_D1_DB_ID'): RestD1Database | undefined {
+    return String(process.env[databaseIdEnv] ?? '').trim() ? RestD1Database.fromEnv(databaseIdEnv) : undefined
+  }
+
   prepare(query: string): D1PreparedStatement {
     return new RestD1PreparedStatement(this, query)
   }

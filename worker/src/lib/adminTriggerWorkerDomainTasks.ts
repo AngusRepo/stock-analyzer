@@ -18,6 +18,7 @@ import {
 import { classifySchedulerSummary, logSchedulerResult } from './schedulerRunLogger'
 import { activeDataDomainShadowBackfillRunId } from './dataDomainShadowSession'
 import { runEodExitUnderIntradayLease } from './eodExitLease'
+import { verifiedDataDomainControlPlaneDatabase, requireLegacyShadowSource } from './legacyDatabase'
 
 const RESCORE_SLOT_TASK_BY_CRON: Record<string, string> = {
   '0 2 * * 1-5': 'rescore-10',
@@ -81,8 +82,8 @@ type WarmupSummary = {
 async function paperShadowSourceMutationProtected(env: any): Promise<boolean> {
   const [active, cutover] = await Promise.all([
     env.KV.get(PAPER_SHADOW_BACKFILL_ACTIVE_KEY),
-    // multi-d1-intentional-legacy-source: cutover authority is anchored in source DB.
-    env.DB.prepare('SELECT status FROM data_domain_cutovers WHERE domain=?')
+    // Cutover authority lives in the control plane (DATA_DOMAIN_CONTROL_PLANE).
+    (await verifiedDataDomainControlPlaneDatabase(env)).prepare('SELECT status FROM data_domain_cutovers WHERE domain=?')
       .bind('paper').first(),
   ])
   const cutoverStatus = String((cutover as { status?: string } | null)?.status ?? 'legacy')
@@ -523,7 +524,7 @@ export function buildAdminWorkerDomainTaskMap(
         if (productionAuthorityIntent && !currentBusinessDateRun) {
           throw new Error(`strategy_learning_production_authority_denied:${runDate}:${authorityReason}`)
         }
-        const chainDurationMs = await resolveEveningChainClosureDurationMs(c.env.DB, runDate)
+        const chainDurationMs = await resolveEveningChainClosureDurationMs(databaseForDataDomain(c.env, 'ops'), runDate)
         const {
           auditEveningChainEvidenceClosure,
           resolveExpectedMatureSignalDate,
@@ -745,7 +746,7 @@ export function buildAdminWorkerDomainTaskMap(
     'selection-reference-repair': async () => {
       const runDate = assertRunDate(requestedRunDate())
       const { repairHistoricalSelectionReferences } = await import('./selectionReferenceRepair')
-      const result = await repairHistoricalSelectionReferences(c.env.DB, runDate, {
+      const result = await repairHistoricalSelectionReferences(requireLegacyShadowSource(c.env, 'selection_reference_repair'), runDate, {
         dryRun: c.req.query('dry_run') === '1',
         archiveEnv: c.env,
       })
@@ -1340,7 +1341,7 @@ export function buildAdminWorkerDomainTaskMap(
             inspectLatestEveningChainClosure,
             runDataDomainShadowBackfillHttpStep,
           } = await import('./dataDomainShadowBackfillDrain')
-          const closure = await inspectLatestEveningChainClosure(c.env.KV, c.env.DB)
+          const closure = await inspectLatestEveningChainClosure(c.env.KV, c.env)
           if (!closure.terminalSuccess || !closure.timestamp) {
             return `skipped: data_domain_shadow_backfill direct_step ${closure.reason}`
           }
@@ -1357,7 +1358,7 @@ export function buildAdminWorkerDomainTaskMap(
           enqueueDataDomainShadowBackfill,
           inspectLatestEveningChainClosure,
         } = await import('./dataDomainShadowBackfillDrain')
-        const closure = await inspectLatestEveningChainClosure(c.env.KV, c.env.DB)
+        const closure = await inspectLatestEveningChainClosure(c.env.KV, c.env)
         if (!closure.terminalSuccess || !closure.timestamp) {
           return `skipped: data_domain_shadow_backfill durable ${closure.reason}`
         }
@@ -1391,11 +1392,11 @@ export function buildAdminWorkerDomainTaskMap(
         import('./dataDomainShadowBackfillDrain'),
         import('./dataDomainBackfillRetirementReadiness'),
       ])
-      const readiness = await inspectDataDomainBackfillRetirementReadiness(c.env.DB, c.env.KV, databaseForDataDomain(c.env, 'ops'))
+      const readiness = await inspectDataDomainBackfillRetirementReadiness(await verifiedDataDomainControlPlaneDatabase(c.env), c.env.KV, databaseForDataDomain(c.env, 'ops'))
       if (readiness.retirement_data_plane_ready) {
         return `data_domain_shadow_backfill_next all_domains_caught_up=true retirement_data_plane_ready=true observed_at=${readiness.observed_at}`
       }
-      const closure = await inspectLatestEveningChainClosure(c.env.KV, c.env.DB)
+      const closure = await inspectLatestEveningChainClosure(c.env.KV, c.env)
       if (!closure.terminalSuccess) {
         return `skipped: data_domain_shadow_backfill_next ${closure.reason} run_date=${closure.runDate ?? 'missing'}`
       }
@@ -1405,7 +1406,7 @@ export function buildAdminWorkerDomainTaskMap(
         parityNotBefore: closure.timestamp,
       })
       if (next.caughtUp) {
-        const refreshedReadiness = await inspectDataDomainBackfillRetirementReadiness(c.env.DB, c.env.KV, databaseForDataDomain(c.env, 'ops'))
+        const refreshedReadiness = await inspectDataDomainBackfillRetirementReadiness(await verifiedDataDomainControlPlaneDatabase(c.env), c.env.KV, databaseForDataDomain(c.env, 'ops'))
         if (refreshedReadiness.retirement_data_plane_ready) {
           return `data_domain_shadow_backfill_next all_domains_caught_up=true retirement_data_plane_ready=true observed_at=${refreshedReadiness.observed_at}`
         }
@@ -1424,7 +1425,7 @@ export function buildAdminWorkerDomainTaskMap(
       const learningDb = shadowDatabaseForDataDomain(c.env, 'learning')
       if (!learningDb) throw new Error('data_domain_shadow_binding_missing:learning')
       const { installDataDomainControlRevisionTriggers } = await import('./dataDomainControlRevision')
-      const legacy = await installDataDomainControlRevisionTriggers(c.env.DB)
+      const legacy = await installDataDomainControlRevisionTriggers(requireLegacyShadowSource(c.env, 'data_domain_control_revision_trigger_install'))
       const learning = await installDataDomainControlRevisionTriggers(learningDb)
       return `data_domain_control_revision_trigger_install legacy=${JSON.stringify(legacy)} learning=${JSON.stringify(learning)}`
     },
@@ -1437,7 +1438,7 @@ export function buildAdminWorkerDomainTaskMap(
       }
       const requestedDomain = resolveCutoverProbeDomain(String(c.req.query('domain') ?? 'ops'))
       const { installDataDomainWriterEpochTriggers } = await import('./dataDomainWriterEpoch')
-      const installed = await installDataDomainWriterEpochTriggers(c.env.DB, requestedDomain)
+      const installed = await installDataDomainWriterEpochTriggers(requireLegacyShadowSource(c.env, 'data_domain_writer_epoch_trigger_install'), requestedDomain)
       return `data_domain_writer_epoch_trigger_install ${JSON.stringify(installed)}`
     },
     'data-domain-cutover-probe': async () => {
@@ -1450,8 +1451,9 @@ export function buildAdminWorkerDomainTaskMap(
       const requestedDomain = resolveCutoverProbeDomain(String(c.req.query('domain') ?? 'ops'))
       const targetDb = shadowDatabaseForDataDomain(c.env, requestedDomain)
       if (!targetDb) throw new Error(`data_domain_shadow_binding_missing:${requestedDomain}`)
-      // multi-d1-intentional-legacy-source: canary binds the source authority receipt.
-      const cutover = await c.env.DB.prepare(`
+      // Migration-era probe: the canary binds the legacy source authority receipt.
+      const legacySource = requireLegacyShadowSource(c.env, 'data_domain_cutover_probe')
+      const cutover = await legacySource.prepare(`
         SELECT status, parity_checked_at
           FROM data_domain_cutovers
          WHERE domain=?
@@ -1461,7 +1463,7 @@ export function buildAdminWorkerDomainTaskMap(
       }
       const { runDataDomainCutoverProbe } = await import('./dataDomainWriterEpoch')
       const receipt = await runDataDomainCutoverProbe({
-        sourceDb: c.env.DB,
+        sourceDb: legacySource,
         targetDb,
         domain: requestedDomain,
         parityCheckedAt: String(cutover.parity_checked_at ?? ''),
@@ -1556,6 +1558,9 @@ export function buildAdminWorkerDomainTaskMap(
         const { status: forecastStatus, ...forecast } = estimate
         return {
           domain: row.domain,
+          // The frozen legacy rollback source is reported, never judged with the live domains.
+          role: row.domain === 'legacy' && health.legacy_capacity_role === 'frozen_rollback_source'
+            ? 'frozen_rollback_source' : 'live',
           binding: row.binding_name,
           used: row.used_bytes,
           max: row.max_bytes,
@@ -1565,7 +1570,19 @@ export function buildAdminWorkerDomainTaskMap(
           ...forecast,
         }
       })
-      return `storage_capacity_report observed_date=${observedDate} lineage_run_date=${lineageRunDate} health=${JSON.stringify(health)} d1=${JSON.stringify(capacities)} classes=${JSON.stringify(results ?? [])}`
+      // M4: per-database days to 90%, labelled with the health check's own alert
+      // decision (live domains under the alert days; frozen legacy never judged).
+      // The runway rows leave the health echo so the summary carries them once;
+      // the system-log warning stays with storage-health-check.
+      const { capacityRunwayWarningPrefix, summarizeStorageCapacityRunway } = await import('./storageHealthSeverity')
+      const runway = summarizeStorageCapacityRunway(health)
+      const {
+        capacity_runway: _runwayRows,
+        capacity_runway_alert_days: _runwayAlertDays,
+        capacity_runway_alert_domains: _runwayAlertDomains,
+        ...healthEcho
+      } = health
+      return `storage_capacity_report ${capacityRunwayWarningPrefix(runway)}observed_date=${observedDate} lineage_run_date=${lineageRunDate} runway=${JSON.stringify(runway)} health=${JSON.stringify(healthEcho)} d1=${JSON.stringify(capacities)} classes=${JSON.stringify(results ?? [])}`
     },
     'learning-retention-readiness': async () => {
       const { inspectLearningTenYearRetentionReadiness } = await import('./learningTenYearRetentionReadiness')
@@ -1578,10 +1595,15 @@ export function buildAdminWorkerDomainTaskMap(
     },
     'retention-archive-only': async () => {
       const {
+        LEGACY_FINAL_ARCHIVE_CONFIRM_PHRASE,
         RETENTION_ARCHIVE_ONLY_POLICY_IDS,
         runRetentionArchiveOnly,
         summarizeRetentionArchiveOnly,
       } = await import('./retentionArchiveOnly')
+      const legacyFinalArchiveQuery = c.req.query('legacy_final_archive')
+      if (legacyFinalArchiveQuery != null && legacyFinalArchiveQuery !== LEGACY_FINAL_ARCHIVE_CONFIRM_PHRASE) {
+        throw new Error('retention_archive_only_legacy_final_archive_confirm_mismatch')
+      }
       const requestedPolicies = (c.req.query('policies') ?? '')
         .split(',')
         .map((value: string) => value.trim())
@@ -1593,6 +1615,7 @@ export function buildAdminWorkerDomainTaskMap(
         businessDate: requestedRunDate() || twToday(),
         policyIds: requestedPolicies.length ? requestedPolicies as any : undefined,
         limitPerDataset: parseBoundedPositiveInt(c.req.query('limit_per_dataset'), 100, 250),
+        legacyFinalArchive: legacyFinalArchiveQuery === LEGACY_FINAL_ARCHIVE_CONFIRM_PHRASE,
       })
       if (result.status === 'error') {
         throw new Error(`retention archive only failed ${JSON.stringify(result)}`)
@@ -1629,9 +1652,10 @@ export function buildAdminWorkerDomainTaskMap(
     'legacy-learning-deletion-readiness': async () => {
       const { inspectLegacyLearningDeletionReadiness } = await import('./learningTenYearRetentionReadiness')
       const result = await inspectLegacyLearningDeletionReadiness(
-        c.env.DB,
+        await verifiedDataDomainControlPlaneDatabase(c.env),
         databaseForDataDomain(c.env, 'learning'),
         requestedRunDate() || twToday(),
+        databaseForDataDomain(c.env, 'ops'),
       )
       return `legacy_learning_deletion_readiness ${JSON.stringify(result)}`
     },

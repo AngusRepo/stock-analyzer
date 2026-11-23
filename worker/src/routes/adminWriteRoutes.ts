@@ -1336,14 +1336,14 @@ adminWriteRoutes.post('/api/admin/entry-model-v2/replay', async (c) => {
     buildEntryModelReplayReportFromD1,
     persistEntryModelReplayReport,
   } = await import('../lib/entryModelReplay')
-  const report = await buildEntryModelReplayReportFromD1(c.env.DB, {
+  const report = await buildEntryModelReplayReportFromD1(databaseForDataDomain(c.env, 'core'), {
     startDate,
     endDate,
     limit: body.limit,
     symbols: Array.isArray(body.symbols) ? body.symbols : undefined,
     minRank: body.min_rank,
     maxRank: body.max_rank,
-  })
+  }, databaseForDataDomain(c.env, 'market'))
   const persisted = dryRun ? null : await persistEntryModelReplayReport(databaseForDataDomain(c.env, 'learning'), report)
   return c.json({
     success: true,

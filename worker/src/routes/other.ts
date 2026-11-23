@@ -189,6 +189,7 @@ async function buildMarketRiskFallback(reason: string) {
 
 import type { Bindings, Variables } from '../types'
 import { databaseForDataDomain } from '../lib/dataDomainRegistry'
+import { optionalLegacyDatabase } from '../lib/legacyDatabase'
 import { loadPitFactorFlowMap } from '../lib/pitFactorFlowMap'
 import { authMiddleware, adminMiddleware } from '../lib/auth'
 import { rateLimitMiddleware } from '../lib/rateLimit'
@@ -2996,7 +2997,8 @@ system.get('/status', async (c) => {
     coreDb.prepare('SELECT date, risk_level, risk_score, calculated_at FROM market_risk ORDER BY date DESC LIMIT 1').first<any>(),
     coreDb.prepare('SELECT COUNT(*) as cnt FROM stocks WHERE in_current_watchlist=1').first<any>(),
     marketDb.prepare('SELECT COUNT(*) as cnt FROM news').first<any>(),
-    c.env.DB.prepare("SELECT SUM(pgsize * ncell) as sz FROM dbstat").first<any>().catch(() => null),
+    // Size of the frozen legacy DB while it is still bound; null after retirement.
+    (optionalLegacyDatabase(c.env)?.prepare("SELECT SUM(pgsize * ncell) as sz FROM dbstat").first<any>() ?? Promise.resolve(null)).catch(() => null),
   ])
 
   // 判斷各資料是否為今日（台灣交易日）

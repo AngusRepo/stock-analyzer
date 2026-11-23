@@ -10,7 +10,7 @@ import { paperExecutionNow, paperExecutionFetch } from './paperExecutionScope'
  *
  * Verdict: APPROVE → normal buy / DOWNGRADE → halve position / REJECT → skip
  *
- * 2026-04-20 #18 FinMem: 若 env.DB 可用，runBuyDebate 會：
+ * 2026-04-20 #18 FinMem: 若 Paper D1 可用，runBuyDebate 會：
  *   - 讀 debate_memory last 7d/30d/90d 同 symbol thesis 注入 mlContext
  *   - 結束後把 verdict / conviction / summary 寫入 debate_memory
  */
@@ -88,7 +88,7 @@ export interface LLMEnv {
   LOCAL_TUNNEL_URL?: string   // e.g. https://claude-proxy.your-tunnel.cfargotunnel.com
   AI?: any                    // Cloudflare Workers AI binding
   KV?: KVNamespace            // Shared context storage
-  DB?: D1Database             // Legacy/control-plane binding; formal FinMem resolves Paper owner.
+  DB?: D1Database             // Frozen legacy binding; unused here (FinMem resolves the Paper owner).
   PAPER_DB?: D1Database
   MULTI_D1_ACTIVE_DOMAINS?: string
   MULTI_D1_STRICT?: string
@@ -308,9 +308,10 @@ export async function runBuyDebate(
   }
 
   // 2026-04-20 #18 FinMem: 讀歷史 thesis（graceful degrade when DB 缺或 table 空）
-  const debateDb = env.DB
-    ? databaseForDataDomain(env as Pick<Bindings, 'DB'> & Partial<Bindings>, 'paper')
-    : env.DB
+  // debate_memory is Paper-owned; the legacy binding no longer gates FinMem.
+  const debateDb = env.PAPER_DB
+    ? databaseForDataDomain(env as Partial<Bindings>, 'paper')
+    : undefined
   const historicalBundle = await getHistoricalThesis(debateDb, symbol)
   const historicalBlock = renderHistoricalThesisBlock(historicalBundle)
 
@@ -544,7 +545,7 @@ export async function runBuyDebate(
     `Fulcrum: ${fulcrumResponse.replace(/VERDICT:.*\n?/, '').trim().slice(0, 150)}`,
   ].join('').slice(0, 500)
 
-  // 2026-04-20 #18 FinMem: 寫入 debate_memory（graceful no-op 若 env.DB 缺）
+  // 2026-04-20 #18 FinMem: 寫入 debate_memory（graceful no-op 若 Paper D1 缺）
   // thesis_summary = Fulcrum 判決理由（裁掉 prompt-side 元信息），最能代表當日 thesis。
   const thesisForMemory = fulcrumResponse.replace(/VERDICT:.*\n?/i, '').trim().slice(0, 200)
   const twToday = new Date(paperExecutionNow() + 8 * 3600_000).toISOString().slice(0, 10)

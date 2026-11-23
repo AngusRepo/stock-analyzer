@@ -19,6 +19,10 @@ import {
   loadExpectedReturnSemanticSnapshot,
   type ExpectedReturnSemanticSnapshot,
 } from './expectedReturnPointerSemanticGuard'
+import { requireLegacyShadowSource } from './legacyDatabase'
+
+// Migration-era tool: reads the frozen legacy source; retired once the control plane moved to Ops.
+const legacyShadowSource = (env: Parameters<typeof requireLegacyShadowSource>[0]) => requireLegacyShadowSource(env, 'expected_return_pointer_shadow_guard')
 
 const POINTER_TABLE = 'model_champion_pointers' as const
 const POINTER_PARENT_TABLES = [
@@ -61,7 +65,7 @@ async function blockPointerOnly(
   reason: string,
   preserveCursor: boolean,
 ): Promise<never> {
-  await invalidateControlTableClosure(env.DB, {
+  await invalidateControlTableClosure(legacyShadowSource(env), {
     changedTables: [POINTER_TABLE],
     preserveCursorTables: preserveCursor ? [POINTER_TABLE] : [],
     reason,
@@ -87,9 +91,9 @@ export async function beginExpectedReturnPointerShadowGuard(
   const parentStates = await Promise.all(
     POINTER_PARENT_TABLES.map(async (table) => ({
       table,
-      receipt: await loadControlTableReceipt(env.DB, table),
-      counts: await controlTableRowCounts(env.DB, target, table),
-      liveRevision: await loadDataDomainControlRevisionPair(env.DB, target, table),
+      receipt: await loadControlTableReceipt(legacyShadowSource(env), table),
+      counts: await controlTableRowCounts(legacyShadowSource(env), target, table),
+      liveRevision: await loadDataDomainControlRevisionPair(legacyShadowSource(env), target, table),
     })),
   )
   const blockedParents = parentStates.map(({ table, receipt, counts, liveRevision }) => {
@@ -121,7 +125,7 @@ export async function beginExpectedReturnPointerShadowGuard(
       'expected_return_pointer_shadow_guard_parent_receipt_blocked',
       parentBlockers,
     )
-    await invalidateControlTableClosure(env.DB, {
+    await invalidateControlTableClosure(legacyShadowSource(env), {
       changedTables: blockedParents.map(({ table }) => table),
       preserveCursorTables: blockedParents
         .filter(({ receipt, counts }) => (
@@ -135,7 +139,7 @@ export async function beginExpectedReturnPointerShadowGuard(
     })
     throw new ExpectedReturnPointerShadowGuardError(reason)
   }
-  const sourceBefore = await loadExpectedReturnSemanticSnapshot(env.DB)
+  const sourceBefore = await loadExpectedReturnSemanticSnapshot(legacyShadowSource(env))
   const semanticBlockers = await expectedReturnSemanticBlockers(sourceBefore)
   if (semanticBlockers.length) {
     return blockPointerOnly(
@@ -162,7 +166,7 @@ async function loadStableSource(
 ): Promise<ExpectedReturnSemanticSnapshot> {
   const liveParentRevisions = await Promise.all(POINTER_PARENT_TABLES.map(async (table) => ({
     table,
-    live: await loadDataDomainControlRevisionPair(env.DB, guard.target, table),
+    live: await loadDataDomainControlRevisionPair(legacyShadowSource(env), guard.target, table),
   })))
   const changedParents = liveParentRevisions.filter(({ table, live }) => {
     const expected = guard.parentRevisions[table]
@@ -181,7 +185,7 @@ async function loadStableSource(
         ]
       }),
     )
-    await invalidateControlTableClosure(env.DB, {
+    await invalidateControlTableClosure(legacyShadowSource(env), {
       changedTables: [...changedTables, POINTER_TABLE],
       preserveCursorTables: changedTables,
       reason,
@@ -189,7 +193,7 @@ async function loadStableSource(
     })
     throw new ExpectedReturnPointerShadowGuardError(reason)
   }
-  const sourceAfter = await loadExpectedReturnSemanticSnapshot(env.DB)
+  const sourceAfter = await loadExpectedReturnSemanticSnapshot(legacyShadowSource(env))
   const changed = changedExpectedReturnSemanticTables(guard.sourceBefore, sourceAfter)
   const semanticBlockers = await expectedReturnSemanticBlockers(sourceAfter)
   if (changed.length || semanticBlockers.length) {
@@ -204,7 +208,7 @@ async function loadStableSource(
         ...semanticBlockers,
       ],
     )
-    await invalidateControlTableClosure(env.DB, {
+    await invalidateControlTableClosure(legacyShadowSource(env), {
       changedTables,
       reason,
       authority: guard.authority,
@@ -240,7 +244,7 @@ export async function assertExpectedReturnPointerTargetClosure(
         ...targetBlockers,
       ],
     )
-    await invalidateControlTableClosure(env.DB, {
+    await invalidateControlTableClosure(legacyShadowSource(env), {
       changedTables: [...new Set<DataDomainControlTable>([
         ...targetChanged,
         POINTER_TABLE,

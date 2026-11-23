@@ -169,12 +169,18 @@ export async function inspectLearningTenYearRetentionReadiness(
   }
 }
 
+// Rows of these datasets exist only in the legacy DB; it may be deleted only
+// after the one-time final archive took every one of them to cycle_complete.
+export const LEGACY_HOT_ARCHIVE_DATASETS: readonly string[] =
+  (retentionR2PolicyConfig('legacy_hot_r2_v1')?.sources ?? []).map(source => source.datasetId)
+
 export async function inspectLegacyLearningDeletionReadiness(
   controlDb: D1Database,
   learningDb: D1Database,
   asOfDate: string,
+  retentionOpsDb: D1Database,
 ) {
-  const [cutover, writer, projections, probe, cursors, parity] = await Promise.all([
+  const [cutover, writer, projections, probe, cursors, parity, legacyArchive] = await Promise.all([
     controlDb.prepare(
       `SELECT status, parity_checked_at, updated_at
          FROM data_domain_cutovers WHERE domain='learning'`,
@@ -213,7 +219,13 @@ export async function inspectLegacyLearningDeletionReadiness(
             WHERE domain='learning' AND check_kind='full_table'
          ) WHERE rn=1`,
     ).first<Record<string, unknown>>(),
+    retentionOpsDb.prepare(
+      `SELECT dataset_id, status FROM data_retention_cursors WHERE policy_id='legacy_hot_r2_v1'`,
+    ).all<{ dataset_id: string; status: string }>(),
   ])
+  const legacyArchiveComplete = new Set((legacyArchive.results ?? [])
+    .filter(row => row.status === 'cycle_complete').map(row => row.dataset_id))
+  const legacyArchivePending = LEGACY_HOT_ARCHIVE_DATASETS.filter(dataset => !legacyArchiveComplete.has(dataset))
   const cutoverReadiness = await inspectDataDomainCutoverReadiness(controlDb, 'learning', {
     upstreamTerminalReady: true,
     learningTargetDb: learningDb,
@@ -240,6 +252,9 @@ export async function inspectLegacyLearningDeletionReadiness(
     numeric(parity?.checked_tables) !== expectedTables
     || numeric(parity?.matched_tables) !== expectedTables
   ) blockers.push('legacy_learning_66_table_parity_not_complete')
+  if (!LEGACY_HOT_ARCHIVE_DATASETS.length || legacyArchivePending.length) {
+    blockers.push('legacy_hot_r2_v1_final_archive_not_cycle_complete')
+  }
   if (cutover?.status !== 'complete' && !domainReadiness?.cutover_ready) {
     blockers.push(...(domainReadiness?.blockers ?? ['learning_cutover_readiness_missing']))
   }
@@ -272,7 +287,12 @@ export async function inspectLegacyLearningDeletionReadiness(
         checked_tables: numeric(parity?.checked_tables),
         matched_tables: numeric(parity?.matched_tables),
       },
-      deletion_gate_policy: 'formal_cutover_receipt_plus_time_travel_window',
+      legacy_hot_final_archive: {
+        policy_id: 'legacy_hot_r2_v1',
+        datasets: LEGACY_HOT_ARCHIVE_DATASETS,
+        pending_datasets: legacyArchivePending,
+      },
+      deletion_gate_policy: 'formal_cutover_receipt_plus_time_travel_window_plus_legacy_final_archive',
       post_cutover_target_drift: cutover?.status === 'complete'
         ? domainReadiness?.blockers ?? []
         : [],

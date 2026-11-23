@@ -746,7 +746,11 @@ export function buildAdminWorkerDomainTaskMap(
     'selection-reference-repair': async () => {
       const runDate = assertRunDate(requestedRunDate())
       const { repairHistoricalSelectionReferences } = await import('./selectionReferenceRepair')
-      const result = await repairHistoricalSelectionReferences(requireLegacyShadowSource(c.env, 'selection_reference_repair'), runDate, {
+      const result = await repairHistoricalSelectionReferences({
+        opsDb: databaseForDataDomain(c.env, 'ops'),
+        coreDb: databaseForDataDomain(c.env, 'core'),
+        learningDb: databaseForDataDomain(c.env, 'learning'),
+      }, runDate, {
         dryRun: c.req.query('dry_run') === '1',
         archiveEnv: c.env,
       })

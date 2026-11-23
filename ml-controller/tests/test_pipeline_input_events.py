@@ -18,6 +18,7 @@ class Blob:
             raise PreconditionFailed('generation')
         self.raw = value.encode() if isinstance(value, str) else value
         self.generation += 1
+        self.time_created = datetime.now(timezone.utc)  # GCS: per generation
     def download_as_bytes(self):
         if self.raw is None:
             raise NotFound(self.name)
@@ -36,6 +37,9 @@ class Bucket:
         self.blobs = {}
     def blob(self, path):
         return self.blobs.setdefault(path, Blob(path))
+    def get_blob(self, path):
+        blob = self.blobs.get(path)
+        return blob if blob is not None and blob.raw is not None else None
     def list_blobs(self, prefix):
         return [v for k,v in self.blobs.items() if k.startswith(prefix) and v.raw is not None]
 
@@ -285,6 +289,45 @@ def test_consumption_once_and_terminal_result_reuse(store):
     result={'status':'deferred','deferred_reason':'modal_prediction_callback'}
     events.finish_consumption(path,result)
     assert events.claim_consumption(path)==result
+
+
+def test_consumption_records_the_detached_stage_as_one_phase_receipt(store, monkeypatch):
+    from services import pipeline_progress as progress
+    monkeypatch.setattr(progress, '_completed', [])
+    path, _ = snapshot_stage(store)
+    store.blob(path).time_created = datetime.now(timezone.utc) - timedelta(minutes=6)
+    assert events.claim_consumption(path) is None
+    [receipt] = progress._completed
+    assert (receipt['phase'], receipt['status']) == ('input_snapshot', 'completed')
+    assert receipt['started_at'] == store.blob(path).time_created.isoformat()
+    assert 6*60_000 <= receipt['elapsed_ms'] < 6*60_000 + 5_000
+    assert datetime.fromisoformat(receipt['started_at']) <= datetime.fromisoformat(receipt['completed_at'])
+    # A competing continuation claims nothing, so it records nothing.
+    with pytest.raises(events.InputDeferred):
+        events.claim_consumption(path)
+    assert len(progress._completed) == 1
+
+    state = {'producer_run_id': 'run-1', 'run_date': '2026-10-02'}
+    with events.input_context(state, 'gs://fixture/pre-l2', resume_phase='pre_l2'):
+        _, pre_l2, _ = events.register('prep', {'batches': []})
+    with events.input_context(state, 'gs://fixture/sealed-l2'):
+        _, post_l2, _ = events.register('prep', {'batches': []})
+    # Server clock ahead of this host: the receipt starts at the claim, never after it.
+    store.blob(pre_l2).time_created = datetime.now(timezone.utc) + timedelta(minutes=1)
+    assert events.claim_consumption(pre_l2) is None
+    assert (progress._completed[-1]['phase'], progress._completed[-1]['elapsed_ms']) == ('input_prep', 0)
+    # The post-L2 prep wait shares the controller's prepare_prediction_request name: no receipt.
+    assert events.claim_consumption(post_l2) is None
+    assert len(progress._completed) == 2
+
+
+def test_unreadable_stage_metadata_never_blocks_consumption(store, monkeypatch):
+    from services import pipeline_progress as progress
+    monkeypatch.setattr(progress, '_completed', [])
+    path, _ = snapshot_stage(store)
+    monkeypatch.setattr(store, 'get_blob', lambda path: None)
+    assert events.claim_consumption(path) is None
+    assert progress._completed == []
 
 
 def prep_stage(store, monkeypatch, pit=None):

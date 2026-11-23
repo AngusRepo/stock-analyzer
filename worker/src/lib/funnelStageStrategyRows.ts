@@ -1,5 +1,5 @@
 import type { Bindings } from '../types'
-import { AUDIT_POINTER_SCHEMA, type FunnelArchiveChunkCache, visitArchivedFunnelEvidence } from './screenerEvidenceResolver'
+import { AUDIT_POINTER_SCHEMA, FunnelArchiveReader } from './screenerEvidenceResolver'
 
 export interface FunnelStageStrategyRow {
   symbol: string
@@ -9,15 +9,8 @@ export interface FunnelStageStrategyRow {
 export interface FunnelStageStrategyRows {
   rows: FunnelStageStrategyRow[]
   // Funnel items whose evidence is archived and could not be read back (no archive
-  // binding, verification failure, chunk limit): their strategies are missing from rows.
+  // binding, verification failure, chunk or byte budget): their strategies are missing from rows.
   archived_unresolved: number
-}
-
-function evidenceStrategyIds(evidence: Record<string, any>): string[] {
-  const ids = evidence?.strategy_pool_ids ?? evidence?.strategy_ids
-  // Same as the SQL json_each: array elements, object values, or the scalar itself.
-  return (Array.isArray(ids) ? ids : ids && typeof ids === 'object' ? Object.values(ids) : [ids])
-    .filter((value) => typeof value === 'string' || typeof value === 'number').map(String)
 }
 
 /**
@@ -31,7 +24,8 @@ export async function loadFunnelStageStrategyRows(
   archiveEnv: Pick<Bindings, 'DB' | 'ARTIFACTS'> | null,
   runId: string,
   stage: string,
-  chunks: FunnelArchiveChunkCache = new Map(),
+  // Request-scoped: shares chunk reads with the other stage and the symbol slices.
+  reader: FunnelArchiveReader | null = archiveEnv ? new FunnelArchiveReader(archiveEnv) : null,
 ): Promise<FunnelStageStrategyRows> {
   const { results } = await opsDb.prepare(`
     SELECT DISTINCT i.id, i.run_id, i.stage, i.symbol, CAST(strategy.value AS TEXT) AS strategy_id,
@@ -68,14 +62,11 @@ export async function loadFunnelStageStrategyRows(
     else if (row.strategy_id != null) add(row.symbol, row.strategy_id)
   }
   let archivedUnresolved = archived.length
-  if (archived.length && archiveEnv) {
+  if (archived.length && archiveEnv && reader) {
     try {
-      const restored: Array<[unknown, string[]]> = []
-      await visitArchivedFunnelEvidence(archiveEnv, archived, (_index, row, _text, evidence) => {
-        restored.push([row.symbol, evidenceStrategyIds(evidence)])
-      }, { chunks })
+      const restored = await reader.strategyIds(archived)
       // All-or-error: add only once every archived row of the stage was verified.
-      for (const [symbol, strategyIds] of restored) for (const strategyId of strategyIds) add(symbol, strategyId)
+      for (const [index, strategyIds] of restored) for (const strategyId of strategyIds) add(archived[index].symbol, strategyId)
       archivedUnresolved = 0
     } catch (e) {
       console.warn('[funnelStageStrategyRows] archived evidence unavailable:', stage, e)

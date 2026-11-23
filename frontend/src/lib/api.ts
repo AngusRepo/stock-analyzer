@@ -299,10 +299,8 @@ export type SchedulerJob = {
     observed_at:string;execution_id?:string;started_at?:string|null}
   stageCard?: boolean
   stageElapsed?: string
-  /** Part of the stage card's recorded time spent waiting on sub-jobs between controller executions. */
-  stageSubJobWait?: string
   pipelineBatches?: Array<{stage_id:string;phase:string;completed:number;total:number;observed_at:string}>
-  stageVisualStatus?: 'completed'|'blocked'|'running'|'waiting'|'not_started'|'stale'
+  stageVisualStatus?: 'completed'|'noop'|'blocked'|'running'|'waiting'|'not_started'|'stale'
   finlabPhase?: 'acquire'|'validate'|'publish'
   finlabProgress?: {run_id:string;run_date:string;dispatch_attempt:number;sequence:number;observed_at:string;
     phases:Array<{phase:'acquire'|'validate'|'publish';status:'running'|'completed'|'failed'|'waiting';

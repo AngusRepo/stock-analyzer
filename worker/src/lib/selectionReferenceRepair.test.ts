@@ -42,8 +42,13 @@ function fakeDb(coverageCount = 5): D1Database {
   } as unknown as D1Database
 }
 
+function fakeDbs(coverageCount = 5) {
+  const db = fakeDb(coverageCount)
+  return { opsDb: db, coreDb: db, learningDb: db }
+}
+
 async function main(): Promise<void> {
-  const result = await repairHistoricalSelectionReferences(fakeDb(), '2026-07-15', { dryRun: true })
+  const result = await repairHistoricalSelectionReferences(fakeDbs(), '2026-07-15', { dryRun: true })
   assert.equal(result.expected_rows, 5)
   assert.equal(result.persisted_rows, 0)
   assert.equal(result.source_artifact_schema, 'screener-funnel-evidence-v2')
@@ -51,7 +56,7 @@ async function main(): Promise<void> {
   assert.equal(result.dry_run, true)
 
   await assert.rejects(
-    () => repairHistoricalSelectionReferences(fakeDb(4), '2026-07-15', { dryRun: true }),
+    () => repairHistoricalSelectionReferences(fakeDbs(4), '2026-07-15', { dryRun: true }),
     /selection_reference_repair_scoring_coverage_mismatch:4\/4\/4\/4\/4\/5/,
   )
   console.log('selection reference repair tests passed')

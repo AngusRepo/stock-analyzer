@@ -552,9 +552,13 @@ export async function checkCircuitBreakers(
 
   if (kv) {
     try {
-      const { getAdaptiveParamsForRegime } = await import('./adaptiveConfig')
+      const { getAdaptiveParamsForRegime, adaptiveParamsFreshness, describeAdaptiveFreshness } = await import('./adaptiveConfig')
       const adaptive = await getAdaptiveParamsForRegime(kv)
-      if (adaptive?.confidence_delta != null) {
+      // FG-02: staleness applies to the regime-resolved delta; not fresh -> delta 0.
+      const freshness = adaptiveParamsFreshness(adaptive, cfg.L2_formula?.adaptive_params_max_age_days)
+      if (freshness.status !== 'fresh') {
+        console.warn(`[PendingBuyOrchestrator] adaptive confidence_delta retired: ${describeAdaptiveFreshness(freshness)}`)
+      } else if (adaptive?.confidence_delta != null) {
         confidenceDelta = adaptive.confidence_delta
       } else if (adaptive?.confidence_threshold != null) {
         confidenceDelta = adaptive.confidence_threshold - (circuit.buyConfThreshold ?? 0.6)

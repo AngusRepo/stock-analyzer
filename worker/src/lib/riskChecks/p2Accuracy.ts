@@ -3,9 +3,12 @@ import { publishedAlphaModelOrder } from '../alphaModelRoster'
  * p2Accuracy.ts - Layer 2: model accuracy evidence.
  *
  * Runtime sources:
- * 1. ml:adaptive_params.recent_accuracy_30d from ml-controller.
+ * 1. ml:adaptive_params.recent_accuracy_30d from ml-controller, only while fresh
+ *    (trading:config L2_formula.adaptive_params_max_age_days).
  * 2. model_accuracy active-8 direct-alpha aggregate as the local authoritative table.
  *
+ * Params present but not fresh (stale / undated / lookahead): neutral pass annotated
+ * `p2_evidence_stale` (Wei FG-03; model_accuracy is itself stale, so no fallback).
  * No predictions-table fallback: if both sources are unavailable, fail closed.
  */
 import type { TradingConfig } from '../tradingConfig'
@@ -43,8 +46,15 @@ export async function checkP2Accuracy(
 
   if (kv) {
     try {
-      const { getAdaptiveParams } = await import('../adaptiveConfig')
+      const { getAdaptiveParams, adaptiveParamsFreshness, describeAdaptiveFreshness } = await import('../adaptiveConfig')
       const adaptive = await getAdaptiveParams(kv)
+      // FG-03: never read a frozen accuracy; not fresh -> neutral pass, no threshold change.
+      const freshness = adaptiveParamsFreshness(adaptive, cfg.L2_formula?.adaptive_params_max_age_days)
+      if (freshness.status !== 'fresh') {
+        const note = `p2_evidence_stale ${describeAdaptiveFreshness(freshness)}`
+        console.warn(`[CircuitBreaker] Layer2: ${note}; neutral pass`)
+        return { ...defaults, evidenceNotes: [note] }
+      }
       if (adaptive?.recent_accuracy_30d != null) {
         recentAcc = adaptive.recent_accuracy_30d
         evidenceSource = 'ml:adaptive_params'

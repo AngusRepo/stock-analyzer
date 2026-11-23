@@ -42,4 +42,59 @@ const suspended = resolveTwEquityExecutionGate({
 })
 assert(!suspended.allowed, 'suspended stock must fail closed')
 
+{
+  // Exhaustive limit band check against an exact integer-cent reference for every legal
+  // previous close 0.01..6000: limit-up = largest legal tick <= prev * 1.1,
+  // limit-down = smallest legal tick >= prev * 0.9 (tick decided by the result's own band).
+  const legalCents: number[] = []
+  const addGrid = (from: number, to: number, step: number) => {
+    for (let cents = from; cents <= to; cents += step) legalCents.push(cents)
+  }
+  addGrid(1, 999, 1)
+  addGrid(1000, 4995, 5)
+  addGrid(5000, 9990, 10)
+  addGrid(10000, 49950, 50)
+  addGrid(50000, 99900, 100)
+  addGrid(100000, 700000, 500)
+  const largestAtMost = (numerator: number, denominator: number): number => {
+    let found = 0
+    for (let lo = 0, hi = legalCents.length - 1; lo <= hi;) {
+      const mid = (lo + hi) >> 1
+      if (legalCents[mid] * denominator <= numerator) {
+        found = legalCents[mid]
+        lo = mid + 1
+      } else hi = mid - 1
+    }
+    return found
+  }
+  const smallestAtLeast = (numerator: number, denominator: number): number => {
+    let found = 0
+    for (let lo = 0, hi = legalCents.length - 1; lo <= hi;) {
+      const mid = (lo + hi) >> 1
+      if (legalCents[mid] * denominator >= numerator) {
+        found = legalCents[mid]
+        hi = mid - 1
+      } else lo = mid + 1
+    }
+    return found
+  }
+  let checked = 0
+  for (const prevCents of legalCents) {
+    if (prevCents > 600000) break
+    const prev = prevCents / 100
+    const priceBand = resolveTwEquityPriceBand(prev)
+    const expectedUp = largestAtMost(prevCents * 11, 10) / 100
+    const expectedDown = smallestAtLeast(prevCents * 9, 10) / 100
+    assert(priceBand.limitUp === expectedUp, `prev ${prev}: limit-up ${priceBand.limitUp} should be ${expectedUp}`)
+    assert(priceBand.limitDown === expectedDown, `prev ${prev}: limit-down ${priceBand.limitDown} should be ${expectedDown}`)
+    checked += 1
+  }
+  assert(checked === 4600, 'every legal previous close 0.01..6000 should be checked')
+
+  const band906 = resolveTwEquityPriceBand(9.06)
+  assert(band906.limitUp === 9.96 && band906.limitDown === 8.16, 'prev 9.06 band should be 8.16..9.96')
+  const band1995 = resolveTwEquityPriceBand(19.95)
+  assert(band1995.limitUp === 21.9 && band1995.limitDown === 18, 'prev 19.95 band should be 18.00..21.90')
+}
+
 console.log('twEquityMarketContract tests passed')

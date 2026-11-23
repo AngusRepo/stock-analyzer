@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { l4NativeFixture } from './l4NativeFixture.testSupport'
 import { RISK_CONFIG_FIXTURE } from './riskConfig.testSupport'
-import { DEFAULT_ADAPTIVE_PARAMS, adaptiveParamsFreshness, invalidateAdaptiveCache } from './adaptiveConfig'
+import { ADAPTIVE_PARAMS_MAX_AGE_DAYS_DEFAULT, DEFAULT_ADAPTIVE_PARAMS, adaptiveParamsFreshness, invalidateAdaptiveCache } from './adaptiveConfig'
 import { buildMarketRegimeState } from './marketRegimeState'
 import { withPaperExecutionScope } from './paperExecutionScope'
 import { checkCircuitBreakers } from './pendingBuyOrchestrator'
@@ -31,15 +31,19 @@ test('freshness: Taipei calendar days, inclusive max age, undated/lookahead not 
   assert.equal(f('2026-11-21T09:00:00+08:00').status, 'lookahead')
   assert.equal(f('2026-10-07T15:10:00+08:00', 30).status, 'stale')
   assert.equal(f('2026-11-01T15:10:00+08:00', 30).status, 'fresh')
-  for (const bad of [0, -1, 2.5, Number.NaN, undefined as unknown as number]) {
+  for (const bad of [0, -1, 2.5, Number.NaN]) {
     assert.throws(() => adaptiveParamsFreshness({ computed_at: '2026-11-19T14:40:00+08:00' }, bad, NOW), /max age invalid/)
   }
+  assert.equal(adaptiveParamsFreshness({ computed_at: '2026-11-19T14:40:00+08:00' }, undefined, NOW).max_age_days,
+    ADAPTIVE_PARAMS_MAX_AGE_DAYS_DEFAULT)
 })
 
-test('trading:config owns N: absent field falls back to the champion default; invalid values fail validation', () => {
+test('trading:config owns N: absent field stays absent from the effective config (Paper grant identity) and reads as 7; invalid values fail validation', () => {
   const absent = buildChampionTradingConfig({ L2_formula: { confidence_risk_mult: 0.15 } } as any)
-  assert.equal(absent.L2_formula.adaptive_params_max_age_days, 7)
-  assert.equal(DEFAULT_TRADING_CONFIG.L2_formula.adaptive_params_max_age_days, 7)
+  assert.equal('adaptive_params_max_age_days' in absent.L2_formula, false)
+  assert.equal('adaptive_params_max_age_days' in DEFAULT_TRADING_CONFIG.L2_formula, false)
+  assert.deepEqual(validateTradingConfig(absent).filter((e) => e.includes('adaptive_params_max_age_days')), [])
+  assert.equal(ADAPTIVE_PARAMS_MAX_AGE_DAYS_DEFAULT, 7)
   const set = buildChampionTradingConfig({ L2_formula: { adaptive_params_max_age_days: 5 } } as any)
   assert.equal(set.L2_formula.adaptive_params_max_age_days, 5)
   assert.deepEqual(validateTradingConfig(set).filter((e) => e.includes('adaptive_params_max_age_days')), [])

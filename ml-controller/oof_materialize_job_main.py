@@ -563,7 +563,8 @@ def _summary(run_id: str, result: dict[str, Any], *, mode: str) -> str:
         parts.extend([f"forward_data={forward.get('status', 'unknown')}",
             f"forward_observed={forward.get('latest_observed_signal_date') or 'none'}",
             f"forward_mature={forward.get('latest_mature_evaluation_date') or 'none'}",
-            f"forward_training_eligible={forward.get('latest_training_eligible_date') or 'none'}"])
+            f"forward_training_eligible={forward.get('latest_training_eligible_date') or 'none'}",
+            f"forward_excluded={','.join(forward.get('excluded_signal_dates') or []) or 'none'}"])
     adoption = (result.get('strategy_comparison_nav') or result.get('paired_nav_maturity') or {}).get('adoption')
     if isinstance(adoption, dict):
         committed = dict((adoption.get('closure') or {}).get('promoted_by_owner') or {})

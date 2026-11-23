@@ -90,3 +90,56 @@ def test_actual_daily_materializer_automatically_seals_registry(monkeypatch,tmp_
     assert '7855' in entries and sha
     assert m['prior_venue_scope']['capture_id']=='daily'
     assert m['prior_venue_scope']['price_checksums']==m['checksums']
+
+
+def test_supplement_binds_only_captures_ending_on_or_after_it():
+    m=daily_manifest()
+    assert set(scope.resolve_scope(m)[0])=={"7855","7814","7825","6947","7689","2237"}
+    later={**m,"capture_id":"daily-20261123","end_date":"2026-11-23"}
+    entries,_=scope.resolve_scope(later)
+    assert {"6467","2249","6898","6938","7848"}<=set(entries) and len(entries)==19
+    assert "7848" not in scope.resolve_scope({**later,"end_date":"2026-11-13"})[0]  # before its own listing
+
+
+def test_supplement_extends_sealed_scope_without_touching_older_captures(tmp_path):
+    m={**daily_manifest(),"capture_id":"daily-20261120","end_date":"2026-11-20"}
+    path=tmp_path/"raw/daily_price_full_vintage/manifest.json";path.parent.mkdir(parents=True)
+    registry=scope._registry()
+    sealed={"schema":"price-prior-venue-scope-v1","capture_id":m["capture_id"],"end_date":m["end_date"],
+            "price_checksums":m["checksums"],"entries":registry["entries"]}
+    older={**m,"prior_venue_scope":sealed,"prior_venue_scope_sha256":scope.digest(sealed)}
+    assert scope.resolve_scope(older)[1]==scope.digest(sealed)  # supplement effective 11/23
+    tonight={**older,"end_date":"2026-11-23","prior_venue_scope":{**sealed,"end_date":"2026-11-23"}}
+    tonight["prior_venue_scope_sha256"]=scope.digest(tonight["prior_venue_scope"])
+    entries,sha=scope.resolve_scope(tonight)
+    assert len(entries)==19 and sha!=tonight["prior_venue_scope_sha256"]
+    assert scope.resolve_scope(tonight)==(entries,sha)  # deterministic for the preflight re-check
+
+
+def test_supplement_conflicting_with_sealed_entry_rejected():
+    registry=scope._registry();sup=copy.deepcopy(registry["supplements"][0]["entries"][0])
+    sup["evidence"]["url"]+="&copy=sealed"  # still valid evidence, but not the reviewed entry
+    m={**daily_manifest(),"capture_id":"daily-20261123","end_date":"2026-11-23"}
+    sealed={"schema":"price-prior-venue-scope-v1","capture_id":m["capture_id"],"end_date":m["end_date"],
+            "price_checksums":m["checksums"],"entries":[sup]}
+    m={**m,"prior_venue_scope":sealed,"prior_venue_scope_sha256":scope.digest(sealed)}
+    with pytest.raises(ValueError,match="supplement_conflicts"):scope.resolve_scope(m)
+
+
+def test_listing_on_market_holiday_opens_on_next_session():
+    entries,_=scope.resolve_scope({**daily_manifest(),"capture_id":"daily-20261123","end_date":"2026-11-23"})
+    entry=entries["6938"];assert entry["listed_from"]=="2026-10-23"
+    sessions={"2026-10-22","2026-10-27","2026-10-28"}  # 10/23 typhoon, 10/26 make-up holiday
+    old=[{"date":"2026-10-01"},{"date":"2026-10-27"},{"date":"2026-10-28"}]
+    rows=[{"date":"2026-10-27"},{"date":"2026-10-28"}]
+    count,_=scope.compare_prior_scope(entry,symbol="6938",market="OTC",previous=old,rows=rows,sessions=sessions)
+    assert count==2
+    with pytest.raises(ValueError,match="bar_dates_invalid"):  # a gap after the first session stays a loss
+        scope.compare_prior_scope(entry,symbol="6938",market="OTC",previous=old,rows=rows[1:],sessions=sessions)
+    with pytest.raises(ValueError,match="bar_dates_invalid"):  # no calendar keeps the exact-date rule
+        scope.compare_prior_scope(entry,symbol="6938",market="OTC",previous=old,rows=rows)
+
+
+def test_otc_bulletin_with_ascii_colon_is_accepted():
+    entries,_=scope.resolve_scope({**daily_manifest(),"capture_id":"daily-20261123","end_date":"2026-11-23"})
+    assert "上櫃股票開始買賣日期:115年10月22日" in json.loads(entries["2249"]["evidence"]["raw_utf8"])["data"]["content"]

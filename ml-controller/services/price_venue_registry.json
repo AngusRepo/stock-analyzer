@@ -64,5 +64,143 @@
         "url": "https://www.tpex.org.tw/www/bulletin/annDetail?content_file=MTE1MDA2OTI0NzEuaHRtbA%3D%3D&docId=MTE1MDA2OTI0NzE%3D&response=json"
       }
     }
+  ],
+  "supplements": [
+    {
+      "effective_from": "2026-11-23",
+      "source_receipt": "TPEx bulletin annDetail, fetched 2026-11-23 for the 11/21 security_master venue correction (MEM-M5/NEW-78#1)",
+      "entries": [
+        {
+          "symbol": "2938",
+          "market": "OTC",
+          "listed_from": "2026-09-16",
+          "evidence": {
+            "raw_utf8": "{\"data\":{\"downHtml\":\"/storage/eb_data/11509/11500057881.html\",\"date\":\"中華民國115年09月15日\",\"number\":\"證櫃審字第11500057881號\",\"subject\":\"公告床的世界股份有限公司初次申請上櫃普通股股票20,140,000股及現金增資股款繳納憑證2,700,000股，合計22,840,000股，以一般類股開始櫃檯買賣日期，並自同日起終止該興櫃股票20,140,000股之櫃檯買賣。\",\"depend\":\"\",\"content\":\"<p class='eb_level_1'>一、特別注意事項：上開公司係初次上櫃掛牌，自上櫃買賣日起五個交易日股價無漲跌幅限制。<\\u002fp><p class='eb_level_1'>二、上櫃股票種類、數量及每股面額：普通股20,140,000股暨股款繳納憑證2,700,000股，每股面額新臺幣10元。<\\u002fp><p class='eb_level_1'>三、上櫃股票開始買賣日期:115年9月16日。<\\u002fp><p class='eb_level_1'>四、上櫃股票類別:居家生活。<\\u002fp><p class='eb_level_1'>五、股票係採無實體發行。<\\u002fp><p class='eb_level_1'>六、上櫃股票代號及簡稱：<\\u002fp><p class='eb_level_2'>(一)代號：2938。 <\\u002fp><p class='eb_level_2'>(二)簡稱：床的世界。<\\u002fp><p class='eb_level_1'>七、原興櫃股票代號及簡稱：<\\u002fp><p class='eb_level_2'>(一)代號：2938。<\\u002fp><p class='eb_level_2'>(二)簡稱：床的世界。<\\u002fp><p class='eb_level_1'>八、上櫃股票公司英文名稱及簡稱：<\\u002fp><p class='eb_level_2'>(一)英文名稱：BEDDING WORLD CO.,LTD <\\u002fp><p class='eb_level_2'>(二)簡稱：BEDDING WORLD<\\u002fp><p class='eb_level_1'>九、公司營利事業統一編號：80646713。<\\u002fp><p class='eb_level_1'>十、其他：床的世界股份有限公司本次上櫃股票20,140,000股，原係以興櫃股票為櫃檯買賣(代號：2938，簡稱：床的世界)，今訂於115年9月16日起開始以一般類股為櫃檯買賣，爰依本中心證券商營業處所買賣興櫃股票審查準則第40條規定，自同日起終止該興櫃股票之櫃檯買賣。<\\u002fp>\",\"notes\":\"\",\"files\":[]},\"stat\":\"ok\"}",
+            "sha256": "cbcd1303218ef601973d0b6edfe1317584cacd23c11be293e32dacf134dff407",
+            "url": "https://www.tpex.org.tw/www/bulletin/annDetail?content_file=MTE1MDAwNTc4ODEuaHRtbA%3D%3D&docId=MTE1MDAwNTc4ODE%3D&response=json"
+          }
+        },
+        {
+          "symbol": "7812",
+          "market": "TWSE",
+          "listed_from": "2026-09-22",
+          "evidence": {
+            "raw_utf8": "{\"data\":{\"downHtml\":\"/storage/eb_data/11509/11500738611.html\",\"date\":\"中華民國115年09月21日\",\"number\":\"證櫃審字第11500738611號\",\"subject\":\"公告自115年9月22日起終止與稜研科技股份有限公司（股票代號：7812）簽訂之興櫃股票櫃檯買賣契約，並終止該公司已發行之普通股股票60,418,521股在證券商營業處所買賣。\",\"depend\":\"本中心證券商營業處所買賣興櫃股票審查準則第40條第1項第1款及第2項規定。\",\"content\":\"稜研科技股份有限公司因於臺灣證券交易所創新板上市而申請終止興櫃股票櫃檯買賣，核有本中心證券商營業處所買賣興櫃股票審查準則第40條第1項第1款情事，本中心爰公告自115年9月22日起終止其興櫃股票在證券商營業處所買賣。\",\"notes\":\"\",\"files\":[]},\"stat\":\"ok\"}",
+            "sha256": "204d346cc9c5b2bcf3995c3194337beade3c5ca32f23f1bec5b36a8ccef0b388",
+            "url": "https://www.tpex.org.tw/www/bulletin/annDetail?content_file=MTE1MDA3Mzg2MTEuaHRtbA%3D%3D&docId=MTE1MDA3Mzg2MTE%3D&response=json"
+          }
+        },
+        {
+          "symbol": "7856",
+          "market": "OTC",
+          "listed_from": "2026-09-22",
+          "evidence": {
+            "raw_utf8": "{\"data\":{\"downHtml\":\"/storage/eb_data/11509/11500725521.html\",\"date\":\"中華民國115年09月21日\",\"number\":\"證櫃審字第11500725521號\",\"subject\":\"公告漢民測試系統股份有限公司初次申請上櫃普通股股票27,177,000股及現金增資股款繳納憑證5,823,000股，合計33,000,000股，以一般類股開始櫃檯買賣日期，並自同日起終止該興櫃股票27,177,000股之櫃檯買賣。\",\"depend\":\"\",\"content\":\"<p class='eb_level_1'>一、特別注意事項：上開公司係初次上櫃掛牌，自上櫃買賣日起五個交易日股價無漲跌幅限制。<\\u002fp><p class='eb_level_1'>二、上櫃股票種類、數量及每股面額：普通股27,177,000股暨股款繳納憑證5,823,000股，每股面額新臺幣10元。<\\u002fp><p class='eb_level_1'>三、上櫃股票開始買賣日期：115年9月22日。<\\u002fp><p class='eb_level_1'>四、上櫃股票類別：半導體業 。<\\u002fp><p class='eb_level_1'>五、股票係採無實體發行。<\\u002fp><p class='eb_level_1'>六、上櫃股票代號及簡稱：<\\u002fp><p class='eb_level_2'>(一)代號：7856。 <\\u002fp><p class='eb_level_2'>(二)簡稱：漢測。<\\u002fp><p class='eb_level_1'>七、原興櫃股票代號及簡稱：<\\u002fp><p class='eb_level_2'>(一)代號：7856。<\\u002fp><p class='eb_level_2'>(二)簡稱：漢測。<\\u002fp><p class='eb_level_1'>八、上櫃股票公司英文名稱及簡稱：<\\u002fp><p class='eb_level_2'>(一)英文名稱：HERMES TESTING SOLUTIONS INC.<\\u002fp><p class='eb_level_2'>(二)簡稱：HTSI<\\u002fp><p class='eb_level_1'>九、公司營利事業統一編號：27440348。<\\u002fp><p class='eb_level_1'>十、其他：漢民測試系統股份有限公司本次上櫃股票27,177,000股，原係以興櫃股票為櫃檯買賣(代號：7856，簡稱：漢測)，今訂於115年9月22日起開始以一般類股為櫃檯買賣，爰依本中心證券商營業處所買賣興櫃股票審查準則第40條規定，自同日起終止該興櫃股票之櫃檯買賣。<\\u002fp>\",\"notes\":\"\",\"files\":[]},\"stat\":\"ok\"}",
+            "sha256": "4fd03bb00b480402b38f051498ce1b9b805b3fbb547e79a1d3f896bb3bed50ae",
+            "url": "https://www.tpex.org.tw/www/bulletin/annDetail?content_file=MTE1MDA3MjU1MjEuaHRtbA%3D%3D&docId=MTE1MDA3MjU1MjE%3D&response=json"
+          }
+        },
+        {
+          "symbol": "6604",
+          "market": "OTC",
+          "listed_from": "2026-10-06",
+          "evidence": {
+            "raw_utf8": "{\"data\":{\"downHtml\":\"/storage/eb_data/11510/11500749281.html\",\"date\":\"中華民國115年10月05日\",\"number\":\"證櫃審字第11500749281號\",\"subject\":\"公告儒億科技股份有限公司初次申請上櫃普通股股票43,731,039股及現金增資股款繳納憑證7,000,000股，合計50,731,039股，以一般類股開始櫃檯買賣日期，並自同日起終止該興櫃股票43,731,039股之櫃檯買賣。\",\"depend\":\"\",\"content\":\"<p class='eb_level_1'>一、特別注意事項：上開公司係初次上櫃掛牌，自上櫃買賣日起五個交易日股價無漲跌幅限制。<\\u002fp><p class='eb_level_1'>二、上櫃股票種類、數量及每股面額：普通股43,731,039股暨股款繳納憑證7,000,000股，每股面額新臺幣10元。<\\u002fp><p class='eb_level_1'>三、上櫃股票開始買賣日期:115年10月6日。<\\u002fp><p class='eb_level_1'>四、上櫃股票類別:電機機械。<\\u002fp><p class='eb_level_1'>五、股票係採無實體發行。<\\u002fp><p class='eb_level_1'>六、上櫃股票代號及簡稱：<\\u002fp><p class='eb_level_2'>(一)代號：6604。 <\\u002fp><p class='eb_level_2'>(二)簡稱：儒億。<\\u002fp><p class='eb_level_1'>七、原興櫃股票代號及簡稱：<\\u002fp><p class='eb_level_2'>(一)代號：6604。<\\u002fp><p class='eb_level_2'>(二)簡稱：儒億。<\\u002fp><p class='eb_level_1'>八、上櫃股票公司英文名稱及簡稱：<\\u002fp><p class='eb_level_2'>(一)英文名稱： JUOKU TECHNOLOGY CO., LTD.<\\u002fp><p class='eb_level_2'>(二)簡稱： JUOKU<\\u002fp><p class='eb_level_1'>九、公司營利事業統一編號：86928788。<\\u002fp><p class='eb_level_1'>十、其他：儒億科技股份有限公司本次上櫃股票43,731,039股，原係以興櫃股票為櫃檯買賣(代號：6604，簡稱：儒億)，今訂於115年10月6日起開始以一般類股為櫃檯買賣，爰依本中心證券商營業處所買賣興櫃股票審查準則第40條規定，自同日起終止該興櫃股票之櫃檯買賣。<\\u002fp>\",\"notes\":\"\",\"files\":[]},\"stat\":\"ok\"}",
+            "sha256": "b676e282e72b78831f93c5f21d5313dd21b0375c3b33fdc2c6ef32e4230e3a24",
+            "url": "https://www.tpex.org.tw/www/bulletin/annDetail?content_file=MTE1MDA3NDkyODEuaHRtbA%3D%3D&docId=MTE1MDA3NDkyODE%3D&response=json"
+          }
+        },
+        {
+          "symbol": "7806",
+          "market": "OTC",
+          "listed_from": "2026-10-15",
+          "evidence": {
+            "raw_utf8": "{\"data\":{\"downHtml\":\"/storage/eb_data/11510/11500062261.html\",\"date\":\"中華民國115年10月14日\",\"number\":\"證櫃審字第11500062261號\",\"subject\":\"公告精華生醫股份有限公司初次申請上櫃普通股股票27,860,000股、盈餘轉增資發行新股1,393,000股及現金增資股款繳納憑證3,000,000股，合計32,253,000股，以一般類股開始櫃檯買賣日期，並自同日起終止該興櫃股票29,253,000股之櫃檯買賣。\",\"depend\":\"\",\"content\":\"<p class='eb_level_1'>一、特別注意事項：上開公司係初次上櫃掛牌，自上櫃買賣日起五個交易日股價無漲跌幅限制。<\\u002fp><p class='eb_level_1'>二、上櫃股票種類、數量及每股面額：普通股29,253,000股暨股款繳納憑證3,000,000股，每股面額新臺幣10元。<\\u002fp><p class='eb_level_1'>三、上櫃股票開始買賣日期：115年10月15日。<\\u002fp><p class='eb_level_1'>四、上櫃股票類別：食品工業。<\\u002fp><p class='eb_level_1'>五、股票係採無實體發行。<\\u002fp><p class='eb_level_1'>六、上櫃股票代號及簡稱：<\\u002fp><p class='eb_level_2'>(一)代號：7806。 <\\u002fp><p class='eb_level_2'>(二)簡稱：精華生醫。<\\u002fp><p class='eb_level_1'>七、原興櫃股票代號及簡稱：<\\u002fp><p class='eb_level_2'>(一)代號：7806。<\\u002fp><p class='eb_level_2'>(二)簡稱：精華生醫。<\\u002fp><p class='eb_level_1'>八、上櫃股票公司英文名稱及簡稱：<\\u002fp><p class='eb_level_2'>(一)英文名稱：Gin Hwa Biotech Inc. <\\u002fp><p class='eb_level_2'>(二)簡稱：Gin Hwa<\\u002fp><p class='eb_level_1'>九、公司營利事業統一編號：85120765。<\\u002fp><p class='eb_level_1'>十、其他：精華生醫股份有限公司本次上櫃股票29,253,000股，原係以興櫃股票為櫃檯買賣(代號：7806，簡稱：精華生醫)，今訂於115年10月15日起開始以一般類股為櫃檯買賣，爰依本中心證券商營業處所買賣興櫃股票審查準則第40條規定，自同日起終止該興櫃股票之櫃檯買賣。<\\u002fp>\",\"notes\":\"\",\"files\":[]},\"stat\":\"ok\"}",
+            "sha256": "38fc871c30e6fe890257a72e763d1141ed9b48f121544593c0d203a3a9451b32",
+            "url": "https://www.tpex.org.tw/www/bulletin/annDetail?content_file=MTE1MDAwNjIyNjEuaHRtbA%3D%3D&docId=MTE1MDAwNjIyNjE%3D&response=json"
+          }
+        },
+        {
+          "symbol": "6467",
+          "market": "TWSE",
+          "listed_from": "2026-10-20",
+          "evidence": {
+            "raw_utf8": "{\"data\":{\"downHtml\":\"/storage/eb_data/11510/11500771821.html\",\"date\":\"中華民國115年10月19日\",\"number\":\"證櫃審字第11500771821號\",\"subject\":\"公告自115年10月20日起終止與泰合生技藥品股份有限公司（股票代號：6467）簽訂之興櫃股票櫃檯買賣契約，並終止該公司已發行之普通股股票52,408,615股在證券商營業處所買賣。\",\"depend\":\"本中心證券商營業處所買賣興櫃股票審查準則第40條第1項第1款及第2項規定。\",\"content\":\"泰合生技藥品股份有限公司因於臺灣證券交易所上市而申請終止興櫃股票櫃檯買賣，核有本中心證券商營業處所買賣興櫃股票審查準則第40條第1項第1款情事，本中心爰公告自115年10月20日起終止其興櫃股票在證券商營業處所買賣。\",\"notes\":\"\",\"files\":[]},\"stat\":\"ok\"}",
+            "sha256": "18ee4dce0063e9da09c19194db9c63bb5e354b092dd4e1fee22f9ee927b1bd38",
+            "url": "https://www.tpex.org.tw/www/bulletin/annDetail?content_file=MTE1MDA3NzE4MjEuaHRtbA%3D%3D&docId=MTE1MDA3NzE4MjE%3D&response=json"
+          }
+        },
+        {
+          "symbol": "2249",
+          "market": "OTC",
+          "listed_from": "2026-10-22",
+          "evidence": {
+            "raw_utf8": "{\"data\":{\"downHtml\":\"/storage/eb_data/11510/11500063191.html\",\"date\":\"中華民國115年10月21日\",\"number\":\"證櫃審字第11500063191號\",\"subject\":\"公告湧盛電機股份有限公司初次申請上櫃普通股股票25,537,900股、盈餘轉增資發行新股2,553,790股、員工酬勞轉增資發行新股68,000股及現金增資股款繳納憑證3,520,000股，合計31,679,690股，以一般類股開始櫃檯買賣日期，並自同日起終止該興櫃股票28,159,690股之櫃檯買賣。\",\"depend\":\"\",\"content\":\"<p class='eb_level_1'>一、特別注意事項：上開公司係初次上櫃掛牌，自上櫃買賣日起五個交易日股價無漲跌幅限制。<\\u002fp><p class='eb_level_1'>二、上櫃股票種類、數量及每股面額：普通股28,159,690股暨股款繳納憑證3,520,000股，每股面額新臺幣10元。<\\u002fp><p class='eb_level_1'>三、上櫃股票開始買賣日期:115年10月22日。<\\u002fp><p class='eb_level_1'>四、上櫃股票類別:電機機械。<\\u002fp><p class='eb_level_1'>五、股票係採無實體發行。<\\u002fp><p class='eb_level_1'>六、上櫃股票代號及簡稱：<\\u002fp><p class='eb_level_2'>(一)代號：2249。 <\\u002fp><p class='eb_level_2'>(二)簡稱：湧盛。<\\u002fp><p class='eb_level_1'>七、原興櫃股票代號及簡稱：<\\u002fp><p class='eb_level_2'>(一)代號：2249。<\\u002fp><p class='eb_level_2'>(二)簡稱：湧盛。<\\u002fp><p class='eb_level_1'>八、上櫃股票公司英文名稱及簡稱：<\\u002fp><p class='eb_level_2'>(一)英文名稱：Young Shine Electric Co., Ltd. <\\u002fp><p class='eb_level_2'>(二)簡稱：YOUNG SHINE<\\u002fp><p class='eb_level_1'>九、公司營利事業統一編號：70849653。<\\u002fp><p class='eb_level_1'>十、其他：湧盛電機股份有限公司本次上櫃股票28,159,690股，原係以興櫃股票為櫃檯買賣(代號：2249，簡稱：湧盛)，今訂於115年10月22日起開始以一般類股為櫃檯買賣，爰依本中心證券商營業處所買賣興櫃股票審查準則第40條規定，自同日起終止該興櫃股票之櫃檯買賣。<\\u002fp>\",\"notes\":\"\",\"files\":[]},\"stat\":\"ok\"}",
+            "sha256": "6df7367135ce1be2d11e8b2e9186b32f8564cc7f76a11900ec6d3c9ee4d4df8b",
+            "url": "https://www.tpex.org.tw/www/bulletin/annDetail?content_file=MTE1MDAwNjMxOTEuaHRtbA%3D%3D&docId=MTE1MDAwNjMxOTE%3D&response=json"
+          }
+        },
+        {
+          "symbol": "6898",
+          "market": "OTC",
+          "listed_from": "2026-10-23",
+          "evidence": {
+            "raw_utf8": "{\"data\":{\"downHtml\":\"/storage/eb_data/11510/11500064251.html\",\"date\":\"中華民國115年10月22日\",\"number\":\"證櫃審字第11500064251號\",\"subject\":\"公告程曦資訊整合股份有限公司初次申請上櫃普通股股票29,016,113股及現金增資股款繳納憑證3,869,000股，合計32,885,113股，以一般類股開始櫃檯買賣日期，並自同日起終止該興櫃股票29,016,113股之櫃檯買賣。\",\"depend\":\"\",\"content\":\"<p class='eb_level_1'>一、特別注意事項：上開公司係初次上櫃掛牌，自上櫃買賣日起五個交易日股價無漲跌幅限制。<\\u002fp><p class='eb_level_1'>二、上櫃股票種類、數量及每股面額：普通股29,016,113股暨股款繳納憑證3,869,000股，每股面額新臺幣10元。<\\u002fp><p class='eb_level_1'>三、上櫃股票開始買賣日期：115年10月23日。<\\u002fp><p class='eb_level_1'>四、上櫃股票類別：資訊服務業 。<\\u002fp><p class='eb_level_1'>五、股票係採無實體發行。<\\u002fp><p class='eb_level_1'>六、上櫃股票代號及簡稱：<\\u002fp><p class='eb_level_2'>(一)代號：6898。 <\\u002fp><p class='eb_level_2'>(二)簡稱：程曦資訊。<\\u002fp><p class='eb_level_1'>七、原興櫃股票代號及簡稱：<\\u002fp><p class='eb_level_2'>(一)代號：6898。<\\u002fp><p class='eb_level_2'>(二)簡稱：程曦資訊。<\\u002fp><p class='eb_level_1'>八、上櫃股票公司英文名稱及簡稱：<\\u002fp><p class='eb_level_2'>(一)英文名稱：ChainSea Information Integration Co., Ltd.<\\u002fp><p class='eb_level_2'>(二)簡稱：ChainSea<\\u002fp><p class='eb_level_1'>九、公司營利事業統一編號：84459043。<\\u002fp><p class='eb_level_1'>十、其他： 程曦資訊整合股份有限公司本次上櫃股票29,016,113股，原係以興櫃股票為櫃檯買賣(代號：6898，簡稱：程曦資訊)，今訂於115年10月23日起開始以一般類股為櫃檯買賣，爰依本中心證券商營業處所買賣興櫃股票審查準則第40條規定，自同日起終止該興櫃股票之櫃檯買賣。<\\u002fp>\",\"notes\":\"\",\"files\":[]},\"stat\":\"ok\"}",
+            "sha256": "2a3e0463e44fc2cee61c85b6e775b0ab00a3273fca31c24ba07cf42df2cb23fb",
+            "url": "https://www.tpex.org.tw/www/bulletin/annDetail?content_file=MTE1MDAwNjQyNTEuaHRtbA%3D%3D&docId=MTE1MDAwNjQyNTE%3D&response=json"
+          }
+        },
+        {
+          "symbol": "6938",
+          "market": "OTC",
+          "listed_from": "2026-10-23",
+          "evidence": {
+            "raw_utf8": "{\"data\":{\"downHtml\":\"/storage/eb_data/11510/11500775491.html\",\"date\":\"中華民國115年10月22日\",\"number\":\"證櫃審字第11500775491號\",\"subject\":\"公告藍新資訊股份有限公司初次申請上櫃普通股股票12,570,000股及現金增資股款繳納憑證2,070,000股，合計14,640,000股，以一般類股開始櫃檯買賣日期，並自同日起終止該興櫃股票12,570,000股之櫃檯買賣。\",\"depend\":\"\",\"content\":\"<p class='eb_level_1'>一、特別注意事項：上開公司係初次上櫃掛牌，自上櫃買賣日起五個交易日股價無漲跌幅限制。<\\u002fp><p class='eb_level_1'>二、上櫃股票種類、數量及每股面額：普通股12,570,000股暨股款繳納憑證2,070,000股，每股面額新臺幣10元。<\\u002fp><p class='eb_level_1'>三、上櫃股票開始買賣日期：115年10月23日。<\\u002fp><p class='eb_level_1'>四、上櫃股票類別：資訊服務業 。<\\u002fp><p class='eb_level_1'>五、股票係採無實體發行。<\\u002fp><p class='eb_level_1'>六、上櫃股票代號及簡稱：<\\u002fp><p class='eb_level_2'>(一)代號：6938。 <\\u002fp><p class='eb_level_2'>(二)簡稱：藍新資訊。<\\u002fp><p class='eb_level_1'>七、原興櫃股票代號及簡稱：<\\u002fp><p class='eb_level_2'>(一)代號：6938。<\\u002fp><p class='eb_level_2'>(二)簡稱：藍新資訊。<\\u002fp><p class='eb_level_1'>八、上櫃股票公司英文名稱及簡稱：<\\u002fp><p class='eb_level_2'>(一)英文名稱：NEWEB INFORMATION CO., LTD.<\\u002fp><p class='eb_level_2'>(二)簡稱： Newebinfo<\\u002fp><p class='eb_level_1'>九、公司營利事業統一編號：24540267。<\\u002fp><p class='eb_level_1'>十、其他： 藍新資訊股份有限公司本次上櫃股票12,570,000股，原係以興櫃股票為櫃檯買賣(代號：6938，簡稱：藍新資訊)，今訂於115年10月23日起開始以一般類股為櫃檯買賣，爰依本中心證券商營業處所買賣興櫃股票審查準則第40條規定，自同日起終止該興櫃股票之櫃檯買賣。<\\u002fp>\",\"notes\":\"\",\"files\":[]},\"stat\":\"ok\"}",
+            "sha256": "b5fe9aba2b51678b21f40b7cbf842a93b7f631b9f3f6bce87b04c0bafa197b2b",
+            "url": "https://www.tpex.org.tw/www/bulletin/annDetail?content_file=MTE1MDA3NzU0OTEuaHRtbA%3D%3D&docId=MTE1MDA3NzU0OTE%3D&response=json"
+          }
+        },
+        {
+          "symbol": "7710",
+          "market": "TWSE",
+          "listed_from": "2026-10-27",
+          "evidence": {
+            "raw_utf8": "{\"data\":{\"downHtml\":\"/storage/eb_data/11510/11500781211.html\",\"date\":\"中華民國115年10月22日\",\"number\":\"證櫃審字第11500781211號\",\"subject\":\"公告自115年10月27日起終止與東擎科技股份有限公司（股票代號：7710）簽訂之興櫃股票櫃檯買賣契約，並終止該公司已發行之普通股股票63,905,580股在證券商營業處所買賣。\",\"depend\":\"本中心證券商營業處所買賣興櫃股票審查準則第40條第1項第1款及第2項規定。\",\"content\":\"東擎科技股份有限公司因於臺灣證券交易所上市而申請終止興櫃股票櫃檯買賣，核有本中心證券商營業處所買賣興櫃股票審查準則第40條第1項第1款情事，本中心爰公告自115年10月27日起終止其興櫃股票在證券商營業處所買賣。\",\"notes\":\"\",\"files\":[]},\"stat\":\"ok\"}",
+            "sha256": "960fdc4214bfe406b04f9e4025aedb6215e8afdae25c28d90fb095da0f60ecef",
+            "url": "https://www.tpex.org.tw/www/bulletin/annDetail?content_file=MTE1MDA3ODEyMTEuaHRtbA%3D%3D&docId=MTE1MDA3ODEyMTE%3D&response=json"
+          }
+        },
+        {
+          "symbol": "6825",
+          "market": "OTC",
+          "listed_from": "2026-10-30",
+          "evidence": {
+            "raw_utf8": "{\"data\":{\"downHtml\":\"/storage/eb_data/11510/11500065481.html\",\"date\":\"中華民國115年10月29日\",\"number\":\"證櫃審字第11500065481號\",\"subject\":\"公告和暢科技股份有限公司初次申請上櫃普通股股票33,651,448股、盈餘轉增資發行新股5,687,095股及現金增資股款繳納憑證5,246,000股，合計44,584,543股，以一般類股開始櫃檯買賣日期，並自同日起終止該興櫃股票39,338,543股之櫃檯買賣。\",\"depend\":\"\",\"content\":\"<p class='eb_level_1'>一、特別注意事項：上開公司係初次上櫃掛牌，自上櫃買賣日起五個交易日股價無漲跌幅限制。<\\u002fp><p class='eb_level_1'>二、上櫃股票種類、數量及每股面額：普通股39,338,543股暨股款繳納憑證5,246,000股，每股面額新臺幣10元。<\\u002fp><p class='eb_level_1'>三、上櫃股票開始買賣日期：115年10月30日。<\\u002fp><p class='eb_level_1'>四、上櫃股票類別：電腦及週邊設備業。<\\u002fp><p class='eb_level_1'>五、股票係採無實體發行。<\\u002fp><p class='eb_level_1'>六、上櫃股票代號及簡稱：<\\u002fp><p class='eb_level_2'>(一)代號：6825。 <\\u002fp><p class='eb_level_2'>(二)簡稱：和暢科技。<\\u002fp><p class='eb_level_1'>七、原興櫃股票代號及簡稱：<\\u002fp><p class='eb_level_2'>(一)代號：6825。<\\u002fp><p class='eb_level_2'>(二)簡稱：和暢科技。<\\u002fp><p class='eb_level_1'>八、上櫃股票公司英文名稱及簡稱：<\\u002fp><p class='eb_level_2'>(一)英文名稱：QBIC TECHNOLOGY CO., LTD. <\\u002fp><p class='eb_level_2'>(二)簡稱：QBIC<\\u002fp><p class='eb_level_1'>九、公司營利事業統一編號：24776663。<\\u002fp><p class='eb_level_1'>十、其他：和暢科技股份有限公司本次上櫃股票39,338,543股，原係以興櫃股票為櫃檯買賣(代號：6825，簡稱：和暢科技)，今訂於115年10月30日起開始以一般類股為櫃檯買賣，爰依本中心證券商營業處所買賣興櫃股票審查準則第40條規定，自同日起終止該興櫃股票之櫃檯買賣。<\\u002fp>\",\"notes\":\"\",\"files\":[]},\"stat\":\"ok\"}",
+            "sha256": "ed749e53938fa983e6ad95afe1701cddec83dfcf42d7de589dac67c4208f85b8",
+            "url": "https://www.tpex.org.tw/www/bulletin/annDetail?content_file=MTE1MDAwNjU0ODEuaHRtbA%3D%3D&docId=MTE1MDAwNjU0ODE%3D&response=json"
+          }
+        },
+        {
+          "symbol": "7867",
+          "market": "TWSE",
+          "listed_from": "2026-10-30",
+          "evidence": {
+            "raw_utf8": "{\"data\":{\"downHtml\":\"/storage/eb_data/11510/11500786981.html\",\"date\":\"中華民國115年10月29日\",\"number\":\"證櫃審字第11500786981號\",\"subject\":\"公告自115年10月30日起終止與特力屋股份有限公司（股票代號：7867）簽訂之興櫃股票櫃檯買賣契約，並終止該公司已發行之普通股股票96,000,000股在證券商營業處所買賣。\",\"depend\":\"本中心證券商營業處所買賣興櫃股票審查準則第40條第1項第1款及第2項規定。\",\"content\":\"特力屋股份有限公司因於臺灣證券交易所上市而申請終止興櫃股票櫃檯買賣，核有本中心證券商營業處所買賣興櫃股票審查準則第40條第1項第1款情事，本中心爰公告自115年10月30日起終止其興櫃股票在證券商營業處所買賣。\",\"notes\":\"\",\"files\":[]},\"stat\":\"ok\"}",
+            "sha256": "15154142db2cf40ae9177677018e461334fcd59f364bbb9ba219a18c0672cf12",
+            "url": "https://www.tpex.org.tw/www/bulletin/annDetail?content_file=MTE1MDA3ODY5ODEuaHRtbA%3D%3D&docId=MTE1MDA3ODY5ODE%3D&response=json"
+          }
+        },
+        {
+          "symbol": "7848",
+          "market": "OTC",
+          "listed_from": "2026-11-16",
+          "evidence": {
+            "raw_utf8": "{\"data\":{\"downHtml\":\"/storage/eb_data/11511/11500803601.html\",\"date\":\"中華民國115年11月13日\",\"number\":\"證櫃審字第11500803601號\",\"subject\":\"公告騏億鑫科技股份有限公司初次申請上櫃普通股股票29,800,000股、盈餘轉增資發行新股3,576,000股及現金增資股款繳納憑證4,500,000股，合計37,876,000股，以一般類股開始櫃檯買賣日期，並自同日起終止該興櫃股票33,376,000股之櫃檯買賣。\",\"depend\":\"\",\"content\":\"<p class='eb_level_1'>一、特別注意事項：上開公司係初次上櫃掛牌，自上櫃買賣日起五個交易日股價無漲跌幅限制。<\\u002fp><p class='eb_level_1'>二、上櫃股票種類、數量及每股面額：普通股33,376,000股暨股款繳納憑證4,500,000股，每股面額新臺幣10元。<\\u002fp><p class='eb_level_1'>三、上櫃股票開始買賣日期：115年11月16日。<\\u002fp><p class='eb_level_1'>四、上櫃股票類別：其他電子業。<\\u002fp><p class='eb_level_1'>五、股票係採無實體發行。<\\u002fp><p class='eb_level_1'>六、上櫃股票代號及簡稱：<\\u002fp><p class='eb_level_2'>(一)代號：7848。 <\\u002fp><p class='eb_level_2'>(二)簡稱：騏億鑫。<\\u002fp><p class='eb_level_1'>七、原興櫃股票代號及簡稱：<\\u002fp><p class='eb_level_2'>(一)代號：7848。<\\u002fp><p class='eb_level_2'>(二)簡稱：騏億鑫。<\\u002fp><p class='eb_level_1'>八、上櫃股票公司英文名稱及簡稱：<\\u002fp><p class='eb_level_2'>(一)英文名稱：CHI YI HSIN TECHNOLOGY CO., LTD. <\\u002fp><p class='eb_level_2'>(二)簡稱：CYH<\\u002fp><p class='eb_level_1'>九、公司營利事業統一編號：54560958。<\\u002fp><p class='eb_level_1'>十、其他：騏億鑫科技股份有限公司本次上櫃股票33,376,000股，原係以興櫃股票為櫃檯買賣(代號：7848，簡稱：騏億鑫)，今訂於115年11月16日起開始以一般類股為櫃檯買賣，爰依本中心證券商營業處所買賣興櫃股票審查準則第40條規定，自同日起終止該興櫃股票之櫃檯買賣。<\\u002fp>\",\"notes\":\"\",\"files\":[]},\"stat\":\"ok\"}",
+            "sha256": "0c24195074e091c08f252c3d6acc05d311fe7c74784df9d61dab170f3352431c",
+            "url": "https://www.tpex.org.tw/www/bulletin/annDetail?content_file=MTE1MDA4MDM2MDEuaHRtbA%3D%3D&docId=MTE1MDA4MDM2MDE%3D&response=json"
+          }
+        }
+      ]
+    }
   ]
 }

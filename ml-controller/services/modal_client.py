@@ -17,11 +17,12 @@ import hashlib
 import json
 import httpx
 
+from services.ml_service_auth import ml_service_headers
+
 logger = logging.getLogger(__name__)
 
 _APP_NAME         = "stockvision-ml"
 _ML_SERVICE_URL   = os.environ.get("ML_SERVICE_URL", "")
-_ML_SERVICE_SECRET = os.environ.get("ML_SERVICE_SECRET", "")
 _USE_MODAL        = bool(os.environ.get("MODAL_TOKEN_ID", ""))
 
 _DEFAULT_MODAL_RESOURCE = {"cpu": 1.0, "memory_mb": 1024, "gpu": None}
@@ -1035,10 +1036,8 @@ async def probe_modal_function_call(function_call_id: str) -> dict:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _ml_headers() -> dict[str, str]:
-    h = {"Content-Type": "application/json"}
-    if _ML_SERVICE_SECRET:
-        h["X-Service-Token"] = _ML_SERVICE_SECRET
-    return h
+    # Reads ML_SERVICE_SECRET per call; production without it raises (fail-closed).
+    return ml_service_headers()
 
 
 async def _http_post_one(client: httpx.AsyncClient, url: str, payload: dict) -> dict:

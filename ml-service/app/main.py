@@ -9,12 +9,14 @@ Current ensemble groups:
   - State-space overlays: KalmanFilter / MarkovSwitching
 """
 import asyncio
+import hmac
 import os
 import numpy as np
 import polars as pl
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import Optional
 from datetime import datetime
@@ -65,16 +67,47 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Service token shared by Worker, Cloud Run, and other internal callers.
-_SERVICE_TOKEN = os.environ.get("ML_SERVICE_SECRET", "")
+# Service token shared by Worker, ml-controller, and other internal callers.
+# Fail closed: a missing ML_SERVICE_SECRET rejects every route except /health.
+SERVICE_TOKEN_ENV = "ML_SERVICE_SECRET"
+SERVICE_TOKEN_HEADER = "X-Service-Token"
+PUBLIC_PATHS = frozenset({"/health"})
+
+
+def _unauthenticated_local_dev_allowed() -> bool:
+    """Explicit local-dev opt-out; never honoured inside Modal or production."""
+    if os.environ.get("ML_SERVICE_ALLOW_UNAUTHENTICATED", "").strip() != "1":
+        return False
+    if os.environ.get("ENVIRONMENT", "").strip().lower() == "production":
+        return False
+    return not (os.environ.get("MODAL_TASK_ID") or os.environ.get("MODAL_IS_REMOTE"))
+
+
+def check_service_token(presented: str | None) -> None:
+    expected = os.environ.get(SERVICE_TOKEN_ENV, "").strip()
+    if not expected:
+        if _unauthenticated_local_dev_allowed():
+            return
+        raise HTTPException(status_code=503, detail=f"{SERVICE_TOKEN_ENV} not configured")
+    token = (presented or "").strip()
+    if not token or not hmac.compare_digest(token.encode("utf-8"), expected.encode("utf-8")):
+        raise HTTPException(status_code=401, detail="Invalid service token")
+
 
 async def verify_service_token(request: Request) -> None:
-    """Verify `X-Service-Token` against `ML_SERVICE_SECRET`."""
-    if not _SERVICE_TOKEN:
-        return
-    token = request.headers.get("X-Service-Token", "")
-    if token != _SERVICE_TOKEN:
-        raise HTTPException(status_code=401, detail="Invalid service token")
+    """Verify `X-Service-Token` against `ML_SERVICE_SECRET` (constant-time, fail-closed)."""
+    check_service_token(request.headers.get(SERVICE_TOKEN_HEADER))
+
+
+@app.middleware("http")
+async def require_service_token(request: Request, call_next):
+    """Every path but /health (including /docs and /openapi.json) needs the service token."""
+    if request.method != "OPTIONS" and request.url.path not in PUBLIC_PATHS:
+        try:
+            check_service_token(request.headers.get(SERVICE_TOKEN_HEADER))
+        except HTTPException as exc:
+            return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+    return await call_next(request)
 
 
 @app.get("/health")
@@ -123,14 +156,17 @@ async def breeze2_research_context_endpoint(request: Request):
 async def breeze2_reason_generation_endpoint(request: Request):
     await verify_service_token(request)
     payload = await request.json()
-    from .breeze2_reason_generation import generate_breeze2_reason_generation
+    from .breeze2_reason_generation import Breeze2ModelNotAllowed, generate_breeze2_reason_generation
 
-    return generate_breeze2_reason_generation({
-        **payload,
-        "allowed_use": "reason_shadow_only",
-        "mutation_allowed": False,
-        "real_trading_allowed": False,
-    })
+    try:
+        return generate_breeze2_reason_generation({
+            **payload,
+            "allowed_use": "reason_shadow_only",
+            "mutation_allowed": False,
+            "real_trading_allowed": False,
+        })
+    except Breeze2ModelNotAllowed as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 class FactorAuditRequest(BaseModel):

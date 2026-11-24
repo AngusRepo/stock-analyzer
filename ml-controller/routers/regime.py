@@ -29,6 +29,7 @@ from services.kv_pusher import push_optuna_result
 from services.market_regime_evidence import build_regime_evidence_pack
 from services.hmm_market_inputs import load_hmm_market_env, latest_hmm_input_date
 from services.hmm_input_contract import CONTRACT_HASH
+from services.ml_service_auth import MlServiceTokenMissing, ml_service_headers
 
 logger = logging.getLogger("regime")
 router = APIRouter()
@@ -37,7 +38,6 @@ MARKET_D1_CLIENT = client_proxy_for_domain(D1DataDomain.MARKET)
 TW_TZ = timezone(timedelta(hours=8))
 
 ML_SERVICE_URL    = os.environ.get("ML_SERVICE_URL", "")
-ML_SERVICE_SECRET = os.environ.get("ML_SERVICE_SECRET", "")
 FINLAB_MACRO_CONTEXT_DATASETS = (
     "tw_business_indicators",
     "tw_total_pmi",
@@ -384,6 +384,10 @@ async def regime_compute(req: RegimeComputeRequest = RegimeComputeRequest()):
         raise HTTPException(status_code=409, detail="HMM_INFERENCE_CANNOT_RETRAIN; use an explicitly approved training job")
     if not ML_SERVICE_URL:
         raise HTTPException(status_code=500, detail="ML_SERVICE_URL not set")
+    try:
+        headers = ml_service_headers()
+    except MlServiceTokenMissing as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
     request_id = uuid.uuid4().hex
     logger.info("[Regime] compute_start request_id=%s force_retrain=%s run_date=%s", request_id, req.force_retrain, req.run_date)
@@ -404,9 +408,6 @@ async def regime_compute(req: RegimeComputeRequest = RegimeComputeRequest()):
         raise HTTPException(status_code=404, detail="market_env has empty history")
 
     async with httpx.AsyncClient() as client:
-        headers = {"Content-Type": "application/json"}
-        if ML_SERVICE_SECRET:
-            headers["X-Service-Token"] = ML_SERVICE_SECRET
         info = await _request_regime_current(
             client,
             market_env=market_env,

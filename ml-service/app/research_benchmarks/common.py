@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import io
 import math
 import time
@@ -149,6 +150,72 @@ def _load_npz_bytes(raw: bytes):
     return np.load(buf, allow_pickle=True)
 
 
+class _DecodedOnce:
+    """An NpzFile that decompresses each member once: NpzFile[name] inflates it on every access, and the batch
+    check and the loader read the same members (about half of a 23-batch load was the second inflate)."""
+
+    def __init__(self, npz):
+        self._npz, self._arrays, self.files = npz, {}, npz.files
+
+    def __getitem__(self, name: str):
+        if name not in self._arrays:
+            self._arrays[name] = self._npz[name]
+        return self._arrays[name]
+
+
+def _tabular_prep(payload: dict[str, Any]):
+    gcs_prefix = str(payload.get("gcs_prefix") or payload.get("data_slice", {}).get("gcs_prefix") or "universal").strip().rstrip("/")
+    batch_count = int(payload.get("batch_count") or payload.get("data_slice", {}).get("batch_count") or 5)
+    bucket = _bucket()
+    keys = [f"{gcs_prefix}/prep/batch_{i}.npz" for i in range(batch_count)]
+    from app.gcs_batch_io import download_existing_blobs
+
+    return gcs_prefix, batch_count, bucket, download_existing_blobs(bucket, keys, max_workers=4)
+
+
+def _feature_text(bucket, gcs_prefix: str) -> str | None:
+    feature_blob = bucket.blob(f"{gcs_prefix}/prep/feature_names.json")
+    return feature_blob.download_as_text() if feature_blob.exists() else None
+
+
+# One sealed prep per container: the fold inputs a warm container runs one after another load the same
+# batches (the W4(a) TabM challenger runs 21 folds of one prep).
+_REUSED_TABULAR: dict[str, Any] = {}
+
+
+def load_tabular_dataset_reused(payload: dict[str, Any]) -> TabularBenchmarkDataset:
+    """load_tabular_dataset, built once per sealed prep in this process.
+
+    Reused only while every batch is the very bytes object the last build read (the generation-keyed
+    download cache returns the same object for the same GCS generation, and the entry holds those objects)
+    and feature_names.json is unchanged; anything else rebuilds. The shared arrays are read-only and each
+    call gets its own dataclass, so a caller may rebind fields but never alter the next fold's data."""
+    if isinstance(payload.get("tabular_dataset"), dict):
+        return load_tabular_dataset(payload)
+    gcs_prefix, batch_count, bucket, loaded = _tabular_prep(payload)
+    loaded = list(loaded)
+    raws = [raw for _, raw in loaded]
+    entry = _REUSED_TABULAR.get("entry")
+    if not (entry and entry["prefix"] == (gcs_prefix, batch_count) and len(entry["raws"]) == len(raws)
+            and all(a is b and a is not None for a, b in zip(entry["raws"], raws))
+            and _feature_text(bucket, gcs_prefix) == entry["feature_text"]):
+        _REUSED_TABULAR.clear()
+        entry = None  # release the previous prep (no reference left) before building the next
+        read: list[str | None] = []
+
+        def feature_text() -> str | None:
+            read.append(_feature_text(bucket, gcs_prefix))
+            return read[-1]
+        dataset = _tabular_dataset(gcs_prefix, batch_count, loaded, feature_text)
+        for field in dataclasses.fields(dataset):
+            value = getattr(dataset, field.name)
+            if isinstance(value, np.ndarray):
+                value.flags.writeable = False
+        entry = _REUSED_TABULAR["entry"] = {"prefix": (gcs_prefix, batch_count), "feature_text": read[-1],
+                                            "raws": raws, "dataset": dataset}
+    return dataclasses.replace(entry["dataset"], feature_names=list(entry["dataset"].feature_names))
+
+
 def load_tabular_dataset(payload: dict[str, Any]) -> TabularBenchmarkDataset:
     data = payload.get("tabular_dataset")
     if isinstance(data, dict) and "X" in data and "y" in data:
@@ -175,12 +242,11 @@ def load_tabular_dataset(payload: dict[str, Any]) -> TabularBenchmarkDataset:
             source="payload.tabular_dataset",
         )
 
-    gcs_prefix = str(payload.get("gcs_prefix") or payload.get("data_slice", {}).get("gcs_prefix") or "universal").strip().rstrip("/")
-    batch_count = int(payload.get("batch_count") or payload.get("data_slice", {}).get("batch_count") or 5)
-    bucket = _bucket()
-    keys = [f"{gcs_prefix}/prep/batch_{i}.npz" for i in range(batch_count)]
-    from app.gcs_batch_io import download_existing_blobs
+    gcs_prefix, batch_count, bucket, loaded = _tabular_prep(payload)
+    return _tabular_dataset(gcs_prefix, batch_count, loaded, lambda: _feature_text(bucket, gcs_prefix))
 
+
+def _tabular_dataset(gcs_prefix: str, batch_count: int, loaded, feature_text) -> TabularBenchmarkDataset:
     all_X: list[np.ndarray] = []
     all_y: list[np.ndarray] = []
     all_target_returns: list[np.ndarray] = []
@@ -189,10 +255,10 @@ def load_tabular_dataset(payload: dict[str, Any]) -> TabularBenchmarkDataset:
     all_symbols: list[np.ndarray] = []
     all_markets: list[np.ndarray] = []
     all_label_known_dates: list[np.ndarray] = []
-    for key, raw in download_existing_blobs(bucket, keys, max_workers=4):
+    for key, raw in loaded:
         if raw is None:
             raise ValueError(f"prep_batch_missing:{key}")
-        npz = _load_npz_bytes(raw)
+        npz = _DecodedOnce(_load_npz_bytes(raw))
         validate_tabular_batch(npz, key=key)
         all_X.append(np.asarray(npz["X"], dtype=np.float32))
         all_y.append(np.asarray(npz["y"], dtype=np.float32).reshape(-1))
@@ -218,13 +284,12 @@ def load_tabular_dataset(payload: dict[str, Any]) -> TabularBenchmarkDataset:
     if len(batch_local_y) != len(target_returns):
         raise ValueError("prep_batch_rank_alignment_incomplete")
     y = recompute_global_cross_sectional_rank(target_returns, dates, markets)
-    feature_blob = bucket.blob(f"{gcs_prefix}/prep/feature_names.json")
-    if feature_blob.exists():
-        import json
-
-        feature_names = [str(v) for v in json.loads(feature_blob.download_as_text())]
-    else:
+    text = feature_text()  # read here, after the batch checks and the rank, as load_tabular_dataset always has
+    if text is None:
         raise ValueError("prep_feature_names_missing")
+    import json
+
+    feature_names = [str(v) for v in json.loads(text)]
     validate_feature_names(feature_names, X.shape[1])
     validate_prep_keys(dates, symbols, markets)
     order = np.argsort(dates.astype(str))

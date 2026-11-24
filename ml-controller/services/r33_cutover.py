@@ -79,7 +79,7 @@ def validate_evidence(evidence, admission):
     """Bind the evidence to the admission's candidate identity and L4 artifact."""
     from services.l3_equal_weight_bundle import FEATURE_SCHEMA, is_r33_bundle
     from services.paper_strategy_mode import R33_MODE
-    from services.r33_crossfit_serving import TABLE_NAME
+    from services.r33_crossfit_serving import ESTIMATORS, table_name
     from services.r33_monthly_lifecycle import BUNDLE_PREFIX
     if not isinstance(evidence, dict) or set(evidence) != _FIELDS or evidence['schema_version'] != SCHEMA:
         raise _fail('schema')
@@ -110,7 +110,8 @@ def validate_evidence(evidence, admission):
             or set(calibration) != {'source_payload_checksum', 'serving_table_path', 'serving_table_checksum'}
             or not _hex(calibration['source_payload_checksum']) or not _hex(calibration['serving_table_checksum'])
             or calibration['serving_table_checksum'] != artifact['model']['calibration_checksum']
-            or calibration['serving_table_path'] != f"{BUNDLE_PREFIX}/{identity['cohort_id']}/{TABLE_NAME}"):
+            or calibration['serving_table_path'] not in {f"{BUNDLE_PREFIX}/{identity['cohort_id']}/{table_name(e)}"
+                                                          for e in ESTIMATORS}):
         raise _fail('calibration')
     from services.l4_distribution_runtime import distribution_policy_identity
     from services.r33_isotonic_calibration import checksum
@@ -134,7 +135,9 @@ def validate_evidence(evidence, admission):
 
 def validate_against_ensemble(evidence, ensemble):
     """At serving: the evidence describes the exact published R33 object, field for field."""
+    from services.r33_crossfit_serving import estimator_of, table_name
     from services.r33_ensemble import validate_ensemble
+    from services.r33_monthly_lifecycle import BUNDLE_PREFIX
     validate_ensemble(ensemble)
     source = ensemble['source_bundle']
     candidate, calibration = evidence['candidate_bundle'], evidence['calibration']
@@ -146,7 +149,10 @@ def validate_against_ensemble(evidence, ensemble):
             or candidate['oof_checks_status'] != ensemble['validation']['oof_checks_status']
             or candidate['pit_certified'] is not ensemble['validation']['pit_certified']
             or calibration['source_payload_checksum'] != source['source_calibration_checksum']
-            or calibration['serving_table_checksum'] != ensemble['serving_calibration']['payload_checksum']):
+            or calibration['serving_table_checksum'] != ensemble['serving_calibration']['payload_checksum']
+            # Each estimator's table has its own write-once path (the legacy one keeps TABLE_NAME).
+            or calibration['serving_table_path'] != (f"{BUNDLE_PREFIX}/{ensemble['cohort_id']}/"
+                                                     f"{table_name(estimator_of(ensemble['serving_calibration']))}")):
         raise _fail('ensemble_mismatch')
 
 

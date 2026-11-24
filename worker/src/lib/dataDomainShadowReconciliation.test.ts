@@ -28,9 +28,13 @@ assert(source.includes('domain_full_recopy_reset_cutover_blocked:'))
 assert(drain.includes("status === 'shadow_delete_reconciliation_deferred'"))
 // The per-domain ops job was folded into the sequential coordinator; delete reconciliation
 // stays inside backfillDataDomainTableShadow, which every coordinator step runs.
+// D9 step 4 retired the coordinator's scheduler root (manual trigger only) so the
+// legacy -> ops control-plane copy runs with no writers.
 const schedulerConfig = JSON.parse(scheduler) as { jobs: Array<{ id: string; description?: string }>; deleteJobIds: string[] }
-const coordinator = schedulerConfig.jobs.find((job) => job.id === 'data-domain-shadow-backfill-next')
-assert(coordinator)
+for (const id of ['data-domain-shadow-backfill-next', 'data-domain-shadow-backfill-paper']) {
+  assert(schedulerConfig.deleteJobIds.includes(id), `${id} must be deleted by the scheduler sync`)
+  assert(!schedulerConfig.jobs.some((job) => job.id === id), `${id} must not be declared as a scheduler root`)
+}
 const backfillOrder = drain.match(/const DOMAIN_BACKFILL_ORDER: DataDomain\[\] = \[([^\]]*)\]/)?.[1] ?? ''
 assert(backfillOrder.includes("'ops'"), 'the sequential coordinator must still backfill the ops domain')
 assert(schedulerConfig.deleteJobIds.includes('data-domain-shadow-backfill-ops'))

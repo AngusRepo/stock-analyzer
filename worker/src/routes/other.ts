@@ -207,6 +207,13 @@ import {
   resolveMlVoteSummary,
 } from '../lib/recommendationContext'
 import { getTradingConfig } from '../lib/tradingConfig'
+import {
+  CONFIDENCE_SORT_MODES,
+  confidenceForSymbol,
+  loadConfidenceContext,
+  parseConfidenceSort,
+  sortRecommendationsByConfidence,
+} from '../lib/recommendationConfidence'
 import { classifyBoard, resolveRecommendationGovernance } from '../lib/boardTradability'
 import { summarizeScreenerFunnelRows, summarizeStrategyPortfolioIntelligenceHealth } from '../lib/screenerFunnelEvidence'
 import { FunnelArchiveReader, isAuditPointerEvidence, visitArchivedFunnelEvidence } from '../lib/screenerEvidenceResolver'
@@ -4263,6 +4270,25 @@ recommendations.get('/daily', async (c) => {
       watch_points: watchPoints,
     }
   })
+  // Display-only confidence (percentile + roster agreement, calibrated win rate) and card order;
+  // `rank` stays the legacy screener rank and is only the last tie-break.
+  const confidenceSort = parseConfidenceSort(c.req.query('sort'))
+  const confidenceContext = await loadConfidenceContext(c.env, String(date), recs)
+  for (const rec of recs) rec.r33_confidence = confidenceForSymbol(confidenceContext, String(rec.symbol ?? '').trim())
+  const orderedRecs = sortRecommendationsByConfidence(recs, confidenceSort)
+  recs.splice(0, recs.length, ...orderedRecs)
+  const confidenceSummary = {
+    sort: confidenceSort,
+    sort_options: [...CONFIDENCE_SORT_MODES],
+    plan_id: confidenceContext.header?.plan_id ?? null,
+    signal_date: confidenceContext.header?.signal_date ?? null,
+    pool_size: confidenceContext.sortedScores.length,
+    unavailable_reason: confidenceContext.unavailableReason,
+    win_rate_status: confidenceContext.winRateReason ? 'unavailable' : 'available',
+    win_rate_reason: confidenceContext.winRateReason,
+    win_rate_table_sha256: confidenceContext.table?.table_sha256 ?? null,
+    win_rate_cohort_id: confidenceContext.table?.identity?.cohort_id ?? null,
+  }
   const evidenceLinksBySymbol = view === 'card'
     ? new Map<string, any[]>()
     : await loadRecommendationEvidenceLinks(
@@ -4322,6 +4348,7 @@ recommendations.get('/daily', async (c) => {
       research_only: { count: researchOnlyRecs.length },
     },
     strategy_portfolio_intelligence_health: strategyPortfolioIntelligenceHealth,
+    confidence: confidenceSummary,
     funnel_summary: pipelineSummaries.funnel_summary,
     strategy_summary: pipelineSummaries.strategy_summary,
     generated_at: recs[0]?.created_at ?? null,

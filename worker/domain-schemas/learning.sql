@@ -870,12 +870,6 @@ CREATE TABLE IF NOT EXISTS strategy_decision_log (
 CREATE INDEX IF NOT EXISTS idx_strategy_decision_log_date
   ON strategy_decision_log(date DESC, strategy_id, matched);
 
-CREATE INDEX IF NOT EXISTS idx_strategy_decision_log_symbol
-  ON strategy_decision_log(symbol, date DESC);
-
-CREATE INDEX IF NOT EXISTS idx_strategy_decision_log_status
-  ON strategy_decision_log(strategy_status, matched, date DESC);
-
 CREATE TABLE IF NOT EXISTS selection_reference_snapshots_v1 (
   signal_date TEXT NOT NULL,
   symbol TEXT NOT NULL,
@@ -2046,8 +2040,6 @@ CREATE INDEX IF NOT EXISTS idx_s12_formal_ev_decisions_current
 
 CREATE INDEX IF NOT EXISTS idx_s12_formal_ev_decisions_symbol
   ON s12_formal_ev_decisions(symbol, observation_date DESC, created_at DESC);
-
-CREATE INDEX IF NOT EXISTS idx_strategy_decision_log_evaluability ON strategy_decision_log(date DESC, strategy_id, evaluable, matched);
 
 -- Rows audit-json retention still has to process, one index per target predicate (learning migration 0069).
 CREATE INDEX IF NOT EXISTS idx_strategy_decision_log_audit_json_pending

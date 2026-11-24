@@ -482,7 +482,9 @@ function executionToneClass(tone: string): string {
   return 'border-zinc-500/25 bg-zinc-500/10 text-zinc-200'
 }
 
-function pendingBuyEmptyMessage(meta?: any): string {
+function pendingBuyEmptyMessage(meta?: any, state?: any): string {
+  // A failed flow (no decision, or a run never published by 08:45) is not the normal empty state.
+  if (state?.state === 'error') return `今日沒有可執行的盤前決策：${state.error_message ?? meta?.error_message ?? 'unknown'}`
   const counts = meta?.execution_counts ?? {}
   const cancelled = Number(counts.cancelled ?? 0)
   const filled = Number(counts.filled ?? 0)
@@ -554,7 +556,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
         <div className="px-1 text-xs text-muted-foreground/60 sv-num">{showingDate || 'today'} pending buys execution state</div>
         <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} policy={pendingExecutionPolicy} />
         <div className="rounded-xl border border-muted/40 bg-background/40 p-3 text-xs text-muted-foreground">
-          {pendingBuyEmptyMessage(pendingMeta)}
+          {pendingBuyEmptyMessage(pendingMeta, pendingState)}
           <div className="mt-2 sv-num text-xs text-muted-foreground/70">
             Only L4 sparse final BUY rows enter pending buys; daily recommendations stay evidence until L4 selects them.
           </div>
@@ -566,7 +568,9 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
   return (
     <div className="space-y-2">
       <div className="px-1 text-[11px] text-muted-foreground">{refreshStatus}{pendingRunLabel}</div>
-      <div className="border-t border-muted/40 pt-3 px-1 text-xs font-semibold text-emerald-300 sv-num">{showingDate} · L4 待買清單（{buys.length} 檔）</div>
+      {pendingState?.state === 'error'
+        ? <div className="border-t border-muted/40 pt-3 px-1 text-xs font-semibold text-red-300 sv-num">{showingDate} · L4 待買清單（{buys.length} 檔，未發布，不會執行）：{pendingState.error_message ?? pendingMeta?.error_message ?? 'unknown'}</div>
+        : <div className="border-t border-muted/40 pt-3 px-1 text-xs font-semibold text-emerald-300 sv-num">{showingDate} · L4 待買清單（{buys.length} 檔）</div>}
       <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} policy={pendingExecutionPolicy} />
       <p className="px-1 text-sm text-muted-foreground">辯論僅供觀察，不改變選股、配置或交易資格。行情每 10 秒讀取串流快取；訊號仍在完整 5 分 K 後判斷。</p>
       {completedCards}

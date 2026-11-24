@@ -3,14 +3,14 @@ import { readFileSync } from 'node:fs'
 import test from 'node:test'
 import { navNumber, navPercent, navSign } from './navTradingRoom'
 const source = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8')
-test('NAV lives in trading room, old Paper remains separate and lazy', () => {
+// 047cdef2 (unify single B views) removed the /bot NAV tab, and 62b94c74 (close input stage
+// without Atomic) removed the paired-NAV summary from Pipeline maturity; neither surface may return.
+test('Paper room is the single B view; NAV comparison tab and paired-NAV summary stay removed', () => {
   const bot = source('../pages/BotDashboard.tsx')
-  assert.ok(bot.includes('value="paper"')); assert.ok(bot.includes('value="nav"'))
-  assert.ok(bot.includes("lazy(() => import('@/components/NavTradingRoom'))"))
-  assert.ok(bot.includes('useSearch()')); assert.ok(bot.includes('/bot?tab=nav'))
-  assert.ok(source('../components/PipelineMaturityContribution.tsx').includes('<NavCollectionSummary'))
-  assert.ok(!source('../components/PipelineMaturityContribution.tsx').includes('<PairedNavShadow'))
-  assert.ok(source('../components/NavCollectionSummary.tsx').includes('href="/bot?tab=nav"'))
+  assert.ok(!bot.includes('value="nav"')); assert.ok(!bot.includes('/bot?tab=nav'))
+  assert.ok(!bot.includes("import('@/components/NavTradingRoom')"))
+  const maturity = source('../components/PipelineMaturityContribution.tsx')
+  assert.ok(!maturity.includes('<NavCollectionSummary')); assert.ok(!maturity.includes('<PairedNavShadow'))
 })
 test('UI separates absent data, actual zero, comparison identity and cost evidence', () => {
   const view = source('../components/NavTradingRoom.tsx')

@@ -89,7 +89,9 @@ import { buildL0DropReasonConservation, compactL0DropReasonConservationReceipt }
 import {
   L05_LIQUIDITY_CAPACITY_POLICY,
   L05_LIQUIDITY_CAPACITY_POLICY_CHECKSUM,
+  compactL05LiquidityCapacityReceipt,
   evaluateL05LiquidityCapacity,
+  type L05LiquidityCapacityReceipt,
 } from './l05LiquidityCapacity'
 import { buildStrategyRouteRecoveryPacket } from "./strategyRouteRecoveryPacket"
 import { buildLayer1WithAtomicSource, sealAtomicPostOverlaySource, type AtomicStrategySource } from './atomicStrategyShadow'
@@ -3773,7 +3775,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   }
 
   // ?? Step 1: Universe hard filter ??
-  const universe: { stockId: string; prices: CanonicalScreenerPrice[] }[] = []
+  const universe: { stockId: string; prices: CanonicalScreenerPrice[]; liquidityCapacity: L05LiquidityCapacityReceipt }[] = []
   let skipPriceHistory = 0, skipPrice = 0, skipLiquidity = 0, skipPunish = 0, skipVolZero = 0, skipEtf = 0
 
   for (const [stockId, prices] of data.prices) {
@@ -3829,7 +3831,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       continue
     }
 
-    universe.push({ stockId, prices })
+    universe.push({ stockId, prices, liquidityCapacity })
     pushFunnelItem(funnelItems, {
       symbol: stockId,
       stage: 'universe',
@@ -3897,7 +3899,7 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   }
   const scored: ScoredCandidate[] = []
 
-  for (const { stockId, prices } of universe) {
+  for (const { stockId, prices, liquidityCapacity } of universe) {
     const latest = prices[prices.length - 1]
     const chipDates = data.chips.get(stockId)
     const { base_score, chip_score, tech_score, momentum_score, score_components, reasons } = scoreMultiFactor(
@@ -3939,7 +3941,10 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
       decision: 'pass',
       reasonCode: 'base_score_computed',
       scoreAfter: base_score,
-      evidence: { chip_score, tech_score, momentum_score, score_components, reasons, taxonomy, raw_signals },
+      evidence: {
+        chip_score, tech_score, momentum_score, score_components, reasons, taxonomy, raw_signals,
+        l05_liquidity_capacity: compactL05LiquidityCapacityReceipt(liquidityCapacity),
+      },
     })
   }
 

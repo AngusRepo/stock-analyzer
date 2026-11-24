@@ -129,6 +129,9 @@ function percentMetric(raw: unknown): string {
   return `${fmt(pct, 1)}%`
 }
 
+// Missing funnel evidence (e.g. a row dropped by the D1 persistence cap) is unknown, not blocked.
+const UNKNOWN_EVIDENCE_LABEL = '未知（無資料）'
+
 function boolMetric(raw: unknown, yes = 'yes', no = 'no'): string {
   if (raw === true || raw === 1) return yes
   if (raw === false || raw === 0) return no
@@ -158,7 +161,11 @@ function layerTraceRowsFromRec(rec: any): LayerTraceRow[] {
     {
       layer: 'L0',
       title: 'Universe / Features',
-      status: l0 ? boolMetric(l0.universe_passed, 'pass', textMetric(l0.universe_decision, 'review')) : 'no evidence',
+      status: l0
+        ? l0.universe_passed == null
+          ? UNKNOWN_EVIDENCE_LABEL
+          : boolMetric(l0.universe_passed, 'pass', textMetric(l0.universe_decision, 'review'))
+        : 'no evidence',
       detail: l0?.decision_policy ?? 'feature materialization evidence not found',
       metrics: [
         `source ${numberMetric(l0?.source_universe_count, 0)}`,
@@ -175,6 +182,7 @@ function layerTraceRowsFromRec(rec: any): LayerTraceRow[] {
         `lane ${textMetric(l05?.recommendation_lane)}`,
         `board ${textMetric(l05?.board_type ?? l05?.market_segment)}`,
         `ML ${boolMetric(l05?.ml_slate_allowed ?? l05?.eligible_for_ml, 'allowed', 'blocked')}`,
+        `liquidity ${l05 && l05.liquidity_capacity_passed != null ? boolMetric(l05.liquidity_capacity_passed, 'pass', 'blocked') : UNKNOWN_EVIDENCE_LABEL}`,
       ],
     },
     {

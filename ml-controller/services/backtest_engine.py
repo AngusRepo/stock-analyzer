@@ -3254,7 +3254,7 @@ def simulate_entries_for_date(
     # 2026-04-20 #28 P4: SLTP risk-level add + dd scaling + bull align
     #   risk_level: market_risk.risk_level for `day` (green|yellow|orange|red|black)
     #     → drives compute_sltp_override (orange/red/black only modify SL/TP mults)
-    #     → 'yellow' maps to paper.ts 'medium' for medium_risk_scale (#28 P5)
+    #     → levels in L2_formula.medium_risk_levels (default none) get medium_risk_scale (Paper parity)
     #   bull_align_pct: market_breadth.bull_alignment_pct for `day` (0-100 %)
     #     → if < circuit.bullAlignmentThreshold → budget × 0.5 (paper.ts:347-352)
     risk_level: Optional[str] = None,
@@ -3584,13 +3584,17 @@ def simulate_entries_for_date(
         # 2026-04-20 #28 P5: medium_risk_scale + PF quality blend (Mode B only).
         # Both live under L2_formula, applied on budget AFTER circuit-level mults.
         if ml_predictions is not None and l2_formula_cfg is not None:
-            # medium_risk_scale: yellow is our D1 mapping of paper.ts's 'medium'
-            # (paper.ts runtime fetches from Shioaji proxy whose domain is
-            # 'low/medium/high/extreme'; we use D1 market_risk.risk_level whose
-            # yellow tier is the semantic equivalent of paper.ts 'medium').
-            if risk_level == "yellow":
-                medium_scale = float(l2_formula_cfg.get("medium_risk_scale", 0.5))
-                budget *= medium_scale
+            # medium_risk_scale applies on the levels in L2_formula.medium_risk_levels, the same field Paper
+            # reads (worker mediumRiskScaleFor). Default [] = not applied, which is what Paper has always done
+            # (its old 'medium' compare never matched); whether to enable yellow is Wei's decision.
+            # Parity is exact only at the default []: once a level is listed, backtest keys on the stored v1
+            # level and scales the whole budget, Paper on the canonical runtime level and only kelly / risk_pct.
+            # A non-numeric / non-finite scale leaves sizing unchanged, like the Worker.
+            medium_levels = l2_formula_cfg.get("medium_risk_levels") or []
+            if isinstance(medium_levels, list) and risk_level in medium_levels:
+                medium_scale = l2_formula_cfg.get("medium_risk_scale", 0.5)
+                if isinstance(medium_scale, (int, float)) and not isinstance(medium_scale, bool) and math.isfinite(medium_scale):
+                    budget *= min(1.0, max(0.0, float(medium_scale)))
 
             # PF quality blend: weight 30d + 90d rolling PF then clip.
             # Port of adaptive.compute_pf_quality_mults simplified for Mode B

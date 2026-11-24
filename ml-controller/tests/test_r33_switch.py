@@ -305,3 +305,164 @@ def test_publisher_never_adopts_an_r33_object_without_its_paper_admission(monkey
     # No R33 NAV adoption exists (active8_nav_inference refuses it); the publisher blocks first.
     result, calls = _publish_r33_dry_run(monkeypatch, paper=False)
     assert result['status'] == 'blocked' and result['decision'] == 'r33_requires_paper_admission' and calls == []
+
+
+# ---- same-cohort recalibration (L3-EV-STEP): only the serving estimator changes ----
+
+def _hinge_calibration():
+    from services import r33_crossfit_serving as serving
+    curve = dict(kind='hinge', intercept=-0.001, slope=0.028, knot=0.5, knot_quantile=0.85, score_cap=1.0)
+    quantiles = [-1.0 + 0.1 * i for i in range(21)]
+    return serving._build_hinge_payload(
+        curve=curve, variant='mean_z', horizon_sessions=5, model_order=list(_ensemble()['model_order']),
+        diagnostics={}, score_quantiles=quantiles,
+        inputs={'estimator': serving.HINGE_ESTIMATOR, 'source_calibration_checksum': '5' * 64})
+
+
+def _recalibration_inputs():
+    """The live state is the first R33 cutover's (cohort c1, legacy step table, its grant in KV);
+    the new object swaps in the hinge table."""
+    first = r33_switch.prepare(**_inputs())
+    live, grant = first['ensemble'], first['approval']
+    inputs = _inputs()
+    inputs.update(raw_config=deepcopy(first['writes']['kv-config']['after']),
+                  merged_config=deepcopy(grant['configuration']['trading_config']), prior=deepcopy(grant),
+                  old_admission=deepcopy(first['admission']), runtime_before=deepcopy(grant),
+                  pointer={**{k: live[k] for k in r33_switch.IDENTITY_KEYS}, 'promoted_at': 'x'},
+                  serving_table=_hinge_calibration(), live_ensemble=deepcopy(live),
+                  serving_sanity=_sanity(_hinge_calibration(), grant['configuration']['trading_config']['fees']))
+    new = _hinge_calibration()
+    approval = {'schema_version': r33_switch.RECALIBRATION_SCHEMA, 'approved': True, 'scope': 'paper_r33_recalibration',
+                'cohort_id': 'c1', 'from_serving_table_checksum': live['serving_calibration']['payload_checksum'],
+                'to_estimator': new['inputs']['estimator'], 'to_serving_table_checksum': new['payload_checksum'],
+                'approved_at': '2026-11-08T13:00:00Z', 'source_reference': 'SYNTHETIC TEST ONLY'}
+    return inputs, approval
+
+
+def test_a_same_cohort_estimator_swap_needs_wei_approval_and_then_serves():
+    from services.r33_crossfit_serving import HINGE_ESTIMATOR, table_name
+    from services.r33_cutover import verify_serving
+    inputs, approval = _recalibration_inputs()
+    with pytest.raises(RuntimeError, match='same_cohort_recalibration_requires_wei_approval'):
+        r33_switch.prepare(**inputs)
+    packet = r33_switch.prepare(**inputs, recalibration_approval=approval)
+    verify_serving(packet['approval'], packet['admission'], packet['ensemble'])
+    r33_switch.validate_packet(packet, now=NOW)
+    live = inputs['live_ensemble']
+    assert packet['ensemble']['cohort_id'] == live['cohort_id'] and packet['ensemble']['payload_checksum'] != live['payload_checksum']
+    assert {k for k in live if packet['ensemble'][k] != live[k]} == {'serving_calibration', 'artifact_id', 'payload_checksum'}
+    calibration = packet['approval']['approved_r33_cutover']['calibration']
+    assert calibration['serving_table_checksum'] == approval['to_serving_table_checksum']
+    assert calibration['serving_table_path'] == f'r33/monthly_candidates/c1/{table_name(HINGE_ESTIMATOR)}'
+    assert packet['recalibration']['from']['serving_table_checksum'] == approval['from_serving_table_checksum']
+    assert packet['recalibration']['to']['estimator'] == HINGE_ESTIMATOR
+    # A dropped record is caught at activation (the seal is recomputed to show it is the validators).
+    stripped = r33_switch.seal(dict(packet, recalibration=None))
+    with pytest.raises(RuntimeError, match='same_cohort_recalibration_requires_wei_approval'):
+        r33_switch.validate_packet(stripped, now=NOW)
+
+
+@pytest.mark.parametrize('fault', ['other_cohort', 'other_from', 'other_to', 'other_estimator', 'not_approved',
+                                   'extra_field', 'no_reference', 'no_time', 'bad_time', 'future_time',
+                                   'live_not_pointer', 'other_bundle', 'new_bundle', 'same_estimator', 'live_tampered',
+                                   'prior_not_cutover', 'exit_rules_changed'])
+def test_a_recalibration_fails_closed(fault):
+    inputs, approval = _recalibration_inputs()
+    live = inputs['live_ensemble']
+    edits = {
+        'other_cohort': lambda: approval.update(cohort_id='c2'),
+        'other_from': lambda: approval.update(from_serving_table_checksum='0' * 64),
+        'other_to': lambda: approval.update(to_serving_table_checksum='0' * 64),
+        'other_estimator': lambda: approval.update(to_estimator='r33-purged-crossfit-recalibrated-v1'),
+        'not_approved': lambda: approval.update(approved='yes'),
+        'extra_field': lambda: approval.update(note='x'),
+        'no_reference': lambda: approval.update(source_reference=' '),
+        'live_not_pointer': lambda: inputs.update(live_ensemble=_ensemble(_calibration(ys=(-0.03, 0.0, 0.01, 0.03)))),
+        'other_bundle': lambda: inputs.update(live_ensemble={**live, 'source_bundle': {**live['source_bundle'], 'sha256': 'e' * 64}}),
+        # A self-consistent new object from another sealed bundle of the same cohort.
+        'new_bundle': lambda: inputs.update(bundle_sha256='e' * 64),
+        'same_estimator': lambda: inputs.update(
+            serving_table=_calibration(ys=(-0.03, 0.0, 0.01, 0.03)),
+            serving_sanity=_sanity(_calibration(ys=(-0.03, 0.0, 0.01, 0.03)), inputs['merged_config']['fees'])),
+        'no_time': lambda: approval.pop('approved_at'),
+        'bad_time': lambda: approval.update(approved_at='tonight'),
+        'future_time': lambda: approval.update(approved_at='2099-01-01T00:00:00Z'),
+        # The DB column and the payload agree, but the object no longer recomputes to its checksum.
+        'live_tampered': lambda: live['serving_calibration']['blocks'][0].update(mean_excess=0.5),
+        # A grant that is not (and does not pin) the R33 cutover grant does not own the live table.
+        'prior_not_cutover': lambda: _replace_prior(inputs, _inputs()['prior']),
+        'exit_rules_changed': lambda: inputs['exit_rules'].update(swingMaxHoldSessions=10),
+    }
+    edits[fault]()
+    reason = {'live_not_pointer': 'recalibration_live_object_not_the_pointer',
+              'other_bundle': 'recalibration_live_object_invalid',
+              'new_bundle': 'recalibration_changes_more_than_the_estimator',
+              'same_estimator': 'recalibration_changes_more_than_the_estimator',
+              'future_time': 'recalibration_approval_in_the_future',
+              'live_tampered': 'recalibration_live_object_invalid',
+              'prior_not_cutover': 'recalibration_prior_not_an_r33_cutover_grant',
+              'exit_rules_changed': 'recalibration_changes_the_exit_rules'}.get(fault, 'recalibration_approval_invalid')
+    with pytest.raises(RuntimeError, match=reason):
+        r33_switch.prepare(**inputs, recalibration_approval=approval)
+
+
+def test_a_recalibration_approval_on_an_ordinary_cutover_is_refused():
+    _, approval = _recalibration_inputs()
+    with pytest.raises(RuntimeError, match='recalibration_approval_without_a_recalibration'):
+        r33_switch.prepare(**_inputs(), recalibration_approval=approval)
+    assert r33_switch.prepare(**_inputs())['recalibration'] is None
+
+
+def _replace_prior(inputs, prior):
+    """The same live config and admission under a grant that carries no R33 cutover evidence."""
+    prior = deepcopy(prior)
+    prior.update(admission=deepcopy(inputs['old_admission']),
+                 configuration=deepcopy(inputs['prior']['configuration']))
+    prior.pop('approval_checksum')
+    prior['approval_checksum'] = digest(prior)
+    inputs.update(prior=prior, runtime_before=deepcopy(prior))
+
+
+@pytest.mark.parametrize('fault', ['dropped_reference', 'dropped_time', 'extra_field', 'future_time',
+                                   'from_rewritten', 'from_estimator_is_to'])
+def test_a_tampered_recalibration_record_is_refused_at_activation(fault):
+    """validate_packet re-runs prepare's checks: a re-sealed packet cannot carry a weaker record."""
+    inputs, approval = _recalibration_inputs()
+    packet = r33_switch.prepare(**inputs, recalibration_approval=approval)
+    r33_switch.validate_packet(packet, now=NOW)
+    record = packet['recalibration']
+    edits = {
+        'dropped_reference': lambda: record['approval'].pop('source_reference'),
+        'dropped_time': lambda: record['approval'].pop('approved_at'),
+        'extra_field': lambda: record['approval'].update(note='x'),
+        'future_time': lambda: record['approval'].update(approved_at='2099-01-01T00:00:00Z'),
+        # Rewritten in both places, so the record agrees with itself but not with the live grant.
+        'from_rewritten': lambda: (record['approval'].update(from_serving_table_checksum='0' * 64),
+                                   record['from'].update(serving_table_checksum='0' * 64)),
+        'from_estimator_is_to': lambda: record['from'].update(estimator=record['to']['estimator']),
+    }
+    edits[fault]()
+    reason = {'future_time': 'recalibration_approval_in_the_future', 'from_rewritten': 'packet_recalibration_invalid',
+              'from_estimator_is_to': 'packet_recalibration_invalid'}.get(fault, 'recalibration_approval_invalid')
+    with pytest.raises(RuntimeError, match=reason):
+        r33_switch.validate_packet(r33_switch.seal(packet), now=NOW)
+
+
+def test_activation_refuses_a_recalibration_from_another_bundle_even_with_a_consistent_record(monkeypatch):
+    """prepare refuses it (new_bundle above); a packet produced past that check fails validate_packet."""
+    from services.r33_crossfit_serving import estimator_of
+    inputs, approval = _recalibration_inputs()
+    inputs['bundle_sha256'] = 'e' * 64
+
+    def record_only(**kw):
+        live, new = kw['live_ensemble'], kw['ensemble']
+        side = lambda o: {'artifact_id': o['artifact_id'], 'payload_checksum': o['payload_checksum'],  # noqa: E731
+                          'serving_table_checksum': o['serving_calibration']['payload_checksum'],
+                          'estimator': estimator_of(o['serving_calibration'])}
+        return {'approval': deepcopy(kw['approval']), 'from': side(live), 'to': side(new)}
+    monkeypatch.setattr(r33_switch, 'recalibration', record_only)
+    forged = r33_switch.prepare(**inputs, recalibration_approval=approval)
+    monkeypatch.undo()
+    with pytest.raises(RuntimeError, match='packet_recalibration_invalid'):
+        r33_switch.validate_packet(forged, now=NOW)
+

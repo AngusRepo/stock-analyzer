@@ -4,13 +4,13 @@
   "source_equivalence": false,
   "maturity_transfer": false,
   "production_baseline_verified": true,
-  "production_baseline_source": "ea10784f2b8d2e174b62514a38c49402a7a5f37f",
+  "production_baseline_source": "69aaf527f09e36a8366139e322994359feafc2f8",
   "production_baseline_receipt_checksum": "24bf843f77e644b19b8e05cafbfee9841c7f9b11cb03347dfde875ebc330088e",
-  "prior_approval_checksum": "7c15f2432769c610d757e8368dd953efe25b9fb13cd0876b28570303e7f0eec4",
-  "prior_configuration_checksum": "b106987a51601072e24d7f94300a844c3050b3265ca7e6f7ceddc67374f47c79",
+  "prior_approval_checksum": "10680bb73420e55d802d4975d4814facdf4f969bd85d1e0783e14d6dd4536159",
+  "prior_configuration_checksum": "0b81cf6cb3d329ce59fdd837b4b1a11aaf2263e9fe86160a3daa1be3000d23da",
   "approved_sources": {
     "allocator_source_identity": {
-      "recommendation_service.py": "8a025dd3a900427663add0b912bed3c45e5a5a15461de05d496ce980cabc420d",
+      "recommendation_service.py": "1a9930c1890a87d1a31aa0a502115eee136bca1e1f817af308af4522e563d442",
       "portfolio_allocation.py": "2016860b0083b4b23172c10b30b8937009fe7a0a7e152acd066a99519b870a67",
       "online_portfolio_bandit.py": "4f802541c026a61272f3f0d6bc93aaa58a200f9a0ed1486cd2cff876e36a2525",
       "alpha_framework.py": "955507e02c65a84c95f606ae4d7a2dd7870a5514ac7f9e4b20f844c04ff9546b",
@@ -51,8 +51,8 @@
       "l3_equal_weight_bundle.py": "211314f3f29a073863df651eb015427d319585854207c7f83ef6393bff37f162",
       "r33_rank_pool.py": "408063582f4f7ae54152ef0360d5f0287e85ad2f6dd98e7330d8019d54f363b7",
       "r33_isotonic_calibration.py": "9ae3c91a06a370407800de4494822663da4249ae6d412cb1e74d7e361dfbee8f",
-      "r33_crossfit_serving.py": "565a28b64c0430483dd7001adb0130fac302053f0eca379ce60b1b085dfb3e11",
-      "r33_ensemble.py": "928a9563d57f102105f3d310ae46b628d6b14dac43952e1f005245d4d330e9e6"
+      "r33_crossfit_serving.py": "7eb8cfeeb017a53b336f30b66fb2d2c19a51829389144ccbab1fcfe7c0921b2e",
+      "r33_ensemble.py": "a06a457dd38fe997aae5cfc755226dd5a9597de5ba32e2f7afbdfb44d1fae276"
     },
     "l3_inference_source_identity": {
       "paired_nav_recommendation_path.py": "9c7d2ce429943ee715cb4cc7751ed3c5c316b8e73413b461c11434e0102de2d6",
@@ -60,7 +60,7 @@
       "paired_nav_l3_candidate.py": "e63dc44b6598c40c8b4383800180d4cfc49e764f3d6f0ca9b7559fa292a4a454",
       "paired_nav_l3_dispatch.py": "19bdfef7cff0231db33a76f76772bdded13ed8f96d35587bf6d0dbff76010f48",
       "paired_nav_strategy_bundle.py": "2e6fefa7f2f20e487c6d5cc5cae67e629a743e7e7d21513e84d8aadda64c673a",
-      "recommendation_service.py": "8a025dd3a900427663add0b912bed3c45e5a5a15461de05d496ce980cabc420d",
+      "recommendation_service.py": "1a9930c1890a87d1a31aa0a502115eee136bca1e1f817af308af4522e563d442",
       "active8_paper_admission.py": "2520438ade9dd68645a8cb252d31df77ec69ebb8b92457477d3286a891955cd8",
       "strategy_nav_runtime_approval.py": "98086fe5f7517ed8ec96f3fad29d7f5df8abb1e82e9e9653523b9037cd1280d8",
       "active8_nav_adoption.py": "d43f734af091d0665bbc40fa0618f3924b9b2ec9bd931bf0f7d081186c6110d1",
@@ -89,16 +89,16 @@
       "pit_sector_alpha.py": "919b06527e04c826ef9d8b38c13d84ba98eba1fbb19fc3508a4e2b3c39859f34",
       "sector_flow_pit_history.py": "3344d8c0b078bc1067765847dbf200067a7b599f4ff3a90d614f3b3a77efd3a6",
       "active8_score_semantics.py": "f522e434ecc97200802f87a8ea098ede42ee3bde85307d1b195a8562640f0d47",
-      "r33_ensemble.py": "928a9563d57f102105f3d310ae46b628d6b14dac43952e1f005245d4d330e9e6",
+      "r33_ensemble.py": "a06a457dd38fe997aae5cfc755226dd5a9597de5ba32e2f7afbdfb44d1fae276",
       "r33_rank_pool.py": "408063582f4f7ae54152ef0360d5f0287e85ad2f6dd98e7330d8019d54f363b7",
       "r33_isotonic_calibration.py": "9ae3c91a06a370407800de4494822663da4249ae6d412cb1e74d7e361dfbee8f",
-      "r33_crossfit_serving.py": "565a28b64c0430483dd7001adb0130fac302053f0eca379ce60b1b085dfb3e11",
+      "r33_crossfit_serving.py": "7eb8cfeeb017a53b336f30b66fb2d2c19a51829389144ccbab1fcfe7c0921b2e",
       "r33_calibration_job.py": "0d9e52da7d4b81ae12a9821d5ef10ca41467952d25961f645c483874aa2a71d6",
       "r33_serving_inputs.py": "47a818f1362602fa27e7d93406059dc7adfc382061098f81f9455f65e9507f33",
-      "r33_cutover.py": "acfc12f04959c79095b815a0e363e5e1b7b95849cccbd244f38151c7f9247649",
+      "r33_cutover.py": "85253fd912730580baca146132244c7bdd20222463349b7eda912a37c50767aa",
       "alpha_model_roster.py": "e38d7cf80060bef1b79e72f27079f7e2a04a6638b2e84888985de83b8491fe89"
     }
   },
-  "execution_owner_version": "native-paper-v1:0112bf42de611eeaf6dd7ad0cf4b62b121802d5924ffdabd13bdb6b225b3e68d",
+  "execution_owner_version": "native-paper-v1:55781dbf2246d160b0cc55f5a3d3dbc8640bae2cc1f568511815704f9725a60f",
   "review": "output/herdr-handoff-20261018/sys-cleanup-20261028/runbook_k20_repin_grant.md"
 }

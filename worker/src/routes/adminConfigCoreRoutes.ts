@@ -824,6 +824,9 @@ adminConfigCoreRoutes.post('/api/admin/risk/recompute',async c=>{
   const authError=await requireServiceToken(c);if(authError)return authError
   const body=await c.req.json<{run_date?:string}>().catch(()=>null)
   if(!body?.run_date)return c.json({error:'run_date_required'},400)
-  try{const {recomputeDailyMarketRisk}=await import('../lib/marketRiskMaterialization');return c.json(await recomputeDailyMarketRisk(c.env,body.run_date))}
+  try{const {recomputeDailyMarketRisk}=await import('../lib/marketRiskMaterialization')
+    const result=await recomputeDailyMarketRisk(c.env,body.run_date)
+    // Written without trading:risk_config (no v2, packet flagged): the rerun has not repaired the date yet.
+    return c.json(result,result.risk_config_unavailable?503:200)}
   catch{return c.json({error:'dated_market_risk_materialization_failed'},409)}
 })

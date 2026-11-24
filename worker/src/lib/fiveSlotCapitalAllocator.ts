@@ -1,4 +1,5 @@
 import type { ScoreV2SnapshotSummary } from './scoreV2Taxonomy'
+import { DEFAULT_RISK_CONFIG } from './riskConfig'
 
 export type FiveSlotAllocatorAction = 'buy' | 'add' | 'replace' | 'hold' | 'skip'
 
@@ -24,6 +25,21 @@ export interface FiveSlotMarketContext {
   marketOutlookUpsidePct?: number | null
   regimeFamily?: string | null
   targetExposureCap?: number | null
+  // trading:risk_config.portfolio.{blackTargetExposure, slotFloorCapByLevel}; program defaults apply when omitted.
+  blackTargetExposure?: number | null
+  slotFloorCapByLevel?: Partial<Record<'green' | 'yellow' | 'orange' | 'red' | 'black', number>> | null
+}
+
+function slotFloorCap(level: string | null, caps: FiveSlotMarketContext['slotFloorCapByLevel']): number {
+  const key = (['green', 'yellow', 'orange', 'red', 'black'].includes(level ?? '') ? level : 'green') as keyof typeof DEFAULT_RISK_CONFIG.portfolio.slotFloorCapByLevel
+  const configured = caps == null ? DEFAULT_RISK_CONFIG.portfolio.slotFloorCapByLevel[key] : caps[key]
+  // A configured but unusable cap floors nothing (fail closed).
+  return typeof configured === 'number' && Number.isFinite(configured) ? clamp(configured, 0, 1) : 0
+}
+
+function blackExposure(value: number | null | undefined): number {
+  const configured = value ?? DEFAULT_RISK_CONFIG.portfolio.blackTargetExposure
+  return Number.isFinite(configured) ? clamp(configured, 0, 1) : 0
 }
 
 export interface FiveSlotHolding {
@@ -129,7 +145,11 @@ function outlookExposureAdjustment(upsidePct: number | null | undefined): number
 
 export function inferFiveSlotTargetExposureFromContext(context: FiveSlotMarketContext): number {
   const level = normalizedRiskLevel(context.marketRiskLevel)
-  if (level === 'black') return 0
+  if (level === 'black') {
+    // Without a runtime cap (blocked or unknown context) black stays at 0, whatever the KV black exposure.
+    const cap = context.targetExposureCap
+    return round4(cap != null && Number.isFinite(cap) ? Math.min(blackExposure(context.blackTargetExposure), clamp(cap, 0, 1)) : 0)
+  }
   const rawRiskScore = finiteNumber(context.riskScore, impliedRiskScore(level))
   const riskScore = clamp(rawRiskScore, 0, 100)
   const continuousBase = 0.92 - riskScore * 0.008
@@ -196,6 +216,7 @@ function applySlotFloor(
 export function fiveSlotSlotFloorRatio(
   candidate: FiveSlotCandidate,
   marketRiskLevel: string | null | undefined,
+  slotFloorCapByLevel?: FiveSlotMarketContext['slotFloorCapByLevel'],
 ): { ratio: number; reasons: string[] } {
   if (candidateFlag(candidate.s12HardVeto)) {
     return { ratio: 0, reasons: ['s12_hard_veto'] }
@@ -218,12 +239,7 @@ export function fiveSlotSlotFloorRatio(
   if (topRank && (s12Ready || vwapFast)) applySlotFloor(floor, 0.75, 'top_rank_s12_vwap_slot_floor')
   else if (topRank && !s12Advisory) applySlotFloor(floor, l5Pass ? 0.70 : 0.65, 'top_rank_slot_floor')
 
-  const cap =
-    level === 'black' ? 0 :
-      level === 'red' ? 0.45 :
-        level === 'orange' ? 0.55 :
-          level === 'yellow' ? 0.65 :
-            0.75
+  const cap = slotFloorCap(level, slotFloorCapByLevel)
   return {
     ratio: round4(clamp(floor.ratio, 0, cap)),
     reasons: floor.reasons.length > 0 ? floor.reasons : ['slot_floor_unavailable'],
@@ -415,7 +431,7 @@ export function buildFiveSlotCapitalPlan(input: {
     const targetPositionValue = targetSlotValue * confidenceMultiplier
     const holding = holdingsBySymbol.get(candidate.symbol)
     const currentPositionValue = holding ? holdingValue(holding) : 0
-    const slotFloor = fiveSlotSlotFloorRatio(candidate, input.marketRiskLevel)
+    const slotFloor = fiveSlotSlotFloorRatio(candidate, input.marketRiskLevel, input.marketContext?.slotFloorCapByLevel)
     const slotFloorBudget = Math.max(0, targetSlotValue * slotFloor.ratio - currentPositionValue)
     const rank = candidateRank(candidate)
 

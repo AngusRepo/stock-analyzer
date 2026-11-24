@@ -403,7 +403,11 @@ export interface TradingConfig {
     night_drop_mild_pct: number        // 夜盤中度跌幅（預設 -0.8 = -0.8%）
     night_drop_severe_adjust: number   // 嚴重跌 entry 調整（預設 0.98 = -2%）
     night_drop_mild_adjust: number     // 中度跌 entry 調整（預設 0.99 = -1%）
-    medium_risk_scale: number          // market_risk=medium 時倉位縮放（預設 0.5）
+    medium_risk_scale: number          // medium_risk_levels 當日 kelly／risk_pct 倉位縮放（預設 0.5）
+    // 哪些 canonical market risk level 套用 medium_risk_scale。未設定／[] = 不套用，等於修正前實際行為
+    // （舊程式比對 'medium' 從未命中）。backtest 補上 canonical level parity 前 validator 只接受 []；Paper 與 backtest 共用這個欄位。
+    // 刻意不放進 DEFAULT_TRADING_CONFIG：加預設會改變 Worker merged config，與既有 release grant 的 trading_config digest 不符。
+    medium_risk_levels?: Array<'green' | 'yellow' | 'orange' | 'red' | 'black'>
   }
   // ── #28b T1.3/T1.4 (2026-04-21): Risk event trigger thresholds ────────────
   // Used by daily-report cron (lib/riskTriggers.ts) to decide when to enqueue
@@ -1749,6 +1753,16 @@ export function validateTradingConfig(config: TradingConfig, privateResearch = f
     if (l2.confidence_effective_clip_lo >= l2.confidence_effective_clip_hi)
       errors.push(`confidence clip lo (${l2.confidence_effective_clip_lo}) must be < hi (${l2.confidence_effective_clip_hi})`)
   }
+  if (l2?.medium_risk_levels !== undefined && (!Array.isArray(l2.medium_risk_levels)
+      || l2.medium_risk_levels.some((level: unknown) => !['green', 'yellow', 'orange', 'red', 'black'].includes(String(level)))))
+    errors.push('L2_formula.medium_risk_levels must be an array of green|yellow|orange|red|black')
+  // Not enableable until parity: backtest_engine keys on the stored v1 level and scales the whole budget, while
+  // Paper keys on the canonical runtime level and scales only kelly / risk_pct (L4 sparse untouched). The backtest
+  // has no canonical-level history, so a non-empty list would make Optuna / replay evidence diverge from Paper.
+  else if (Array.isArray(l2?.medium_risk_levels) && l2.medium_risk_levels.length > 0)
+    errors.push('L2_formula.medium_risk_levels must stay [] until backtest_engine has canonical-level parity with Paper (backtest uses v1 level and whole-budget scaling)')
+  if (l2?.medium_risk_scale !== undefined && !(typeof l2.medium_risk_scale === 'number' && l2.medium_risk_scale >= 0 && l2.medium_risk_scale <= 1))
+    errors.push('L2_formula.medium_risk_scale must be a number in [0, 1]')
   if (l2?.adaptive_params_max_age_days !== undefined
       && (!Number.isInteger(l2.adaptive_params_max_age_days) || l2.adaptive_params_max_age_days < 1 || l2.adaptive_params_max_age_days > 30))
     errors.push('L2_formula.adaptive_params_max_age_days must be an integer 1-30')

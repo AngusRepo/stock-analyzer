@@ -421,7 +421,7 @@ CREATE INDEX IF NOT EXISTS idx_model_champion_pointers_updated
 
 CREATE TABLE IF NOT EXISTS active8_ensemble_artifacts_v1 (
   artifact_id TEXT PRIMARY KEY CHECK(length(trim(artifact_id)) > 0),
-  cohort_id TEXT NOT NULL UNIQUE CHECK(length(trim(cohort_id)) > 0),
+  cohort_id TEXT NOT NULL CHECK(length(trim(cohort_id)) > 0),
   training_run_id TEXT NOT NULL CHECK(length(trim(training_run_id)) > 0),
   knowledge_cutoff_date TEXT NOT NULL CHECK(length(knowledge_cutoff_date) = 10),
   schema_version TEXT NOT NULL CHECK(schema_version = 'active8-oof-ensemble-serving-artifact-v1'),
@@ -443,6 +443,10 @@ CREATE INDEX IF NOT EXISTS idx_active8_ensemble_artifacts_state
 
 CREATE INDEX IF NOT EXISTS idx_active8_ensemble_artifacts_run
   ON active8_ensemble_artifacts_v1(training_run_id, knowledge_cutoff_date DESC);
+
+-- 0072: a cohort may hold more than one R33 object (same-cohort recalibration).
+CREATE INDEX IF NOT EXISTS idx_active8_ensemble_artifacts_cohort
+  ON active8_ensemble_artifacts_v1(cohort_id, created_at);
 
 CREATE TABLE IF NOT EXISTS active8_ensemble_validation_attempts_v1 (
   attempt_id TEXT PRIMARY KEY CHECK(length(trim(attempt_id)) > 0),

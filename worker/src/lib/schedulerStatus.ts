@@ -200,6 +200,7 @@ const SCHEDULER_STATUS_SCAN_DAYS = 7
 const SCHEDULER_STATUS_LEGACY_FALLBACK_DAYS = 2
 // Today and yesterday still change and the daily aggregate is a best-effort read-modify-write, so a displayed
 // job it lacks, or still holds as non-terminal, is filled from its per-task key (display only, bounded).
+// On older scanned days only the non-terminal rows are re-read, within the same limit.
 const SCHEDULER_STATUS_DIRECT_READ_DAYS = 2
 const SCHEDULER_STATUS_DIRECT_READ_LIMIT = 30
 const SCHEDULER_STATUS_NON_TERMINAL = new Set(['running', 'triggered', 'waiting'])
@@ -1227,13 +1228,19 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string, now
   // watchdogs (window-gated below). A missing row is read only for a job logged on another scanned day,
   // so jobs that do not run daily cost nothing, and today only once the job is due (its cron fired today,
   // or for an event-driven job its usual time passed); jobs that have not run yet would take every slot. Non-terminal rows first, then yesterday, then today.
-  const directGapReads = dates.slice(0, SCHEDULER_STATUS_DIRECT_READ_DAYS).flatMap((date, dayIndex) => JOB_DEFS
+  // Older scanned days are settled, so there only a row the aggregate still holds as non-terminal (a lost
+  // aggregate update, e.g. indicator-queue 11/17, 11/20, 11/23) is re-read. It shares the read limit but
+  // ranks after today's and yesterday's reads, since such a row never heals in the aggregate.
+  const directGapReads = dates.flatMap((date, dayIndex) => JOB_DEFS
     .filter((def) => !def.id.endsWith('-watchdog') && def.group !== 'weekly' && def.group !== 'monthly'
       && def.id !== 'evening-chain'
       && !(dayIndex === 0 && (def.id === 'market-close-refresh' || def.id === 'pre-market-warmup'))
       && !(date === chainDisplayDate && CHAIN_STEP_IDS.includes(def.id)))
     .flatMap((def) => {
       const log = getJobDisplayLog(allLogs[date], def)
+      if (dayIndex >= SCHEDULER_STATUS_DIRECT_READ_DAYS) {
+        return log && SCHEDULER_STATUS_NON_TERMINAL.has(log.status) ? [{ def, date, rank: 3 }] : []
+      }
       if (log ? !SCHEDULER_STATUS_NON_TERMINAL.has(log.status)
         : !dates.some((other) => other !== date && getJobDisplayLog(allLogs[other], def))) return []
       if (!log && dayIndex === 0 && !((firstScheduledRunMsOnTwDate(def, date) ?? usualRunMsOnTwDate(def, date)) <= nowMs)) return []

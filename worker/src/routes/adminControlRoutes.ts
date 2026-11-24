@@ -771,6 +771,7 @@ async function handleSchedulerCallback(c: any) {
   }
 
   let verifiedNativeL4Closure = false
+  let nativeL4ClosureTransient = false
   if (['active8-oof-daily', 'active8-oof-weekly', 'active8-oof-monthly'].includes(body.task)) {
     const hasSchedulerTicketIdentity = Boolean(callbackSchedulerTicketId || callbackSchedulerRunId)
     if (hasSchedulerTicketIdentity && !(callbackSchedulerTicketId && callbackSchedulerRunId)) {
@@ -782,13 +783,23 @@ async function handleSchedulerCallback(c: any) {
     }
     const nativeClosure=callbackMetadata?.native_l4_daily_closure as Record<string,unknown>|undefined
     if (nativeClosure && body.task==='active8-oof-daily') {
-      const { verifyL4DailyClosure }=await import('../lib/l4DistributionClosure')
+      const { verifyL4DailyClosureWithRetry }=await import('../lib/l4DistributionClosure')
       if (body.status==='success') {
-        try {
-          await verifyL4DailyClosure(c.env,nativeClosure,callbackRunDate ?? '')
+        const verification=await verifyL4DailyClosureWithRetry(c.env,nativeClosure,callbackRunDate ?? '')
+        if (verification.status==='verified') {
           verifiedNativeL4Closure = true
-        } catch {
-          body.status='error';body.error='new_l4_daily_closure_unverified'
+        } else {
+          // D1 capacity errors that outlast the bounded retries are answered with 200, not 503: the controller
+          // posts this callback once (no retry), so a non-200 fails the Cloud Run execution and the controller's
+          // daily dispatch guard then blocks the whole date until a Wei-signed repair. The daily job is
+          // dispatched by the last watchdog slot (07:55 TW), so no later tick re-runs this date; a transient
+          // error is continued below through the bounded active8_oof_continuation queue instead.
+          body.status='error'
+          nativeL4ClosureTransient = verification.status==='transient'
+          body.error=verification.status==='transient'
+            ? `new_l4_daily_closure_verification_transient:retryable:attempts=${verification.attempts}:${verification.reason}`
+            : `new_l4_daily_closure_unverified:${verification.reason}`
+          body.summary=`${String(body.summary ?? '')} ${body.error}`.trim()
         }
       }
     } else {
@@ -836,6 +847,14 @@ async function handleSchedulerCallback(c: any) {
     const continuationAttempt = Math.max(0, Number(callbackMetadata?.continuation_attempt ?? 0))
     const continuationMaxAttempts = Math.min(ACTIVE8_OOF_CONTINUATION_MAX_ATTEMPTS,
       Math.max(1, Number(callbackMetadata?.continuation_max_attempts ?? 12)))
+    if (nativeL4ClosureTransient && callbackMetadata && callbackRunDate) {
+      // Same bounded continuation as active8_allocator_readiness_incomplete below; error only once exhausted.
+      body.status = continuationAttempt < continuationMaxAttempts ? 'triggered' : 'error'
+      if (body.status === 'triggered') {
+        callbackMetadata.lifecycle_status = 'pending'
+        callbackMetadata.dependency_retry_reason = 'new_l4_daily_closure_verification_transient'
+      }
+    }
     if (body.task === 'active8-oof-daily' && body.status === 'success'
       && active8FreshnessStatus === 'fresh' && callbackRunDate) {
       // The materialization callback must refresh its real serving consumer

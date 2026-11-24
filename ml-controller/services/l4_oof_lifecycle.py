@@ -149,12 +149,17 @@ def daily_plan_closure(config,as_of,paper):
     rows=paper.query('SELECT p.payload_json FROM l4_portfolio_head_v1 h JOIN l4_portfolio_plans_v1 p ON h.plan_id=p.plan_id WHERE h.account_id=1 AND p.activated=1',[])
     if len(rows)!=1:raise L4DailyPlanPending('l4_daily_plan_missing')
     plan=json.loads(rows[0]['payload_json'])
-    if plan['signal_date']!=as_of:
+    successor=None
+    if plan['signal_date']>as_of:
+        plan,successor=_superseded_signal_plan(plan,as_of,paper)
+    elif plan['signal_date']!=as_of:
         raise L4DailyPlanPending('l4_daily_plan_pending_for_signal_date')
     bundle=config['l4Distribution']['artifact']
     closure={'schema_version':'l4-daily-plan-closure-v1','signal_date':as_of,'plan_id':plan['plan_id'],
         'model_checksum':plan['model_checksum'],'legacy_oof_maturity_requested':False,
         'training_dispatched':False,'promoted':False}
+    if successor is not None:
+        closure.update(superseded_by_plan_id=successor['plan_id'],superseded_by_signal_date=successor['signal_date'])
     if plan['model_checksum']!=bundle['model_checksum']:
         superseded=_superseded_by_cutover(plan,as_of,bundle['model_checksum'])
         if superseded is None:
@@ -162,6 +167,26 @@ def daily_plan_closure(config,as_of,paper):
         return {**closure,'superseded_by_cutover':superseded}
     validate_bundle(bundle,l3_identity=plan['l3_identity'],signal_date=as_of)
     return closure
+
+
+def _superseded_signal_plan(head,as_of,paper):
+    """A late repair closes the signal date's own plan only if it was activated and the head descends from it."""
+    rows=paper.query('SELECT plan_id,payload_json FROM l4_portfolio_plans_v1 WHERE account_id=1 AND signal_date=? AND activated=1',[as_of])
+    if not rows:raise ValueError('l4_daily_superseded_plan_missing')
+    if len(rows)!=1:raise ValueError('l4_daily_superseded_plan_ambiguous')
+    original=json.loads(rows[0]['payload_json'])
+    if original.get('plan_id')!=rows[0]['plan_id'] or original.get('signal_date')!=as_of:
+        raise ValueError('l4_daily_superseded_plan_lineage_mismatch')
+    successor=head
+    # plan_id seals parent_plan_id, so the activated chain cannot cycle; every hop stays after as_of.
+    while successor.get('parent_plan_id')!=original['plan_id']:
+        parent=paper.query('SELECT payload_json FROM l4_portfolio_plans_v1 WHERE plan_id=? AND account_id=1 AND activated=1',[successor.get('parent_plan_id')])
+        if len(parent)!=1:raise ValueError('l4_daily_superseded_plan_lineage_mismatch')
+        step=json.loads(parent[0]['payload_json'])
+        if step.get('plan_id')!=successor.get('parent_plan_id') or not as_of<step['signal_date']<=successor['signal_date']:
+            raise ValueError('l4_daily_superseded_plan_lineage_mismatch')
+        successor=step
+    return original,successor
 
 
 def _superseded_by_cutover(plan,as_of,current_model_checksum):

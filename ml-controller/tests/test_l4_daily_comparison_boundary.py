@@ -116,6 +116,72 @@ def test_daily_plan_date_waits_but_model_change_fails(monkeypatch):
         l4_oof_lifecycle.daily_plan_closure(config,'2026-09-22',paper)
 
 
+def _superseded_paper(head,plans,row_ids=None,row_dates=None):
+    """head is the current head; plans are the activated rows (row_ids/row_dates forge the columns)."""
+    def query(sql,params):
+        if 'l4_portfolio_head_v1' in sql:return [{'payload_json':json.dumps(head)}]
+        if 'signal_date=?' in sql:
+            return [{'plan_id':(row_ids or {}).get(p['plan_id'],p['plan_id']),'payload_json':json.dumps(p)}
+                    for p in plans if (row_dates or {}).get(p['plan_id'],p['signal_date'])==params[0]]
+        assert 'plan_id=?' in sql
+        return [{'payload_json':json.dumps(p)} for p in plans+[head] if p['plan_id']==params[0]]
+    return SimpleNamespace(query=query)
+
+
+def _plan(plan_id,signal_date,parent):
+    return {'plan_id':plan_id,'signal_date':signal_date,'parent_plan_id':parent,'model_checksum':'model',
+            'l3_identity':{'artifact_id':signal_date}}
+
+
+@pytest.mark.parametrize('hops',[1,2])
+def test_superseded_plan_closes_with_marker_and_original_identity(monkeypatch,hops):
+    # 11-20 type: the 11-20 plan traded, its daily failed, then 11-23 (and 11-24) became head.
+    from services import l4_oof_lifecycle,l4_distribution
+    bundles=[]
+    monkeypatch.setattr(l4_distribution,'validate_bundle',lambda bundle,**kw:bundles.append(kw))
+    original=_plan('p1120','2026-11-20','p1119')
+    successor=_plan('p1123','2026-11-23','p1120')
+    head=successor if hops==1 else _plan('p1124','2026-11-24','p1123')
+    config={'l4Distribution':{'artifact':{'model_checksum':'model'}}}
+    closure=l4_oof_lifecycle.daily_plan_closure(config,'2026-11-20',_superseded_paper(head,[original,successor]))
+    assert closure=={'schema_version':'l4-daily-plan-closure-v1','signal_date':'2026-11-20','plan_id':'p1120',
+        'model_checksum':'model','legacy_oof_maturity_requested':False,'training_dispatched':False,'promoted':False,
+        'superseded_by_plan_id':'p1123','superseded_by_signal_date':'2026-11-23'}
+    assert bundles==[{'l3_identity':{'artifact_id':'2026-11-20'},'signal_date':'2026-11-20'}]
+
+
+def test_head_plan_closure_has_no_superseded_marker(monkeypatch):
+    from services import l4_oof_lifecycle,l4_distribution
+    monkeypatch.setattr(l4_distribution,'validate_bundle',lambda *a,**kw:None)
+    head=_plan('p1120','2026-11-20','p1119')
+    paper=_superseded_paper(head,[])
+    closure=l4_oof_lifecycle.daily_plan_closure({'l4Distribution':{'artifact':{'model_checksum':'model'}}},'2026-11-20',paper)
+    assert closure['plan_id']=='p1120' and not any(k.startswith('superseded') for k in closure)
+
+
+@pytest.mark.parametrize('fault,reason',[('missing','missing'),('multiple','ambiguous'),('row_id','lineage_mismatch'),
+    ('payload_date','lineage_mismatch'),('lineage','lineage_mismatch'),('inactive_hop','lineage_mismatch'),('model','model_changed')])
+def test_superseded_plan_without_consistent_evidence_fails_closed(monkeypatch,fault,reason):
+    from services import l4_oof_lifecycle,l4_distribution
+    monkeypatch.setattr(l4_distribution,'validate_bundle',lambda *a,**kw:None)
+    monkeypatch.setattr(l4_oof_lifecycle,'_superseded_by_cutover',lambda *a:None)
+    original=_plan('p1120','2026-11-20','p1119')
+    successor=_plan('p1123','2026-11-23','p1120')
+    head=_plan('p1124','2026-11-24','p1123')
+    plans,row_ids,row_dates=[original,successor],None,None
+    if fault=='missing':plans=[successor]
+    if fault=='multiple':plans.append(_plan('p1120b','2026-11-20','p1119'))
+    if fault=='row_id':row_ids={'p1120':'other'}
+    if fault=='payload_date':original['signal_date']='2026-11-19';row_dates={'p1120':'2026-11-20'}
+    if fault=='lineage':successor['parent_plan_id']='elsewhere'
+    if fault=='inactive_hop':plans=[original]
+    if fault=='model':original['model_checksum']='changed'
+    with pytest.raises(ValueError,match=reason) as raised:
+        l4_oof_lifecycle.daily_plan_closure({'l4Distribution':{'artifact':{'model_checksum':'model'}}},'2026-11-20',
+                                            _superseded_paper(head,plans,row_ids,row_dates))
+    assert not isinstance(raised.value,l4_oof_lifecycle.L4DailyPlanPending)
+
+
 def test_daily_plan_pending_retries_without_promotion(source,monkeypatch):
     import oof_materialize_job_main as job
     from services import l4_oof_lifecycle,trading_config_loader,d1_domain_client

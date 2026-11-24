@@ -174,6 +174,7 @@ const AUDIT_JSON_TARGETS: AuditJsonTargetConfig[] = [
       'created_at',
     ],
     blobColumns: ['evidence'],
+    pendingIndexMinBlobBytes: AUDIT_JSON_ARCHIVE_MIN_BLOB_BYTES,
   },
   {
     id: 'canonical_screener_funnel_items',
@@ -196,6 +197,7 @@ const AUDIT_JSON_TARGETS: AuditJsonTargetConfig[] = [
       'created_at',
     ],
     blobColumns: ['evidence'],
+    pendingIndexMinBlobBytes: AUDIT_JSON_ARCHIVE_MIN_BLOB_BYTES,
   },
   {
     id: 'paper_execution_events',
@@ -347,6 +349,10 @@ function archiveableWhere(target: AuditJsonTargetConfig, minBlobBytes: '?' | num
 // is used as is, and the archive predicate is repeated with the index's literal threshold
 // (implied by any min_blob_bytes at or above it; a smaller one falls back to the date walk).
 // Locked by src/lib/auditJsonPendingIndex.test.ts.
+// ops 0026 does the same for both screener_funnel_items targets (one index serves both: its
+// predicate is the shared archive predicate; each target's run filter is checked per entry).
+// Before it, 7 days to 2026-11-24 read 478M rows (pages ~561k rows, probes ~558k) to find nothing.
+// Locked by src/lib/auditJsonFunnelPendingIndex.test.ts.
 function pendingIndexWhere(target: AuditJsonTargetConfig, minBlobBytes: number): string {
   const threshold = target.pendingIndexMinBlobBytes
   if (target.mode === 'ref_v2_move' || threshold == null || minBlobBytes < threshold) return ''

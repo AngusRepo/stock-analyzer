@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:0112bf42de611eeaf6dd7ad0cf4b62b121802d5924ffdabd13bdb6b225b3e68d",
+  "execution_owner_version": "native-paper-v1:55781dbf2246d160b0cc55f5a3d3dbc8640bae2cc1f568511815704f9725a60f",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei 2026-11-23 20:2x TW：今晚搶，現在開工（IDREL re-pin after FG-02 default fix）",
+  "authorization": "Wei 2026-11-24 AskUserQuestion: 17:1x go：commit＋push＋3 PR（建議）; 17:3x go：merge 3 個進 release（建議）",
   "review": "output/herdr-handoff-20261018/sys-cleanup-20261028/runbook_k20_repin_grant.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:idrel-20261123"
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:slicea-20261124"
 }

@@ -667,3 +667,60 @@ def test_completed_failed_pipeline_is_parked_without_relaunch_or_large_reads(f,m
         assert result['execution_name']==first['execution_name']
     assert len(j.calls)==1
     assert all(s.blob(root+'/phases/'+name+'.json.gz').downloads==0 for name in m.SERVING_PHASES)
+
+
+def _premarket_routes():
+    # Compile the real route functions without importing the server app.
+    import ast
+    from pathlib import Path
+    from fastapi import HTTPException, Request
+    source = Path(__file__).resolve().parents[1] / 'routers/pipeline.py'
+    fns = [n for n in ast.parse(source.read_text(encoding='utf-8')).body
+           if isinstance(n, ast.AsyncFunctionDef) and n.name in ('premarket_resume', 'premarket_state')]
+    for fn in fns:
+        fn.decorator_list = []
+    ns = {'Request': Request, 'HTTPException': HTTPException, 'asyncio': asyncio,
+          '_jobs_client': object(), '_check_service_token': lambda request: None}
+    exec(compile(ast.Module(body=fns, type_ignores=[]), 'pipeline.py', 'exec'), ns)
+    return ns, HTTPException
+
+
+class _Body:
+    def __init__(self, body): self.body = body
+    async def json(self): return self.body
+
+
+@pytest.mark.parametrize('error', [ValueError('premarket_seal_mismatch'),
+    ValueError('premarket_nonretryable_frozen_atomic_inputs_requires_explicit_recovery'), KeyError('receipt')])
+def test_resume_contract_refusal_is_409_not_a_retryable_500(monkeypatch, error):
+    # The Worker retries 5xx as an unavailable controller until 08:45; a refusal must fail at once.
+    ns, HTTPException = _premarket_routes()
+    monkeypatch.setattr(m, 'enabled', lambda: True)
+    def refuse(*args, **kwargs): raise error
+    monkeypatch.setattr(m, 'dispatch', refuse)
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(ns['premarket_resume'](_Body({'receipt': {}, 'context': {}})))
+    assert caught.value.status_code == 409
+
+
+def test_resume_unexpected_fault_stays_5xx_and_success_passes_through(monkeypatch):
+    ns, HTTPException = _premarket_routes()
+    monkeypatch.setattr(m, 'enabled', lambda: True)
+    def crash(*args, **kwargs): raise RuntimeError('gcs unavailable')
+    monkeypatch.setattr(m, 'dispatch', crash)
+    with pytest.raises(RuntimeError):
+        asyncio.run(ns['premarket_resume'](_Body({'receipt': {}, 'context': {}})))
+    monkeypatch.setattr(m, 'dispatch', lambda receipt, context, jobs_client: {'status': 'dispatched'})
+    assert asyncio.run(ns['premarket_resume'](_Body({'receipt': {}, 'context': {}}))) == {'status': 'dispatched'}
+
+
+def test_state_seal_refusal_is_409(monkeypatch):
+    ns, HTTPException = _premarket_routes()
+    monkeypatch.setattr(m, 'enabled', lambda: True)
+    def mismatch(*args, **kwargs): raise ValueError('premarket_seal_mismatch')
+    monkeypatch.setattr(m, 'read_seal', mismatch)
+    with pytest.raises(HTTPException) as caught:
+        asyncio.run(ns['premarket_state'](object(), date='2026-09-11', run_id='r'))
+    assert caught.value.status_code == 409
+    monkeypatch.setattr(m, 'read_seal', lambda day, run_id: None)
+    assert asyncio.run(ns['premarket_state'](object(), date='2026-09-11', run_id='r'))['status'] == 'waiting'

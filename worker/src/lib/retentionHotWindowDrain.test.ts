@@ -124,6 +124,8 @@ test('dry-run reports every Learning source and never touches unsupported reader
           hot_retention_days: 120, cold_retention_days: 3650, archive_store: 'r2', action: 'archive_delete',
           hard_reference_protected: 1, status: 'active' }
         if (sql.includes('FROM predictions')) return null
+        // D1-M3: ops migration 0025 not applied -> no dataset gates, all ten stay blocked.
+        if (sql.includes('FROM sqlite_master') && sql.includes("type='table'")) return null
         throw new Error(`unexpected read: ${sql}`)
       },
       async all() {

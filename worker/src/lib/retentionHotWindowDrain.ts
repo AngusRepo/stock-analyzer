@@ -4,6 +4,7 @@ import { runRetentionDrainRounds } from './retentionDrainRounds'
 import { reconcileRetentionReleases } from './retentionReleaseReconciliation'
 import { releaseArchivedRows } from './retentionSourceRelease'
 import type { Bindings } from '../types'
+import { LEARNING_DRAIN_POLICY_ID, learningDatasetHotDays, loadLearningDrainGates, resolveLearningDrainSource, type LearningDrainGate } from './retentionLearningDrainGates'
 import { writeEvidenceArtifact } from './artifactLifecycle'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { sha256Text } from './datasetSnapshots'
@@ -104,6 +105,7 @@ type DrainPolicyResult = {
   policy_id: RetentionHotWindowDrainPolicyId
   status: 'dry_run' | 'success' | 'error'
   cutoff_date: string
+  dataset_cutoffs: Record<string, string>
   scanned_rows: number
   archived_rows: number
   deleted_rows: number
@@ -255,15 +257,33 @@ async function runPolicy(
   let archivedBytes = 0
   const errors: string[] = []
   const blockedDatasets: string[] = []
+  const datasetCutoffs: Record<string, string> = {}
 
   if (!dryRun) await beginRetentionRun(opsDb, { runId, policyId, businessDate })
 
-  const drainSources = config.sources.filter(source => source.deleteTable && source.deleteKeyColumn)
-  for (const source of config.sources.filter(source => !source.deleteTable || !source.deleteKeyColumn)) {
-    const message = `cold_reader_not_verified:${source.datasetId}`
+  // D1-M3: archive-only Learning sources drain only through an active OPS dataset gate.
+  // A failed gate read keeps every gated dataset blocked; predictions and the other policies still run.
+  let gates = new Map<string, LearningDrainGate>(), gateReadFailed = false
+  if (policyId === LEARNING_DRAIN_POLICY_ID) {
+    try { gates = await loadLearningDrainGates(opsDb) } catch (error) {
+      gateReadFailed = true
+      console.error('retention_learning_gate_read_failed', error instanceof Error ? error.message.slice(0, 160) : 'unknown')
+    }
+  }
+  const resolved = config.sources.map(source => {
+    const item = resolveLearningDrainSource(source, gates)
+    return gateReadFailed && item.blockedReason === 'gate_missing' ? { ...item, blockedReason: 'gate_read_failed' } : item
+  })
+  const drainSources = resolved.filter(item => !item.blockedReason && item.source.deleteTable && item.source.deleteKeyColumn)
+  for (const { source, blockedReason } of resolved.filter(item => !drainSources.includes(item))) {
+    const message = `cold_reader_not_verified:${source.datasetId}${blockedReason ? `:${blockedReason}` : ''}`
     blockedDatasets.push(source.datasetId)
+    // Show the window this dataset would drain at (45 days for decision_log / label_matrix).
+    const blockedCutoff = policyId === LEARNING_DRAIN_POLICY_ID
+      ? dateOffset(businessDate, -learningDatasetHotDays(source.datasetId, Number(policy.hot_retention_days))) : cutoffDate
+    datasetCutoffs[source.datasetId] = blockedCutoff
     datasets.push({ dataset_id: source.datasetId, source_domain: source.sourceDomain,
-      cutoff_date: cutoffDate, candidates: 0, archived_rows: 0, deleted_rows: 0,
+      cutoff_date: blockedCutoff, candidates: 0, archived_rows: 0, deleted_rows: 0,
       archived_bytes: 0, artifact_id: null, checksum: null, backlog_remaining: true,
       status: 'blocked', error: message })
     if (!dryRun) await checkpointRetentionItem(opsDb, {
@@ -272,7 +292,11 @@ async function runPolicy(
       evidence: { delete_executor: false, candidate_count_known: false, dry_run: false, blocked: true, reason: message },
     })
   }
-  for (const configured of drainSources) {
+  for (const { source: configured, hotRetentionDays: datasetHotDays } of drainSources) {
+    // A gated dataset carries its own hot window (e.g. 45 days); others use the policy window.
+    const hotDays = datasetHotDays ?? Number(policy.hot_retention_days)
+    const cutoffDate = dateOffset(businessDate, -hotDays)
+    datasetCutoffs[configured.datasetId] = cutoffDate
     const source = retentionSourceAtCutoff(configured, cutoffDate)
     const sourceDb = retentionSourceDatabase(env, source.sourceDomain)
     try {
@@ -351,7 +375,7 @@ async function runPolicy(
           dataset_id: source.datasetId,
           source_domain: source.sourceDomain,
           cutoff_date: cutoffDate,
-          hot_retention_days: Number(policy.hot_retention_days),
+          hot_retention_days: hotDays,
           cold_retention_days: Number(policy.cold_retention_days),
           source_schema_sql: schema.sql,
           row_checksum: await sha256Text(JSON.stringify(rows)),
@@ -472,6 +496,8 @@ async function runPolicy(
     policy_id: policyId,
     status: errors.length ? 'error' : dryRun ? 'dry_run' : 'success',
     cutoff_date: cutoffDate,
+    // Per-dataset cutoffs; cutoff_date above is the policy default window.
+    dataset_cutoffs: datasetCutoffs,
     scanned_rows: scannedRows,
     archived_rows: archivedRows,
     deleted_rows: deletedRows,

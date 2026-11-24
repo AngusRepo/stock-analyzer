@@ -73,7 +73,7 @@ export function dataDomainProjectionContractReady(domain: DataDomain): boolean {
 }
 const DOMAIN_TABLES: Record<DataDomain, ReadonlySet<string>> = {
   core: new Set([
-    'users', 'stocks', 'watchlist', 'risk_metrics', 'alert_rules', 'market_risk', 'market_risk_quality_v1',
+    'users', 'stocks', 'watchlist', 'risk_metrics', 'alert_rules', 'market_risk', 'market_risk_quality_v1', 'market_risk_stress_v2',
     'chat_sessions', 'chat_messages', 'alert_notifications', 'daily_recommendations',
   ]),
   market: new Set([
@@ -340,7 +340,7 @@ export const POST_CUTOVER_NATIVE_TABLES: Partial<Record<DataDomain, ReadonlySet<
     'ga_optimizer_shadow_runs_v1',
     'strategy_evidence_gap_dispositions_v1',
   ]),
-  core: new Set(['market_risk_quality_v1']),
+  core: new Set(['market_risk_quality_v1', 'market_risk_stress_v2']),
   market: new Set([
     // Append-only knowledge-time rows start at domain creation; mutable legacy revenue cannot seed them.
     'canonical_revenue_observations_v2',

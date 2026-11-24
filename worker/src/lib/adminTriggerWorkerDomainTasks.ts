@@ -1493,7 +1493,22 @@ export function buildAdminWorkerDomainTaskMap(
     },
     'kv-config-drift': async () => {
       const { runKvConfigDriftCheck } = await import('./kvConfigDigest')
-      return runKvConfigDriftCheck(c.env.KV)
+      const { runStoredRiskV2DriftCheck } = await import('./marketRiskMaterialization')
+      const { getRiskConfig } = await import('./riskConfig')
+      const { twDaysAgo } = await import('./dateUtils')
+      // Both checks always run; either drift fails the task so the scheduler alerts.
+      const [kvResult, storedV2] = await Promise.allSettled([
+        runKvConfigDriftCheck(c.env.KV),
+        getRiskConfig(c.env.KV).then(config => runStoredRiskV2DriftCheck(
+          databaseForDataDomain(c.env, 'core'), config.portfolio, twDaysAgo(45))),
+      ])
+      const kvSummary = kvResult.status === 'fulfilled' ? kvResult.value : String((kvResult.reason as Error)?.message ?? kvResult.reason)
+      const v2Summary = storedV2.status === 'fulfilled'
+        ? storedV2.value.summary + (storedV2.value.ok ? '' : ' ' + JSON.stringify(storedV2.value.failures.slice(0, 10)))
+        : 'stored_risk_v2_drift_error ' + String((storedV2.reason as Error)?.message ?? storedV2.reason)
+      const summary = kvSummary + ' | ' + v2Summary
+      if (kvResult.status === 'rejected' || storedV2.status === 'rejected' || !storedV2.value.ok) throw new Error(summary)
+      return summary
     },
     'storage-integrity-audit': async () => {
       const { runArtifactIntegrityAudit } = await import('./artifactLifecycle')

@@ -3,8 +3,11 @@ import fs from 'node:fs'
 import { l4NativeFixture } from './l4NativeFixture.testSupport'
 import { recomputeDailyMarketRisk } from './marketRiskMaterialization'
 import { adminConfigCoreRoutes } from '../routes/adminConfigCoreRoutes'
+import { DEFAULT_RISK_CONFIG } from './riskConfig'
 const frozen=JSON.parse(fs.readFileSync(new URL('../../test-fixtures/daily-market-risk/readonly-sources.json', import.meta.url),'utf8'))
 const f=l4NativeFixture(),nativeMarket=f.env.MARKET_DB,nativeCore=f.env.CORE_DB
+// Materialization needs a readable trading:risk_config (it fails closed without one).
+f.kvs.set('trading:risk_config',JSON.stringify(DEFAULT_RISK_CONFIG))
 const realFetch=globalThis.fetch;let fault=false
 globalThis.fetch=(async(input:unknown)=>{
  const url=String(input)
@@ -30,7 +33,20 @@ async function main(){try{
  f.sqls.market.prepare('INSERT INTO market_breadth(date,advance_count,decline_count,advance_ratio,sample_size) VALUES(?,1000,700,.419,1952)').run(frozen.date)
  const noAuth=await adminConfigCoreRoutes.request('http://test/api/admin/risk/recompute',{method:'POST'},f.env)
  assert.equal(noAuth.status,401)
+ // KV trading:risk_config missing: v1 row + receipt + a packet flagged as built on built-in defaults are written
+ // (what main wrote, so HMM runs and de-risking keeps working); v2 is never written and the result says why.
+ f.kvs.delete('trading:risk_config')
+ const outage=await recomputeDailyMarketRisk(f.env,frozen.date)
+ assert.equal(outage.risk_config_unavailable,true);assert.equal(outage.quality_status,'bounded')
+ const count=(db:any,table:string)=>(db.prepare(`SELECT COUNT(*) AS n FROM ${table} WHERE date=?`).get(frozen.date) as any).n
+ assert.deepEqual([count(f.sqls.core,'market_risk'),count(f.sqls.core,'market_risk_quality_v1'),count(f.sqls.core,'market_risk_stress_v2')],[1,1,0])
+ const outagePacket:any=f.sqls.market.prepare('SELECT lineage_json FROM market_regime_factor_packets WHERE date=?').get(frozen.date)
+ assert.equal(JSON.parse(outagePacket.lineage_json).risk_config,'unavailable_builtin_defaults')
+ f.kvs.set('trading:risk_config',JSON.stringify(DEFAULT_RISK_CONFIG))
  const result=await recomputeDailyMarketRisk(f.env,frozen.date)
+ assert.equal(count(f.sqls.core,'market_risk_stress_v2'),1)
+ const packet:any=f.sqls.market.prepare('SELECT lineage_json FROM market_regime_factor_packets WHERE date=?').get(frozen.date)
+ assert.equal(JSON.parse(packet.lineage_json).risk_config,undefined,'a KV-backed rerun replaces the flagged packet')
  assert.equal(result.quality_status,'bounded');assert.equal(result.known_score,21);assert.equal(result.upper_score,21)
  assert.equal(result.model_training,false);assert.equal(result.prediction_pipeline_started,false)
  const row:any=f.sqls.core.prepare('SELECT * FROM market_risk WHERE date=?').get(frozen.date)

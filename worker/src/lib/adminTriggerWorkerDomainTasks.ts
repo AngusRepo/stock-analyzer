@@ -1743,10 +1743,14 @@ export function buildAdminWorkerDomainTaskMap(
       const result = taskName === 'audit-json-retention'
         ? await runWithMaintenanceLease(databaseForDataDomain(c.env, 'ops'), lease)
         : await runWithMaintenanceLeaseYielding(databaseForDataDomain(c.env, 'ops'), lease, MAINTENANCE_LEASE_YIELD_WAIT_MS)
-      // This job is the only daily cold-archive writer. A busy lease must
-      // retry, not close its scheduler ticket as a successful no-op.
+      // This job is the only daily cold-archive writer. A busy tick closes as skipped (not a 5xx
+      // that makes Scheduler redispatch into the same busy lease); the next tick retries, and the
+      // window's final tick fails when its business date archived nothing.
       if (taskName === 'retention-archive-only' && isMaintenanceLeaseBusy(result)) {
-        throw new Error(result.reason)
+        const { retentionArchiveDayStarved } = await import('./retentionArchiveDailyGuarantee')
+        if (await retentionArchiveDayStarved(databaseForDataDomain(c.env, 'ops'), schedulerContext.schedulerTicketId)) {
+          throw new Error(`retention_archive_only_no_success_for_business_date:${result.reason}`)
+        }
       }
       return summarizeMaintenanceLeaseResult(result)
     }

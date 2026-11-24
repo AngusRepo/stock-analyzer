@@ -4,10 +4,10 @@
   "source_equivalence": false,
   "maturity_transfer": false,
   "production_baseline_verified": true,
-  "production_baseline_source": "69aaf527f09e36a8366139e322994359feafc2f8",
-  "production_baseline_receipt_checksum": "24bf843f77e644b19b8e05cafbfee9841c7f9b11cb03347dfde875ebc330088e",
-  "prior_approval_checksum": "10680bb73420e55d802d4975d4814facdf4f969bd85d1e0783e14d6dd4536159",
-  "prior_configuration_checksum": "0b81cf6cb3d329ce59fdd837b4b1a11aaf2263e9fe86160a3daa1be3000d23da",
+  "production_baseline_source": "c15454908a04fa7dd517c197268d57020cffc1a6",
+  "production_baseline_receipt_checksum": "669abd8095444f4a56893ca7ceed9e5a41ab32f7a7f2da99625b83bcef1ad913",
+  "prior_approval_checksum": "0dd2a789bfefc4a91095a95d245b42c83ce87aaef48444da65ba76236bdcc317",
+  "prior_configuration_checksum": "b9905bbb0bc3b1c4af516f0aaac4293834cdb3aa97e5dac150730d0cf155e919",
   "approved_sources": {
     "allocator_source_identity": {
       "recommendation_service.py": "1a9930c1890a87d1a31aa0a502115eee136bca1e1f817af308af4522e563d442",
@@ -99,6 +99,6 @@
       "alpha_model_roster.py": "e38d7cf80060bef1b79e72f27079f7e2a04a6638b2e84888985de83b8491fe89"
     }
   },
-  "execution_owner_version": "native-paper-v1:55781dbf2246d160b0cc55f5a3d3dbc8640bae2cc1f568511815704f9725a60f",
+  "execution_owner_version": "native-paper-v1:c82664021f240f8c90fa69aa9176a6360de4e39301051b3d083694611f176fc3",
   "review": "output/herdr-handoff-20261018/sys-cleanup-20261028/runbook_k20_repin_grant.md"
 }

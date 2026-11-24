@@ -21,10 +21,14 @@ type Row = { state: string; receipt_json: string }
  * The strategy-evidence pair qualifies because the metric snapshot publishes receipt and rows in one batch and a
  * rerun returns the published receipt, while calibration rows are keyed by the artifact checksum and the head
  * upsert is monotonic by cutoff (EC-F: a dead producer on 11/2 otherwise needed manual reconciliation).
+ * model-ic-rolling qualifies because /model_pool/compute_weekly_ic only reads predictions and its one write is
+ * update_live_gate_from_ic's UPDATE of the selected registry rows by artifact_id (no history append since 8/27;
+ * the Worker sends append_history:false). A Worker abort at the 120 s fetch limit while the controller still
+ * returned 200 (11/16) otherwise left an UNCERTAIN receipt that blocked every later claim of the date.
  * The list also releases RUNNING claims left by earlier revisions, so add a task only if every revision that could
  * have left such a claim was idempotent, or reconcile those claims first. */
 export const POST_VERIFY_RETRY_SAFE_TASKS: readonly string[] = ['price-horizon-projection', 'strategy-multi-horizon-outcomes',
-  'strategy-evidence-current', 'strategy-evidence-metric-backfill', 'linucb-reward-ledger']
+  'strategy-evidence-current', 'strategy-evidence-metric-backfill', 'linucb-reward-ledger', 'model-ic-rolling']
 const PREFIX = 'post_verify_task_v1:'
 const RUNNING = PREFIX + 'running'
 const SUCCESS = PREFIX + 'success'

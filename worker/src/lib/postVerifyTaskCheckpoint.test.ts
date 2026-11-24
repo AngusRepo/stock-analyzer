@@ -1008,3 +1008,39 @@ test('EC-F counter: a retry-safe task with a legacy uncertain receipt takes only
   assert.equal((await reconcileStatements(rows,deadStage,[{receipt_key:rows[0].receipt_key,verdict:'no-effect',reason:'x'}],'20261115')).statements.length,1)
   f.sqlite.close()
 })
+
+// 11/16: compute_weekly_ic answered 200 at 119.6 s, the Worker fetch aborted at 120 s, and the UNCERTAIN receipt blocked
+// every later claim of the date. Its only write is a keyed registry UPDATE, so the abort now settles as a rerunnable ERROR.
+test('model-ic-rolling fetch abort settles as a rerunnable ERROR and the next delivery completes the chain',async()=>{
+  assert.ok(POST_VERIFY_RETRY_SAFE_TASKS.includes('model-ic-rolling'))
+  const f=fixture(), calls=new Map<string,number>()
+  let abort=true
+  const taskRunner=async(task:string)=>{calls.set(task,(calls.get(task)??0)+1)
+    if(task==='model-ic-rolling'&&abort)return {...success(task),status:'error' as const,summary:'The operation was aborted due to timeout'}
+    return success(task)}
+  await assert.rejects(runPostVerifyCallbackChain(f.env,f.ctx,{productionAuthority:f.authority,taskRunner}),/post_verify_chain_failed/)
+  assert.deepEqual(dumpRows(f),[])
+  abort=false
+  assert.equal(await runPostVerifyCallbackChain(f.env,f.ctx,{productionAuthority:f.authority,taskRunner}),'success')
+  assert.equal(calls.get('model-ic-rolling'),2)
+  for(const task of tasks.slice(0,tasks.indexOf('model-ic-rolling')))assert.equal(calls.get(task),1,task)
+  f.sqlite.close()
+  // Counter: without the retry-safe flag the same abort is the 11/16 UNCERTAIN receipt that blocks the next task.
+  const g=fixture()
+  await (await g.manager()).run('model-ic-rolling',async()=>({...success('model-ic-rolling'),status:'error',summary:'The operation was aborted due to timeout'}))
+  assert.equal(dumpRows(g)[0].state,'post_verify_task_v1:uncertain')
+  await assert.rejects((await g.manager()).run('artifact-auto-promotion',async()=>success('artifact-auto-promotion')),
+    /unsettled_side_effect:artifact-auto-promotion/)
+  g.sqlite.close()
+})
+
+test('a dead model-ic-rolling claim stored as retrySafe:false is reclaimed once its stage lease expires',async()=>{
+  const f=fixture();let calls=0
+  await assert.rejects((await f.manager()).run('model-ic-rolling',async()=>{calls++;return new Promise<PostVerifyTaskResult>(()=>{})},{timeoutMs:2}),/timeout_unsettled/)
+  assert.equal(JSON.parse(dumpRows(f)[0].receipt_json).retrySafe,false)
+  const next=await takeover(f,'lease-B')
+  const result=await next.run('model-ic-rolling',async()=>{calls++;return success('model-ic-rolling')},{retrySafe:true})
+  assert.equal(result.status,'success');assert.equal(calls,2)
+  assert.deepEqual(dumpRows(f),[])
+  f.sqlite.close()
+})

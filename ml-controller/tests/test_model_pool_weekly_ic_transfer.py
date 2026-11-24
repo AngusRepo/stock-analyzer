@@ -126,3 +126,53 @@ def test_compute_weekly_ic_reads_one_lifecycle_snapshot_after_predictions(monkey
     assert passed["rows"] is registry_rows and passed["pointers"] is pointers
     assert set(out["stage_s"]) == {"prediction_read", "lifecycle_read", "registry_write"}
     assert set(out["per_model_ic"]) == set(tracked_model_names())
+
+
+def test_compute_weekly_ic_rerun_writes_only_keyed_registry_updates(monkeypatch):
+    # model-ic-rolling is retry-safe in the Worker checkpoint (11/16: the Worker aborted at 120 s after the
+    # controller had written). A rerun must not append or insert: the route's one write is the registry
+    # UPDATE keyed by artifact_id, and the same snapshot yields the same UPDATE.
+    from services import model_artifact_registry as registry
+    from test_model_artifact_registry import _oof_full_fit_release_row
+
+    rows = {r["artifact_id"]: r for r in (_oof_full_fit_release_row(model_name=m) for m in ("XGBoost", "LightGBM"))}
+    executed: list[tuple[str, list]] = []
+
+    def execute(sql, params=None, timeout=60.0):
+        assert sql.lstrip().startswith("UPDATE model_artifact_registry") and sql.rstrip().endswith("WHERE artifact_id = ?"), sql
+        executed.append((sql, list(params)))
+        state, live, evidence, decision, approval, artifact_id = params
+        rows[artifact_id].update(state=state, live_gate_status=live, live_evidence_json=evidence,
+                                 promotion_decision=decision, approval_state=approval)
+        return {"success": True}
+
+    monkeypatch.setattr(model_pool, "_load_weekly_ic_rows", lambda all_tracked, run_date, lookback_days: [])
+    monkeypatch.setattr(model_pool, "load_d1_champion_pool", lambda: {"models": {}})
+    monkeypatch.setattr(model_pool, "list_artifact_registry", lambda limit=100: [dict(r) for r in rows.values()])
+    monkeypatch.setattr(model_pool, "list_champion_pointers", lambda model_name=None: [])
+    monkeypatch.setattr(registry.d1_client, "execute", execute)
+    request = model_pool.ComputeWeeklyICRequest(run_date="2026-11-16", append_history=False)
+
+    def without_clock(params):
+        evidence = json.loads(params[2])
+        evidence.pop("evaluated_at")
+        return [*params[:2], evidence, *params[3:]]
+
+    snapshot = {k: dict(v) for k, v in rows.items()}
+    first = asyncio.run(model_pool.compute_weekly_ic(request))
+    assert first["artifact_registry_updates"]["updated"] == 2
+    first_writes = [(sql, without_clock(p)) for sql, p in executed]
+    after_first = {k: dict(v) for k, v in rows.items()}
+
+    # Same inputs (the pre-run snapshot): byte-identical keyed UPDATEs apart from the evaluation clock.
+    rows.clear(); rows.update({k: dict(v) for k, v in snapshot.items()}); executed.clear()
+    asyncio.run(model_pool.compute_weekly_ic(request))
+    assert [(sql, without_clock(p)) for sql, p in executed] == first_writes
+
+    # Rerun on top of the committed first run (the 11/16 case): still only keyed UPDATEs, the row set is
+    # unchanged, and every gate field the first run wrote stays as it was.
+    rows.clear(); rows.update(after_first); executed.clear()
+    asyncio.run(model_pool.compute_weekly_ic(request))
+    assert set(rows) == set(after_first)
+    gate = ("state", "live_gate_status", "promotion_decision", "approval_state")
+    assert {k: [v[f] for f in gate] for k, v in rows.items()} == {k: [v[f] for f in gate] for k, v in after_first.items()}

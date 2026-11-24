@@ -6,6 +6,11 @@ import { logSchedulerResult } from './schedulerRunLogger'
 // Trading days (strategyLearningRecoveryWindowStart): a weekend must not consume the lookback.
 export const RECOVERY_LOOKBACK_DAYS = 4
 const DISPATCH_FENCE_TTL_SECONDS = 15 * 60
+// A run older than the lookback whose producer died mid-lease keeps its post-verify waiting with
+// no owner (10-29: 843/843 and 21918/21918 written, lease expired 11-23 14:21Z). One such date per
+// tick is redispatched through the normal materialize message, which goes straight to the finalizer
+// when the counts are complete; dispatches share the deferred-failure backoff and cap.
+const STALE_RUNNING_OUTSIDE_WINDOW_PER_TICK = 1
 // A deferred finalizer failure used to be resumed on every 15-minute fence expiry, so
 // one deterministic or overload failure reran the learning-db finalizer all night
 // (11/10–11/11). Its redispatches back off and stop at a cap; counted in KV because a
@@ -219,20 +224,46 @@ async function loadRecoveryCandidates(
      LIMIT ?
   `).bind(windowStart, cutoffDate, RECOVERY_LOOKBACK_DAYS + 1)
     .all<StrategyLearningRecoveryRow>()
-  return results ?? []
+  // Seeks idx_strategy_learning_runs_status (status='running', business_date<windowStart), so only
+  // running rows are read however old. Queued/error rows outside the window stay manual, and the
+  // progress terms keep an invalid old row away from blockTerminalRun.
+  const { results: staleRunning } = await db.prepare(`
+    SELECT ${RECOVERY_RUN_COLUMNS}
+      FROM strategy_learning_runs
+     WHERE status='running' AND business_date<?
+       AND (lease_expires_at IS NULL OR lease_expires_at<=CURRENT_TIMESTAMP)
+       AND expected_candidates>0 AND processed_candidates BETWEEN 0 AND expected_candidates
+       AND expected_decision_rows>0 AND persisted_decision_rows BETWEEN 0 AND expected_decision_rows
+       AND EXISTS (
+         SELECT 1 FROM pipeline_stage_runs p
+          WHERE p.business_date=strategy_learning_runs.business_date
+            AND p.stage='post_verify_chain'
+            AND p.canonical_run_id=strategy_learning_runs.canonical_run_id
+            AND p.status='waiting' AND p.lease_owner IS NULL
+       )
+     ORDER BY business_date DESC
+     LIMIT ?
+  `).bind(windowStart, STALE_RUNNING_OUTSIDE_WINDOW_PER_TICK)
+    .all<StrategyLearningRecoveryRow>()
+  // After the window's own queued/running work, before its success rows (closed only when first).
+  const inWindow = results ?? []
+  const successAt = inWindow.findIndex((row) => row.status === 'success')
+  const split = successAt < 0 ? inWindow.length : successAt
+  return [...inWindow.slice(0, split), ...(staleRunning ?? []), ...inWindow.slice(split)]
 }
 
-async function loadActiveLeaseDate(db: D1Database, windowStart: string): Promise<string | null> {
+// No lower bound: a redispatched run older than the window holds a live lease too.
+async function loadActiveLeaseDate(db: D1Database): Promise<string | null> {
   const cutoffDate = twToday()
   const row = await db.prepare(`
     SELECT business_date
       FROM strategy_learning_runs
-     WHERE business_date BETWEEN ? AND ?
+     WHERE business_date<=?
        AND status IN ('queued','running')
        AND lease_expires_at>CURRENT_TIMESTAMP
      ORDER BY business_date DESC
      LIMIT 1
-  `).bind(windowStart, cutoffDate)
+  `).bind(cutoffDate)
     .first<{ business_date: string }>()
   return row?.business_date ?? null
 }
@@ -285,7 +316,7 @@ async function logWatchdog(
 }
 
 type CandidateOutcome =
-  | { dispatch: true; deferredFailure: boolean; deferredDispatches: number; deferredKey: string }
+  | { dispatch: true; deferredFailure: boolean; outsideWindow: boolean; deferredDispatches: number; deferredKey: string }
   | { dispatch: false; status: 'running' | 'error'; token: string; detail: string }
 
 async function blockTerminalRun(
@@ -309,6 +340,7 @@ async function evaluateRecoveryCandidate(
   row: StrategyLearningRecoveryRow,
   options: StrategyLearningRecoveryOptions,
   first: boolean,
+  outsideWindow = false,
 ): Promise<CandidateOutcome> {
   const blocked = (status: 'running' | 'error', token: string, detail: string): CandidateOutcome => (
     { dispatch: false, status, token, detail }
@@ -350,11 +382,16 @@ async function evaluateRecoveryCandidate(
   }
 
   const deferredFailure = isStrategyLearningDeferredFailure(row)
-  const deferredKey = `strategy-learning:watchdog-deferred-dispatches:${row.business_date}:${row.canonical_run_id}`
-  const deferredDispatches = deferredFailure
+  // A stale run outside the window is counted like a deferred failure: a finalizer that keeps dying
+  // must not be relaunched on every fence expiry.
+  const counted = deferredFailure || outsideWindow
+  const deferredKey = outsideWindow
+    ? `strategy-learning:watchdog-stale-running-dispatches:${row.business_date}:${row.canonical_run_id}`
+    : `strategy-learning:watchdog-deferred-dispatches:${row.business_date}:${row.canonical_run_id}`
+  const deferredDispatches = counted
     ? Number.parseInt((await env.KV.get(deferredKey)) ?? '0', 10) || 0
     : 0
-  if (deferredFailure && !options.overrideBackoff) {
+  if (counted && !options.overrideBackoff) {
     const gate = strategyLearningDeferredRetryGate(row, deferredDispatches)
     if (gate.action === 'exhausted') {
       const lastError = String(row.last_error).replace(/status=/gi, 'status:').replace(/\s+/g, '_').slice(0, 300)
@@ -388,7 +425,7 @@ async function evaluateRecoveryCandidate(
       : blocked('running', 'awaiting_similarity_artifact',
         `date=${row.business_date} reason=awaiting_similarity_artifact attempts=${deferredDispatches}`)
   }
-  return { dispatch: true, deferredFailure, deferredDispatches, deferredKey }
+  return { dispatch: true, deferredFailure, outsideWindow, deferredDispatches, deferredKey }
 }
 
 function dispatchFenceKey(row: StrategyLearningRecoveryRow): string {
@@ -460,7 +497,7 @@ export async function runStrategyLearningRecoveryWatchdog(
     return summary
   }
 
-  const activeDate = await loadActiveLeaseDate(opsDb, windowStart)
+  const activeDate = await loadActiveLeaseDate(opsDb)
   if (activeDate) {
     const summary = `running strategy-learning recovery date=${row.business_date} reason=other_date_active:${activeDate}`
     await logWatchdog(env, row, 'running', summary)
@@ -491,7 +528,8 @@ export async function runStrategyLearningRecoveryWatchdog(
       } })
       continue
     }
-    const outcome = await evaluateRecoveryCandidate(env, opsDb, candidate, options, first)
+    const outcome = await evaluateRecoveryCandidate(env, opsDb, candidate, options, first,
+      !requestedDate && candidate.business_date < windowStart)
     if ('token' in outcome) {
       blockedCandidates.push({ row: candidate, outcome })
       continue
@@ -518,7 +556,7 @@ async function dispatchRecovery(
   outcome: Extract<CandidateOutcome, { dispatch: true }>,
   options: StrategyLearningRecoveryOptions,
 ): Promise<string> {
-  if (outcome.deferredFailure) {
+  if (outcome.deferredFailure || outcome.outsideWindow) {
     await env.KV.put(outcome.deferredKey, String(outcome.deferredDispatches + 1), {
       expirationTtl: DEFERRED_FAILURE_DISPATCH_TTL_SECONDS,
     })
@@ -544,6 +582,7 @@ async function dispatchRecovery(
     `reason=${decision.reason}`,
     `attempts=${Number(row.attempt_count ?? 0)}`,
     ...(outcome.deferredFailure ? [`deferred_dispatch=${outcome.deferredDispatches + 1}/${DEFERRED_FAILURE_MAX_DISPATCHES}`] : []),
+    ...(outcome.outsideWindow ? [`outside_window_dispatch=${outcome.deferredDispatches + 1}/${DEFERRED_FAILURE_MAX_DISPATCHES}`] : []),
     ...(options.overrideBackoff ? ['override_backoff=true'] : []),
     `cursor=${row.cursor_symbol ?? ''}`,
     `production_authority_intent=${Number(row.production_authority_intent ?? 0) === 1}`,

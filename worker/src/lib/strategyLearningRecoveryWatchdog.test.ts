@@ -444,9 +444,12 @@ test('the candidate and serialization reads are index searches on ops-db', () =>
   }
   const candidates = query('const { results } = await db.prepare(`')
   const leases = query('async function loadActiveLeaseDate')
+  const staleRunning = query('const { results: staleRunning } = await db.prepare(`')
   assert.match(candidates, /LIMIT \?\s*$/)
+  assert.match(staleRunning, /LIMIT \?\s*$/)
   assert.match(leases, /status IN \('queued','running'\)\s+AND lease_expires_at>CURRENT_TIMESTAMP/)
-  for (const [sqlText, binds] of [[candidates, ['2026-11-06', '2026-11-12', 5]], [leases, ['2026-11-06', '2026-11-12']]] as const) {
+  for (const [sqlText, binds] of [[candidates, ['2026-11-06', '2026-11-12', 5]], [leases, ['2026-11-12']],
+    [staleRunning, ['2026-11-06', 1]]] as const) {
     const plan = (ops.prepare(`EXPLAIN QUERY PLAN ${sqlText}`).all(...binds) as { detail: string }[]).map((row) => row.detail).join(' | ')
     assert.match(plan, /SEARCH strategy_learning_runs USING INDEX idx_strategy_learning_runs_status/, plan)
     assert.doesNotMatch(plan, /SCAN strategy_learning_runs/, plan)
@@ -557,3 +560,75 @@ const compositeWatchdog = tasks.slice(tasks.indexOf("'screener-v2-watchdog': asy
 assert.doesNotMatch(compositeWatchdog, /overrideBackoff/, 'the scheduled composite watchdog never overrides backoff')
 
 console.log('strategy learning recovery watchdog tests passed')
+
+// 10-29 (11/23): every row written but the producer died with its lease, so post-verify waited with
+// no owner; the date was older than the four-trading-day lookback.
+function staleRunningOutsideWindow(f: ReturnType<typeof watchdogFixture>, businessDate: string, fields: Record<string, unknown> = {}) {
+  f.insertRun(businessDate, { status: 'running', lease_owner: 'dead', production_authority_intent: 0, updated_ago_minutes: 600, ...fields })
+  f.sql.prepare(`UPDATE strategy_learning_runs SET lease_expires_at=datetime('now', '-9 hours') WHERE business_date=?`).run(businessDate)
+  f.sql.prepare(`UPDATE pipeline_stage_runs SET status='waiting', lease_owner=NULL WHERE business_date=?`).run(businessDate)
+}
+const staleKey = (businessDate: string) => `strategy-learning:watchdog-stale-running-dispatches:${businessDate}:run-${businessDate}`
+
+test('an expired running run outside the lookback with post-verify waiting is redispatched once per fence and counted', async () => {
+  const f = watchdogFixture()
+  const old = f.date(-25)
+  staleRunningOutsideWindow(f, old)
+  const summary = await runStrategyLearningRecoveryWatchdog(f.env)
+  assert.match(summary, new RegExp(`^triggered strategy-learning recovery date=${old} reason=lease_expired attempts=3 outside_window_dispatch=1/6 cursor=9958 production_authority_intent=false`))
+  assert.deepEqual(f.sent.map((message) => [message.type, message.triggerTime, message.cursorKey, message.runId]),
+    [['strategy_learning_materialize', old, '9958', `run-${old}`]])
+  assert.equal(f.values.get(staleKey(old)), '1')
+  assert.match(await runStrategyLearningRecoveryWatchdog(f.env), new RegExp(`date=${old} reason=dispatch_fenced`))
+  assert.equal(f.sent.length, 1)
+  // Same backoff and cap as a deferred failure; the explicit-date override still reaches it.
+  f.values.delete(`strategy-learning:watchdog-dispatch:${old}:run-${old}`)
+  f.values.set(staleKey(old), '6')
+  const exhausted = await runStrategyLearningRecoveryWatchdog(f.env)
+  assert.match(exhausted, new RegExp(`^error strategy-learning recovery exhausted date=${old} `))
+  assert.equal(f.sent.length, 1)
+  assert.match(await runStrategyLearningRecoveryWatchdog(f.env, old, { overrideBackoff: true }), /^triggered .*override_backoff=true/)
+  assert.equal(f.sent.length, 2)
+  f.sql.close()
+})
+
+test('only running rows with an owned, waiting post-verify are recovered outside the lookback', async () => {
+  for (const [label, setup] of [
+    ['post-verify running', (f: any, day: string) => f.sql.prepare(`UPDATE pipeline_stage_runs SET status='running' WHERE business_date=?`).run(day)],
+    ['post-verify success', (f: any, day: string) => f.sql.prepare(`UPDATE pipeline_stage_runs SET status='success' WHERE business_date=?`).run(day)],
+    ['post-verify leased', (f: any, day: string) => f.sql.prepare(`UPDATE pipeline_stage_runs SET lease_owner='live' WHERE business_date=?`).run(day)],
+    ['other canonical run', (f: any, day: string) => f.sql.prepare(`UPDATE pipeline_stage_runs SET canonical_run_id='run-other' WHERE business_date=?`).run(day)],
+    ['queued deferred failure', (f: any, day: string) => f.sql.prepare(`UPDATE strategy_learning_runs SET status='queued', lease_owner=NULL, lease_expires_at=NULL, last_error=? WHERE business_date=?`).run(STAGE_FAILED, day)],
+    ['live lease', (f: any, day: string) => f.sql.prepare(`UPDATE strategy_learning_runs SET lease_expires_at=datetime('now', '+5 minutes') WHERE business_date=?`).run(day)],
+    ['invalid progress', (f: any, day: string) => f.sql.prepare(`UPDATE strategy_learning_runs SET persisted_decision_rows=99999 WHERE business_date=?`).run(day)],
+  ] as const) {
+    const f = watchdogFixture()
+    const old = f.date(-25)
+    staleRunningOutsideWindow(f, old)
+    setup(f, old)
+    const summary = await runStrategyLearningRecoveryWatchdog(f.env)
+    assert.equal(summary, 'SKIPPED strategy-learning recovery recoverable_run_missing', label)
+    assert.equal(f.sent.length, 0, label)
+    f.sql.close()
+  }
+})
+
+test('the stale date waits behind in-window work, goes ahead of in-window success rows, and its lease serializes the window', async () => {
+  const f = watchdogFixture()
+  const old = f.date(-25)
+  const recent = f.date(-1)
+  staleRunningOutsideWindow(f, old)
+  f.insertRun(recent, { updated_ago_minutes: 30 })
+  assert.match(await runStrategyLearningRecoveryWatchdog(f.env), new RegExp(`^triggered strategy-learning recovery date=${recent} reason=queued_without_lease`))
+  f.sql.prepare(`UPDATE strategy_learning_runs SET status='success', completed_at=CURRENT_TIMESTAMP, policy_closure_status='materialized',
+    policy_closure_completed_at=CURRENT_TIMESTAMP WHERE business_date=?`).run(recent)
+  assert.match(await runStrategyLearningRecoveryWatchdog(f.env), new RegExp(`^triggered strategy-learning recovery date=${old} reason=lease_expired`))
+  assert.deepEqual(f.sent.map((message) => message.triggerTime), [recent, old])
+  // The redispatched old run holds a live lease: newer recoverable work waits for it.
+  const newer = f.date(-2)
+  f.insertRun(newer, { updated_ago_minutes: 30 })
+  f.sql.prepare(`UPDATE strategy_learning_runs SET lease_owner='finalizer', lease_expires_at=datetime('now', '+5 minutes') WHERE business_date=?`).run(old)
+  assert.equal(await runStrategyLearningRecoveryWatchdog(f.env), `running strategy-learning recovery date=${newer} reason=other_date_active:${old}`)
+  assert.equal(f.sent.length, 2)
+  f.sql.close()
+})

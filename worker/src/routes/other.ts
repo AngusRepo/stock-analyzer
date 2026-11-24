@@ -2307,6 +2307,14 @@ news.get('/:stockId/keywords', async (c) => {
 // ════════════════════════════════════════════════════════════════════════════
 export const ml = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
+// A session without an observed close is absent, not a bar: never send it to ml-service.
+export function observedClosePriceRows<T extends { close?: unknown }>(rows: T[]): T[] {
+  return rows.filter((row) => {
+    const close = Number(row.close)
+    return row.close != null && Number.isFinite(close) && close > 0
+  })
+}
+
 ml.use('/*', authMiddleware)
 
 // POST /api/ml/predict/:stockId
@@ -2332,7 +2340,7 @@ ml.post('/predict/:stockId', async (c) => {
   ])
 
   // ── Step 2：新股票自動初始化（資料不足 60 筆時）───────────────────────────
-  let priceRows = prices.results ?? []
+  let priceRows = observedClosePriceRows(prices.results ?? [])
   let indRows   = indicators.results ?? []
 
   if (priceRows.length < 60) {
@@ -2348,7 +2356,7 @@ ml.post('/predict/:stockId', async (c) => {
         databaseForDataDomain(c.env, 'market').prepare('SELECT date, close, high, low, open, volume FROM stock_prices WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(stockId).all<any>(),
         databaseForDataDomain(c.env, 'market').prepare('SELECT date, ma5, ma10, ma20, ma60, rsi14, macd_hist as macdHist, bb_upper, bb_lower, atr14, plus_di14 as plusDi14, minus_di14 as minusDi14, adx14, parabolic_sar as parabolicSar, cci20, volume_weighted_rsi14 as volumeWeightedRsi14, volume_momentum_divergence_13_27_10 as volumeMomentumDivergence132710 FROM technical_indicators WHERE stock_id=? ORDER BY date DESC LIMIT 500').bind(stockId).all<any>(),
       ])
-      priceRows = p2.results ?? []
+      priceRows = observedClosePriceRows(p2.results ?? [])
       indRows   = i2.results ?? []
     } catch (e) {
       console.error(`[ML predict] 自動初始化失敗 ${stock.symbol}:`, e)

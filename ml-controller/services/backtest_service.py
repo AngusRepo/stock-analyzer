@@ -294,6 +294,12 @@ def _load_backtest_inputs_from_snapshot(manifest: dict) -> tuple[list[dict], dic
         raise RuntimeError("backtest_snapshot_stocks_schema_invalid")
 
     prices_df = _snapshot_frame_with_stock_id(prices_df, stocks_df)
+    if "close" in prices_df.columns:
+        # A session without an observed close is absent, not a bar: float(bar["close"]) would crash.
+        observed = prices_df.filter(pl.col("close").is_not_null())
+        if observed.height != prices_df.height:
+            logger.warning("[backtest] dropped %d snapshot price rows with NULL close", prices_df.height - observed.height)
+        prices_df = observed
     signals_df = _snapshot_frame_with_stock_id(signals_df, stocks_df)
     stocks = stocks_df.select([col for col in ["id", "symbol", "name"] if col in stocks_df.columns]).to_dicts()
     return (
@@ -327,7 +333,9 @@ async def _bulk_load_prices_by_stock(
         )
         query_count += 1
         for row in rows:
-            grouped[int(row["stock_id"])].append(row)
+            # A session without an observed close is absent, not a bar.
+            if row.get("close") is not None:
+                grouped[int(row["stock_id"])].append(row)
     if stock_ids:
         import asyncio
         from services.retention_market_history import archived_market_projection
@@ -337,7 +345,8 @@ async def _bulk_load_prices_by_stock(
         cold = await asyncio.to_thread(lambda: list(archived_market_projection(
             'stock_prices', sql, [json.dumps(stock_ids)], '0001-01-01', '9999-12-31')))
         for row in cold:
-            grouped[int(row['stock_id'])].append(row)
+            if row.get('close') is not None:
+                grouped[int(row['stock_id'])].append(row)
         for values in grouped.values():
             values.sort(key=lambda row: row['date'])
     return grouped, query_count

@@ -68,6 +68,19 @@ def test_bulk_backtest_combines_exact_cold_prices_once(monkeypatch):
  assert [r['close'] for r in result[1]]==[101.,103.]
 
 
+def test_bulk_backtest_drops_price_rows_without_observed_close(monkeypatch):
+ import asyncio
+ from services import backtest_service as b,retention_market_history as h
+ async def hot(*a,**k):return [dict(stock_id=1,date='2026-03-31',close=None),dict(stock_id=1,date='2026-04-01',close=103.)]
+ def cold(*a,**k):
+  yield dict(stock_id=1,date='2025-01-01',close=None)
+  yield dict(stock_id=1,date='2025-01-02',close=101.)
+ monkeypatch.setattr(b,'_d1_query',hot)
+ monkeypatch.setattr(h,'archived_market_projection',cold)
+ result,_=asyncio.run(b._bulk_load_prices_by_stock(None,[1]))
+ assert [r['date'] for r in result[1]]==['2025-01-02','2026-04-01']
+
+
 @pytest.mark.parametrize('method,table', [('_load_prices','stock_prices'),('_load_indicators','technical_indicators'),('_load_chips','chip_data')])
 def test_backtest_dataset_does_not_shorten_history_to_hot_window(monkeypatch,method,table):
  from services import backtest_engine as b,retention_market_history as h

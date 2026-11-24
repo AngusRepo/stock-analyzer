@@ -216,6 +216,7 @@ import {
 } from '../lib/recommendationConfidence'
 import { classifyBoard, resolveRecommendationGovernance } from '../lib/boardTradability'
 import { summarizeScreenerFunnelRows, summarizeStrategyPortfolioIntelligenceHealth } from '../lib/screenerFunnelEvidence'
+import { resolveRecommendationFunnelRun } from '../lib/recommendationFunnelRun'
 import { FunnelArchiveReader, isAuditPointerEvidence, visitArchivedFunnelEvidence } from '../lib/screenerEvidenceResolver'
 import { loadFunnelStageStrategyRows } from '../lib/funnelStageStrategyRows'
 import { readMarketRegimeState } from '../lib/marketRegimeState'
@@ -3259,17 +3260,35 @@ async function buildDailyPipelineSummaries(
   archiveEnv: Pick<Bindings, 'DB' | 'ARTIFACTS'> | null = null,
   archiveReader: FunnelArchiveReader | null = archiveEnv ? new FunnelArchiveReader(archiveEnv) : null,
 ): Promise<Record<string, any>> {
-  const latestRun = await opsDb.prepare(`
+  // Same run as the recommendation evidence (resolveRecommendationFunnelRun): the latest
+  // successful run. A rerun still writing (status='error') or failed is reported only as
+  // latest_attempt, never mixed into the summary counts.
+  const [latestRun, latestAttempt] = await Promise.all([
+    opsDb.prepare(`
     SELECT run_id, date, status, universe_count, candidate_count, final_count, emerging_count, metadata, created_at
+      FROM screener_funnel_runs
+     WHERE date = ?
+       AND status = 'success'
+     ORDER BY created_at DESC
+     LIMIT 1
+  `).bind(date).first<any>(),
+    opsDb.prepare(`
+    SELECT run_id, status, created_at
       FROM screener_funnel_runs
      WHERE date = ?
      ORDER BY created_at DESC
      LIMIT 1
-  `).bind(date).first<any>()
+  `).bind(date).first<any>(),
+  ])
+  // Equal to the summary run normally; a newer run_id here is a rerun still writing or failed.
+  const latestFunnelAttempt = latestAttempt?.run_id
+    ? { run_id: latestAttempt.run_id, status: latestAttempt.status, created_at: latestAttempt.created_at }
+    : null
   if (!latestRun?.run_id) {
     return {
       funnel_summary: null,
       strategy_summary: null,
+      latest_funnel_attempt: latestFunnelAttempt,
     }
   }
 
@@ -3479,6 +3498,7 @@ async function buildDailyPipelineSummaries(
       emerging_count: finiteNumber(latestRun.emerging_count),
       layers,
       stage_counts: stageRows ?? [],
+      latest_attempt: latestFunnelAttempt,
     },
     strategy_summary: {
       schema_version: 'daily_active_strategy_summary_v2',
@@ -3678,6 +3698,7 @@ async function buildDailyPipelineViewPayload(
       ...counts, sell_count: null, other_count: null,
     })],
     stage_counts: [],
+    latest_attempt: pipelineSummaries.latest_funnel_attempt ?? null,
   }
   const funnelSummary = pipelineSummaries.funnel_summary
     ? pipelineSummaries.funnel_summary
@@ -4059,22 +4080,26 @@ recommendations.get('/daily', async (c) => {
       }
     }
   }
-  if (resultSymbols.length > 0 && view !== 'card') {
+  // Evidence comes from the canonical successful screener run that produced these
+  // recommendations, never from a later rerun that is still writing or failed.
+  const recommendationFunnelRun = resultSymbols.length > 0 && view !== 'card'
+    ? await resolveRecommendationFunnelRun(databaseForDataDomain(c.env, 'ops'), date).catch((e) => {
+        console.warn('[recommendations/daily] canonical screener run unavailable:', e)
+        return null
+      })
+    : null
+  if (recommendationFunnelRun && !recommendationFunnelRun.is_canonical_head) {
+    console.warn(`[recommendations/daily] producer screener run ${recommendationFunnelRun.run_id} is not the canonical head for ${date}`)
+  }
+  if (recommendationFunnelRun) {
     const archivedFunnelRows: any[] = []
     for (const resultSymbolChunk of d1SafeInChunks(resultSymbols)) {
       try {
         const placeholders = resultSymbolChunk.map(() => '?').join(',')
       const { results: funnelRows } = await databaseForDataDomain(c.env, 'ops').prepare(`
-        WITH latest_screener_run AS (
-          SELECT run_id
-            FROM screener_funnel_runs
-           WHERE date = ?
-           ORDER BY created_at DESC
-           LIMIT 1
-        )
         SELECT id, run_id, symbol, stage, decision, reason_code, score_before, score_after, rank, evidence
           FROM screener_funnel_items
-         WHERE run_id = (SELECT run_id FROM latest_screener_run)
+         WHERE run_id = ?
            AND symbol IN (${placeholders})
            AND stage IN (
              'universe',
@@ -4093,7 +4118,7 @@ recommendations.get('/daily', async (c) => {
              'final_selection'
            )
          ORDER BY symbol ASC, created_at ASC
-      `).bind(date, ...resultSymbolChunk).all<any>()
+      `).bind(recommendationFunnelRun.run_id, ...resultSymbolChunk).all<any>()
       // Dates past audit-json retention keep pointers in D1: those slices are restored together
       // below, so each R2 chunk is read once for all slices instead of once per slice.
       if ((funnelRows ?? []).some((row: any) => isAuditPointerEvidence(row.evidence))) {
@@ -4234,6 +4259,7 @@ recommendations.get('/daily', async (c) => {
       medianDailyTradedValueTwd: layer0UniverseFeatures?.median_daily_traded_value_twd,
       minMedianDailyTradedValueTwd: layer0UniverseFeatures?.min_median_daily_traded_value_twd,
       liquidityCapacityPassed: layer0UniverseFeatures?.liquidity_capacity_passed,
+      universePassed: layer0UniverseFeatures?.universe_passed,
       maturityImpact: layer0UniverseFeatures?.maturity_impact,
     })
     const screenerFunnelEvidence = screenerFunnelEvidenceBase
@@ -4351,6 +4377,7 @@ recommendations.get('/daily', async (c) => {
     strategy_portfolio_intelligence_health: strategyPortfolioIntelligenceHealth,
     confidence: confidenceSummary,
     funnel_summary: pipelineSummaries.funnel_summary,
+    latest_funnel_attempt: pipelineSummaries.latest_funnel_attempt ?? null,
     strategy_summary: pipelineSummaries.strategy_summary,
     generated_at: recs[0]?.created_at ?? null,
   })

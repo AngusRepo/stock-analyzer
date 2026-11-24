@@ -1,8 +1,10 @@
-// node --test reporter: one "worker: <file> :: <test path>" line per failed test.
+// node --test reporter: one "<suite>: <file> :: <test path>" line per failed test
+// (suite = $NODE_FAILURE_SUITE, default worker).
 // A file that crashes outside node:test (custom main()) fails as its own entry.
 import { relative } from 'node:path'
 
 export default async function* failures(source) {
+  const suite = process.env.NODE_FAILURE_SUITE || 'worker'
   const stack = []
   for await (const event of source) {
     if (event.type !== 'test:start' && event.type !== 'test:fail' && event.type !== 'test:pass') continue
@@ -11,7 +13,7 @@ export default async function* failures(source) {
     if (event.type === 'test:fail') {
       const rel = file ? relative(process.cwd(), file).replaceAll('\\', '/') : '?'
       const path = name === file ? '<file>' : [...stack.slice(0, nesting), name].join(' > ')
-      yield `worker: ${rel} :: ${path}\n`
+      yield `${suite}: ${rel} :: ${path}\n`
     }
   }
 }

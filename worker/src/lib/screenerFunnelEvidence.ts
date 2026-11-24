@@ -1,4 +1,5 @@
 import { predictionModelOrder } from './alphaModelRoster'
+import { expandL05LiquidityCapacityCompactReceipt, type L05LiquidityCapacityEvidenceView } from './l05LiquidityCapacity'
 export interface ScreenerFunnelRow {
   symbol: string
   stage: string
@@ -681,25 +682,35 @@ function buildLayer0UniverseFeaturesSummary(
   if (!universe && !scoring) return null
   const universeEvidence = universe?.evidence ?? {}
   const scoringEvidence = scoring?.evidence ?? {}
+  // The universe row is a non-critical funnel stage that the D1 persistence cap can
+  // drop; the scoring row carries the same L0.5 receipt and is always persisted.
+  // With neither, capacity is unknown (null) and must not read as a failed gate.
+  const universeLiquidity = universeLiquidityCapacityEvidence(universeEvidence)
+  const scoringLiquidity = expandL05LiquidityCapacityCompactReceipt(scoringEvidence.l05_liquidity_capacity)
+  const liquidity = universeLiquidity ?? scoringLiquidity
+  const liquidityEvidenceSource = universeLiquidity
+    ? 'universe'
+    : scoringLiquidity
+      ? 'scoring_l05_receipt'
+      : null
   const featureGroups = [
-    universe && (
-      universeEvidence.close != null
-      || universeEvidence.median_daily_traded_value_twd != null
-      || universeEvidence.mean_daily_traded_value_twd != null
-    ) ? 'price_volume_liquidity' : null,
+    universeEvidence.close != null
+      || liquidity?.median_daily_traded_value_twd != null
+      || liquidity?.mean_daily_traded_value_twd != null
+      ? 'price_volume_liquidity' : null,
     scoringEvidence.score_components != null ? 'score_v2_components' : null,
     hasRecord(scoringEvidence.raw_signals) ? 'strategy_raw_signals' : null,
     hasRecord(scoringEvidence.taxonomy) ? 'finlab_taxonomy_profile' : null,
   ].filter((value): value is string => Boolean(value))
 
   return {
-    schema_version: 'layer0_universe_features_summary_v2',
+    schema_version: 'layer0_universe_features_summary_v3',
     source: 'screener_funnel_items',
     decision_policy: 'feature_materialization_only_not_selector',
     selection_policy: 'no_topk_no_shrink',
     universe_decision: universe?.decision ?? null,
     universe_reason: universe?.reason_code ?? null,
-    universe_passed: universe?.decision === 'pass',
+    universe_passed: universe ? universe.decision === 'pass' : null,
     base_score: toNullableNumber(scoring?.score_after),
     scoring_reason: scoring?.reason_code ?? null,
     source_universe_count: toNullableNumber(layer1?.evidence?.source_universe_count ?? candidateSeed?.evidence?.source_universe_count),
@@ -709,16 +720,41 @@ function buildLayer0UniverseFeaturesSummary(
     has_strategy_raw_signals: hasRecord(scoringEvidence.raw_signals),
     has_taxonomy_profile: hasRecord(scoringEvidence.taxonomy),
     close: toNullableNumber(universeEvidence.close),
-    liquidity_policy_version: universeEvidence.policy_version ?? null,
-    liquidity_policy_checksum: universeEvidence.policy_checksum ?? null,
-    liquidity_metric: universeEvidence.metric ?? null,
-    liquidity_window_sessions: toNullableNumber(universeEvidence.window_sessions),
-    liquidity_observed_sessions: toNullableNumber(universeEvidence.observed_sessions),
-    median_daily_traded_value_twd: toNullableNumber(universeEvidence.median_daily_traded_value_twd),
-    mean_daily_traded_value_twd: toNullableNumber(universeEvidence.mean_daily_traded_value_twd),
-    min_median_daily_traded_value_twd: toNullableNumber(universeEvidence.min_median_daily_traded_value_twd),
-    liquidity_capacity_passed: universeEvidence.passed === true,
-    maturity_impact: universeEvidence.maturity_impact ?? null,
+    liquidity_evidence_source: liquidityEvidenceSource,
+    liquidity_policy_version: liquidity?.policy_version ?? null,
+    liquidity_policy_checksum: liquidity?.policy_checksum ?? null,
+    liquidity_metric: liquidity?.metric ?? null,
+    liquidity_window_sessions: liquidity?.window_sessions ?? null,
+    liquidity_observed_sessions: liquidity?.observed_sessions ?? null,
+    median_daily_traded_value_twd: liquidity?.median_daily_traded_value_twd ?? null,
+    mean_daily_traded_value_twd: liquidity?.mean_daily_traded_value_twd ?? null,
+    min_median_daily_traded_value_twd: liquidity?.min_median_daily_traded_value_twd ?? null,
+    liquidity_capacity_passed: liquidity ? liquidity.passed : null,
+    maturity_impact: liquidity?.maturity_impact ?? null,
+  }
+}
+
+function textOrNull(value: unknown): string | null {
+  if (value == null) return null
+  const text = String(value).trim()
+  return text ? text : null
+}
+
+/** Universe rows dropped before L0.5 ran (ETF, price, restriction) carry no capacity verdict. */
+function universeLiquidityCapacityEvidence(evidence: Record<string, unknown>): L05LiquidityCapacityEvidenceView | null {
+  const passed = evidence.passed
+  if (typeof passed !== 'boolean') return null
+  return {
+    policy_version: textOrNull(evidence.policy_version),
+    policy_checksum: textOrNull(evidence.policy_checksum),
+    metric: textOrNull(evidence.metric),
+    window_sessions: toNullableNumber(evidence.window_sessions),
+    observed_sessions: toNullableNumber(evidence.observed_sessions),
+    median_daily_traded_value_twd: toNullableNumber(evidence.median_daily_traded_value_twd),
+    mean_daily_traded_value_twd: toNullableNumber(evidence.mean_daily_traded_value_twd),
+    min_median_daily_traded_value_twd: toNullableNumber(evidence.min_median_daily_traded_value_twd),
+    maturity_impact: textOrNull(evidence.maturity_impact),
+    passed,
   }
 }
 

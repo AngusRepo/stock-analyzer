@@ -212,6 +212,7 @@ type HardGateSummary = {
   median_daily_traded_value_twd?: number | string | null
   min_median_daily_traded_value_twd?: number | string | null
   liquidity_capacity_passed?: boolean | number | string | null
+  universe_passed?: boolean | number | string | null
   maturity_impact?: string | null
   notes?: string[]
 }
@@ -239,6 +240,7 @@ type UniverseFeatureSummary = {
   mean_daily_traded_value_twd?: number | string | null
   min_median_daily_traded_value_twd?: number | string | null
   liquidity_capacity_passed?: boolean | number | string | null
+  liquidity_evidence_source?: string | null
   maturity_impact?: string | null
 }
 
@@ -642,6 +644,9 @@ function finiteMetric(raw: unknown): number | null {
   return Number.isFinite(value) ? value : null
 }
 
+// Missing funnel evidence (e.g. a row dropped by the D1 persistence cap) is unknown, not blocked.
+const UNKNOWN_EVIDENCE_LABEL = '未知（無資料）'
+
 function boolFromValue(raw: unknown): boolean {
   if (raw === true || raw === 1) return true
   if (typeof raw === 'string') {
@@ -690,7 +695,10 @@ function hardGateFromRec(rec: any): HardGateSummary | null {
 function universeFeaturesFromRec(rec: any): UniverseFeatureSummary | null {
   const funnelEvidence = parseObject(rec?.screener_funnel_evidence)
   const layer0 = parseObject(funnelEvidence?.layer0_universe_features)
-  if (layer0?.schema_version === 'layer0_universe_features_summary_v2' || layer0?.schema_version === 'layer0_universe_features_summary_v1') return layer0
+  // v3: universe_passed / liquidity_capacity_passed are tri-state (null = evidence missing).
+  if (layer0?.schema_version === 'layer0_universe_features_summary_v3'
+    || layer0?.schema_version === 'layer0_universe_features_summary_v2'
+    || layer0?.schema_version === 'layer0_universe_features_summary_v1') return layer0
   return null
 }
 
@@ -1709,7 +1717,7 @@ function HardGateEvidenceBlock({ gate }: { gate: HardGateSummary | null }) {
         <MetricPill label="pending buy" value={pendingBlocked ? 'blocked' : 'allowed'} />
       </div>
       <div className="mt-2 grid gap-2 sm:grid-cols-4">
-        <MetricPill label="liquidity" value={liquidityPassed == null ? 'unavailable' : liquidityPassed ? 'PASS' : 'BLOCKED'} />
+        <MetricPill label="liquidity" value={liquidityPassed == null ? UNKNOWN_EVIDENCE_LABEL : liquidityPassed ? 'PASS' : 'BLOCKED'} />
         <MetricPill label="median ADTV" value={medianDailyValue == null ? '-' : fmtNumber(medianDailyValue, 0)} />
         <MetricPill label="minimum" value={minimumDailyValue == null ? '-' : fmtNumber(minimumDailyValue, 0)} />
         <MetricPill label="sessions" value={countText(gate.liquidity_observed_sessions)} />
@@ -1727,7 +1735,7 @@ function HardGateEvidenceBlock({ gate }: { gate: HardGateSummary | null }) {
 
 function UniverseFeatureEvidenceBlock({ universe }: { universe: UniverseFeatureSummary | null }) {
   if (!universe) return null
-  const passed = boolFromValue(universe.universe_passed)
+  const passed = universe.universe_passed == null ? null : boolFromValue(universe.universe_passed)
   const featureGroups = universe.feature_groups?.length
     ? universe.feature_groups.join(' / ')
     : 'feature groups unavailable'
@@ -1740,7 +1748,7 @@ function UniverseFeatureEvidenceBlock({ universe }: { universe: UniverseFeatureS
         <span className="sv-num text-[11px] text-muted-foreground">feature coverage, not top-k</span>
       </div>
       <div className="grid gap-2 sm:grid-cols-4">
-        <MetricPill label="universe" value={passed ? 'PASS' : String(universe.universe_decision ?? 'unknown')} />
+        <MetricPill label="universe" value={passed == null ? UNKNOWN_EVIDENCE_LABEL : passed ? 'PASS' : String(universe.universe_decision ?? 'unknown')} />
         <MetricPill label="source count" value={countText(universe.source_universe_count)} />
         <MetricPill label="base score（僅顯示）" value={fmtNumber(universe.base_score, 1)} />
         <MetricPill label="feature groups" value={countText(universe.feature_group_count ?? universe.feature_groups?.length)} />

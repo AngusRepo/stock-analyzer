@@ -34,28 +34,24 @@ def build_validation_payload() -> dict[str, object]:
     high_dup = miner._similarity_adjusted_novelty(
         ["factor_a", "factor_b"],
         [],
-        base_novelty=1.0,
         pair_map=pair_map,
         feature_meta=feature_meta,
     )
     low_dup = miner._similarity_adjusted_novelty(
         ["factor_a", "factor_c"],
         [],
-        base_novelty=0.70,
         pair_map=pair_map,
         feature_meta=feature_meta,
     )
     archive_dup = miner._similarity_adjusted_novelty(
         ["factor_a", "factor_c"],
         [{"factor_b"}],
-        base_novelty=0.80,
         pair_map=pair_map,
         feature_meta=feature_meta,
     )
     missing_pair = miner._similarity_adjusted_novelty(
         ["factor_e", "factor_f"],
         [],
-        base_novelty=1.0,
         pair_map={},
         feature_meta=feature_meta,
     )

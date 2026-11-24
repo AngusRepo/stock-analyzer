@@ -223,13 +223,13 @@ def _metrics_for_scenario(
     return row
 
 
-def _pairwise_rows(ids: list[str], positions: dict[str, pd.DataFrame], close: pd.DataFrame, fee_tax_cost: float) -> list[dict[str, Any]]:
+def _pairwise_rows(ids: list[str], positions: dict[str, pd.DataFrame], close: pd.DataFrame) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    # Miner cost model: commission both sides + sell tax (TW defaults), fill at t+1 close.
     returns = {
         sid: robust.alpha223.miner._portfolio_returns(
             positions[sid].reindex(index=close.index, columns=close.columns).fillna(False).astype(bool),
             close,
-            fee_tax_cost=fee_tax_cost,
         )
         for sid in ids
         if sid in positions
@@ -329,13 +329,13 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         *ALPHA_IDS,
         *EXTENSION_ALPHA_IDS,
     ]
-    pairwise = pd.DataFrame(_pairwise_rows(focus_ids, positions, close_slice, args.fee_tax_cost))
+    pairwise = pd.DataFrame(_pairwise_rows(focus_ids, positions, close_slice))
     standalone_rows = []
     for sid in focus_ids:
         if sid not in positions:
             continue
         pos = positions[sid].reindex(index=close_slice.index, columns=close_slice.columns).fillna(False).astype(bool)
-        ret = robust.alpha223.miner._portfolio_returns(pos, close_slice, fee_tax_cost=args.fee_tax_cost)
+        ret = robust.alpha223.miner._portfolio_returns(pos, close_slice)
         standalone_rows.append({
             "strategy_id": sid,
             **metadata.get(sid, {}),
@@ -403,6 +403,12 @@ def main() -> int:
     parser.add_argument("--min-coverage", type=float, default=0.15)
     parser.add_argument("--min-rank-std", type=float, default=0.01)
     parser.add_argument("--output-dir", default=str(DEFAULT_OUT_DIR))
+    parser.add_argument(
+        "--legacy-direction-mode",
+        choices=["fail_closed", "as_mined"],
+        default="fail_closed",
+        help="rows without recorded factor_directions: fail (default) or replay with the pre-v3 as-mined directions",
+    )
     args = parser.parse_args()
 
     out_dir = Path(args.output_dir)

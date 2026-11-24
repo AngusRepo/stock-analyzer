@@ -59,6 +59,27 @@ def test_single_b_pending_plan_is_not_a_compute_retry(monkeypatch):
     assert result['expected_signal_date']=='2026-10-02'
 
 
+def test_single_b_late_repair_closes_the_superseded_signal_plan(monkeypatch):
+    # 11-20: the plan was activated and traded, then 11-23 became head before the repair ran.
+    import json
+    from services import paper_strategy_mode, l4_distribution, d1_domain_client
+    monkeypatch.setattr(paper_strategy_mode,'single_b_policy',lambda *a,**k:{'mode':'single_b'})
+    monkeypatch.setattr(paper_strategy_mode,'disabled_receipt',lambda *a,**k:{})
+    monkeypatch.setattr(l4_distribution,'validate_bundle',lambda *a,**k:None)
+    original={'plan_id':'a'*64,'signal_date':'2026-11-20','parent_plan_id':'c'*64,'model_checksum':'m'*64,'l3_identity':{}}
+    head={'plan_id':'b'*64,'signal_date':'2026-11-23','parent_plan_id':'a'*64,'model_checksum':'m'*64,'l3_identity':{}}
+    def query(sql,params):
+        if 'l4_portfolio_head_v1' in sql:return [{'payload_json':json.dumps(head)}]
+        assert 'signal_date=?' in sql and params==['2026-11-20']
+        return [{'plan_id':'a'*64,'payload_json':json.dumps(original)}]
+    monkeypatch.setattr(d1_domain_client,'client_proxy_for_domain',lambda *a:SimpleNamespace(query=query))
+    result=closure.single_b_daily_closure({'l4Distribution':{'artifact':{'model_checksum':'m'*64}}},'2026-11-20')
+    receipt=result['native_l4_daily_closure']
+    assert result['status']=='native_l4_daily_accounted' and receipt['plan_id']=='a'*64
+    assert receipt['superseded_by_plan_id']=='b'*64 and receipt['superseded_by_signal_date']=='2026-11-23'
+    assert receipt['legacy_oof_maturity_requested'] is False and receipt['training_dispatched'] is False
+
+
 @pytest.mark.parametrize('probe_error',[False,True])
 def test_missing_display_reaches_durable_dispatch_not_success_shortcut(monkeypatch, probe_error):
     from services import strategy_nav_read_model

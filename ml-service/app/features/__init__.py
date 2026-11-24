@@ -511,7 +511,9 @@ def build_feature_matrix(
         df = df.with_columns(pl.col("bb_lower").alias("bb_lower_raw"))
 
     # ── 7. Market env history join (Wave 1+2) ────────────────────────────────
-    risk_map = {"low": 0.0, "medium": 0.5, "high": 1.0, "extreme": 1.5}
+    # market_risk.risk_level is green..black; low..extreme is the retired vocabulary kept for old payloads.
+    risk_map = {"green": 0.0, "yellow": 0.5, "orange": 1.0, "red": 1.25, "black": 1.5,
+                "low": 0.0, "medium": 0.5, "high": 1.0, "extreme": 1.5}
     market_history: dict = market_env.get("history", {}) if market_env else {}
 
     if market_history:

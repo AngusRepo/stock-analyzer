@@ -1296,7 +1296,8 @@ function cycleSignalLabel(score: number | null): string {
 function businessCycleFromFactorPacket(factorPacket: any, fallbackDate: string) {
   const factors = Array.isArray(factorPacket?.factors) ? factorPacket.factors : []
   const businessFactor = factors.find((item: any) => (
-    String(item?.id ?? '').toLowerCase().includes('breadth')
+    String(item?.id ?? '').toLowerCase() === 'business_cycle'
+    || String(item?.id ?? '').toLowerCase().includes('breadth')
     || String(item?.label ?? '').includes('景氣對策')
     || String(item?.source ?? '').includes('tw_business_indicators')
   ))

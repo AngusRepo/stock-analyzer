@@ -13,7 +13,7 @@ import json
 import io
 import logging
 import hashlib
-from .hmm_input_contract import CONTRACT_HASH, FEATURES, validate_environment
+from .hmm_input_contract import CONTRACT_HASH, FEATURES, feature_vector, validate_environment
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -40,7 +40,11 @@ REGIME_SURFACE_LABELS = {
 
 PRICE_MODEL_NAMES   = {"DLinear", "PatchTST", "iTransformer"}
 FEATURE_MODEL_NAMES = {"LightGBM", "XGBoost", "ExtraTrees", "TabM", "GNN"}
-REGIME_FEATURE_WIDTH = 6
+REGIME_FEATURE_WIDTH = len(FEATURES)
+# Semantic labels read these columns by name; v3 removes risk_score_fraction and shifts later columns.
+RET_1D_INDEX = FEATURES.index("return_1d")
+RET_5D_INDEX = FEATURES.index("return_5d")
+VOL_INDEX = FEATURES.index("realized_vol_3d")
 REGIME_SEMANTIC_MAPPING_VERSION = "emission_direction_vol_v2"
 
 
@@ -59,11 +63,7 @@ class RegimeDetector:
     # ── 訓練 ──────────────────────────────────────────────────────────────────
     def fit(self, features_raw: np.ndarray, *, input_contract: str | None = None, training_input_checksum: str | None = None) -> "RegimeDetector":
         """
-        features_raw shape: (n_days, 6)
-          col 0: market_return_1d
-          col 1: market_return_5d
-          col 2: risk_score (0-1)
-          col 3: market_bias_20d
+        features_raw shape: (n_days, REGIME_FEATURE_WIDTH), columns in hmm_input_contract.FEATURES order.
         """
         if input_contract != CONTRACT_HASH or not isinstance(training_input_checksum, str) or len(training_input_checksum) != 64:
             logger.warning("[Regime] verified input contract/checksum required; training skipped")
@@ -133,7 +133,7 @@ class RegimeDetector:
 
     def _assign_semantic_regimes(self, features_raw: np.ndarray, states: np.ndarray) -> dict:
         """Fallback for models without emission means; never force a class by rank."""
-        baseline_vol = float(features_raw[:, 5].mean())
+        baseline_vol = float(features_raw[:, VOL_INDEX].mean())
         regime_map: dict[int, int] = {}
         for state in range(self.n_components):
             mask = states == state
@@ -147,7 +147,7 @@ class RegimeDetector:
     @staticmethod
     def _semantic_label(means: np.ndarray, baseline_vol: float) -> int:
         """Direction needs agreement across horizons; volatility uses its training baseline."""
-        ret_1d, ret_5d, vol = float(means[0]), float(means[1]), float(means[5])
+        ret_1d, ret_5d, vol = float(means[RET_1D_INDEX]), float(means[RET_5D_INDEX]), float(means[VOL_INDEX])
         if not np.isfinite([ret_1d, ret_5d, vol, baseline_vol]).all():
             return 2
         if ret_1d < 0 and ret_5d < 0:
@@ -169,7 +169,7 @@ class RegimeDetector:
         if len(self.feature_means) != REGIME_FEATURE_WIDTH or len(self.feature_stds) != REGIME_FEATURE_WIDTH:
             return None
         raw_means = normalized_means * self.feature_stds + self.feature_means
-        baseline_vol = float(self.feature_means[5])
+        baseline_vol = float(self.feature_means[VOL_INDEX])
         return {state: self._semantic_label(row, baseline_vol) for state, row in enumerate(raw_means)}
 
     def predict_regime(self, current_features_raw: np.ndarray, regime_config_override: dict | None = None) -> dict:
@@ -279,7 +279,7 @@ class RegimeDetector:
             return False
         means, stds = self.feature_means, self.feature_stds
         return bool(self._trained and self.model is not None and means is not None and stds is not None
-                    and np.shape(means) == (6,) and np.shape(stds) == (6,)
+                    and np.shape(means) == (REGIME_FEATURE_WIDTH,) and np.shape(stds) == (REGIME_FEATURE_WIDTH,)
                     and np.isfinite(means).all() and np.isfinite(stds).all() and (np.asarray(stds) > 0).all())
 
     def save_to_gcs(
@@ -401,12 +401,7 @@ def build_market_feature_rows(market_env: dict | None) -> tuple[list[str], np.nd
     except (ValueError, TypeError, KeyError):
         return [], None
     dates = sorted(history)
-    rows = []
-    for day in dates:
-        row = history[day]
-        ret = float(row["market_return_1d"])
-        rows.append([ret, float(row["market_return_5d"]), float(row["risk_score"])/100,
-                     float(row["market_bias_20d"]), abs(ret), float(row["realized_vol_3d"])])
+    rows = [feature_vector(history[day]) for day in dates]
     return dates, np.asarray(rows, dtype=float)
 
 

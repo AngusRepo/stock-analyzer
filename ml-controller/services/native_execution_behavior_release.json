@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:55781dbf2246d160b0cc55f5a3d3dbc8640bae2cc1f568511815704f9725a60f",
+  "execution_owner_version": "native-paper-v1:c82664021f240f8c90fa69aa9176a6360de4e39301051b3d083694611f176fc3",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei 2026-11-24 AskUserQuestion: 17:1x go：commit＋push＋3 PR（建議）; 17:3x go：merge 3 個進 release（建議）",
+  "authorization": "Wei 2026-11-24 AskUserQuestion: 20:5x go：commit＋push＋PR（建議）; 21:0x go：今晚整串（建議）",
   "review": "output/herdr-handoff-20261018/sys-cleanup-20261028/runbook_k20_repin_grant.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:slicea-20261124"
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:r2b-20261124"
 }

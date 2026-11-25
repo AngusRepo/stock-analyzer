@@ -836,7 +836,8 @@ def test_materialize_outputs_include_regime_context_market_index_and_futures() -
     )
     _write(
         root / "raw" / "regime_context" / "tw_taifex_futures_large_trader.parquet",
-        pl.DataFrame({"date": ["2026-06-26"], "net_position": [2315.0]}),
+        pl.DataFrame({"date": ["2026-06-26"], "symbol": ["臺股期貨(TX+MTX/4+TMF/20)"],
+                      "到期月份(週別)": ["所有契約"], "net_position": [2315.0]}),
     )
     _write(
         root / "raw" / "regime_context" / "futures_inst_net_oi_amount_k.parquet",
@@ -983,6 +984,67 @@ def test_option_large_trader_regime_context_preserves_option_type_scope() -> Non
     )
     assert call_market_oi["value"] == 72364.0
     assert put_market_oi["value"] == 87173.0
+
+
+def test_large_trader_d1_rows_keep_only_contract_category_scope() -> None:
+    from services.finlab_canonical_materializer import regime_context_d1_category_scope
+
+    contract = json.loads((Path(__file__).resolve().parents[2] / "data" / "finlab_source_contract.json").read_text("utf-8"))
+    scope = contract["lanes"]["regime_context"]["d1_category_scope"]
+    assert regime_context_d1_category_scope() == {dataset: tuple(parts) for dataset, parts in scope.items()}
+    assert set(scope) == {"tw_taifex_futures_large_trader", "tw_taifex_option_large_trader"}
+
+    root = _root("large_trader_d1_category_scope")
+    expiry, buy5, oi = "到期月份(週別)", "買方前五大交易人部位數", "全市場未沖銷部位數"
+    _write(
+        root / "raw" / "regime_context" / "tw_taifex_futures_large_trader.parquet",
+        pl.DataFrame({
+            "date": ["2026-11-24"] * 3,
+            "symbol": ["臺股期貨(TX+MTX/4+TMF/20)", "萬海期貨", "澳幣兌美元期貨"],
+            expiry: ["所有契約", "所有契約", "202612"],
+            buy5: [68607.0, 120.0, 30.0],
+            oi: [117672.0, 900.0, 80.0],
+        }),
+    )
+    _write(
+        root / "raw" / "regime_context" / "tw_taifex_option_large_trader.parquet",
+        pl.DataFrame({
+            "date": ["2026-11-24"] * 2,
+            "symbol": ["臺指", "鴻海"],
+            "買賣權": ["買權", "買權"],
+            expiry: ["所有契約", "所有契約"],
+            buy5: [24784.0, 10.0],
+            oi: [72364.0, 50.0],
+        }),
+    )
+    _write(
+        root / "raw" / "regime_context" / "tw_option_put_call_ratio.parquet",
+        pl.DataFrame({"date": ["2026-11-24"], "pcr": [0.9]}),
+    )
+
+    outputs = materialize_finlab_canonical_outputs(
+        root,
+        generated_at="2026-11-25T00:00:00+00:00",
+        start_date="2026-11-24",
+        end_date="2026-11-24",
+        datasets=["canonical_regime_context_daily"],
+    )
+
+    categories = {(row["dataset"], row["category"]) for row in outputs.canonical_regime_context_daily}
+    assert categories == {
+        ("tw_taifex_futures_large_trader", "臺股期貨(TX+MTX/4+TMF/20) / 所有契約"),
+        ("tw_taifex_option_large_trader", "臺指 / 買權 / 所有契約"),
+        ("tw_option_put_call_ratio", "market"),
+    }
+    # 2 fields x 2 kept large-trader categories + pcr; receipts and D1 rows count the same kept rows.
+    assert outputs.manifest["row_counts"]["canonical_regime_context_daily"] == 5
+    statements = build_d1_upsert_statements(outputs)
+    written = [params for sql, params in statements if "INSERT INTO canonical_regime_context_daily" in sql]
+    flat = [str(value) for params in written for value in params]
+    assert not any("萬海" in value or "鴻海" in value or "澳幣" in value for value in flat)
+    receipts = [params for sql, params in statements if "finlab_materialization_receipts_v1" in sql
+                and params[2] == "canonical_regime_context_daily"]
+    assert [params[5] for params in receipts] == [5]
 
 
 def test_futures_rows_keep_regular_and_after_hours_sessions_separate() -> None:

@@ -1,0 +1,77 @@
+# stockvision-monitoring: read-only API for Grafana (P3, audits/grafana-obs-eval-20261124).
+# Deploy: node ../tools/deploy_monitoring_worker_with_provenance.mjs (CD unit `monitoring`).
+# Shares worker/node_modules and the main Worker's src/lib; everything it runs is under src/monitoring.
+name = "stockvision-monitoring"
+main = "src/monitoring/index.ts"
+compatibility_date = "2024-07-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Served on workers.dev until there is a custom domain (the account has no zone): Access is enabled on the
+# workers.dev URL (Worker settings -> Domains & Routes), and the Worker still verifies the Access JWT and the Bearer.
+# The Cache API stores nothing on workers.dev, so the route cache and memo use MONITORING_CACHE (src/monitoring/kvCache.ts).
+# With a custom domain later: routes = [{ pattern = "<monitoring hostname>", custom_domain = true }], workers_dev = false,
+# and remove MONITORING_CACHE to go back to the Cache API.
+workers_dev = true
+preview_urls = false
+
+[observability]
+enabled = true
+
+# Secrets (wrangler secret put --config wrangler.monitoring.toml <NAME>); none are committed:
+#   ACCESS_TEAM_DOMAIN               <team>.cloudflareaccess.com
+#   ACCESS_AUD                       AUD tag of the Access application on the monitoring hostname
+#   ACCESS_SERVICE_TOKEN_CLIENT_ID   optional: Client ID of the Grafana service token (JWT common_name)
+#   MONITORING_READ_TOKEN            32 random bytes, also stored in Grafana Infinity secureJsonData
+# Optional var: CHAIN_ROOT_EXPECTED_BY_TW = "HH:MM" overrides the contract's 18:30 (Taiwan) no-chain-rows deadline.
+
+# Same databases as the main Worker. No migrations_dir: this Worker never applies migrations,
+# and src/monitoring/readOnlyD1.ts refuses anything but SELECT / WITH ... SELECT / EXPLAIN.
+[[d1_databases]]
+binding = "DB"
+database_name = "stockvision-db"
+database_id = "6401a5f6-5767-4fa8-a1a7-ec8d4739ac79"
+
+[[d1_databases]]
+binding = "MARKET_DB"
+database_name = "stockvision-market-db"
+database_id = "067bbeb0-1247-416a-96dd-138315345319"
+
+[[d1_databases]]
+binding = "LEARNING_DB"
+database_name = "stockvision-learning-db"
+database_id = "73599848-b73b-4bac-9144-df638b877dbc"
+
+[[d1_databases]]
+binding = "OPS_DB"
+database_name = "stockvision-ops-db"
+database_id = "d9914406-bb36-45a4-bdc4-fe565ed910d3"
+
+[[d1_databases]]
+binding = "CORE_DB"
+database_name = "stockvision-core-db"
+database_id = "8cc0ab1f-088c-4c21-b282-bcd4c790c7da"
+
+[[d1_databases]]
+binding = "EXECUTION_DB"
+database_name = "stockvision-execution-db"
+database_id = "731b3c7e-ad14-4e0e-b38e-4de53c5a83fa"
+
+[[d1_databases]]
+binding = "PAPER_DB"
+database_name = "stockvision-paper-db"
+database_id = "bd0a99b2-077b-4d57-8971-07ff8c7f19e1"
+
+[[d1_databases]]
+binding = "RESEARCH_DB"
+database_name = "stockvision-research-db"
+database_id = "9332506a-ef37-43d4-9ea3-5aa70b1561d2"
+
+# Route cache and memo (kvCache.ts); this Worker's own namespace, never exposed to routes.
+[[kv_namespaces]]
+binding = "MONITORING_CACHE"
+id = "bc973e5be8ca49f58efabee549acb305"
+
+# Main Worker KV: holiday:* and the TWSE closure caches (get only; readOnlyEnv exposes no put/delete).
+[[kv_namespaces]]
+binding = "KV"
+id = "39dcebcf5b6848c98f269ef9a48dc3f8"

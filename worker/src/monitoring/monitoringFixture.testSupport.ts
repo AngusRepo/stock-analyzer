@@ -7,7 +7,7 @@ import type { MonitoringEnv } from './env'
 import type { ExecutedQuery } from './readOnlyD1'
 
 const read = (path: string) => readFileSync(new URL(path, import.meta.url), 'utf8')
-const P2_MIGRATION = '../../domain-migrations/ops/0025_ops_chain_stage_state.sql'
+const P2_MIGRATION = '../../domain-migrations/ops/0027_ops_chain_stage_state.sql'
 
 // p2p3_contract.md (11/24): used until P2's migration file lands in this tree.
 const CONTRACT_CHAIN_DDL = `

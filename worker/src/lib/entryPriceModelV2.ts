@@ -182,7 +182,9 @@ export function buildEntryPriceModelV2FromOhlcvPlan(
   const bearishSmcPressure =
     smc?.bias === 'bearish' &&
     (smc.bearishScore ?? 0) > Math.max(0.12, (smc.bullishScore ?? 0) + 0.08)
-  const entryLow = round2(Math.max(
+  // The OHLCV plan already moved a below-zone pullback entry to the latest price; keep the band on it.
+  const belowBuyReference = plan.mode === 'pullback' && plan.entryPrice < plan.buyReferenceLow
+  const entryLow = belowBuyReference ? round2(plan.entryPrice) : round2(Math.max(
     swingLow,
     Math.min(plan.buyReferenceLow, profileVal ?? plan.buyReferenceLow),
   ))
@@ -195,8 +197,8 @@ export function buildEntryPriceModelV2FromOhlcvPlan(
   const entryHighBase = bearishSmcPressure
     ? Math.min(smcEntryHighBase, Math.max(plan.buyReferenceHigh, profilePoc ?? plan.buyReferenceHigh))
     : smcEntryHighBase
-  const entryHigh = round2(Math.max(entryLow, entryHighBase))
-  const preferredEntry = round2(plan.mode === 'pullback'
+  const entryHigh = belowBuyReference ? entryLow : round2(Math.max(entryLow, entryHighBase))
+  const preferredEntry = belowBuyReference ? entryLow : round2(plan.mode === 'pullback'
     ? Math.min(entryHigh, Math.max(entryLow, profilePoc ?? plan.entryPrice))
     : Math.max(plan.entryPrice, plan.confirmation))
   const rawChaseCeiling = Math.max(

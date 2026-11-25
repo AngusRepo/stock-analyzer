@@ -303,11 +303,16 @@ export function resolveOhlcvEntryPlan(
     : latest >= confirmation
       ? 'breakout'
       : 'pullback'
+  // Price already below the pullback zone: the zone is stale structure, and a buy limit there
+  // would fill at market while stop/targets stay anchored to the old range.
+  const belowBuyReference = mode === 'pullback' && latest < buyReferenceLow
   const entryPrice = mode === 'breakout_continuation'
     ? Math.min(latest, optimisticHigh)
     : mode === 'breakout'
       ? confirmation
-      : buyReferenceHigh
+      : belowBuyReference
+        ? latest
+        : buyReferenceHigh
   // Keep the structural invalidation separate from the chase ceiling.
   // 1.5R / 3R are planned gross targets, checked again against costs at fill.
   const buffer = Math.max(getTwTickSize(entryPrice), (levels.atr ?? 0) * 0.25)
@@ -315,8 +320,9 @@ export function resolveOhlcvEntryPlan(
   const stopLoss = snapToTwPriceTick(Math.max(getTwTickSize(entryPrice), stopAnchor - buffer), 'floor')
   const risk = entryPrice - stopLoss
   if (!(risk > 0)) return null
-  const previousTarget1 = mode === 'pullback' ? confirmation : optimisticHigh
-  const previousTarget2 = Math.max(optimisticHigh, previousTarget1) + (levels.atr ?? 0)
+  // Below the zone, structural levels are out of reach; targets come from R multiples alone.
+  const previousTarget1 = belowBuyReference ? entryPrice : mode === 'pullback' ? confirmation : optimisticHigh
+  const previousTarget2 = belowBuyReference ? entryPrice : Math.max(optimisticHigh, previousTarget1) + (levels.atr ?? 0)
   const target1 = snapToTwPriceTick(Math.max(previousTarget1, entryPrice + 1.5 * risk), 'ceil')
   const target2 = snapToTwPriceTick(Math.max(previousTarget2, entryPrice + 3 * risk, target1 + (levels.atr ?? getTwTickSize(target1))), 'ceil')
 

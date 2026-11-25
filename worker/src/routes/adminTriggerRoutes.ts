@@ -7,6 +7,7 @@ import type { Bindings, Variables } from '../types'
 import type { SchedulerCallbackContext, TaskHandler } from '../lib/adminTriggerTaskMap'
 import { resolveNextTwSessionClosure, shouldRunScheduledTask } from '../lib/schedulerPolicy'
 import { databaseForDataDomain } from '../lib/dataDomainRegistry'
+import { setOpsRuntimeTicket } from '../lib/opsRuntimeScope'
 import {
   admitSchedulerExecutionTicket,
   failAcceptedSchedulerTicket,
@@ -193,6 +194,9 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
     const schedulerTicketId = ticketAdmission.ticket.ticket_id
     schedulerContext.schedulerTicketId = schedulerTicketId
     schedulerContext.schedulerRunId = executionRunId
+    // L1 correlation id for this request: Worker logs, chain stage state, ml-controller header.
+    setOpsRuntimeTicket({ task, ticketId: schedulerTicketId, rootTicketId: ticketAdmission.ticket.root_ticket_id,
+      attempt: ticketAdmission.ticket.attempt_count, businessDate: ticketAdmission.ticket.business_date })
     if (task === 'audit-json-retention') schedulerContext.businessDate = ticketAdmission.ticket.business_date
     const updateTicket = (
       status: SchedulerExecutionTicketStatus,

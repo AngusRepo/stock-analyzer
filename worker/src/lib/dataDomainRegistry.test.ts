@@ -50,6 +50,10 @@ const domainMigrationTransientTables = new Set([
   // routing. Registering them in dataDomainRegistry.ts changes the native bundle; wait for the next re-pin.
   'todo_cards',
   'todo_card_events',
+  // Chain stage state (ops/0025, observability P2): written through env.OPS_DB directly for the same
+  // reason (dataDomainRegistry.ts is a native bundle input); register at the next re-pin.
+  'ops_chain_stage_state_v1',
+  'ops_chain_stage_transitions_v1',
 ])
 const productionSqlFiles = [
   'schema.sql',

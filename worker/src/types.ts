@@ -21,6 +21,8 @@ export type Bindings = {
   MULTI_D1_ACTIVE_DOMAINS?: string
   /** Where the multi-D1 cutover control plane lives: 'legacy' (DB, default) or 'ops' (OPS_DB). */
   DATA_DOMAIN_CONTROL_PLANE?: string
+  /** Observability P2 rollback switch: "0" stops every ops_chain_stage_state write (default on). */
+  OPS_CHAIN_STAGE_STATE_WRITES?: string
   KV: KVNamespace
   ARTIFACTS?: R2Bucket
   EVIDENCE_ARTIFACT_WRITER?: EvidenceArtifactWriter
@@ -174,7 +176,6 @@ export interface DbStockPrice {
   high: number | null
   low: number | null
   close: number | null
-  adj_close: number | null
   volume: number | null
 }
 

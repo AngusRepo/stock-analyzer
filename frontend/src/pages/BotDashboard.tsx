@@ -15,7 +15,7 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import {
-  Activity, TrendingUp, Wallet, Bot, ShieldCheck, ShieldAlert,
+  Activity, TrendingUp, Wallet, Bot, Shield, ShieldCheck, ShieldAlert,
   Clock, ArrowUpRight, ArrowDownRight, Scale, Cpu,
 } from 'lucide-react'
 import { StockFactorTrajectoryPanel } from '@/components/PitFactorTrajectoryPanel'
@@ -25,6 +25,7 @@ import { stocksApi } from '@/lib/api'
 import { explainExecutionEvent, formatExecutionEvent } from '@/lib/executionEvent'
 import { formatCanonicalTradeLifecycleBadge, formatPartialFillRemaining, formatPendingBuyExecutionBadge, formatPositionRiskPlan, formatS12HoldingDefenseBadge, formatS12IntradayStructureBadge, formatS12IntradayStructureState } from '@/lib/pendingBuyExecutionUi'
 import { formatTwDateTimeShort } from '@/lib/twTime'
+import { marketRiskShield, tradingMarketRisk } from '@/lib/marketRiskLevel'
 import { paperOrdersFromPayload, paperPendingBuysFromPayload, paperPnlSnapshotsFromPayload, paperPositionsFromPayload } from '@/lib/paperPayload'
 import {
   WorkstationCatCard,
@@ -482,7 +483,9 @@ function executionToneClass(tone: string): string {
   return 'border-zinc-500/25 bg-zinc-500/10 text-zinc-200'
 }
 
-function pendingBuyEmptyMessage(meta?: any): string {
+function pendingBuyEmptyMessage(meta?: any, state?: any): string {
+  // A failed flow (no decision, or a run never published by 08:45) is not the normal empty state.
+  if (state?.state === 'error') return `今日沒有可執行的盤前決策：${state.error_message ?? meta?.error_message ?? 'unknown'}`
   const counts = meta?.execution_counts ?? {}
   const cancelled = Number(counts.cancelled ?? 0)
   const filled = Number(counts.filled ?? 0)
@@ -554,7 +557,7 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
         <div className="px-1 text-xs text-muted-foreground/60 sv-num">{showingDate || 'today'} pending buys execution state</div>
         <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} policy={pendingExecutionPolicy} />
         <div className="rounded-xl border border-muted/40 bg-background/40 p-3 text-xs text-muted-foreground">
-          {pendingBuyEmptyMessage(pendingMeta)}
+          {pendingBuyEmptyMessage(pendingMeta, pendingState)}
           <div className="mt-2 sv-num text-xs text-muted-foreground/70">
             Only L4 sparse final BUY rows enter pending buys; daily recommendations stay evidence until L4 selects them.
           </div>
@@ -566,7 +569,9 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
   return (
     <div className="space-y-2">
       <div className="px-1 text-[11px] text-muted-foreground">{refreshStatus}{pendingRunLabel}</div>
-      <div className="border-t border-muted/40 pt-3 px-1 text-xs font-semibold text-emerald-300 sv-num">{showingDate} · L4 待買清單（{buys.length} 檔）</div>
+      {pendingState?.state === 'error'
+        ? <div className="border-t border-muted/40 pt-3 px-1 text-xs font-semibold text-red-300 sv-num">{showingDate} · L4 待買清單（{buys.length} 檔，未發布，不會執行）：{pendingState.error_message ?? pendingMeta?.error_message ?? 'unknown'}</div>
+        : <div className="border-t border-muted/40 pt-3 px-1 text-xs font-semibold text-emerald-300 sv-num">{showingDate} · L4 待買清單（{buys.length} 檔）</div>}
       <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} policy={pendingExecutionPolicy} />
       <p className="px-1 text-sm text-muted-foreground">辯論僅供觀察，不改變選股、配置或交易資格。行情每 10 秒讀取串流快取；訊號仍在完整 5 分 K 後判斷。</p>
       {completedCards}
@@ -1225,22 +1230,24 @@ function BotStatusPanel() {
     staleTime: 5 * 60_000,
   })
 
-  const riskScore = risk?.risk_score ?? risk?.riskScore ?? 50
-  const riskLevel = risk?.risk_level ?? risk?.riskLevel ?? 'medium'
-  const riskColor = riskScore > 70 ? 'text-red-400' : riskScore > 40 ? 'text-amber-400' : 'text-emerald-400'
+  // The level Paper buys/halts use (GET /market/risk runtimeRisk); the UI applies no score cuts.
+  const trading = tradingMarketRisk(risk)
+  const ShieldIcon = { alert: ShieldAlert, check: ShieldCheck, neutral: Shield }[marketRiskShield(trading)]
 
   return (
     <div className="space-y-4">
       {/* Market Risk */}
       <div className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">
         <div className="flex items-center gap-2">
-          {riskScore > 70 ? <ShieldAlert className="w-4 h-4 text-red-400" /> : <ShieldCheck className="w-4 h-4 text-emerald-400" />}
+          <ShieldIcon className={`w-4 h-4 ${trading.style.color}`} />
           <span className="text-sm text-foreground/80">Market Risk</span>
         </div>
         <div className="text-right">
-          <span className={`sv-num font-semibold ${riskColor}`}>{riskScore}</span>
-          <span className="text-muted-foreground text-xs ml-1">/ 100</span>
-          <Badge className="ml-2 bg-muted/50 text-muted-foreground border-border/30 text-xs">{riskLevel}</Badge>
+          {trading.score == null
+            ? <span className="text-muted-foreground text-xs">—</span>
+            : <><span className={`sv-num font-semibold ${trading.style.color}`}>{Math.round(trading.score)}</span>
+              <span className="text-muted-foreground text-xs ml-1">/ 100</span></>}
+          <Badge className={`ml-2 text-xs ${trading.style.bg} ${trading.style.color} ${trading.style.border}`}>{trading.label}</Badge>
         </div>
       </div>
 
@@ -1551,7 +1558,8 @@ function AdaptiveParamsCard() {
   }
 
   const confThreshold = data.confidence_threshold ?? 0.60
-  const riskScore     = data.market_risk_score ?? 50
+  // Score the adaptive update was computed with; it carries no level, so it is not colored as one.
+  const riskScore     = typeof data.market_risk_score === 'number' && Number.isFinite(data.market_risk_score) ? data.market_risk_score : null
   const acc30d        = data.recent_accuracy_30d ?? 0
   const banditMult    = data.bandit_max_mult ?? 2.5
   const forceExplore  = data.bandit_force_explore ?? false
@@ -1577,7 +1585,7 @@ function AdaptiveParamsCard() {
           </div>
           <div className="rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2">
             <div className="text-muted-foreground text-[10px] normal-case">Risk Score</div>
-            <div className={`text-sm sv-num mt-0.5 ${riskScore > 70 ? 'text-red-400' : riskScore > 40 ? 'text-amber-400' : 'text-emerald-400'}`}>{riskScore}</div>
+            <div className="text-sm sv-num mt-0.5 text-foreground/80">{riskScore == null ? '待接資料' : riskScore}</div>
           </div>
           <div className="rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2">
             <div className="text-muted-foreground text-[10px] normal-case">30d 準確率</div>

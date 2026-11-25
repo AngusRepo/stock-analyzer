@@ -1,9 +1,11 @@
 import type { Bindings, UpdateQueueMsg } from '../types'
-import { databaseForDataDomain } from './dataDomainRegistry'
+import { databaseForDataDomain, databaseForTable } from './dataDomainRegistry'
 import { logSchedulerResult } from './schedulerRunLogger'
 import { resolveTwTradingSession } from './schedulerPolicy'
 import { settlePremarketReadinessTickets } from './premarketReadinessTickets'
-import { premarketPublicationMinutes, premarketPublicationTarget } from './premarketPublicationWindow'
+import { premarketPublicationCutoff, premarketPublicationMinutes, premarketPublicationTarget } from './premarketPublicationWindow'
+import { paperAccountId } from './paperExecutionScope'
+import { recordChainStage } from './opsChainStageState'
 
 export type PremarketStage = 'context' | 'setup' | 'allocate' | 'market-health' | `debate:${number}` | `replan:${number}` | `publish:${number}`
 export interface PremarketPayload { [key: string]: unknown }
@@ -57,6 +59,102 @@ export function premarketStageNotBefore(date: string, stage: PremarketStage): nu
   return Date.parse(`${date}T${stage === 'context' ? '06:45' : stage === 'market-health' ? '08:30' : '07:15'}:00+08:00`)
 }
 interface Row { stage: string; status: string; cursor_key: string | null; attempt_count: number; lease_owner: string | null }
+type ChainRow = Pick<Row,'stage'|'status'|'cursor_key'> & { last_error: string | null }
+const EXPIRED = 'premarket_session_expired'
+/** Waits on an unavailable controller back off (120s doubling, capped); dependency waits keep the 120s cadence. */
+const BACKOFF_WAIT = /premarket_wait:controller_unavailable:/
+const backoffSeconds = (streak: number) => Math.min(600, 120 * 2 ** Math.max(0, streak - 1))
+function backoffStreak(lastError: string | null): number {
+  return BACKOFF_WAIT.test(lastError ?? '') ? Number(/backoff_streak=(\d+)/.exec(lastError ?? '')?.[1] ?? 0) : 0
+}
+
+/** Bounded, credential-free cause text for a user-visible record. */
+export function premarketCauseText(raw: string | null | undefined, max = 300): string {
+  const text = String(raw ?? '').replace(/\s+/g, ' ').trim()
+    .replace(/\b(bearer|token|secret|password|api[_-]?key|authorization|x-controller-token)(\s*[=:]\s*|\s+)(?:bearer\s+)?[^\s,;&]+/gi, '$1=[redacted]')
+    .replace(/([?&][^=\s&]+=)[^\s&]+/g, '$1[redacted]')
+  return (text || 'unknown').slice(0, max)
+}
+function isReadyRow(r: Pick<Row,'stage'|'status'|'cursor_key'>): boolean {
+  return r.stage.startsWith(PREFIX + 'publish:') && r.status === 'success' && JSON.parse(r.cursor_key ?? '{}').output?.ready === true
+}
+/** The stage that kept the plan from publishing: market health is reported separately and never names the blocker. */
+function blockingStage(rows: ChainRow[]): ChainRow | undefined {
+  const critical = rows.filter(r => r.stage !== PREFIX + 'market-health')
+  return critical.find(r => r.status === 'error') ?? critical.find(r => r.status !== 'success')
+    ?? rows.find(r => r.status === 'error') ?? rows.find(r => r.status !== 'success')
+}
+async function readChain(env: Bindings, date: string): Promise<ChainRow[]> {
+  return (await databaseForDataDomain(env, 'ops').prepare(`SELECT stage,status,cursor_key,last_error FROM pipeline_stage_runs
+    WHERE business_date=? AND canonical_run_id=? AND stage LIKE 'premarket_v3:%' ORDER BY created_at,stage`)
+    .bind(date, RUN(date)).all<ChainRow>()).results
+}
+
+/** Closure already recorded by resolveTwTradingSession (weekend, holiday key, cached TWSE schedule or
+ * ad-hoc check). Cache reads only: a display poll must not fetch TWSE, write KV or alert. */
+async function recordedClosure(kv: KVNamespace, date: string): Promise<boolean> {
+  const day = new Date(`${date}T12:00:00+08:00`).getUTCDay()
+  if (day === 0 || day === 6) return true
+  if (await kv.get(`holiday:${date}`)) return true
+  if (await kv.get(`market:twse_adhoc_closure_check:v1:${date}`) === 'closed') return true
+  const schedule = await kv.get(`market:twse_holiday_schedule:v2:${date.slice(0, 4)}`, 'json') as { dates?: unknown } | null
+  return Array.isArray(schedule?.dates) && schedule.dates.includes(date)
+}
+
+/** Display only. In single-plan mode trading acts only on today's finalized daily-plan head, so a
+ * ready/empty/halted run without one past the publication target is not executable: returns
+ * `premarket_publication_expired:<blocking stage cause>`, else null. Reads D1/KV only; never writes or fetches. */
+export async function premarketUnpublishedRunReason(env: Bindings, date: string, now = Date.now()): Promise<string | null> {
+  if (env.PAPER_DAILY_PLAN_OWNER !== 'premarket_once_v1' || now < premarketPublicationCutoff(date)) return null
+  // Same head-and-review join readL4ExecutionPlan uses before trading acts on the day.
+  const head = await databaseForDataDomain(env, 'paper').prepare(`SELECT 1 AS ok FROM paper_daily_plan_heads_v1 h
+    JOIN paper_daily_plan_reviews_v1 r ON r.account_id=h.account_id AND r.trade_date=h.trade_date AND r.checksum=h.checksum
+    WHERE h.account_id=? AND h.trade_date=?`).bind(paperAccountId(), date).first()
+  if (head) return null
+  // A closure announced after the run was written stops the day; it is not a failed publication.
+  if (await recordedClosure(env.KV, date)) return null
+  const blocker = blockingStage(await readChain(env, date))
+  const cause = blocker ? `${blocker.stage.slice(PREFIX.length)}:${blocker.last_error ?? blocker.status}` : 'not_started'
+  return 'premarket_publication_expired:' + premarketCauseText(cause)
+}
+/** Display projection of today's run meta: an unpublished decision shows as a failed flow with
+ * its reason (original status kept). An unverifiable check leaves the meta as it is, marked. */
+export async function premarketPublicationDisplayMeta<M extends Record<string, any>>(
+  env: Bindings, date: string, meta: M | null | undefined, now = Date.now(),
+): Promise<M | null | undefined> {
+  if (!meta || !['ready', 'empty', 'halted'].includes(String(meta.status))) return meta
+  let reason: string | null
+  try { reason = await premarketUnpublishedRunReason(env, date, now) } catch (error) {
+    console.warn('[premarket] publication display check unavailable:', premarketCauseText(String(error), 200))
+    return { ...meta, publication_check: 'unavailable' }
+  }
+  return reason ? { ...meta, status: 'error', error_message: reason, original_status: meta.status,
+    original_error_message: meta.error_message, publication_state: 'expired' } : meta
+}
+/** The same projection for today's entry in the run history. */
+export function projectExpiredRunHistory<H>(history: H, runId: unknown, displayMeta: Record<string, any> | null | undefined): H {
+  const runs = (history as { runs?: unknown })?.runs
+  if (displayMeta?.publication_state !== 'expired' || !Array.isArray(runs)) return history
+  return { ...history, runs: runs.map((run: Record<string, any>) => run.run_id === Number(runId)
+    ? { ...run, status: 'error', error_message: displayMeta.error_message, original_status: run.status } : run) }
+}
+
+/** A trading day whose chain missed its publication target gets one explicit error run, so
+ * "no decision today" is visible. An existing decision (any non-superseded run) is never replaced.
+ * source_reco_date stays NULL: no recommendation date was consumed, and the data-quality date
+ * check fails an error run on its status before it looks at the source date. */
+async function recordPremarketNoDecision(env: Bindings, date: string, rows: ChainRow[]): Promise<string> {
+  if (rows.some(isReadyRow)) return 'published'
+  const blocker = blockingStage(rows)
+  const cause = blocker ? `${blocker.stage.slice(PREFIX.length)}:${blocker.last_error ?? blocker.status}` : 'not_started'
+  const message = 'premarket_no_decision:' + premarketCauseText(cause)
+  const result = await databaseForTable(env, 'pending_buy_runs').prepare(`INSERT INTO pending_buy_runs
+    (trade_date,source_reco_date,status,debate_status,candidate_count,error_message,created_at,updated_at)
+    SELECT ?,NULL,'error','skipped',0,?,datetime('now'),datetime('now')
+    WHERE NOT EXISTS (SELECT 1 FROM pending_buy_runs WHERE trade_date=? AND status!='superseded')`)
+    .bind(date, message, date).run()
+  return Number(result.meta?.changes ?? 0) > 0 ? 'recorded' : 'existing_decision'
+}
 
 /** Queued stage rows are the durable outbox. Sending may repeat; claiming cannot. */
 export async function dispatchPremarketEvents(env: Bindings, date: string, now = Date.now()): Promise<number> {
@@ -98,14 +196,15 @@ async function projectPremarketProgress(env: Bindings, date: string, rows?: Row[
 async function premarketOverdueSummary(env: Bindings, date: string): Promise<string> {
   const session = await resolveTwTradingSession(env.KV, date, env)
   if (!session.trading) return 'status=skipped premarket_outside_window'
-  const { results } = await databaseForDataDomain(env, 'ops').prepare(`SELECT stage,status,cursor_key FROM pipeline_stage_runs
-    WHERE business_date=? AND canonical_run_id=? AND stage LIKE 'premarket_v3:%' ORDER BY created_at,stage`)
-    .bind(date, RUN(date)).all<Pick<Row,'stage'|'status'|'cursor_key'>>()
-  const ready = results.some(r => r.stage.startsWith(PREFIX + 'publish:') && r.status === 'success'
-    && JSON.parse(r.cursor_key ?? '{}').output?.ready === true)
-  if (ready) return 'status=skipped premarket_outside_window'
+  const results = await readChain(env, date)
+  if (results.some(isReadyRow)) return 'status=skipped premarket_outside_window'
   const stage = results.find(r => r.status === 'error')?.stage ?? results.find(r => r.status !== 'success')?.stage ?? 'not_started'
-  return `status=error premarket_event_chain overdue=true ready_target=${premarketPublicationTarget(date)} stage=${stage}`
+  // Recording is visibility only: a failed write is reported here, and the next sweep retries it.
+  const record = await recordPremarketNoDecision(env, date, results)
+    .catch(error => 'failed:' + premarketCauseText(error instanceof Error ? error.message : String(error), 120))
+  const blocker = blockingStage(results)
+  return `status=error premarket_event_chain overdue=true ready_target=${premarketPublicationTarget(date)} stage=${stage} no_decision_record=${record}`
+    + ` cause=${premarketCauseText(blocker?.last_error ?? blocker?.status ?? 'not_started', 200)}`
 }
 
 /** All signals converge on one daily root; watchdog never resets successful stages. */
@@ -175,9 +274,21 @@ export async function processPremarketEvent(env: Bindings, msg: UpdateQueueMsg, 
   const clock = premarketClock(now)
   const advisoryWindow = env.PAPER_DAILY_PLAN_OWNER==='premarket_once_v1' && stage.startsWith('debate:') && clock.minutes < 960
   if (date !== clock.date || (!advisoryWindow && clock.minutes >= (env.PAPER_DAILY_PLAN_OWNER==='premarket_once_v1'?premarketPublicationMinutes(date):540))) {
-    await db.prepare(`UPDATE pipeline_stage_runs SET status='error',last_error='premarket_session_expired',updated_at=CURRENT_TIMESTAMP
+    // Expiry keeps the blocking reason it ends: premarket_session_expired:<previous last_error>.
+    await db.prepare(`UPDATE pipeline_stage_runs SET status='error',updated_at=CURRENT_TIMESTAMP,
+      last_error=CASE WHEN COALESCE(last_error,'')='' THEN '${EXPIRED}'
+        WHEN substr(last_error,1,${EXPIRED.length})='${EXPIRED}' THEN last_error
+        ELSE substr('${EXPIRED}:'||last_error,1,900) END
       WHERE business_date=? AND stage=? AND canonical_run_id=? AND status!='success'`)
       .bind(date,key,RUN(date)).run()
+    if (date === clock.date) {
+      try {
+        if ((await resolveTwTradingSession(env.KV, date, env)).trading) await recordPremarketNoDecision(env, date, await readChain(env, date))
+      } catch (error) {
+        // The overdue sweep (08:50 watchdog and warmup) records it again and reports a failed write.
+        console.warn('[premarket] no-decision record deferred to overdue sweep:', premarketCauseText(String(error), 200))
+      }
+    }
     return
   }
   // A closure announced after the chain was queued (typhoon) must stop every stage.
@@ -194,8 +305,13 @@ export async function processPremarketEvent(env: Bindings, msg: UpdateQueueMsg, 
     attempt_count=attempt_count+1,started_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
     WHERE business_date=? AND stage=? AND canonical_run_id=?
       AND (status='queued' OR (status='waiting' AND lease_expires_at<=CURRENT_TIMESTAMP)) AND attempt_count<?
-    RETURNING cursor_key`).bind(owner,date,key,RUN(date),attemptLimit).first<{cursor_key:string}>()
+    RETURNING cursor_key,last_error,attempt_count`).bind(owner,date,key,RUN(date),attemptLimit).first<{cursor_key:string;last_error:string|null;attempt_count?:number}>()
   if (!row) return
+  // Chain stage state (observability; never throws): the claimed stage is running. Stamped with the
+  // trade date, so the writer maps it back to the evening chain it continues.
+  await recordChainStage({ stageId: stage === 'context' || stage === 'setup' ? 'morning-setup' : 'pre-market-warmup',
+    businessDate: date, dateKind: 'run_date', status: 'running', runId: RUN(date),
+    attempt: Number(row.attempt_count ?? 0) || undefined, summary: `premarket stage=${stage} claimed` })
   const input = JSON.parse(row.cursor_key ?? '{}') as PremarketPayload
   const guard = async () => {
     const active = await db.prepare(`SELECT 1 AS ok FROM pipeline_stage_runs WHERE business_date=? AND stage=?
@@ -225,14 +341,18 @@ export async function processPremarketEvent(env: Bindings, msg: UpdateQueueMsg, 
     if (!committed) throw new Error('premarket_stage_lease_lost')
   } catch (error) {
     const waiting = /premarket_wait:|premarket_evidence_wait:|status=pending/.test(String(error))
+    const streak = waiting && BACKOFF_WAIT.test(String(error)) ? backoffStreak(row.last_error) + 1 : 0
+    // Backoff never skips the last chance before the publication deadline.
+    const deadlineMs = env.PAPER_DAILY_PLAN_OWNER==='premarket_once_v1' ? premarketPublicationCutoff(date) : Date.parse(`${date}T09:00:00+08:00`)
+    const delay = streak ? Math.min(backoffSeconds(streak), Math.max(30, Math.ceil((deadlineMs - now) / 1000) - 60)) : 120
     await db.prepare(`UPDATE pipeline_stage_runs SET attempt_count=attempt_count-?, status=CASE WHEN attempt_count>=? AND ?=0 THEN 'error' ELSE 'waiting' END,
-      last_error=?,lease_expires_at=datetime('now','+120 seconds'),updated_at=CURRENT_TIMESTAMP
+      last_error=?,lease_expires_at=datetime('now','+'||?||' seconds'),updated_at=CURRENT_TIMESTAMP
       WHERE business_date=? AND stage=? AND canonical_run_id=? AND lease_owner=? AND status='running'`)
-      .bind(waiting ? 1 : 0,attemptLimit,waiting ? 1 : 0,String(error).slice(0,900),date,key,RUN(date),owner).run()
+      .bind(waiting ? 1 : 0,attemptLimit,waiting ? 1 : 0,((streak ? `backoff_streak=${streak} ` : '')+String(error)).slice(0,900),delay,date,key,RUN(date),owner).run()
     // Retry the incomplete stage directly; the watchdog recovers a lost delayed send.
     const retry = await db.prepare(`SELECT 1 AS ok FROM pipeline_stage_runs WHERE business_date=? AND stage=?
       AND canonical_run_id=? AND lease_owner=? AND status='waiting'`).bind(date,key,RUN(date),owner).first()
-    if (retry) await env.UPDATE_QUEUE.send(msg, {delaySeconds:120}).catch(() => {})
+    if (retry) await env.UPDATE_QUEUE.send(msg, {delaySeconds:delay}).catch(() => {})
     await projectPremarketProgress(env,date).catch(() => {})
     throw error
   }

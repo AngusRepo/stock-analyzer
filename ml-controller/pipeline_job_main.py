@@ -24,10 +24,10 @@ from datetime import datetime, timedelta
 from routers.pipeline import _callback_worker, _emit_subtask_callbacks
 from services.cloud_run_jobs_client import CloudRunJobsClient, JobExecution
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-)
+# One JSON object per line (Cloud Logging jsonPayload, with root_ticket_id when set).
+from services.json_logging import configure_json_logging  # noqa: E402
+
+configure_json_logging(logging.INFO)
 logger = logging.getLogger("pipeline_job")
 
 

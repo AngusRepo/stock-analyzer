@@ -5,6 +5,7 @@
  */
 import { useQuery } from '@tanstack/react-query'
 import { tradeApi } from '@/lib/api'
+import { marketRiskLevelStyle } from '@/lib/marketRiskLevel'
 
 interface TradePerf {
   model_name: string
@@ -56,11 +57,6 @@ const outcomeLabel: Record<string, { label: string; color: string }> = {
   hit_target1: { label: '達目標 1 ✓', color: 'text-red-300' },
   hit_stop:    { label: '觸停損 ✗',   color: 'text-emerald-400' },
   expired:     { label: '到期平倉',   color: 'text-gray-400' },
-}
-
-const riskColor: Record<string, string> = {
-  low: 'text-green-400', medium: 'text-yellow-400',
-  high: 'text-orange-400', extreme: 'text-red-500',
 }
 
 function StatCard({ label, value, sub, color = 'text-white' }: {
@@ -239,7 +235,7 @@ export default function TradePerformancePanel({ stockId }: { stockId: number }) 
                       <td className={`py-1 pr-2 text-right sv-num ${!h.trade_pnl_r ? 'text-gray-500' : h.trade_pnl_r >= 0 ? 'text-red-400' : 'text-emerald-400'}`}>
                         {h.trade_pnl_r == null ? '-' : r(h.trade_pnl_r)}
                       </td>
-                      <td className={`py-1 text-xs ${riskColor[h.market_risk_level ?? ''] ?? 'text-gray-500'}`}>
+                      <td className={`py-1 text-xs ${marketRiskLevelStyle(h.market_risk_level).color}`}>
                         {h.market_risk_level ?? '-'}
                       </td>
                     </tr>

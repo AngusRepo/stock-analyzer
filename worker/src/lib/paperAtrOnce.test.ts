@@ -15,6 +15,15 @@ test('first fail remains veto even later momentum passes',()=>{
  assert.equal(first.status,'veto');assert.deepEqual(assessAtrOnce(input([100,100,100,100,102,104]),0),first)
  assert.equal(applyAtrOnce(assessSwingEntry(input([100,100,100,100,102])),first).action,'defer')
 })
+test('R2b: 0050 below MA60 neither waits nor hides the first signal',()=>{
+ const below={...input([100,100,100,99,101]),benchmarkPriorCloses:prior.map((x,i)=>({...x,close:i===59?100:101}))}
+ assert.equal(assessSwingEntry(below).conditions?.ma60,false)
+ const r=assessAtrOnce(below)
+ assert.equal(r.status,'passed');assert.equal(r.firstSignalMs,open+25*MIN)
+ assert.deepEqual(r,assessAtrOnce(input([100,100,100,99,101])))
+ const missing=assessAtrOnce({...input([100,100,100,99,101]),benchmarkPriorCloses:prior.slice(1)})
+ assert.equal(missing.status,'passed','incomplete MA60 history is not first-signal evidence')
+})
 test('09:20 unknown can repair previous TR; unclosed minute ignored',()=>{
  const x=input([100,100,100,101]);assert.equal(assessAtrOnce(x).status,'unknown')
  assert.equal(assessAtrOnce(x).firstSignalMs,open+20*MIN);assert.equal(assessAtrOnce(x,0).status,'passed')

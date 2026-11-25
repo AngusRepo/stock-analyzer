@@ -523,9 +523,12 @@ async def premarket_state(request:Request,date:str,run_id:str):
     _check_service_token(request)
     from services.premarket_pipeline import enabled,read_seal
     if not enabled():raise HTTPException(409,'premarket_owner_disabled')
-    receipt=await asyncio.to_thread(read_seal,date,run_id)
     from services.premarket_publication import read as read_publication
-    publication=await asyncio.to_thread(read_publication,date,run_id) if receipt else None
+    # A contract violation is a 409, never a 500: the Worker retries 5xx as an unavailable controller.
+    try:
+        receipt=await asyncio.to_thread(read_seal,date,run_id)
+        publication=await asyncio.to_thread(read_publication,date,run_id) if receipt else None
+    except ValueError as exc:raise HTTPException(409,str(exc)) from exc
     return {'status':'sealed' if receipt else 'waiting','receipt':receipt,'publication':publication}
 
 @router.post('/v2/premarket-postclose')
@@ -547,7 +550,10 @@ async def premarket_resume(request:Request):
     from services.premarket_pipeline import enabled,dispatch
     if not enabled():raise HTTPException(409,'premarket_owner_disabled')
     body=await request.json()
-    return await asyncio.to_thread(dispatch,body['receipt'],body['context'],jobs_client=_jobs_client)
+    # Deterministic refusals (seal mismatch, frozen inputs, identity change) are 409 so the Worker
+    # fails them at once; only an unexpected fault stays 5xx and is retried until the deadline.
+    try:return await asyncio.to_thread(dispatch,body['receipt'],body['context'],jobs_client=_jobs_client)
+    except (KeyError,ValueError) as exc:raise HTTPException(409,str(exc)) from exc
 
 
 @callback_router.post('/v2/oof-input/callback')

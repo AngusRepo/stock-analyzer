@@ -21,6 +21,8 @@ function loadFixtures() {
 
 const STATE = '/v1/chain/state'
 const ALERTS = '/v1/chain/alerts'
+/** An alert row's chain: rows carry chain_id once the Worker judges all four chains; until then only the response does. */
+const ROW_CHAIN = 'chain_id ? chain_id : $$.chain_id'
 const TIMELINE = '/v1/chain/timeline?days=2'
 const HISTORY = '/v1/chain/history?days=14'
 const READINESS = '/v1/data-readiness'
@@ -102,7 +104,7 @@ function today(q) {
       { name: '卡住', th: th([C.txt, null], [C.bad, 1]) }, { name: '漏跑', th: th([C.txt, null], [C.bad, 1]) },
     ]),
     table('要處理（四條鏈；次數＝近 14 天第幾次失敗）', q(ALERTS, {
-      root: `rows.{ 'chain': $lookup(${CHAIN_NAMES}, chain_id), 'date': business_date, 'stage': $lookup(${NAMES}, stage_id), 'kind': kind, 'minutes': minutes,
+      root: `rows.{ 'chain': $lookup(${CHAIN_NAMES}, ${ROW_CHAIN}), 'date': business_date, 'stage': $lookup(${NAMES}, stage_id), 'kind': kind, 'minutes': minutes,
         'times': failures_14d, 'error': error ? error : summary }`,
       columns: [S('chain', '鏈'), S('date', '業務日'), S('stage', '階段'), S('kind', '狀況'), N('minutes', '已持續'), N('times', '14 天次數'), S('error', '錯誤')] }),
       0, 3, 11, 8, { status: ['狀況'], num: { '14 天次數': [[C.txt, null], [C.bad, 2]] }, unit: { 已持續: 'm' }, wd: { 鏈: 48, 業務日: 104, 狀況: 64, 已持續: 84, '14 天次數': 88 },
@@ -284,13 +286,13 @@ function mobile(q) {
   return [
     verdict(q, 0, 0, 24, 3),
     table('要處理', q(ALERTS, {
-      root: `rows.{ 'level': severity, 'item': $lookup(${CHAIN_NAMES}, chain_id) & '｜' & $lookup(${NAMES}, stage_id) & '｜' & $lookup(${STATUS_LABELS_JSONATA}, kind), 'due': expected_by }`,
+      root: `rows.{ 'level': severity, 'item': $lookup(${CHAIN_NAMES}, ${ROW_CHAIN}) & '｜' & $lookup(${NAMES}, stage_id) & '｜' & $lookup(${STATUS_LABELS_JSONATA}, kind), 'due': expected_by }`,
       columns: [S('level', '級別'), S('item', '事項'), T('due', '期限')] }), 0, 3, 24, 6,
       { status: ['級別'], unit: { 期限: CLOCK }, wd: { 級別: 76, 期限: 100 }, empty: '沒有需要處理的事項' }),
     marginTable(q, '未完成的必要階段（離截止還剩多久）', 0, 9, 24, 8, { hide: ['截止'] }),
     readinessTable(q, '資料就緒：只列有問題的', 0, 17, 24, 5, { only: `status != 'ok' and status != 'ready'`, empty: '全部到齊', hide: ['最新日期'] }),
     table('失敗中的階段（次數＝近 14 天第幾次）', q(ALERTS, {
-      root: `rows[kind = 'failed'].{ 'stage': $lookup(${CHAIN_NAMES}, chain_id) & '｜' & $lookup(${NAMES}, stage_id), 'times': failures_14d, 'error': error ? error : summary }`,
+      root: `rows[kind = 'failed'].{ 'stage': $lookup(${CHAIN_NAMES}, ${ROW_CHAIN}) & '｜' & $lookup(${NAMES}, stage_id), 'times': failures_14d, 'error': error ? error : summary }`,
       columns: [S('stage', '階段'), N('times', '次數'), S('error', '錯誤')] }), 0, 22, 24, 6,
       { num: { 次數: [[C.txt, null], [C.bad, 2]] }, wd: { 次數: 56 }, empty: '沒有失敗中的階段' }),
   ]

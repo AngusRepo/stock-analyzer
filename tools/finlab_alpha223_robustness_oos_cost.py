@@ -253,7 +253,6 @@ def _build_alpha223_args(args: argparse.Namespace) -> argparse.Namespace:
         max_symbols=0,
         min_factors=1,
         max_factors=8,
-        fee_tax_cost=args.fee_tax_cost,
         seed=42,
         pbo_folds=8,
         resample=args.resample,
@@ -265,6 +264,7 @@ def _build_alpha223_args(args: argparse.Namespace) -> argparse.Namespace:
         min_rank_std=args.min_rank_std,
         limit_finlab86=0,
         progress_every=10,
+        legacy_direction_mode=getattr(args, "legacy_direction_mode", "fail_closed"),
     )
 
 
@@ -725,6 +725,12 @@ def main() -> int:
     parser.add_argument("--trade-at-price", default="close")
     parser.add_argument("--fee-tax-cost", type=float, default=0.004425)
     parser.add_argument("--extra-slippage-bps", type=float, nargs="+", default=[0, 10, 25, 50, 100])
+    parser.add_argument(
+        "--legacy-direction-mode",
+        choices=["fail_closed", "as_mined"],
+        default="fail_closed",
+        help="rows without recorded factor_directions: fail (default) or replay with the pre-v3 as-mined directions",
+    )
     parser.add_argument("--min-overlap-symbols", type=int, default=80)
     parser.add_argument("--min-coverage", type=float, default=0.15)
     parser.add_argument("--min-rank-std", type=float, default=0.01)

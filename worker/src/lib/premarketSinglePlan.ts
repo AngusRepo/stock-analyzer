@@ -16,6 +16,23 @@ function stable(value:any):string {
   if(value&&typeof value==='object')return '{'+Object.keys(value).sort().map(k=>JSON.stringify(k)+':'+stable(value[k])).join(',')+'}'
   return JSON.stringify(value)
 }
+/** 5xx, timeout or a lost connection is an unavailable controller: a bounded wait until the
+ * publication deadline. 4xx and malformed or mismatching responses stay hard errors. */
+export function controllerUnavailable(error:unknown):boolean {
+ const name=(error as {name?:unknown}|null)?.name,message=String(error instanceof Error?error.message:error)
+ if(name==='TimeoutError'||name==='AbortError')return true
+ // An HTTP answer is classified by its status alone, never by words in its body.
+ const http=/^Controller \S+ HTTP (\d{3})\b/.exec(message)
+ if(http)return http[1].startsWith('5')
+ // workerd reports a dropped connection as a plain Error, not only TypeError.
+ return /network connection lost|fetch failed|connection (?:reset|refused|closed|lost)|socket hang up|ECONNRESET/i.test(message)
+}
+async function controllerOrWait<T>(env:Bindings,path:string,options?:Parameters<typeof controllerJson>[2]):Promise<T> {
+ try {return await controllerJson<T>(env,path,options)} catch(error) {
+   if(!controllerUnavailable(error))throw error
+   throw new Error('premarket_wait:controller_unavailable:'+String(error instanceof Error?error.message:error).slice(0,160))
+ }
+}
 async function checksum(value:any) {
  return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(stable(value)))))
    .map(x=>x.toString(16).padStart(2,'0')).join('')
@@ -24,7 +41,7 @@ export async function singlePlanContext(env:Bindings,date:string,signalDate:stri
  const stage=await databaseForDataDomain(env,'ops').prepare("SELECT canonical_run_id FROM pipeline_stage_runs WHERE business_date=? AND stage='pipeline_execution'")
    .bind(signalDate).first<{canonical_run_id:string}>()
  if(!stage)throw new Error('premarket_wait:l3_source')
- const seal=await controllerJson<{status:string;receipt:any}>(env,'/pipeline/v2/premarket-state?'+new URLSearchParams({date:signalDate,run_id:stage.canonical_run_id}))
+ const seal=await controllerOrWait<{status:string;receipt:any}>(env,'/pipeline/v2/premarket-state?'+new URLSearchParams({date:signalDate,run_id:stage.canonical_run_id}))
  if(seal.status!=='sealed')throw new Error('premarket_wait:l3_seal')
  const [us,news]=await Promise.all([env.KV.get('us:leading:'+date,'json'),readCurrentNewsReport(env.KV,date)])
  if(!isReadyUSSignal(us,date)||!news?.evidence_receipt)throw new Error('premarket_wait:context')
@@ -53,7 +70,8 @@ export async function dispatchSinglePlan(env:Bindings,input:PremarketPayload) {
  const row=await databaseForDataDomain(env,'ops').prepare("SELECT status FROM pipeline_stage_runs WHERE business_date=? AND stage='pipeline_execution' AND canonical_run_id=?")
    .bind(receipt.run_date,receipt.run_id).first<{status:string}>()
  if(row?.status!=='success') {
- const status=await controllerJson<{status:string;reason?:string}>(env,'/pipeline/v2/premarket-resume',{
+ // Retrying is safe: the controller's generation-matched dispatch claim never launches twice.
+ const status=await controllerOrWait<{status:string;reason?:string}>(env,'/pipeline/v2/premarket-resume',{
    method:'POST',jsonBody:{receipt:input.l3_receipt,context:input.morning_context},timeoutMs:60_000})
  if(status.status==='reconciliation_required')throw new Error(status.reason ?? 'premarket_dispatch_outcome_unknown')
  if(!['dispatching','dispatched','completed'].includes(status.status))throw new Error('premarket_dispatch_receipt_invalid')

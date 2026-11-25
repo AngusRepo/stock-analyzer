@@ -97,7 +97,7 @@ test('the post-verify handler checks the learning run right after its waiting wr
   const guard = handler.slice(finalize, check)
   // Exactly the waiting outcome, closed by the helper's result (not a dead or inverted branch).
   assert.match(guard, /\n\s*if \(status === 'waiting'\) \{\n[^\n]*\n\s*const \{ propagateStrategyLearningFailureAfterWaiting \} = await import\('\.\/strategyLearningRunState'\)\n\s*const learningError = await $/)
-  assert.match(handler.slice(check), /^propagateStrategyLearningFailureAfterWaiting\(databaseForDataDomain\(env, 'ops'\), \{\n\s*businessDate: triggerTime, canonicalRunId: runId,\n\s*\}, env\.KV\)\n\s*if \(learningError\) \{[\s\S]*?\n\s*return\n/)
+  assert.match(handler.slice(check), /^propagateStrategyLearningFailureAfterWaiting\(databaseForDataDomain\(env, 'ops'\), \{\n\s*businessDate: triggerTime, canonicalRunId: runId,\n\s*\}, env\.KV, \{ postVerifyEntryWrittenByCaller: true \}\)\n\s*if \(learningError\) \{[\s\S]*?\n\s*return\n/)
   const telemetry = handler.indexOf("logSchedulerResult(env.KV, 'evening-chain'", finalize)
   assert.ok(finalize > 0 && check > finalize && check < telemetry)
 })
@@ -198,4 +198,74 @@ test('a non-transient materialize error stays terminal on the first failure', as
     Date.now = oldNow
     f.ops.close(); f.learning.close(); f.core.close()
   }
+})
+
+function memoryKv(seed: Record<string, unknown> = {}) {
+  const values = new Map<string, string>(Object.entries(seed).map(([key, value]) => [key, JSON.stringify(value)]))
+  return {
+    values,
+    kv: {
+      get: async (key: string, type?: string) => { const value = values.get(key) ?? null; return value != null && type === 'json' ? JSON.parse(value) : value },
+      put: async (key: string, value: string) => { values.set(key, value) },
+      delete: async (key: string) => { values.delete(key) },
+      list: async () => ({ keys: [], list_complete: true }),
+    } as any,
+  }
+}
+
+test('terminal failure propagation also settles the post-verify-chain scheduler entry as error', async () => {
+  const f = opsFixture()
+  const key = `scheduler:run:post-verify-chain:${date}`
+  const { values, kv } = memoryKv({ [key]: { task: 'post-verify-chain', status: 'running', run_id: run, run_date: date, attempt_id: 'pv-attempt',
+    summary: 'waiting for queued strategy-learning: strategy-learning:triggered' } })
+  await markPipelineStageFenced(f.db, {
+    businessDate: date, stage: 'post_verify_chain', canonicalRunId: run, leaseOwner: 'pv-lease', status: 'waiting',
+  })
+  await failStrategyLearningRun(f.db, { businessDate: date, canonicalRunId: run, leaseOwner: 'sl-lease', error: 'strategy_learning_live_policy_closure_missing:x' })
+  await propagateStrategyLearningTerminalFailure(f.db, { businessDate: date, canonicalRunId: run }, kv)
+  assert.equal(postVerify(f.sqlite).status, 'error')
+  const entry = JSON.parse(values.get(key) ?? 'null')
+  assert.equal(entry.status, 'error')
+  assert.equal(entry.run_id, run)
+  assert.equal(entry.error, 'strategy_learning_live_policy_closure_missing:x')
+  assert.match(entry.summary, /^status=failed post-verify-chain closed by strategy-learning terminal failure/)
+  f.sqlite.close()
+})
+
+test('a no-op propagation (post-verify still leased) leaves the post-verify-chain scheduler entry alone', async () => {
+  const f = opsFixture()
+  const key = `scheduler:run:post-verify-chain:${date}`
+  const running = { task: 'post-verify-chain', status: 'running', run_id: run, run_date: date }
+  const { values, kv } = memoryKv({ [key]: running })
+  await failStrategyLearningRun(f.db, { businessDate: date, canonicalRunId: run, leaseOwner: 'sl-lease', error: 'boom' })
+  await propagateStrategyLearningTerminalFailure(f.db, { businessDate: date, canonicalRunId: run }, kv)
+  assert.equal(postVerify(f.sqlite).status, 'running')
+  assert.deepEqual(JSON.parse(values.get(key) ?? 'null'), running)
+  f.sqlite.close()
+})
+
+test('a KV outage while settling the post-verify-chain entry does not mask the propagated failure', async () => {
+  const f = opsFixture()
+  await markPipelineStageFenced(f.db, {
+    businessDate: date, stage: 'post_verify_chain', canonicalRunId: run, leaseOwner: 'pv-lease', status: 'waiting',
+  })
+  await failStrategyLearningRun(f.db, { businessDate: date, canonicalRunId: run, leaseOwner: 'sl-lease', error: 'boom' })
+  const { kv } = memoryKv()
+  kv.put = async () => { throw new Error('KV PUT failed: 429 Too Many Requests') }
+  await propagateStrategyLearningTerminalFailure(f.db, { businessDate: date, canonicalRunId: run }, kv)
+  assert.equal(postVerify(f.sqlite).status, 'error')
+  f.sqlite.close()
+})
+
+test('a caller that writes its own post-verify-chain entry is not double-written (one KV write per key per second)', async () => {
+  const f = opsFixture()
+  await markPipelineStageFenced(f.db, {
+    businessDate: date, stage: 'post_verify_chain', canonicalRunId: run, leaseOwner: 'pv-lease', status: 'waiting',
+  })
+  await failStrategyLearningRun(f.db, { businessDate: date, canonicalRunId: run, leaseOwner: 'sl-lease', error: 'boom' })
+  const { values, kv } = memoryKv()
+  await propagateStrategyLearningTerminalFailure(f.db, { businessDate: date, canonicalRunId: run }, kv, { postVerifyEntryWrittenByCaller: true })
+  assert.equal(postVerify(f.sqlite).status, 'error')
+  assert.equal(values.has(`scheduler:run:post-verify-chain:${date}`), false)
+  f.sqlite.close()
 })

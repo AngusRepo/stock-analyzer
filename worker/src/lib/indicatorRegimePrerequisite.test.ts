@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import { prepareIndicatorRegime } from './indicatorRegimePrerequisite'
 import { recomputeDailyMarketRisk } from './marketRiskMaterialization'
 import { l4NativeFixture } from './l4NativeFixture.testSupport'
+import { DEFAULT_RISK_CONFIG } from './riskConfig'
 
 async function main() {
   const date = '2026-10-06'
@@ -21,10 +22,17 @@ async function main() {
   assert.equal(calls, 0, 'HMM cannot run on stale, blocked, uncertain or failed input writes')
   assert.equal(await prepareIndicatorRegime({} as any, date, compute,
     async () => ({ ...valid, quality_status: 'bounded' })), 'HMM_READY')
+  // trading:risk_config unavailable: HMM still runs (as on main), so the runtime can keep de-risking.
+  const before = calls
+  assert.equal(await prepareIndicatorRegime({} as any, date, compute,
+    async () => ({ ...valid, risk_config_unavailable: true })), 'HMM_READY; risk_config_unavailable')
+  assert.equal(calls, before + 1)
 
   // Reproduce the actual missing-day dependency with SQLite and the production writer.
   const frozen = JSON.parse(fs.readFileSync(new URL('../../test-fixtures/daily-market-risk/readonly-sources.json', import.meta.url), 'utf8'))
   const f = l4NativeFixture(), nativeMarket = f.env.MARKET_DB, originalFetch = globalThis.fetch
+  // recomputeDailyMarketRisk fails closed without a readable trading:risk_config.
+  f.kvs.set('trading:risk_config', JSON.stringify(DEFAULT_RISK_CONFIG))
   try {
     globalThis.fetch = (async (input: unknown) => {
       const url = String(input)

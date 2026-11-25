@@ -42,9 +42,10 @@ export function assessSecondBreakout(input: SwingEntryInput, priorLastTR?: numbe
   for (let ms=first.firstSignalMs+5*MIN;ms<=end;ms+=5*MIN) {
     const structural=assessSwingEntry({...input,nowMs:ms,quote:{price:input.previousClose,observedAtMs:ms}})
     const conditions=structural.conditions??{}
-    if (['bars','ma60','or_touch','vwap','relative_strength','opening_limit'].some(k=>typeof conditions[k]!=='boolean'))
+    // ma60 is evidence only (R2b), never a structural qualification.
+    if (['bars','or_touch','vwap','relative_strength','opening_limit'].some(k=>typeof conditions[k]!=='boolean'))
       return {...result,status:'unknown',reason:'swing_atr_first_signal_evidence_missing'}
-    if (['plan','position','ma60','or_touch','vwap','relative_strength','opening_limit'].some(k=>conditions[k]!==true)) continue
+    if (['plan','position','or_touch','vwap','relative_strength','opening_limit'].some(k=>conditions[k]!==true)) continue
     const bars=Array.from({length:(ms-open)/MIN},(_,i)=>byTime.get(open+i*MIN)!)
     const priorBars=bars.slice((first.firstSignalMs-5*MIN-open)/MIN,-5)
     const priorHigh=Math.max(...priorBars.map(b=>b.high))
@@ -81,7 +82,7 @@ export function authorizeSecondBreakout(input:SwingEntryInput,evidence:SecondBre
     || input.nowMs>=recoveryDeadline(input.tradeDate,evidence.triggerMs))
     return evidence
   const signal=assessSwingEntry({...input,nowMs:evidence.triggerMs,quote:{price:input.previousClose,observedAtMs:evidence.triggerMs}})
-  if(['plan','position','bars','ma60','or_touch','vwap','relative_strength','opening_limit'].some(k=>signal.conditions?.[k]!==true)) return evidence
+  if(['plan','position','bars','or_touch','vwap','relative_strength','opening_limit'].some(k=>signal.conditions?.[k]!==true)) return evidence
   const authorization:SwingEntryDecision={...signal,action:'pass',reason:'swing_saved_signal',
     signalKey:`${input.tradeDate}:${evidence.triggerMs}`,submitUntilMs:recoveryDeadline(input.tradeDate,evidence.triggerMs),
     recoveryPolicy:SECOND_BREAKOUT_POLICY,

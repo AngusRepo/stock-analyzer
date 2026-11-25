@@ -32,7 +32,7 @@ const BUDGET = {
   headerRow: 600,
   referenceRow: 2_050,
   referenceIndexCount: 8,
-  decisionIndexCount: 10,
+  decisionIndexCount: 6, // learning 0071: 4 full (date, context, 2 UNIQUE) + 2 audit-json pending partial
 }
 
 const SIGNAL_DATE = '2026-11-12'

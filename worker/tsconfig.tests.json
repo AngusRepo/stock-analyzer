@@ -4,6 +4,6 @@
     "types": ["node"],
     "noEmit": true
   },
-  "include": ["src/**/*.test.ts", "src/**/*.d.ts"],
+  "include": ["src/**/*.test.ts", "src/**/*.d.ts", "../tools/**/*.test.ts"],
   "exclude": []
 }

@@ -58,6 +58,8 @@ interface CountRow {
   distinct_feature_versions?: number
   run_trade_date?: string | null
   source_reco_date?: string | null
+  run_status?: string | null
+  run_error_message?: string | null
   candidate_count?: number
   active_count?: number
   l4_sparse_final_buy_count?: number
@@ -736,6 +738,8 @@ export function buildPendingBuyDateSanityCheck(input: {
   sourceRecoDate?: string | null
   candidateCount?: number | null
   activeCount?: number | null
+  runStatus?: string | null
+  errorMessage?: string | null
 }): DataQualityCheck {
   const runTradeDate = input.runTradeDate ?? null
   const sourceRecoDate = input.sourceRecoDate ?? null
@@ -766,6 +770,19 @@ export function buildPendingBuyDateSanityCheck(input: {
       status: 'fail',
       summary: `pending-buy run trade_date=${runTradeDate} does not match target=${input.targetDate}`,
       metrics: baseMetrics,
+    }
+  }
+
+  // The day's decision is the latest non-superseded run: an error run (setup failure or
+  // premarket_no_decision) means the trading day had no executable plan.
+  if (input.runStatus === 'error') {
+    const reason = String(input.errorMessage ?? '').replace(/\s+/g, ' ').trim().slice(0, 200) || 'unknown'
+    return {
+      id: 'pending_buy_date_sanity',
+      label: 'Pending-buy date sanity',
+      status: 'fail',
+      summary: `pending-buy run ${runTradeDate} status=error: ${reason}`,
+      metrics: { ...baseMetrics, run_status: 'error' },
     }
   }
 
@@ -1150,6 +1167,8 @@ interface PendingBuyAuditRunRow {
   trade_date: string
   source_reco_date?: string | null
   candidate_count?: number | null
+  status?: string | null
+  error_message?: string | null
 }
 
 interface PendingBuyAuditItemRow {
@@ -1246,13 +1265,13 @@ function parseJsonRecord(value: unknown): Record<string, unknown> | null {
   }
 }
 
-async function loadPendingBuyStats(
+export async function loadPendingBuyStats(
   coreDb: D1Database,
   paperDb: D1Database,
   targetDate: string,
 ): Promise<CountRow> {
   const run = await paperDb.prepare(`
-    SELECT id, trade_date, source_reco_date, candidate_count
+    SELECT id, trade_date, source_reco_date, candidate_count, status, error_message
       FROM pending_buy_runs
      WHERE trade_date = ?
        AND COALESCE(status, '') <> 'superseded'
@@ -1302,6 +1321,8 @@ async function loadPendingBuyStats(
     run_trade_date: run.trade_date,
     source_reco_date: run.source_reco_date ?? null,
     candidate_count: Number(run.candidate_count ?? 0),
+    run_status: run.status ?? null,
+    run_error_message: run.error_message ?? null,
     active_count: items.length,
     l4_sparse_final_buy_count: l4SparseFinalBuyCount,
     pending_buy_invalid_allocator_count: invalidAllocatorCount,
@@ -2047,6 +2068,8 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
       sourceRecoDate: pendingBuyStats.source_reco_date,
       candidateCount: Number(pendingBuyStats.candidate_count ?? 0),
       activeCount: Number(pendingBuyStats.active_count ?? 0),
+      runStatus: pendingBuyStats.run_status == null ? null : String(pendingBuyStats.run_status),
+      errorMessage: pendingBuyStats.run_error_message == null ? null : String(pendingBuyStats.run_error_message),
     }),
     buildPendingBuyAllocatorOwnerCheck({
       activeCount: Number(pendingBuyStats.active_count ?? 0),

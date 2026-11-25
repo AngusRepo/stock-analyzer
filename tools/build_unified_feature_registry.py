@@ -3,20 +3,25 @@ from __future__ import annotations
 import csv
 import json
 import math
+import sys
 from collections import Counter
 from pathlib import Path
 from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from feature_triage_window import triage_paths  # noqa: E402
+
+TRIAGE_INPUTS = triage_paths()  # window from pymoo_monthly_mining_config_v1 research_protocol.feature_triage_window
 TRIAGE = ROOT / "output" / "feature_universe_triage"
 REGISTRY_DIR = ROOT / "data" / "feature_registry"
 
-STRATEGY95_BEST = ROOT / "output" / "finlab_strategy95_backtests" / "strategy95_factors_sii_20230101_20260615_top10_bothdir_best.csv"
+STRATEGY95_BEST = TRIAGE_INPUTS["strategy95_best"]
 STRATEGY95_MAPPING = TRIAGE / "strategy95_vs_ml106_full_mapping.csv"
-ML106_BEST = ROOT / "output" / "finlab_ml_feature_backtests" / "ml106_features_sii_20230101_20260615_top10_bothdir_best.csv"
-OVERLAP_PAIRS = ROOT / "output" / "feature_strategy_overlap_numeric" / "feature_strategy_overlap_sii_20230101_20260615_pairs_ge_0_6.csv"
-FINLAB701_AUDITS = ROOT / "output" / "finlab_augment701_backtests" / "finlab701_sii_20230101_20260615_top10_bothdir_audits.csv"
+ML106_BEST = TRIAGE_INPUTS["ml106_best"]
+OVERLAP_PAIRS = TRIAGE_INPUTS["overlap_pairs"]
+FINLAB701_AUDITS = TRIAGE_INPUTS["augment701_audits"]
 FINLAB701_TRIAGE = TRIAGE / "finlab701_triage_best_by_field.csv"
 PRUNE_DECISION = TRIAGE / "unified179_feature_prune_decision_20260617.csv"
 PAIRWISE_SUMMARY = TRIAGE / "unified179_pairwise_similarity_summary_20260617.json"

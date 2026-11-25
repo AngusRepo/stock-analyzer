@@ -17,6 +17,9 @@
  *   black  86+   → 極端風險，保留現金
  */
 
+import { DEFAULT_RISK_CONFIG } from './riskConfig'
+import { scoreToRiskLevel, validRiskLevelThresholds } from './marketRiskStressV2'
+
 // ── 型別 ───────────────────────────────────────────────────────────────────────
 export interface MarketRiskResult {
   date: string
@@ -403,14 +406,6 @@ export function calcRiskScore(data: Omit<MarketRiskResult, 'riskScore' | 'riskLe
   return { score: Math.min(100, score), triggers }
 }
 
-// ── 風險等級 ───────────────────────────────────────────────────────────────────
-function scoreToLevel(score: number): 'green' | 'yellow' | 'orange' | 'red' | 'black' {
-  if (score <= 25) return 'green'
-  if (score <= 45) return 'yellow'
-  if (score <= 65) return 'orange'
-  if (score <= 85) return 'red'
-  return 'black'
-}
 
 // ── 主函式：計算今日大盤風險 ──────────────────────────────────────────────────
 export async function calcMarketRisk(
@@ -418,7 +413,10 @@ export async function calcMarketRisk(
   controllerUrl?: string,
   controllerSecret?: string,
   runDate?: string,
+  // v1 cuts come from trading:risk_config.portfolio.riskLevelThresholds.storedV1 (single owner).
+  levelThresholds: readonly number[] = DEFAULT_RISK_CONFIG.portfolio.riskLevelThresholds.storedV1,
 ): Promise<MarketRiskResult> {
+  if (!validRiskLevelThresholds(levelThresholds)) throw new Error('market_risk_level_thresholds_invalid')
   const today = runDate || new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
 
 
@@ -467,7 +465,7 @@ export async function calcMarketRisk(
   const {triggers}=calcRiskScore(partial)
   const score=quality.upper_score
   if(quality.missing.length)triggers.push(`資料缺少：${quality.missing.join(',')}；已知分數 ${quality.known_score}，保守上界 ${score}`)
-  const level = scoreToLevel(score)
+  const level = scoreToRiskLevel(score, levelThresholds)
 
   // 依同一風險分數與警示產生規則摘要
   const summary = generateRiskSummary(score, level, triggers)

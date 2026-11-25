@@ -31,6 +31,14 @@ import { explainExecutionEvent, parseExecutionEvent } from '@/lib/executionEvent
 import { stocksApi } from '@/lib/api'
 import { describeAllocatorDecision } from '@/lib/pendingBuyAllocatorUi'
 import { buildScoreBreakdownViewModel } from '@/lib/scoreV2ViewModel'
+import {
+  agreementText,
+  confidenceFromRec,
+  confidenceUnavailableText,
+  percentileText,
+  winRateText,
+  type RecommendationConfidence,
+} from '@/lib/recommendationConfidence'
 import { buildAtrBandSeries, buildTradingPlanLevels, normalizeOhlcvRows, type TradingPlanLevels } from '@/lib/tradingPlanLevels'
 import { buildTradePlanStructureZones } from '@/lib/tradePlanStructureZones'
 import { cn } from '@/lib/utils'
@@ -204,6 +212,7 @@ type HardGateSummary = {
   median_daily_traded_value_twd?: number | string | null
   min_median_daily_traded_value_twd?: number | string | null
   liquidity_capacity_passed?: boolean | number | string | null
+  universe_passed?: boolean | number | string | null
   maturity_impact?: string | null
   notes?: string[]
 }
@@ -231,6 +240,7 @@ type UniverseFeatureSummary = {
   mean_daily_traded_value_twd?: number | string | null
   min_median_daily_traded_value_twd?: number | string | null
   liquidity_capacity_passed?: boolean | number | string | null
+  liquidity_evidence_source?: string | null
   maturity_impact?: string | null
 }
 
@@ -634,6 +644,9 @@ function finiteMetric(raw: unknown): number | null {
   return Number.isFinite(value) ? value : null
 }
 
+// Missing funnel evidence (e.g. a row dropped by the D1 persistence cap) is unknown, not blocked.
+const UNKNOWN_EVIDENCE_LABEL = '未知（無資料）'
+
 function boolFromValue(raw: unknown): boolean {
   if (raw === true || raw === 1) return true
   if (typeof raw === 'string') {
@@ -682,7 +695,10 @@ function hardGateFromRec(rec: any): HardGateSummary | null {
 function universeFeaturesFromRec(rec: any): UniverseFeatureSummary | null {
   const funnelEvidence = parseObject(rec?.screener_funnel_evidence)
   const layer0 = parseObject(funnelEvidence?.layer0_universe_features)
-  if (layer0?.schema_version === 'layer0_universe_features_summary_v2' || layer0?.schema_version === 'layer0_universe_features_summary_v1') return layer0
+  // v3: universe_passed / liquidity_capacity_passed are tri-state (null = evidence missing).
+  if (layer0?.schema_version === 'layer0_universe_features_summary_v3'
+    || layer0?.schema_version === 'layer0_universe_features_summary_v2'
+    || layer0?.schema_version === 'layer0_universe_features_summary_v1') return layer0
   return null
 }
 
@@ -1701,7 +1717,7 @@ function HardGateEvidenceBlock({ gate }: { gate: HardGateSummary | null }) {
         <MetricPill label="pending buy" value={pendingBlocked ? 'blocked' : 'allowed'} />
       </div>
       <div className="mt-2 grid gap-2 sm:grid-cols-4">
-        <MetricPill label="liquidity" value={liquidityPassed == null ? 'unavailable' : liquidityPassed ? 'PASS' : 'BLOCKED'} />
+        <MetricPill label="liquidity" value={liquidityPassed == null ? UNKNOWN_EVIDENCE_LABEL : liquidityPassed ? 'PASS' : 'BLOCKED'} />
         <MetricPill label="median ADTV" value={medianDailyValue == null ? '-' : fmtNumber(medianDailyValue, 0)} />
         <MetricPill label="minimum" value={minimumDailyValue == null ? '-' : fmtNumber(minimumDailyValue, 0)} />
         <MetricPill label="sessions" value={countText(gate.liquidity_observed_sessions)} />
@@ -1719,7 +1735,7 @@ function HardGateEvidenceBlock({ gate }: { gate: HardGateSummary | null }) {
 
 function UniverseFeatureEvidenceBlock({ universe }: { universe: UniverseFeatureSummary | null }) {
   if (!universe) return null
-  const passed = boolFromValue(universe.universe_passed)
+  const passed = universe.universe_passed == null ? null : boolFromValue(universe.universe_passed)
   const featureGroups = universe.feature_groups?.length
     ? universe.feature_groups.join(' / ')
     : 'feature groups unavailable'
@@ -1732,7 +1748,7 @@ function UniverseFeatureEvidenceBlock({ universe }: { universe: UniverseFeatureS
         <span className="sv-num text-[11px] text-muted-foreground">feature coverage, not top-k</span>
       </div>
       <div className="grid gap-2 sm:grid-cols-4">
-        <MetricPill label="universe" value={passed ? 'PASS' : String(universe.universe_decision ?? 'unknown')} />
+        <MetricPill label="universe" value={passed == null ? UNKNOWN_EVIDENCE_LABEL : passed ? 'PASS' : String(universe.universe_decision ?? 'unknown')} />
         <MetricPill label="source count" value={countText(universe.source_universe_count)} />
         <MetricPill label="base score（僅顯示）" value={fmtNumber(universe.base_score, 1)} />
         <MetricPill label="feature groups" value={countText(universe.feature_group_count ?? universe.feature_groups?.length)} />
@@ -3127,6 +3143,45 @@ function normalizeEvidenceLinks(raw: unknown): EvidenceLink[] {
   return links
 }
 
+// Display-only confidence (Wei 2026-11-24): replaces the card total score. Both readings come from
+// the L4 plan behind the card; neither feeds a trading decision.
+function RecommendationConfidenceStrip({ confidence }: { confidence: RecommendationConfidence | null }) {
+  const percentile = confidence?.percentile
+  const winRate = confidence?.win_rate
+  const percentileOk = percentile?.status === 'available'
+  const winRateOk = winRate?.status === 'available'
+  const agreement = agreementText(confidence)
+  return (
+    <div className="flex flex-wrap items-center gap-2 border-t border-white/[0.07] bg-black/10 px-4 py-2 text-[11px] leading-5">
+      <span className="font-semibold text-slate-300">信心度</span>
+      <span
+        className={cn('rounded-md border px-2 py-0.5', percentileOk ? 'border-amber-300/25 bg-amber-400/[0.08] text-amber-100' : 'border-white/[0.08] bg-white/[0.04] text-slate-400')}
+        title={percentile?.definition ?? '當日全池 R33 分數排名百分位'}
+      >
+        排名百分位 <span className="sv-num font-semibold">{percentileText(confidence)}</span>
+        {percentileOk && percentile?.rank != null && percentile?.pool_size != null && (
+          <span className="sv-num text-slate-400">（第 {percentile.rank}/{percentile.pool_size}）</span>
+        )}
+        {agreement && <span className="ml-1 text-slate-300">· {agreement}</span>}
+        {!percentileOk && <span className="ml-1">{confidenceUnavailableText(percentile?.reason)}</span>}
+      </span>
+      <span
+        className={cn('rounded-md border px-2 py-0.5', winRateOk ? 'border-emerald-300/25 bg-emerald-400/[0.08] text-emerald-100' : 'border-white/[0.08] bg-white/[0.04] text-slate-400')}
+        title={winRate?.definition ?? 'P(5 日池內超額報酬 > 0)，R33 正式 OOF 擬合'}
+      >
+        校準勝率 <span className="sv-num font-semibold">{winRateText(confidence)}</span>
+        {winRateOk && winRate?.base_rate != null && (
+          <span className="text-slate-400">（5 日超額&gt;0，全池基準 {(Number(winRate.base_rate) * 100).toFixed(0)}%）</span>
+        )}
+        {!winRateOk && <span className="ml-1">{confidenceUnavailableText(winRate?.reason)}</span>}
+      </span>
+      {confidence?.signal_date && (
+        <span className="sv-num text-slate-500">資料日 {confidence.signal_date}</span>
+      )}
+    </div>
+  )
+}
+
 export function RecommendationCardClean({ rec, rank, context = 'full' }: RecommendationCardCleanProps) {
   const [expanded, setExpanded] = useState(false)
   const sig = SIGNAL_CONFIG[recommendationSignalKey(rec)] ?? SIGNAL_CONFIG.HOLD
@@ -3150,9 +3205,7 @@ export function RecommendationCardClean({ rec, rank, context = 'full' }: Recomme
   const isEmerging = String(rec.market_segment ?? '').toUpperCase() === 'EMERGING'
     || String(rec.recommendation_lane ?? '').toLowerCase() === 'emerging_watchlist'
   const scoreViewModel = buildScoreBreakdownViewModel(rec)
-  const mlEdgePolicy = parseObject(scoreV2PayloadFromRec(rec)?.mlEdgePolicy)
-  const mlProbabilityDiagnosticOnly = mlEdgePolicy?.signal_status === 'policy_blocked'
-    || parseObject(mlEdgePolicy?.qualifications)?.calibration?.probability_status === 'diagnostic_only'
+  const confidence = confidenceFromRec(rec)
   const institutionalRaw = institutionalRawFromRec(rec)
   const brokerTopFlows = brokerTopFlowsFromRec(rec)
   const chipDisplaySummary = chipDisplaySummaryFromRec(rec)
@@ -3256,8 +3309,8 @@ export function RecommendationCardClean({ rec, rank, context = 'full' }: Recomme
 
         <div className="grid min-w-[4.5rem] shrink-0 grid-cols-[minmax(0,1fr)_1rem] items-center gap-1 justify-self-end">
           <div className="min-w-0 text-right">
-            <div className="sv-num whitespace-nowrap text-xl font-bold leading-none text-amber-200">{Math.round(scoreViewModel.finalScore)}</div>
-            <div className="mt-1 whitespace-nowrap text-[10px] font-medium leading-none text-slate-500">最終分</div>
+            <div className="sv-num whitespace-nowrap text-xl font-bold leading-none text-amber-200" title="R33 分數在當日全池的排名百分位">{percentileText(confidence)}</div>
+            <div className="mt-1 whitespace-nowrap text-[10px] font-medium leading-none text-slate-500">排名百分位</div>
           </div>
           <div className="flex h-7 w-4 items-center justify-end">
             {expanded ? (
@@ -3268,6 +3321,8 @@ export function RecommendationCardClean({ rec, rank, context = 'full' }: Recomme
           </div>
         </div>
       </div>
+
+      <RecommendationConfidenceStrip confidence={confidence} />
 
       {evidenceLinks.length > 0 && (
         <div className="flex flex-wrap gap-2 border-t border-white/[0.07] bg-black/10 px-4 py-2">
@@ -3290,8 +3345,6 @@ export function RecommendationCardClean({ rec, rank, context = 'full' }: Recomme
 
       {expanded && (
         <div className="sv-card-expanded-content space-y-4 border-t border-white/[0.08] bg-[linear-gradient(180deg,rgba(17,20,28,0.92),rgba(9,11,16,0.98))] px-4 pb-4 pt-3">
-          <ScoreFormulaSummary viewModel={scoreViewModel} />
-
           <div className="space-y-1.5">
             <p className="mb-2 text-xs font-semibold text-slate-200">四構面基礎分數</p>
             {scoreViewModel.rows.map((item) => (
@@ -3345,14 +3398,9 @@ export function RecommendationCardClean({ rec, rank, context = 'full' }: Recomme
             </div>
           )}
 
-          {showFullDecisionDetail && rec.confidence != null && (
+          {showFullDecisionDetail && rec.current_price != null && (
             <p className="text-[11px] text-slate-400">
-              {mlProbabilityDiagnosticOnly
-                ? 'ML 方向信心未核准；校準機率僅供診斷，非個股買進信心'
-                : `ML 方向信心度 ${(Number(rec.confidence) * 100).toFixed(0)}%`}
-              {rec.current_price != null && (
-                <span className="ml-3">{'\u53c3\u8003\u6536\u76e4\u50f9'} ${fmtNumber(rec.current_price, 2)}{'\uff08\u975e\u6700\u7d42\u639b\u50f9\uff09'}</span>
-              )}
+              <span>{'\u53c3\u8003\u6536\u76e4\u50f9'} ${fmtNumber(rec.current_price, 2)}{'\uff08\u975e\u6700\u7d42\u639b\u50f9\uff09'}</span>
             </p>
           )}
         </div>

@@ -425,6 +425,33 @@ void (async () => {
 }
 
 {
+  // An error run (premarket_no_decision or a setup failure) is a trading day without a plan: fail,
+  // with or without a source date, never ok/warn.
+  for (const sourceRecoDate of [null, '2026-04-29']) {
+    const check = buildPendingBuyDateSanityCheck({
+      targetDate: '2026-04-30',
+      runTradeDate: '2026-04-30',
+      sourceRecoDate,
+      candidateCount: 0,
+      activeCount: 0,
+      runStatus: 'error',
+      errorMessage: 'premarket_no_decision:context:premarket_session_expired:Error: premarket_wait:l3_source',
+    })
+    assert(check.status === 'fail', 'an error pending-buy run must fail data quality')
+    assert(check.summary.includes('status=error: premarket_no_decision:context:'), 'the failing check names the cause')
+  }
+  for (const runStatus of ['ready', 'empty', 'halted']) {
+    const check = buildPendingBuyDateSanityCheck({
+      targetDate: '2026-04-30', runTradeDate: '2026-04-30', sourceRecoDate: '2026-04-29',
+      candidateCount: 0, activeCount: 0, runStatus,
+    })
+    assert(check.status === 'ok', `${runStatus} runs keep the existing date logic`)
+  }
+  const missing = buildPendingBuyDateSanityCheck({ targetDate: '2026-04-30', runStatus: null })
+  assert(missing.status === 'warn', 'no run at all keeps the existing warn')
+}
+
+{
   const check = buildSurfaceRoleConsistencyCheck({
     recommendationRole: 'recommendation_candidate',
     pendingBuyRole: 'execution_pool',

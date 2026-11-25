@@ -94,3 +94,22 @@ def test_bull_alignment_reads_market_breadth_percent_not_0050_proxy(monkeypatch)
     # ADL down adds 8, bull alignment 25% (<30%) adds 4.
     assert history[DAYS[6]]["risk_score"] == 0
     assert history[DAYS[7]]["risk_score"] == 12
+
+
+def test_fallback_risk_level_cuts_have_one_owner(monkeypatch):
+    # KV storedV1 is the owner; the frozen default equals the Worker riskConfig.ts default.
+    worker_cfg = (Path(__file__).resolve().parents[2] / "worker/src/lib/riskConfig.ts").read_text()
+    assert "storedV1: [25, 45, 65, 85]" in worker_cfg
+    assert payload_builder.STORED_RISK_V1_LEVEL_CUTS_DEFAULT == (25.0, 45.0, 65.0, 85.0)
+    monkeypatch.setattr(payload_builder.kv_client, "get_json", lambda key, default=None: default)
+    assert payload_builder._stored_risk_v1_level_cuts() == (25.0, 45.0, 65.0, 85.0)
+    kv = {"portfolio": {"riskLevelThresholds": {"storedV1": [20, 40, 60, 80]}}}
+    monkeypatch.setattr(payload_builder.kv_client, "get_json",
+                        lambda key, default=None: kv if key == "trading:risk_config" else default)
+    cuts = payload_builder._stored_risk_v1_level_cuts()
+    assert cuts == (20.0, 40.0, 60.0, 80.0)
+    levels = [payload_builder._stored_risk_v1_level(s, cuts) for s in (20, 21, 60, 80, 81)]
+    assert levels == ["green", "yellow", "orange", "red", "black"]
+    bad = {"portfolio": {"riskLevelThresholds": {"storedV1": [50, 40, 60, 80]}}}
+    monkeypatch.setattr(payload_builder.kv_client, "get_json", lambda key, default=None: bad)
+    assert payload_builder._stored_risk_v1_level_cuts() == (25.0, 45.0, 65.0, 85.0)

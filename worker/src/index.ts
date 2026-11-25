@@ -20,6 +20,7 @@ import { runScreenerV2 } from './lib/screenerJobTrigger'
 import { runDailySnapshot, runPaperAutoTrade } from './lib/paperWorkerTasks'
 import { runEODExit } from './lib/paperExitTasks'
 import { handleScheduledCron } from './lib/cronOrchestrator'
+import { withOpsRuntimeScope } from './lib/opsRuntimeScope'
 import { isPipelineStageLeaseBusy } from './lib/pipelineStageLease'
 import {
   runWeeklyAudit as runWeeklyAuditWorkflow,
@@ -170,15 +171,18 @@ app.route('/',                    todoBoardRoutes)
 app.route('/',                    finlabExecutionLoopRoutes)
 app.route('/',                    adminTriggerRoutes)
 app.get('/api/health', (c) => c.json(buildWorkerHealthPayload(c.env.CF_VERSION_METADATA)))
+// Every entrypoint runs inside the observability request scope (env + scheduler ticket), so helpers
+// called without env (logSchedulerRunResult) still alert and record chain stage state.
 export default {
-  fetch: app.fetch,
+  fetch: (...args: Parameters<typeof app.fetch>) =>
+    withOpsRuntimeScope(args[1] as Bindings, () => app.fetch(...args)),
 
   async scheduled(event: ScheduledEvent, env: Bindings, ctx: ExecutionContext) {
     if ((env as any).ENABLE_CLOUDFLARE_CRON !== '1') {
       console.warn(`[Cron] Cloudflare scheduled trigger ignored (${event.cron}); GCP Scheduler is the production owner.`)
       return
     }
-    await handleScheduledCron(event, env, ctx)
+    await withOpsRuntimeScope(env, () => handleScheduledCron(event, env, ctx))
   },
 
   async queue(
@@ -187,43 +191,46 @@ export default {
     ctx: ExecutionContext,
   ): Promise<void> {
     void ctx
+    // One scope per message: a ticket bound while handling one message never leaks into the next.
     for (const msg of batch.messages) {
-      try {
-        console.log('[Queue] Delivery received', JSON.stringify({
-          messageId: msg.id, type: msg.body?.type, date: msg.body?.triggerTime,
-          runId: msg.body?.runId, attempts: msg.attempts,
-        }))
-        if (msg.body.type === 'data_domain_shadow_backfill' && msg.body.dataDomain === 'ops') {
-          console.warn('[Queue] OPS shadow backfill moved to HTTP-isolated scheduler; acknowledging legacy message')
-          msg.ack()
-          continue
-        }
-        await processUpdateBatch(msg.body, env, {
-          runMarketScreener,
-          runMarketScreenerAsync: runScreenerV2,
-          runMLAndRiskV2,
-        })
-        console.log('[Queue] Delivery completed', msg.id)
-        msg.ack()
-      } catch (e) {
-        const attempts = Math.max(1, Number(msg.attempts ?? 1))
-        if (isPipelineStageLeaseBusy(e)) {
-          // Another owner's live stage lease: redeliver after it instead of acknowledging the message away.
-          console.warn(`[Queue] ${e.message} (attempt=${attempts})`)
-          msg.retry({ delaySeconds: e.delaySeconds })
-          continue
-        }
-        console.error(`[Queue] Message failed, will retry (attempt=${attempts}):`, e)
-        if (msg.body.type === 'update_batch') {
-          await recordIndicatorQueueMessageFailure(env, msg.body, e, attempts).catch((logError) => {
-            console.error('[Queue] Indicator failure receipt write failed:', logError)
+      await withOpsRuntimeScope(env, async () => {
+        try {
+          console.log('[Queue] Delivery received', JSON.stringify({
+            messageId: msg.id, type: msg.body?.type, date: msg.body?.triggerTime,
+            runId: msg.body?.runId, attempts: msg.attempts,
+          }))
+          if (msg.body.type === 'data_domain_shadow_backfill' && msg.body.dataDomain === 'ops') {
+            console.warn('[Queue] OPS shadow backfill moved to HTTP-isolated scheduler; acknowledging legacy message')
+            msg.ack()
+            return
+          }
+          await processUpdateBatch(msg.body, env, {
+            runMarketScreener,
+            runMarketScreenerAsync: runScreenerV2,
+            runMLAndRiskV2,
           })
-          const shardIndex = Number.isFinite(msg.body.shardIndex) ? Number(msg.body.shardIndex) : 0
-          msg.retry({ delaySeconds: indicatorQueueRetryDelaySeconds(attempts, shardIndex) })
-        } else {
-          msg.retry()
+          console.log('[Queue] Delivery completed', msg.id)
+          msg.ack()
+        } catch (e) {
+          const attempts = Math.max(1, Number(msg.attempts ?? 1))
+          if (isPipelineStageLeaseBusy(e)) {
+            // Another owner's live stage lease: redeliver after it instead of acknowledging the message away.
+            console.warn(`[Queue] ${e.message} (attempt=${attempts})`)
+            msg.retry({ delaySeconds: e.delaySeconds })
+            return
+          }
+          console.error(`[Queue] Message failed, will retry (attempt=${attempts}):`, e)
+          if (msg.body.type === 'update_batch') {
+            await recordIndicatorQueueMessageFailure(env, msg.body, e, attempts).catch((logError) => {
+              console.error('[Queue] Indicator failure receipt write failed:', logError)
+            })
+            const shardIndex = Number.isFinite(msg.body.shardIndex) ? Number(msg.body.shardIndex) : 0
+            msg.retry({ delaySeconds: indicatorQueueRetryDelaySeconds(attempts, shardIndex) })
+          } else {
+            msg.retry()
+          }
         }
-      }
+      })
     }
   },
 }

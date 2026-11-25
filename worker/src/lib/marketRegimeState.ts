@@ -194,6 +194,50 @@ export async function readMarketRegimeStateHistory(db:D1Database,runDate:string,
   return readRegimeObservation(db,runDate,false,asOf)
 }
 
+/**
+ * HMM families of the `sessions` trading sessions before `runDate`, oldest first, as known at `asOf` (latest
+ * publication per date, same order as readRegimeObservation). A date without a verified HMM publication is null.
+ */
+/** HMM provenance shape shared by today's gate and the confirmation history (contract, feature date, model identity). */
+export function hmmProvenanceShapeValid(state:any,date:string,inputContract:string):boolean {
+  const provenance=state?.regime_evidence?.hmm_provenance,model=provenance?.model
+  return state?.source==='hmm'&&provenance?.input_contract===inputContract&&provenance?.feature_date===date
+    &&model?.input_contract===inputContract&&/^[a-f0-9]{64}$/.test(model?.sha256??'')&&/^\d+$/.test(model?.generation??'')
+    &&/^[a-f0-9]{64}$/.test(provenance?.input_checksum??'')&&/^[a-f0-9]{64}$/.test(provenance?.risk_quality_checksum??'')
+}
+
+export async function readHmmRegimeFamiliesBefore(db:D1Database,runDate:string,sessions:number,inputContract:string,asOf=paperExecutionDate().toISOString()):Promise<Array<{date:string;family:MarketRegimeFamily|null}>> {
+  const {results:dates}=await db.prepare('SELECT session_date FROM market_trading_sessions WHERE session_date<? ORDER BY session_date DESC LIMIT ?')
+    .bind(runDate,sessions).all<{session_date:string}>()
+  const window=(dates??[]).map(row=>row.session_date).sort()
+  if(!window.length)return []
+  const placeholders=window.map(()=>'?').join(',')
+  const {results}=await db.prepare(`SELECT run_date,state_json,state_checksum FROM (
+    SELECT run_date,state_json,state_checksum,computed_at,recorded_at FROM market_regime_state_revisions_v1
+      WHERE run_date IN (${placeholders}) AND julianday(computed_at)<=julianday(?) AND julianday(recorded_at)<=julianday(?)
+    UNION ALL
+    SELECT run_date,state_json,state_checksum,computed_at,persisted_at AS recorded_at FROM market_regime_state_history_v1
+      WHERE run_date IN (${placeholders}) AND julianday(computed_at)<=julianday(?) AND julianday(persisted_at)<=julianday(?)
+  ) ORDER BY run_date DESC,julianday(computed_at) DESC,julianday(recorded_at) DESC,state_checksum DESC`)
+    .bind(...window,asOf,asOf,...window,asOf,asOf).all<{run_date:string;state_json:string;state_checksum:string}>()
+  const latest=new Map<string,{state_json:string;state_checksum:string}>()
+  for(const row of results??[])if(!latest.has(row.run_date))latest.set(row.run_date,row)
+  const families:Array<{date:string;family:MarketRegimeFamily|null}>=[]
+  for(const date of window){
+    const row=latest.get(date)
+    let family:MarketRegimeFamily|null=null
+    if(row&&await sha256Hex(row.state_json)===row.state_checksum){
+      try{
+        const parsed=parseMarketRegimeState(JSON.parse(row.state_json))
+        // A session counts only with the same HMM provenance today's gate requires; otherwise it is a gap.
+        if(parsed?.run_date===date&&hmmProvenanceShapeValid(parsed,date,inputContract)&&Date.parse(parsed.computed_at)<=Date.parse(asOf))family=parsed.family
+      }catch{ /* an unreadable publication only withholds confirmation */ }
+    }
+    families.push({date,family})
+  }
+  return families
+}
+
 export async function readLatestMarketRegimeStateOnOrBefore(db:D1Database,asOfDate:string,asOf=paperExecutionDate().toISOString()):Promise<MarketRegimeState|null> {
   return readRegimeObservation(db,asOfDate,true,asOf)
 }

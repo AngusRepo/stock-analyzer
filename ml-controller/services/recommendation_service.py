@@ -415,23 +415,31 @@ def _ml_threshold_policy_edge_seed30(ev2: dict[str, Any]) -> tuple[float | None,
     }
 
 def _r33_edge_seed30(ev2: dict[str, Any]) -> tuple[float | None, dict[str, Any] | None]:
-    """R33 has no probability: show E-hat's position inside the serving table's value range.
+    """R33 has no probability: show the serving view's edge position (0..1) as 0..30.
 
-    Presentation only (the allocator reads E-hat itself). An unscored name has no score.
+    A hinge table gives the score's position in the fit's own pool (most names share the flat
+    E-hat, so E-hat's range position would be 0 for them); a legacy step table gives E-hat's
+    position inside the table's value range. Presentation only (the allocator reads E-hat
+    itself). An unscored name has no score.
     """
-    position = _finite_float_or_none(ev2.get("ehat_range_position"))
+    by_score = ev2.get("edge_position_semantic") == "r33_score_in_oof_pool_distribution"
+    position = _finite_float_or_none(ev2.get("edge_position") if by_score else ev2.get("ehat_range_position"))
     checksum = str(ev2.get("artifact_checksum") or "")
     if position is None or not 0.0 <= position <= 1.0 or len(checksum) != 64:
         return None, None
     score = _round1(30.0 * position)
+    # The legacy evidence keeps its exact fields; the hinge names its own position field.
+    position_field = ({"edge_position": position, "edge_position_semantic": ev2.get("edge_position_semantic")}
+                      if by_score else {"ehat_range_position": position})
     return score, {
-        "schema_version": "score-v2-ml-edge-r33-ehat-range-position-v1",
-        "source": "ensemble_v2.ehat_range_position",
+        "schema_version": ("score-v2-ml-edge-r33-score-position-v1" if by_score
+                           else "score-v2-ml-edge-r33-ehat-range-position-v1"),
+        "source": "ensemble_v2.edge_position" if by_score else "ensemble_v2.ehat_range_position",
         "artifact_checksum": checksum, "cohort_id": ev2.get("cohort_id"),
         "calibration_checksum": ev2.get("calibration_checksum"),
         "signal": ev2.get("signal"), "unqualified_signal": ev2.get("unqualified_signal"),
         "signal_status": ev2.get("signal_status"), "signal_blockers": [], "qualifications": None,
-        "expected_excess": ev2.get("forecast_pct"), "ehat_range_position": position,
+        "expected_excess": ev2.get("forecast_pct"), **position_field,
         "score_seed30": score, "status": "scored", "decision_owner": "allocator_opb_policy",
         "signal_role": "advisory_only", "advisory_signal": ev2.get("advisory_signal"),
         "scale_role": "presentation_only",

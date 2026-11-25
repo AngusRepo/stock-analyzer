@@ -18,21 +18,23 @@ assert(!page.includes('CandidateSourceMixChart'), 'PipelinePage must not render 
 assert(!page.includes('SingleStockTrace'), 'PipelinePage must not bring back the duplicate single-stock trace panel')
 assert(page.includes('buildScreenerSectorSummary('), 'PipelinePage should keep sector selection reasons in the bottom-up screener block')
 assert(page.includes('DebateTurnsList'), 'PipelinePage should keep debate turns attached to each T2 pending buy row')
+// 0b2df83f removed the RecommendationSummaryColumn (also pinned absent by pipelineMaturityWiring);
+// d54f39df replaced the single recommendation error banner with per-column PipelineColumnError.
 for (const text of [
   'function FunnelSummaryColumn',
   'function StrategySummaryColumn',
-  'function RecommendationSummaryColumn',
   'function ExecutionFlowColumn',
+  'function PipelineColumnError',
   'recData?.funnel_summary',
   'recData?.strategy_summary',
   'recommendationRows',
   'candidateCount={l4BuyCount}',
-  '<RecommendationSummaryColumn rows={recommendationRows} />',
   'isError: recIsError',
-  '選股推薦資料讀取失敗',
+  '每日推薦與策略彙總讀取失敗',
 ]) {
-  assert(page.includes(text), `PipelinePage should render the four-column flow-tracking rebuild: ${text}`)
+  assert(page.includes(text), `PipelinePage should render the flow-tracking rebuild: ${text}`)
 }
+assert(!page.includes('RecommendationSummaryColumn'), 'PipelinePage must not bring back the removed recommendation summary column')
 assert(!page.includes('function StepHeader'), 'PipelinePage should not bring back the old low-signal step-card layout')
 
 const packageLock = JSON.parse(fs.readFileSync(packageLockPath, 'utf8')) as {

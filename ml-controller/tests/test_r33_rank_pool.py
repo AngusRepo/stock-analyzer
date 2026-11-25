@@ -369,3 +369,62 @@ def test_bool_is_not_a_raw_score():
     snapshot = rank_pool.build_rank_pool(signal_date=DAY, pool=_pool(symbols), predictions=predictions, holdings=[],
                                          ensemble=_ensemble(), l3_identity=IDENTITY)
     assert snapshot["coverage"]["unscored"] == {symbols[0]: "no_model_available"}
+
+
+def _hinge_calibration(variant="mean_z"):
+    from services.r33_crossfit_serving import HINGE_ESTIMATOR, _build_hinge_payload
+    return _build_hinge_payload(curve=dict(kind="hinge", intercept=-0.001, slope=0.02, knot=0.2, knot_quantile=0.85,
+                                           score_cap=1.5),
+                                variant=variant, horizon_sessions=5, model_order=list(MODELS), diagnostics={},
+                                score_quantiles=[-1.5 + 0.15 * i for i in range(21)],
+                                inputs={"estimator": HINGE_ESTIMATOR, "source_calibration_checksum": SOURCE})
+
+
+def test_hinge_serving_table_flows_through_the_rank_pool_and_serving_view():
+    from services.r33_crossfit_serving import hinge_value
+    from services.r33_ensemble import serving_view
+    symbols, raws = _book()
+    predictions = {s: _prediction(raws[s]) for s in symbols}
+    ensemble = _ensemble(calibration=_hinge_calibration())
+    rank_pool.build_rank_pool(signal_date=DAY, pool=_pool(symbols), predictions=predictions, holdings=[],
+                              ensemble=ensemble, l3_identity=_identity(ensemble))
+    raw = np.array([[raws[s][m] for m in MODELS] for s in symbols])
+    score, _, _ = pool_scores(raw, np.isfinite(raw), variant="mean_z")
+    curve = ensemble["serving_calibration"]["curve"]
+    ehat = [predictions[s]["r33_rank_evidence"]["expected_excess"] for s in symbols]
+    assert ehat == pytest.approx(list(hinge_value(curve, score)))
+    above = [e for e, sc in zip(ehat, score) if sc > curve["knot"]]
+    assert len(set(above)) == len(above) > 1  # above the knot every name has its own E-hat
+    top = symbols[int(np.argmax(score))]
+    view = serving_view(predictions[top], ensemble, cost=0.00585)
+    high = hinge_value(curve, [curve["score_cap"]])[0]
+    assert view["ehat_range_position"] == pytest.approx(round((max(ehat) - curve["intercept"]) / (high - curve["intercept"]), 6))
+    # The display edge: names on the flat part share E-hat (range position 0) but not their edge.
+    quantiles = ensemble["serving_calibration"]["score_quantiles"]
+    views = {s: serving_view(predictions[s], ensemble, cost=0.00585) for s in symbols}
+    flat = [s for s, sc in zip(symbols, score) if sc <= curve["knot"]]
+    assert len(flat) > 2 and all(views[s]["ehat_range_position"] == 0 for s in flat)
+    edges = [views[s]["edge_position"] for s in flat]
+    assert len(set(edges)) == len(flat)
+    assert all(views[s]["edge_position_semantic"] == "r33_score_in_oof_pool_distribution" for s in symbols)
+    for s, sc in zip(symbols, score):
+        assert views[s]["edge_position"] == pytest.approx(
+            round(float(np.clip(np.interp(sc, quantiles, [i / 20 for i in range(21)]), 0, 1)), 6))
+    from services.recommendation_service import _r33_edge_seed30
+    seed, evidence = _r33_edge_seed30(views[flat[0]])
+    assert seed == round(30 * views[flat[0]]["edge_position"], 1) and seed > 0
+    assert evidence["schema_version"] == "score-v2-ml-edge-r33-score-position-v1"
+    assert evidence["edge_position"] == views[flat[0]]["edge_position"] and "ehat_range_position" not in evidence
+    order = np.argsort(score)
+    assert all(np.diff([views[symbols[i]]["edge_position"] for i in order]) >= 0)   # monotone like E-hat
+
+
+def test_a_legacy_table_keeps_its_ml_edge_evidence_fields():
+    from services.recommendation_service import _r33_edge_seed30
+    view = {"ehat_range_position": 0.5, "edge_position": 0.9, "edge_position_semantic": "ehat_in_serving_range",
+            "artifact_checksum": "a" * 64, "cohort_id": "c1", "calibration_checksum": "b" * 64, "validation": {}}
+    seed, evidence = _r33_edge_seed30(view)
+    assert seed == 15.0
+    assert evidence["schema_version"] == "score-v2-ml-edge-r33-ehat-range-position-v1"
+    assert evidence["source"] == "ensemble_v2.ehat_range_position" and evidence["ehat_range_position"] == 0.5
+    assert "edge_position" not in evidence and "edge_position_semantic" not in evidence

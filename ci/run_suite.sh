@@ -17,7 +17,8 @@ case "$suite" in
     npx tsc --noEmit -p tsconfig.json > "$RUNNER_TEMP/tsc.txt" 2>&1 || tsc_ids "worker tsc" < "$RUNNER_TEMP/tsc.txt"
     npx tsc --noEmit -p tsconfig.tests.json > "$RUNNER_TEMP/tsc-tests.txt" 2>&1 || tsc_ids "worker tsc tests" < "$RUNNER_TEMP/tsc-tests.txt"
     # Runtime E2E tests need a local server/model runtime (same exclusion as p9_gate.ps1).
-    mapfile -t files < <(ls src/lib/*.test.ts | grep -vE 'strategyDiscovery(LocalE2E|RealModelE2E)\.test\.ts$' | sort)
+    # Repo tools tests (../tools/*.test.ts) run here too: they import Worker code and need its tsx.
+    mapfile -t files < <({ ls src/lib/*.test.ts | grep -vE 'strategyDiscovery(LocalE2E|RealModelE2E)\.test\.ts$'; ls ../tools/*.test.ts 2>/dev/null || true; } | sort)
     node --import tsx --test --test-concurrency=4 \
       --test-reporter=dot --test-reporter-destination=stdout \
       --test-reporter="$tools/node_failures_reporter.mjs" --test-reporter-destination="$RUNNER_TEMP/node-fail.txt" \
@@ -68,6 +69,13 @@ case "$suite" in
     npm ci --no-audit --no-fund || { fail "frontend: npm ci"; exit 0; }
     npx tsc --noEmit > "$RUNNER_TEMP/tsc.txt" 2>&1 || tsc_ids "frontend tsc" < "$RUNNER_TEMP/tsc.txt"
     npx vite build > "$RUNNER_TEMP/vite.txt" 2>&1 || { tail -40 "$RUNNER_TEMP/vite.txt"; fail "frontend: vite build"; }
+    # Contract/unit tests under src/lib (node:test via the frontend's own pinned tsx).
+    mapfile -t files < <(ls src/lib/*.test.ts | sort)
+    NODE_FAILURE_SUITE=frontend node --import tsx --test --test-concurrency=4 \
+      --test-reporter=dot --test-reporter-destination=stdout \
+      --test-reporter="$tools/node_failures_reporter.mjs" --test-reporter-destination="$RUNNER_TEMP/node-fail-frontend.txt" \
+      "${files[@]}" || true
+    [ -f "$RUNNER_TEMP/node-fail-frontend.txt" ] && sort -u "$RUNNER_TEMP/node-fail-frontend.txt" >> "$out" || fail "frontend: test runner produced no report"
     ;;
   service)
     # ml-service (the Modal app). Same order as ml-service/Dockerfile: scikit-learn-extra builds

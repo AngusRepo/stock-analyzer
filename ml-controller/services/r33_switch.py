@@ -121,6 +121,132 @@ def check_serving_sanity(sanity, *, serving_table, trading_config):
         raise _fail('serving_curve_sanity_failed:' + ','.join(sanity.get('reasons') or ['unknown']))
 
 
+RECALIBRATION_SCHEMA = 'r33-recalibration-approval-v1'
+RECALIBRATION_FIELDS = frozenset({'schema_version', 'approved', 'scope', 'cohort_id', 'from_serving_table_checksum',
+                                  'to_estimator', 'to_serving_table_checksum', 'approved_at', 'source_reference'})
+# What a recalibration may change in the R33 object: its serving table and the ids derived from it.
+RECALIBRATED_FIELDS = frozenset({'serving_calibration', 'artifact_id', 'payload_checksum'})
+
+
+def _check_recalibration_approval(approval, *, cohort_id, from_table_checksum, to_table, now):
+    """Wei's approval names this cohort, the live table, the new estimator and the exact new table."""
+    from services.paired_nav_journal import _timestamp
+    from services.r33_crossfit_serving import estimator_of
+    if (not isinstance(approval, dict) or set(approval) != RECALIBRATION_FIELDS
+            or approval['schema_version'] != RECALIBRATION_SCHEMA or approval['approved'] is not True
+            or approval['scope'] != 'paper_r33_recalibration' or approval['cohort_id'] != cohort_id
+            or not isinstance(from_table_checksum, str) or approval['from_serving_table_checksum'] != from_table_checksum
+            or approval['to_estimator'] != estimator_of(to_table)
+            or approval['to_serving_table_checksum'] != to_table.get('payload_checksum')
+            or not isinstance(approval['source_reference'], str) or not approval['source_reference'].strip()
+            or not isinstance(approval['approved_at'], str)):
+        raise _fail('recalibration_approval_invalid')
+    try:
+        approved_at = _timestamp(approval['approved_at'])
+    except ValueError as exc:
+        raise _fail('recalibration_approval_invalid') from exc
+    if approved_at > now:
+        raise _fail('recalibration_approval_in_the_future')
+
+
+def _prior_cutover_evidence(prior):
+    """The R33 cutover evidence the live grant (or the grant it pins) carries: the live table's owner."""
+    from services.r33_cutover import cutover_evidence
+    evidence = cutover_evidence(prior, prior.get('admission')) if isinstance(prior, dict) else None
+    if evidence is None:
+        raise _fail('recalibration_prior_not_an_r33_cutover_grant')
+    return evidence
+
+
+def recalibration(*, pointer, ensemble, prior, merged_config, exit_rules, now, live_ensemble=None, approval=None):
+    """A cutover inside the live cohort that only swaps the serving estimator (L3-EV-STEP).
+
+    Same cohort, different R33 object = a recalibration: it needs Wei's approval naming the
+    cohort, the live serving table, the new estimator and the exact new table. The live object
+    must be the one the pointer and the live grant name, and the new object must equal it except
+    for the serving table (same sealed bundle, artifacts, source calibration, roster, validation);
+    the exit rules stay as they are. Anything else fails closed. A new cohort, or the same object
+    again, is an ordinary cutover and must not carry a recalibration approval.
+    Returns the packet record, or None for an ordinary cutover."""
+    from services.r33_crossfit_serving import estimator_of
+    from services.r33_ensemble import validate_ensemble
+    same_cohort = pointer.get('cohort_id') == ensemble['cohort_id']
+    if not same_cohort or pointer.get('payload_checksum') == ensemble['payload_checksum']:
+        if approval is not None:
+            raise _fail('recalibration_approval_without_a_recalibration')
+        return None
+    if approval is None:
+        raise _fail('same_cohort_recalibration_requires_wei_approval')
+    if not isinstance(live_ensemble, dict) or any(live_ensemble.get(k) != pointer.get(k) for k in IDENTITY_KEYS):
+        raise _fail('recalibration_live_object_not_the_pointer')
+    try:
+        validate_ensemble(live_ensemble)
+    except ValueError as exc:
+        raise _fail('recalibration_live_object_invalid:' + str(exc)) from exc
+    granted = _prior_cutover_evidence(prior)
+    live_table, table = live_ensemble['serving_calibration'], ensemble['serving_calibration']
+    if (granted['ensemble'] != {'artifact_id': live_ensemble['artifact_id'],
+                                'payload_checksum': live_ensemble['payload_checksum']}
+            or granted['calibration']['serving_table_checksum'] != live_table['payload_checksum']):
+        raise _fail('recalibration_live_object_not_the_granted_object')
+    if (set(live_ensemble) != set(ensemble)
+            or any(live_ensemble[k] != ensemble[k] for k in set(ensemble) - RECALIBRATED_FIELDS)
+            or (live_table.get('inputs') or {}).get('source_calibration_checksum')
+            != (table.get('inputs') or {}).get('source_calibration_checksum')
+            or estimator_of(live_table) == estimator_of(table)):
+        raise _fail('recalibration_changes_more_than_the_estimator')
+    if any((merged_config.get('exit') or {}).get(k) != exit_rules.get(k) for k in EXIT_FIELDS):
+        raise _fail('recalibration_changes_the_exit_rules')
+    _check_recalibration_approval(approval, cohort_id=ensemble['cohort_id'],
+                                  from_table_checksum=live_table['payload_checksum'], to_table=table, now=now)
+    return {'approval': deepcopy(approval),
+            'from': {'artifact_id': live_ensemble['artifact_id'], 'payload_checksum': live_ensemble['payload_checksum'],
+                     'serving_table_checksum': live_table['payload_checksum'], 'estimator': estimator_of(live_table)},
+            'to': {'artifact_id': ensemble['artifact_id'], 'payload_checksum': ensemble['payload_checksum'],
+                   'serving_table_checksum': table['payload_checksum'], 'estimator': estimator_of(table)}}
+
+
+def check_packet_recalibration(packet, *, now) -> None:
+    """validate_packet: the recalibration record is re-checked as prepare checked it, against the
+    packet's live baseline, the prior grant it replaces and the new object."""
+    record = packet.get('recalibration')
+    baseline, ensemble = packet['baseline_pointer'], packet['ensemble']
+    if record is None:
+        if baseline['cohort_id'] == ensemble['cohort_id'] and baseline['payload_checksum'] != ensemble['payload_checksum']:
+            raise _fail('same_cohort_recalibration_requires_wei_approval')
+        return
+    from services.r33_crossfit_serving import estimator_of
+    approval, table = packet['approval'], ensemble['serving_calibration']
+    prior = approval['prior_runtime_approval']
+    granted = _prior_cutover_evidence(prior)
+    source = record.get('from') if isinstance(record, dict) else None
+    expected_to = {'artifact_id': ensemble['artifact_id'], 'payload_checksum': ensemble['payload_checksum'],
+                   'serving_table_checksum': table['payload_checksum'], 'estimator': estimator_of(table)}
+    before_exit = prior['configuration']['trading_config'].get('exit') or {}
+    after_exit = approval['configuration']['trading_config'].get('exit') or {}
+    # The new object is the granted one except for its serving table: same sealed bundle, artifacts,
+    # source calibration and feature schema (prepare compared the objects themselves).
+    evidence = approval['approved_r33_cutover']
+    same_source = all(granted.get(k) == evidence.get(k)
+                      for k in ('candidate_bundle', 'artifacts', 'base_artifact_set_checksum', 'feature_schema'))
+    same_source = (same_source and granted['calibration'].get('source_payload_checksum')
+                   == evidence['calibration'].get('source_payload_checksum')
+                   and baseline['base_artifact_set_checksum'] == ensemble['base_artifact_set_checksum'])
+    if (not same_source or not isinstance(record, dict) or set(record) != {'approval', 'from', 'to'}
+            or not isinstance(source, dict)
+            or set(source) != set(expected_to) or baseline['cohort_id'] != ensemble['cohort_id']
+            or source['artifact_id'] != baseline['artifact_id']
+            or source['payload_checksum'] != baseline['payload_checksum']
+            or granted['ensemble'] != {k: source[k] for k in ('artifact_id', 'payload_checksum')}
+            or granted['calibration']['serving_table_checksum'] != source['serving_table_checksum']
+            or source['estimator'] == expected_to['estimator'] or record['to'] != expected_to
+            or any(before_exit.get(k) != after_exit.get(k) for k in EXIT_FIELDS)):
+        raise _fail('packet_recalibration_invalid')
+    _check_recalibration_approval(record['approval'], cohort_id=ensemble['cohort_id'],
+                                  from_table_checksum=granted['calibration']['serving_table_checksum'],
+                                  to_table=table, now=now)
+
+
 def check_prior(prior, *, live_prior, merged_config, admission, pointer):
     """The grant the cutover replaces must be the one KV serves now, for the config and pointer now."""
     if digest(prior) != digest(live_prior):
@@ -155,12 +281,14 @@ def next_raw_config(raw, next_merged):
 def prepare(*, raw_config, merged_config, prior, old_admission, pointer, current_plan_id, bundle, bundle_path,
             bundle_sha256, serving_table, training_label_known_max, source_evidence, exit_rules, business_date,
             effective_signal_date, wei_approval, source_reference, approved_at, runtime_key, runtime_before,
-            archive_uri, serving_sanity, oof_checks_report, now):
+            archive_uri, serving_sanity, oof_checks_report, now, live_ensemble=None, recalibration_approval=None):
     """Every value the five steps write, validated with the same owners serving uses.
 
     serving_sanity is r33_crossfit_serving.serving_curve_sanity of this serving table at the
     granted round trip (B-1); a failed or foreign result fails closed. oof_checks_report is the
-    sealed receipt check_oof_checks_report verified against the bundle checksum."""
+    sealed receipt check_oof_checks_report verified against the bundle checksum. live_ensemble is
+    the object the live pointer names and recalibration_approval Wei's approval of a same-cohort
+    estimator swap (see recalibration); without it a same-cohort swap fails closed."""
     from services.active8_paper_admission import (KEY, RUNTIME_SCHEMA, SCHEMA as ADMISSION_SCHEMA,
                                                   validate_admission, validate_runtime_approval)
     from services.l3_equal_weight_bundle import build_bundle
@@ -171,13 +299,16 @@ def prepare(*, raw_config, merged_config, prior, old_admission, pointer, current
     from services.paper_strategy_mode import validate_model_mode
     from services.paired_nav_strategy_bundle import SCHEMA as BUNDLE_SCHEMA
     from services.r33_cutover import SCHEMA as EVIDENCE_SCHEMA, RANK_POOL_SCHEMA, changed_paths, validate_against_ensemble
-    from services.r33_crossfit_serving import TABLE_NAME
+    from services.r33_crossfit_serving import estimator_of, table_name
     from services.r33_monthly_lifecycle import BUNDLE_PREFIX
     from services.strategy_ab import FEE_TERMS, R33_SCHEMA, bind_r33
     if set(exit_rules) != set(EXIT_FIELDS):
         raise _fail('exit_rules_required')
     ensemble = ensemble_from_bundle(bundle, bundle_path=bundle_path, bundle_sha256=bundle_sha256,
                                     serving_table=serving_table)
+    recalibrated = recalibration(pointer=pointer, ensemble=ensemble, prior=prior, merged_config=merged_config,
+                                 exit_rules=exit_rules, now=now, live_ensemble=live_ensemble,
+                                 approval=recalibration_approval)
     oof_checks = oof_checks_receipt(oof_checks_report, checksum=bundle['oof_checks']['checksum'])
     check_serving_sanity(serving_sanity, serving_table=serving_table, trading_config=merged_config)
     identity = l3_identity(ensemble)
@@ -243,7 +374,8 @@ def prepare(*, raw_config, merged_config, prior, old_admission, pointer, current
                 'base_artifact_set_checksum': ensemble['base_artifact_set_checksum'],
                 'ensemble': {'artifact_id': ensemble['artifact_id'], 'payload_checksum': ensemble['payload_checksum']},
                 'calibration': {'source_payload_checksum': bundle['calibration']['payload_checksum'],
-                                'serving_table_path': f"{BUNDLE_PREFIX}/{ensemble['cohort_id']}/{TABLE_NAME}",
+                                'serving_table_path': f"{BUNDLE_PREFIX}/{ensemble['cohort_id']}/"
+                                                      f"{table_name(estimator_of(serving_table))}",
                                 'serving_table_checksum': serving_table['payload_checksum']},
                 'rank_pool_schema': RANK_POOL_SCHEMA, 'feature_schema': candidate['feature_schema'],
                 'l4_model_checksum': candidate['model_checksum'],
@@ -270,6 +402,7 @@ def prepare(*, raw_config, merged_config, prior, old_admission, pointer, current
               'roster': {'model_order': list(ensemble['model_order']), 'source': 'sealed_bundle_serving_table'},
               'serving_sanity': deepcopy(serving_sanity),
               'oof_checks': oof_checks,
+              'recalibration': recalibrated,
               'e7_followup': 'trading:config is manifest-managed (E-7): upload the new raw value to GCS and '
                              'update the manifest digest by PR after the kv-config step; the drift alert is expected.',
               # NEW-L01#SliceA (Wei 10/28 Q40): accepted consequence, listed so nobody repairs it.
@@ -310,6 +443,7 @@ def validate_packet(packet, *, now):
     check_serving_sanity(packet.get('serving_sanity'), serving_table=packet['serving_table'],
                          trading_config=approval['configuration']['trading_config'])
     check_packet_oof_checks(packet.get('oof_checks'), evidence=evidence, ensemble=ensemble)
+    check_packet_recalibration(packet, now=now)
     before, after = writes['kv-config']['before'], writes['kv-config']['after']
     granted = approval['configuration']['trading_config']
     changed = changed_paths(before, after)

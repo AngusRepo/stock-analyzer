@@ -131,7 +131,11 @@ def risk_quality_record():
                 for d in days]
     content = {'schema_version': 'market-risk-quality-v1', 'date': '2026-09-04', 'status': 'complete',
                'known_score': 10, 'upper_score': 10, 'missing': [], 'critical_missing': [],
-               'sources': {'benchmark': {'source': 'finlab.taiex_total_index', 'sessions': sessions}}}
+               'sources': {'benchmark': {'source': 'finlab.taiex_total_index', 'sessions': sessions}},
+               # Stored v2 is recomputed from these receipt inputs (benign: v2 score 0, green).
+               'inputs': {'date': '2026-09-04', 'vix': 14, 'twiiClose': 22000, 'twiiVol20': 10, 'twiiBias': 0,
+                          'foreignConsecutiveSell': 1, 'foreignNet5d': 100, 'marginRatio': 3, 'adlTrend': 'flat',
+                          'bullAlignmentPct': 50}}
     # Same canonical form as the Worker's canonicalRiskJson: sorted keys, no whitespace.
     text = json.dumps(content, sort_keys=True, separators=(',', ':'))
     return text, hashlib.sha256(text.encode()).hexdigest()

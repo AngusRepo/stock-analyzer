@@ -18,8 +18,47 @@ assert.equal(assessSwingEntry({...base,nowMs:open+19*minute+59_999}).reason,'swi
 assert.equal(assessSwingEntry({...base,nowMs:open+21*minute}).reason,'swing_waiting_next_bar')
 assert.equal(assessSwingEntry({...base,bars:bars.slice(1)}).reason,'swing_minutes_missing')
 assert.equal(assessSwingEntry({...base,label:'end',bars:bars.map(b=>({...b,startMs:b.startMs+minute})),benchmarkBars:base.benchmarkBars.map(b=>({...b,startMs:b.startMs+minute}))}).action,'pass')
-assert.equal(assessSwingEntry({...base,benchmarkPreviousClose:98}).reason,'swing_ma60_evidence_missing')
-assert.equal(assessSwingEntry({...base,benchmarkPriorCloses:prior.map(x=>({...x,close:100}))}).reason,'swing_market_below_ma60')
+// R2b: the 0050 MA60 trend is recorded on every assessment and never defers.
+const belowMa60=assessSwingEntry({...base,benchmarkPriorCloses:prior.map(x=>({...x,close:100}))})
+assert.equal(belowMa60.action,'pass','0050 at or below MA60 is evidence only')
+assert.equal(belowMa60.conditions?.ma60,false)
+assert.equal(belowMa60.ma60,100)
+assert.equal(belowMa60.benchmarkPreviousClose,100)
+const aboveMa60=assessSwingEntry(base)
+assert.equal(aboveMa60.conditions?.ma60,true)
+assert.ok(Math.abs(aboveMa60.ma60!-(98*59+100)/60)<1e-9)
+const strictlyBelow=assessSwingEntry({...base,benchmarkPriorCloses:prior.map((x,i)=>({...x,close:i===59?100:101}))})
+assert.equal(strictlyBelow.action,'pass');assert.equal(strictlyBelow.conditions?.ma60,false)
+assert.ok(strictlyBelow.ma60!>strictlyBelow.benchmarkPreviousClose!)
+for(const history of [prior.slice(1),[{...prior[0]},...prior.slice(0,58),prior[59]],[...prior.slice(0,58),{...prior[58],close:0},prior[59]]]) {
+  const missing=assessSwingEntry({...base,benchmarkPriorCloses:history})
+  assert.equal(missing.action,'pass','incomplete MA60 history is recorded, not blocking')
+  assert.equal(missing.conditions?.ma60,null)
+  assert.equal(missing.ma60,undefined)
+}
+// The relative-strength base must be the 0050 close of previousSession, nothing else.
+for(const [name,x] of [
+  ['close disagrees with history',{...base,benchmarkPreviousClose:98}],
+  ['previousSession is not the latest row',{...base,previousSession:'2026-09-30'}],
+  ['latest row after previousSession',{...base,benchmarkPriorCloses:[...prior,{date:'2026-10-02',close:100}]}],
+  ['previousSession duplicated',{...base,benchmarkPriorCloses:[...prior.slice(0,59),prior[59],prior[59]]}],
+  ['history row dated tradeDate',{...base,previousSession:date,benchmarkPriorCloses:[...prior.slice(1),{date,close:100}]}],
+] as const) {
+  const r=assessSwingEntry(x as SwingEntryInput)
+  assert.equal(r.action,'defer',name);assert.equal(r.reason,'swing_benchmark_reference_inconsistent',name)
+  assert.equal(r.conditions?.ma60,null,name)
+}
+assert.equal(assessSwingEntry({...base,benchmarkPriorCloses:[...prior,{date:null as unknown as string,close:1}]}).action,'pass','a malformed daily row cannot throw')
+for(const close of [Number.NaN,0]) {
+  const noBenchmark=assessSwingEntry({...base,benchmarkPreviousClose:close})
+  assert.equal(noBenchmark.action,'defer')
+  assert.equal(noBenchmark.reason,'swing_benchmark_previous_close_missing','relative strength needs yesterday 0050 close')
+}
+const earlyWait=assessSwingEntry({...base,benchmarkPriorCloses:prior.map(x=>({...x,close:100})),bars:bars.slice(1)})
+assert.equal(earlyWait.reason,'swing_minutes_missing')
+assert.equal(earlyWait.conditions?.ma60,false)
+assert.equal(earlyWait.ma60,100,'MA60 evidence is kept on non-pass decisions too')
+assert.equal(earlyWait.benchmarkPreviousClose,100)
 assert.equal(assessSwingEntry({...base,benchmarkBars:base.benchmarkBars.slice(0,-1)}).reason,'swing_benchmark_timestamp_missing')
 assert.equal(assessSwingEntry({...base,limitUp:101}).reason,'swing_opening_range_at_limit')
 assert.equal(assessSwingEntry({...base,quote:{price:110,observedAtMs:base.nowMs}}).reason,'swing_buy_at_limit')

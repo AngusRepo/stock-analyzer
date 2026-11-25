@@ -162,7 +162,7 @@ export const SCHEDULER_DEPENDENCY_MAP: Record<string, SchedulerDependencySpec> =
     task: 'kv-config-drift',
     owner: 'gcp_scheduler',
     consolidationClass: 'keep_scheduler',
-    currentFunction: 'Read-only nightly digest of trading:config and trading:risk_config against config/kv/manifest.json (E-7); reports match or drift, never writes KV.',
+    currentFunction: 'Read-only nightly digest of trading:config and trading:risk_config against config/kv/manifest.json (E-7), plus the market_risk_stress_v2 drift check (each row recomputes from its quality receipt under the KV it echoes); reports match or drift, never writes KV or D1.',
     upstream: [],
     downstream: [],
     requiredBeforeDisable: ['another owner reports KV config drift against the manifest every day'],

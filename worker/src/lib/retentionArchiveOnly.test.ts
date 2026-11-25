@@ -4,6 +4,7 @@ import {
   RETENTION_ARCHIVE_ONLY_POLICY_IDS,
   buildRetentionArchiveOnlyQuery,
   isRetryableRetentionArchiveD1Error,
+  retentionArchiveOnlyBinds,
   retentionArchiveOnlyPolicyConfig,
 } from './retentionArchiveOnly'
 
@@ -30,7 +31,8 @@ const market = retentionArchiveOnlyPolicyConfig('canonical_market_hot_v1')
 if (market.store !== 'r2') throw new Error('canonical_market_hot_v1 must use r2')
 const source = market.sources[0]
 const firstQuery = buildRetentionArchiveOnlyQuery(source, null)
-assert.match(firstQuery, /stock_prices\.date < \?/)
+// Market pages fold the 500th-date bound into the cutoff as one index bound.
+assert.match(firstQuery, /stock_prices\.date < min\(\?, \(/)
 assert.match(firstQuery, /ORDER BY __archive_date ASC, __cursor_key ASC/)
 assert.doesNotMatch(firstQuery, /DELETE\s+FROM/i)
 
@@ -58,3 +60,14 @@ assert.equal(scheduled.task, 'retention-archive-only')
 assert.match(String(scheduled.description), /deleted_rows is always zero/)
 
 console.log('retention archive-only tests passed')
+
+// D1-RR E (2026-11-24): market cursor pages start their date index range at the cursor.
+for (const sourceId of ['stock_prices', 'chip_data', 'margin_data', 'technical_indicators']) {
+  const marketSource = market.sources.find((s) => s.datasetId === sourceId)!
+  const cursor = { cursor_date: '2025-04-01', cursor_key: '9' }
+  const sql = buildRetentionArchiveOnlyQuery(marketSource, cursor)
+  assert.match(sql, new RegExp(`${sourceId}\\.date >= \\?`))
+  assert.match(sql, new RegExp(`${sourceId}\\.date < min\\(\\?, \\(`))
+  assert.deepEqual(retentionArchiveOnlyBinds(marketSource, '2025-07-01', cursor, 50), ['2025-07-01', '2025-04-01', '2025-04-01', '9', 50])
+  assert.deepEqual(retentionArchiveOnlyBinds(marketSource, '2025-07-01', null, 50), ['2025-07-01', 50])
+}

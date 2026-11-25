@@ -19,6 +19,11 @@ function canonical(value:unknown):string {
   return JSON.stringify(value)
 }
 const tally=(value:unknown)=>Number.isSafeInteger(value) && (value as number)>=0
+/** The one definition of a plan target that may lack a recommendation row: a locked existing holding
+ * (held outside the seed). Shared with the post-pipeline closure (l4DistributionClosure.ts). */
+export function isUnservedLockedHolding(target:L4PortfolioPlan['targets'][string]|undefined):boolean {
+  return target?.locked===true && target.current_weight>0
+}
 /** R33 closes the seed with its unscored names, and its plan also carries held names outside
  * the seed: those targets have no recommendation row, so they must be locked holdings. */
 function verifyR33Closure(p:ServingPublication,plan:L4PortfolioPlan,rows:Row[]) {
@@ -32,7 +37,7 @@ function verifyR33Closure(p:ServingPublication,plan:L4PortfolioPlan,rows:Row[]) 
     || !tally(c.prediction_symbols) || (c.prediction_symbols as number)+(unscored as number)!==c.prediction_seed_symbols
     || c.recommendation_seed_rows!==count || c.recommendation_closed_rows!==count
     || c.recommendation_row_closure_passed!==true || rowSymbols.size!==count
-    || outside.some(s=>plan.targets[s].locked!==true || !(plan.targets[s].current_weight>0))
+    || outside.some(s=>!isUnservedLockedHolding(plan.targets[s]))
     || (heldOutside as number)>outside.length)throw new Error('premarket_serving_receipt_closure_mismatch')
 }
 export async function verifyPublicationReceipt(input:{publication:ServingPublication;source:Source;context:Context;
@@ -72,7 +77,7 @@ export async function verifyPublicationReceipt(input:{publication:ServingPublica
 /** The plan also carries held names outside the seed: a target without a recommendation row must be a locked holding. */
 function unservedTargetsAreHoldings(plan:L4PortfolioPlan,rows:Row[]):boolean {
   const served=new Set(rows.map(r=>r.symbol))
-  return Object.entries(plan.targets).every(([symbol,t])=>served.has(symbol) || (t.locked===true && t.current_weight>0))
+  return Object.entries(plan.targets).every(([symbol,t])=>served.has(symbol) || isUnservedLockedHolding(t))
 }
 
 export async function verifyStoredPublication(env:Bindings,input:{publication:ServingPublication;source:Source;context:Context;plan:L4PortfolioPlan}) {

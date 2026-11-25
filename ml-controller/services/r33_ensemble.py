@@ -12,7 +12,7 @@ from __future__ import annotations
 import math
 import re
 
-from services.r33_crossfit_serving import validate_serving
+from services.r33_crossfit_serving import score_position, serving_range, validate_serving
 from services.alpha_model_roster import validate_r33_roster
 from services.r33_isotonic_calibration import checksum
 
@@ -164,9 +164,15 @@ def serving_view(prediction: dict, ensemble: dict, *, cost: float) -> dict:
         signal = "NO_SIGNAL"
     else:
         signal = "BUY" if ehat > cost else "SELL" if ehat <= 0 else "HOLD"
-    values = [float(block["mean_excess"]) for block in calibration["blocks"]]
-    low, high = min(values), max(values)
+    low, high = serving_range(calibration)
     position = None if ehat is None else (0.5 if high == low else (ehat - low) / (high - low))
+    # Display edge: on a hinge table most of the pool shares the flat E-hat (range position 0),
+    # so the card shows where the score sits in the fit's own pool instead (monotone in E-hat).
+    score_cdf = None if ehat is None else score_position(calibration, [evidence["score"]])
+    if score_cdf is not None:
+        edge, edge_semantic = float(score_cdf[0]), "r33_score_in_oof_pool_distribution"
+    else:
+        edge, edge_semantic = position, None if position is None else "ehat_in_serving_range"
     models = ensemble["model_order"]
     contract = formal_contract(prediction, models)
     weights = {m: round(1 / len(models), 8) for m in models}
@@ -187,6 +193,8 @@ def serving_view(prediction: dict, ensemble: dict, *, cost: float) -> dict:
         "confidence": 0.0, "confidence_semantic": "not_estimated_r33",
         "probability_positive_net_return": None,
         "ehat_range_position": None if position is None else round(min(1.0, max(0.0, position)), 6),
+        "edge_position": None if edge is None else round(min(1.0, max(0.0, edge)), 6),
+        "edge_position_semantic": edge_semantic,
         "forecast_pct": ehat, "forecast_pct_source": "r33_isotonic_pool_relative_excess",
         "forecast_return_5bar": ehat, "forecast_return_5bar_source": "r33_isotonic_pool_relative_excess",
         "forecast_return_5bar_owner": "r33_roster_isotonic", "forecast_horizon_bars": 5,

@@ -21,7 +21,9 @@ assert(!lifecycle.includes('recoverCompletedS12DurableCallback'), 'watchdog must
 assert(!lifecycle.includes("type: 's12_structure_batch_complete'"), 'watchdog must not enqueue retired S12 serving finalizers')
 assert(orchestrator.includes("if (msg.type === 's12_structure_batch_complete')"), 'legacy S12 completion messages must remain drainable during cutover')
 assert(orchestrator.includes('drained without pipeline continuation'), 'legacy S12 completion messages must have no serving side effects')
-assert(lifecycle.includes('inspectAllocatorEvMaturityCoverage'), 'watchdog must expose strict expected-return maturity coverage')
+assert(lifecycle.includes('export async function inspectAllocatorEvMaturityCoverage'), 'strict expected-return maturity coverage stays exported for the read routes')
+const watchdogSource = lifecycle.slice(lifecycle.indexOf('export async function runAllocatorEvLifecycleWatchdog'))
+assert(!watchdogSource.includes('inspectAllocatorEvMaturityCoverage('), 'the watchdog tick must not run the full-scan maturity coverage query')
 assert(lifecycle.includes("'$.l4_alpha_ev.artifact_contract_version'"), 'L4 PIT maturity must require the current artifact contract')
 assert(lifecycle.includes("'$.l4_alpha_ev.point_in_time_prediction_lineage.schema_version'"), 'L4 PIT maturity must require explicit point-in-time lineage')
 assert(lifecycle.includes('incompatibleOrLegacyL4Rows'), 'legacy L4 snapshot rows must stay visible and outside strict maturity')
@@ -84,8 +86,9 @@ assert(fusionArtifactBuilder.includes('generation_mode == "native"'), 'Fusion pr
 assert(fusionArtifactBuilder.includes('native_rows == published_rows'), 'Fusion promotion must require complete native rows')
 assert(fusionArtifactBuilder.includes('reconstructed_rows == 0'), 'Fusion promotion must reject reconstructed rows')
 assert(lifecycle.includes("state !== 'verify_triggered'"), 'watchdog must detect stale verify callbacks')
-assert(lifecycle.includes("WHERE state = 'verify_triggered'") && lifecycle.includes("datetime(updated_at) <= datetime('now', '-15 minutes')"), 'watchdog date selection must prioritize a stale post-verify lifecycle')
-assert(lifecycle.indexOf("WHERE state = 'verify_triggered'") < lifecycle.indexOf("WHERE state = 'replay_pending_maturity'"), 'today stale post-verify recovery must not be starved by an older maturity cohort')
+assert(lifecycle.includes('strategyLearningRecoveryWindowStart(env, today)'), 'the watchdog must inspect every date of the recovery window, not one selected date')
+assert(lifecycle.includes('dispatchDeferred(ctx, businessDate)'), 'the window tick must redispatch at most one date')
+assert(lifecycle.includes('allocator-ev-lifecycle:outside-window-reported:'), 'a non-terminal date outside the window must be reported once, not block newer dates')
 assert(lifecycle.indexOf('if (staleVerifyTrigger(lifecycle))') < lifecycle.indexOf('inspectAllocatorSnapshotClosure(learningDb'), 'post-verify recovery must run before allocator snapshot and action-authority gates')
 assert(!lifecycle.includes("if (snapshot.ready && lifecycle?.state === 'verify_triggered')"), 'post-verify recovery must not depend on allocator snapshot readiness')
 assert(lifecycle.includes("const opsDb = databaseForDataDomain(env, 'ops')") && lifecycle.includes('await markPipelineStageFenced(opsDb, {'), 'pipeline stage reads and writes must use Ops D1')
@@ -99,11 +102,11 @@ assert(lifecycle.includes('stageLeaseLive'), 'watchdog callback grace must not p
 assert(lifecycle.includes("postPipelineStage?.status !== 'running' || stageLeaseLive"), 'expired running callbacks must be recoverable immediately')
 assert(lifecycle.includes('callback_observation=pending'), 'watchdog must report an in-flight callback without leaving its own durable ticket non-terminal')
 assert(lifecycle.includes("excluded.state = 'replay_pending_maturity'"), 'replay queue must be able to return to stock-specific maturity waiting')
-assert(lifecycle.includes('MAX(prediction_date) AS business_date'), 'cross-midnight watchdog must follow the latest native lineage date')
-assert(lifecycle.includes("WHERE state = 'replay_pending_maturity'"), 'watchdog must revisit older replay cohorts waiting for five sessions')
-assert(lifecycle.includes("last_error LIKE 'terminal market-data source error:%'"), 'watchdog must retry quota-blocked replay after the next post-market window')
-assert(lifecycle.includes("datetime(updated_at) <= datetime('now', '-12 hours')"), 'quota recovery must not poll repeatedly in the same exhausted window')
-assert(lifecycle.includes('coverage.matureMissingRows > 0'), 'watchdog must distinguish mature replay work from legitimate waiting')
+assert(lifecycle.includes("WHERE stage = 'pipeline_execution' AND status = 'success'"), 'cross-midnight watchdog must see every pipelined date of the window, including ones without a lifecycle row')
+assert(lifecycle.includes("outside.filter(row => row.state === 'replay_pending_maturity').at(-1)"), 'legacy watchdog must revisit the oldest replay cohort waiting five sessions, past the window')
+assert(lifecycle.includes('SOURCE_ERROR_RETRY_HOURS * 3_600_000') && lifecycle.includes("const SOURCE_ERROR_PREFIX = 'terminal market-data source error:'"), 'quota-blocked replay must back off until the next post-market window')
+assert(lifecycle.includes('POST_PIPELINE_WATCHDOG_MAX_REDISPATCHES'),'post-pipeline redispatch must stop at a cap instead of polling a failing date every tick')
+assert(lifecycle.includes('matureReplayMissingRows > 0'), 'watchdog must distinguish mature replay work from legitimate waiting')
 assert(lifecycle.includes("type: 's12_replay_backfill_chunk'"), 'mature pending lifecycle rows must enqueue replay directly')
 assert(lifecycle.includes('maturityAsOfDate'), 'replayed historical cohorts must use the current maturity knowledge date')
 assert(
@@ -128,13 +131,12 @@ assert(orchestrator.includes('dynamicCohortStalled'), 'dynamic replay must detec
 assert(orchestrator.includes('requeue=0'), 'terminal market-data failures must not self-requeue and exhaust broker quota')
 
 assert(
-  lifecycle.indexOf("const learningDb = databaseForDataDomain(env, 'learning')")
-    < lifecycle.indexOf('resolveLifecycleBusinessDate(env, learningDb, requestedDate)') &&
-    !lifecycle.includes('resolveLifecycleBusinessDate(env.DB, requestedDate)'),
-  'EV lifecycle business date must be resolved from Learning D1, never the retired legacy DB mirror',
+  lifecycle.includes("const learningDb = databaseForDataDomain(env, 'learning')") &&
+    !lifecycle.includes('env.DB.prepare'),
+  'EV lifecycle dates must be resolved from Learning/Ops D1, never the retired legacy DB mirror',
 )
 assert(
-  lifecycle.match(/loadSplitFusionSnapshotReplayCoverage\(env,/g)?.length === 2 &&
+  lifecycle.match(/loadSplitFusionSnapshotReplayCoverage\(env,/g)?.length === 1 &&
     !lifecycle.includes('loadFusionSnapshotReplayCoverage(db,') &&
     !lifecycle.includes('loadFusionSnapshotReplayCoverage(env.DB,'),
   'EV lifecycle maturity selection and replay decisions must use the split Learning/Ops/Market read model',

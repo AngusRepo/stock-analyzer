@@ -113,7 +113,8 @@ const GROUPS = [
   {
     id: 'business_cycle',
     label: '景氣對策燈號',
-    factorIds: ['breadth'],
+    // Packets written before 2026-11 keyed this factor as 'breadth'.
+    factorIds: ['business_cycle', 'breadth'],
     sourceHint: 'FinLab tw_business_indicators',
     Icon: Landmark,
   },
@@ -142,7 +143,7 @@ const GROUPS = [
     id: 'event_pressure',
     label: '全球事件',
     factorIds: ['event_monitors', 'lppls', 'hawkes'],
-    sourceHint: '鉅亨頭條 + LPPLS / Hawkes 監控',
+    sourceHint: 'market_regime_state：LPPLS / Hawkes 監控',
     Icon: AlertTriangle,
   },
 ] as const

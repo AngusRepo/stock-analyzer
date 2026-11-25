@@ -719,15 +719,18 @@ test('LIVE-AUTH-B: in the chain a daily-report claim left by a dead invocation i
   let hang=true
   const taskRunner=async(task:string)=>{seen.push(task)
     return task==='daily-report'&&hang?new Promise<PostVerifyTaskResult>(()=>{}):success(task)}
-  await assert.rejects(runPostVerifyCallbackChain(f.env,f.ctx,{productionAuthority:authority,taskRunner,taskTimeoutMs:5}),/timeout_unsettled/)
+  // Earlier tasks settle immediately; the budget only has to expire on the hanging daily-report.
+  await assert.rejects(runPostVerifyCallbackChain(f.env,f.ctx,{productionAuthority:authority,taskRunner,taskTimeoutMs:200}),
+    /timeout_unsettled:daily-report/)
   hang=false
   await takeover(f,'lease-B')
   const next={...f.ctx,stageLeaseOwner:'lease-B'}
-  assert.equal(await runPostVerifyCallbackChain(f.env,next,{productionAuthority:authority,taskRunner,taskTimeoutMs:5}),'success')
+  // Replays settle immediately; a 5 ms budget times out under a loaded CI runner.
+  assert.equal(await runPostVerifyCallbackChain(f.env,next,{productionAuthority:authority,taskRunner,taskTimeoutMs:10_000}),'success')
   assert.equal(seen.filter(task=>task==='daily-report').length,1,'the report is not sent again')
   assert.equal(seen.at(-1),'strategy-learning')
   // A further delivery replays the same settled receipts and still succeeds.
-  assert.equal(await runPostVerifyCallbackChain(f.env,next,{productionAuthority:authority,taskRunner,taskTimeoutMs:5}),'success')
+  assert.equal(await runPostVerifyCallbackChain(f.env,next,{productionAuthority:authority,taskRunner,taskTimeoutMs:10_000}),'success')
   assert.equal(seen.filter(task=>task==='daily-report').length,1)
   f.sqlite.close()
 })

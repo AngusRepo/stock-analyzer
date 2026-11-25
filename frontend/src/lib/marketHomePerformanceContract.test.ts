@@ -12,7 +12,8 @@ const main = fs.readFileSync(path.join(root, 'src', 'main.tsx'), 'utf8')
 
 assert(page.includes('sv-home-glass-panel'), 'Homepage glass panels should use the isolated paint class')
 assert((page.match(/sv-home-deferred-section/g) ?? []).length >= 2, 'Below-fold homepage groups should defer rendering')
-assert(page.includes('xl:grid-cols-[minmax(0,3fr)_minmax(380px,2fr)]'), 'Recommendation list and group residual momentum must share a 6:4 desktop row')
+// d32030c2 changed this row from 6:4 to an even 1:1 split (also pinned by pitFactorTrajectoryUiContract).
+assert(/xl:grid-cols-2">\s*<div className="min-w-0"><RecommendationPanel \/><\/div>\s*<div className="min-w-0"><GroupFactorTrajectoryPanel \/><\/div>/.test(page), 'Recommendation list and group residual momentum must share a 1:1 desktop row')
 assert(page.includes('aria-label="市場概況與風險"'), 'Market overview should be split into a semantic section')
 assert(page.includes("panelClass('grid gap-4 p-4 xl:self-stretch')"), 'Large market overview should be split into contained cards')
 

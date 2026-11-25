@@ -1,4 +1,7 @@
-import { paperExecutionFetch, paperExecutionNow, paperExecutionDate } from './paperExecutionScope'
+import { paperExecutionNow, paperExecutionDate } from './paperExecutionScope'
+import { DEFAULT_RISK_CONFIG } from './riskConfig'
+import type { FactorPacketPolicy, FactorPacketRule, FactorPacketBandOp } from './riskConfig'
+import { scoreToRiskLevel, validRiskLevelThresholds } from './marketRiskStressV2'
 export interface MarketRegimeFactorTile {
   id: string
   label: string
@@ -39,17 +42,48 @@ function clamp(value: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, value))
 }
 
-function riskLevel(score: number): MarketRegimeFactorPacket['level'] {
-  if (score <= 25) return 'green'
-  if (score <= 45) return 'yellow'
-  if (score <= 65) return 'orange'
-  if (score <= 85) return 'red'
-  return 'black'
-}
 
 function formatAmountBillion(value: number | null): string {
   if (value == null || !Number.isFinite(value)) return 'n/a'
   return `${value.toFixed(1)}億`
+}
+
+const BAND_OPS: readonly FactorPacketBandOp[] = ['<', '<=', '>', '>=']
+const score100 = (value: unknown): boolean => typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 100
+const finiteCut = (value: unknown): boolean => typeof value === 'number' && Number.isFinite(value)
+
+function validFactorPacketRule(rule: any): rule is FactorPacketRule {
+  return !!rule && typeof rule === 'object' && Array.isArray(rule.bands) && rule.bands.length <= 10
+    && rule.bands.every((band: any) => !!band && BAND_OPS.includes(band.op) && finiteCut(band.cut) && score100(band.score))
+    && score100(rule.otherwise)
+    && (rule.warn === undefined || (!!rule.warn && BAND_OPS.includes(rule.warn.op) && finiteCut(rule.warn.cut)))
+}
+
+/** KV trading:risk_config.portfolio.factorPacketPolicy shape check; the packet builder refuses anything else. */
+export function validFactorPacketPolicy(policy: unknown): policy is FactorPacketPolicy {
+  const p = policy as FactorPacketPolicy | null
+  const weightKeys = ['price_trend', 'business_cycle', 'chips', 'leverage', 'volatility', 'macro', 'global', 'event_monitors'] as const
+  const weights = p?.weights as Record<string, unknown> | undefined
+  return !!p && typeof p === 'object' && score100(p.missingScore)
+    && !!weights && typeof weights === 'object' && Object.keys(weights).every(key => (weightKeys as readonly string[]).includes(key))
+    && weightKeys.every(key => typeof weights[key] === 'number' && Number.isFinite(weights[key]) && (weights[key] as number) >= 0)
+    // Weights sum to 1 so the packet score stays on the 0-100 scale its level cuts use.
+    && Math.abs(weightKeys.reduce((sum, key) => sum + (weights[key] as number), 0) - 1) < 1e-9
+    && [p.priceTrend, p.businessCycle, p.chips, p.leverage, p.volatilityVix, p.volatilityVol20].every(validFactorPacketRule)
+    && !!p.evidenceStanceScores && score100(p.evidenceStanceScores.bearish) && score100(p.evidenceStanceScores.bullish)
+    && score100(p.evidenceStanceScores.neutral) && finiteCut(p.eventMonitorWarn)
+}
+
+function bandMatch(op: FactorPacketBandOp, value: number, cut: number): boolean {
+  return op === '<' ? value < cut : op === '<=' ? value <= cut : op === '>' ? value > cut : value >= cut
+}
+
+export function factorPacketBandScore(rule: FactorPacketRule, value: number): number {
+  return rule.bands.find(band => bandMatch(band.op, value, band.cut))?.score ?? rule.otherwise
+}
+
+export function factorPacketBandWarn(rule: FactorPacketRule, value: number): boolean {
+  return !!rule.warn && bandMatch(rule.warn.op, value, rule.warn.cut)
 }
 
 function factor(input: Omit<MarketRegimeFactorTile, 'contribution'>): MarketRegimeFactorTile {
@@ -178,72 +212,6 @@ async function canonicalLeverageStress(db: D1Database, date: string): Promise<{
   }
 }
 
-async function sectorBreadthProxy(db: D1Database, date: string): Promise<{ value: number | null; sourceDate: string | null; detail: string }> {
-  try {
-    const rows = await db.prepare(`
-      SELECT date, classification, quadrant, COUNT(*) AS n
-        FROM sector_flow
-       WHERE date = (SELECT MAX(date) FROM sector_flow WHERE date <= ?)
-         AND classification IN ('industry', 'industry_theme', 'subindustry', 'theme')
-         AND quadrant IS NOT NULL
-       GROUP BY date, classification, quadrant
-    `).bind(date).all<{ date: string; classification: string; quadrant: string; n: number }>()
-    const list = rows.results ?? []
-    if (!list.length) return { value: null, sourceDate: null, detail: 'sector_flow missing' }
-    const positive = list.filter((row) => row.quadrant === 'Leading' || row.quadrant === 'Improving').reduce((sum, row) => sum + Number(row.n ?? 0), 0)
-    const total = list.reduce((sum, row) => sum + Number(row.n ?? 0), 0)
-    const ratio = total > 0 ? positive / total : null
-    return {
-      value: ratio == null ? null : Math.round(ratio * 10000) / 100,
-      sourceDate: list[0]?.date ?? null,
-      detail: `positive_quadrants=${positive}/${total}`,
-    }
-  } catch {
-    return { value: null, sourceDate: null, detail: 'sector breadth query failed' }
-  }
-}
-
-async function sourceQualityContext(
-  db: D1Database,
-  date: string,
-  source: string,
-  datasets: string[],
-): Promise<{ score: number | null; sourceDate: string | null; status: MarketRegimeFactorTile['status']; detail: string; source: string }> {
-  if (!datasets.length) return { score: null, sourceDate: null, status: 'missing', detail: 'no dataset configured', source }
-  const placeholders = datasets.map(() => '?').join(',')
-  try {
-    const rows = await db.prepare(`
-      SELECT source, dataset, freshness_status, missing_rate, latest_materialization, metrics_json
-        FROM source_quality_metrics
-       WHERE as_of_date = ?
-         AND source = ?
-         AND dataset IN (${placeholders})
-       ORDER BY latest_materialization DESC
-    `).bind(date, source, ...datasets).all<{
-      source: string
-      dataset: string
-      freshness_status: string
-      missing_rate: number | null
-      latest_materialization: string | null
-      metrics_json: string | null
-    }>()
-    const list = rows.results ?? []
-    if (!list.length) return { score: null, sourceDate: null, status: 'missing', detail: `${source}.${datasets.join('|')} missing`, source }
-    const degraded = list.some((row) => /degraded|stale|disabled|failed/i.test(`${row.freshness_status || ''} ${row.metrics_json || ''}`))
-    const avgMissing = list.reduce((sum, row) => sum + Number(row.missing_rate ?? 1), 0) / list.length
-    const score = degraded ? 55 : clamp(35 + avgMissing * 35, 25, 70)
-    return {
-      score: Math.round(score * 10) / 10,
-      sourceDate: list[0]?.latest_materialization ? String(list[0].latest_materialization).slice(0, 10) : date,
-      status: degraded ? 'warn' : 'info',
-      detail: list.map((row) => `${row.dataset}:${row.freshness_status}`).join(' / '),
-      source: `${source}.${datasets.join('|')}`,
-    }
-  } catch {
-    return { score: null, sourceDate: null, status: 'missing', detail: `${source} source quality query failed`, source }
-  }
-}
-
 function monitorScore(monitors: Record<string, any>, key: string): number | null {
   const item = monitors?.[key]
   return finiteNumber(item?.score ?? item?.risk_score ?? item?.value ?? item)
@@ -259,17 +227,17 @@ function regimeEvidenceItem(regimeState: any, key: string): any {
   )
 }
 
-function evidenceStanceScore(regimeState: any, key: string): number | null {
+function evidenceStanceScore(regimeState: any, key: string, stances: FactorPacketPolicy['evidenceStanceScores']): number | null {
   const item = regimeEvidenceItem(regimeState, key)
   if (typeof item === 'number' && Number.isFinite(item)) return clamp(item * 100, 0, 100)
   const stance = String(item?.stance ?? '').toLowerCase()
-  if (stance === 'bearish') return 75
-  if (stance === 'bullish') return 15
-  if (stance === 'neutral') return 40
+  if (stance === 'bearish') return stances.bearish
+  if (stance === 'bullish') return stances.bullish
+  if (stance === 'neutral') return stances.neutral
   return null
 }
 
-function evidenceRawContext(regimeState: any, key: string): {
+function evidenceRawContext(regimeState: any, key: string, stances: FactorPacketPolicy['evidenceStanceScores']): {
   raw: number | string | null
   value: string
   score: number | null
@@ -303,7 +271,7 @@ function evidenceRawContext(regimeState: any, key: string): {
     return {
       raw: item,
       value: item,
-      score: evidenceStanceScore(regimeState, key),
+      score: evidenceStanceScore(regimeState, key, stances),
       detail: `${key}=${item}`,
       missing: false,
     }
@@ -312,7 +280,7 @@ function evidenceRawContext(regimeState: any, key: string): {
   if (typeof item === 'object') {
     const rawScore = finiteNumber(item.score ?? item.risk_score)
     const score = rawScore == null
-      ? evidenceStanceScore(regimeState, key)
+      ? evidenceStanceScore(regimeState, key, stances)
       : clamp(rawScore >= 0 && rawScore <= 1 ? rawScore * 100 : rawScore, 0, 100)
     const raw =
       item.raw ??
@@ -420,54 +388,23 @@ function businessCycleContext(regimeState: any): { value: string; raw: number | 
   }
 }
 
-async function latestCnyesHeadlines(): Promise<{ value: string; sourceDate: string | null; detail: string; url: string | null; missing: boolean }> {
-  const url = 'https://news.cnyes.com/api/v3/news/category/headline?page=1&limit=5'
-  try {
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), 1500)
-    const res = await paperExecutionFetch(url, {
-      headers: { 'User-Agent': 'StockVision/12.3 (market-regime-context)' },
-      signal: controller.signal,
-    })
-    clearTimeout(timer)
-    if (!res.ok) throw new Error(`cnyes_http_${res.status}`)
-    const body = await res.json() as any
-    const items = Array.isArray(body?.items?.data) ? body.items.data : []
-    const first = items.find((item: any) => item?.title)
-    if (!first) throw new Error('cnyes_empty')
-    const ts = Number(first.publishAt ?? first.publishedAt ?? 0)
-    const sourceDate = Number.isFinite(ts) && ts > 0
-      ? new Date(ts * 1000).toISOString().slice(0, 10)
-      : null
-    const newsId = first.newsId ?? first.id
-    return {
-      value: String(first.title).slice(0, 52),
-      sourceDate,
-      detail: `鉅亨頭條：${String(first.title).slice(0, 90)}${newsId ? `；url=https://news.cnyes.com/news/id/${newsId}` : ''}`,
-      url: newsId ? `https://news.cnyes.com/news/id/${newsId}` : 'https://news.cnyes.com/news/cat/headline',
-      missing: false,
-    }
-  } catch (error: any) {
-    return {
-      value: 'n/a',
-      sourceDate: null,
-      detail: `鉅亨頭條讀取失敗：${String(error?.message ?? error)}`,
-      url,
-      missing: true,
-    }
-  }
-}
-
 export async function buildMarketRegimeFactorPacket(
   db: D1Database,
   marketRiskRow: Record<string, any>,
   regimeState: any,
+  // Packet cuts come from trading:risk_config.portfolio.riskLevelThresholds.factorPacket (single owner).
+  levelThresholds: readonly number[] = DEFAULT_RISK_CONFIG.portfolio.riskLevelThresholds.factorPacket,
+  // Tile bands, weights and warn cuts: trading:risk_config.portfolio.factorPacketPolicy (single owner).
+  policy: unknown = DEFAULT_RISK_CONFIG.portfolio.factorPacketPolicy,
 ): Promise<MarketRegimeFactorPacket> {
+  if (!validRiskLevelThresholds(levelThresholds)) throw new Error('factor_packet_level_thresholds_invalid')
+  if (!validFactorPacketPolicy(policy)) throw new Error('factor_packet_policy_invalid')
+  const P = policy, W = policy.weights, M = policy.missingScore
   const date = String(marketRiskRow.date ?? new Date(paperExecutionNow() + 8 * 3600_000).toISOString().slice(0, 10))
-  const [canonicalChip, leverage, cnyesEvent] = await Promise.all([
+  // Every input is point-in-time D1/regime evidence for `date`, so a rebuilt packet reproduces the original.
+  const [canonicalChip, leverage] = await Promise.all([
     canonicalInstitutionalNet5d(db, date),
     canonicalLeverageStress(db, date),
-    latestCnyesHeadlines(),
   ])
 
   const twiiBias = finiteNumber(marketRiskRow.twii_bias)
@@ -475,11 +412,12 @@ export async function buildMarketRegimeFactorPacket(
   const vix = finiteNumber(marketRiskRow.vix)
   const institutionalNet5d = canonicalChip.total ?? finiteNumber(marketRiskRow.foreign_net_5d)
   const businessCycle = businessCycleContext(regimeState)
-  const globalEvidence = evidenceRawContext(regimeState, 'global_risk')
-  const macroEvidence = evidenceRawContext(regimeState, 'macro_liquidity')
+  const globalEvidence = evidenceRawContext(regimeState, 'global_risk', P.evidenceStanceScores)
+  const macroEvidence = evidenceRawContext(regimeState, 'macro_liquidity', P.evidenceStanceScores)
   const lppls = monitorScore(regimeState?.monitors ?? {}, 'lppls_weekly_bubble')
   const hawkes = monitorScore(regimeState?.monitors ?? {}, 'hawkes_contagion')
   const monitorRisk = Math.max(lppls ?? 0, hawkes ?? 0)
+  const monitorsMissing = lppls == null && hawkes == null
 
   const factors: MarketRegimeFactorTile[] = [
     factor({
@@ -487,24 +425,23 @@ export async function buildMarketRegimeFactorPacket(
       label: '趨勢 / 20MA',
       raw_value: twiiBias,
       value: twiiBias == null ? 'n/a' : `${twiiBias.toFixed(2)}%`,
-      score: twiiBias == null ? 45 : clamp(twiiBias <= -6 ? 85 : twiiBias <= -3 ? 65 : twiiBias >= 3 ? 20 : 40, 0, 100),
-      weight: 0.20,
-      status: twiiBias == null ? 'missing' : twiiBias <= -3 ? 'warn' : 'ok',
+      score: twiiBias == null ? M : factorPacketBandScore(P.priceTrend, twiiBias),
+      weight: W.price_trend,
+      status: twiiBias == null ? 'missing' : factorPacketBandWarn(P.priceTrend, twiiBias) ? 'warn' : 'ok',
       source: 'market_risk.twii_bias',
       source_date: date,
       detail: `TWII close ${marketRiskRow.twii_close ?? 'n/a'} vs MA20 ${marketRiskRow.twii_ma20 ?? 'n/a'}`,
       missing_reason: twiiBias == null ? 'twii_bias_missing' : undefined,
     }),
     factor({
-      id: 'breadth',
+      id: 'business_cycle',
       label: '景氣對策燈號',
       raw_value: businessCycle.raw,
       value: businessCycle.value,
-      score: finiteNumber(businessCycle.raw) == null
-        ? 45
-        : clamp(Number(businessCycle.raw) <= 16 ? 85 : Number(businessCycle.raw) <= 22 ? 62 : Number(businessCycle.raw) <= 31 ? 38 : Number(businessCycle.raw) <= 37 ? 55 : 72, 0, 100),
-      weight: 0.15,
-      status: businessCycle.missing ? 'missing' : 'info',
+      score: finiteNumber(businessCycle.raw) == null ? M : factorPacketBandScore(P.businessCycle, Number(businessCycle.raw)),
+      weight: W.business_cycle,
+      status: businessCycle.missing ? 'missing'
+        : finiteNumber(businessCycle.raw) != null && factorPacketBandWarn(P.businessCycle, Number(businessCycle.raw)) ? 'warn' : 'info',
       source: 'finlab.tw_business_indicators',
       source_date: businessCycle.sourceDate,
       detail: businessCycle.detail,
@@ -515,9 +452,9 @@ export async function buildMarketRegimeFactorPacket(
       label: '三大法人',
       raw_value: institutionalNet5d,
       value: formatAmountBillion(institutionalNet5d),
-      score: institutionalNet5d == null ? 45 : clamp(institutionalNet5d < -250 ? 85 : institutionalNet5d < -80 ? 65 : institutionalNet5d > 120 ? 20 : 40, 0, 100),
-      weight: 0.15,
-      status: institutionalNet5d == null ? 'missing' : institutionalNet5d < -80 ? 'warn' : 'ok',
+      score: institutionalNet5d == null ? M : factorPacketBandScore(P.chips, institutionalNet5d),
+      weight: W.chips,
+      status: institutionalNet5d == null ? 'missing' : factorPacketBandWarn(P.chips, institutionalNet5d) ? 'warn' : 'ok',
       source: canonicalChip.total != null ? 'canonical_chip_daily.finlab_5d_amount' : 'market_risk.foreign_net_5d',
       source_date: canonicalChip.sourceDate ?? date,
       detail: canonicalChip.total != null ? canonicalChip.detail : `外資5日=${formatAmountBillion(finiteNumber(marketRiskRow.foreign_net_5d))}`,
@@ -530,11 +467,9 @@ export async function buildMarketRegimeFactorPacket(
       value: leverage.marginBillion != null
         ? `融資 ${formatAmountBillion(leverage.marginBillion)} / 融券 ${formatAmountBillion(leverage.shortBillion)}`
         : 'n/a',
-      score: leverage.marginChangePct != null
-        ? clamp(leverage.marginChangePct > 8 ? 75 : leverage.marginChangePct > 3 ? 55 : leverage.marginChangePct < -5 ? 25 : 40, 0, 100)
-        : 45,
-      weight: 0.15,
-      status: leverage.marginBillion == null ? 'missing' : leverage.marginChangePct != null && leverage.marginChangePct > 3 ? 'warn' : 'info',
+      score: leverage.marginChangePct != null ? factorPacketBandScore(P.leverage, leverage.marginChangePct) : M,
+      weight: W.leverage,
+      status: leverage.marginBillion == null ? 'missing' : leverage.marginChangePct != null && factorPacketBandWarn(P.leverage, leverage.marginChangePct) ? 'warn' : 'info',
       source: 'canonical_chip_daily.margin_short_amount',
       source_date: leverage.sourceDate ?? date,
       detail: leverage.detail,
@@ -546,12 +481,11 @@ export async function buildMarketRegimeFactorPacket(
       raw_value: vix ?? twiiVol20,
       value: vix != null ? `VIX ${vix.toFixed(1)}` : twiiVol20 != null ? `${twiiVol20.toFixed(2)}%` : 'n/a',
       score: vix != null
-        ? clamp(vix >= 35 ? 85 : vix >= 25 ? 65 : vix <= 16 ? 25 : 40, 0, 100)
-        : twiiVol20 != null
-          ? clamp(twiiVol20 >= 35 ? 80 : twiiVol20 >= 24 ? 60 : 35, 0, 100)
-          : 45,
-      weight: 0.10,
-      status: vix == null && twiiVol20 == null ? 'missing' : (vix ?? twiiVol20 ?? 0) >= 25 ? 'warn' : 'info',
+        ? factorPacketBandScore(P.volatilityVix, vix)
+        : twiiVol20 != null ? factorPacketBandScore(P.volatilityVol20, twiiVol20) : M,
+      weight: W.volatility,
+      status: vix == null && twiiVol20 == null ? 'missing'
+        : (vix != null ? factorPacketBandWarn(P.volatilityVix, vix) : factorPacketBandWarn(P.volatilityVol20, twiiVol20 as number)) ? 'warn' : 'info',
       source: vix != null ? 'market_risk.vix' : 'market_risk.twii_vol20',
       source_date: date,
       detail: `vix_level=${marketRiskRow.vix_level ?? 'n/a'}`,
@@ -562,8 +496,8 @@ export async function buildMarketRegimeFactorPacket(
       label: '總經',
       raw_value: macroEvidence.raw,
       value: macroEvidence.value,
-      score: macroEvidence.score ?? 45,
-      weight: 0.10,
+      score: macroEvidence.score ?? M,
+      weight: W.macro,
       status: macroEvidence.missing ? 'missing' : 'info',
       source: 'market_regime_state.evidence.macro_liquidity',
       source_date: regimeState?.run_date ?? null,
@@ -575,8 +509,8 @@ export async function buildMarketRegimeFactorPacket(
       label: '全球風險',
       raw_value: globalEvidence.raw,
       value: globalEvidence.value,
-      score: globalEvidence.score ?? 45,
-      weight: 0.10,
+      score: globalEvidence.score ?? M,
+      weight: W.global,
       status: globalEvidence.missing ? 'missing' : 'info',
       source: 'market_regime_state.evidence.global_risk',
       source_date: regimeState?.run_date ?? null,
@@ -586,15 +520,15 @@ export async function buildMarketRegimeFactorPacket(
     factor({
       id: 'event_monitors',
       label: '全球事件',
-      raw_value: cnyesEvent.value,
-      value: cnyesEvent.value,
-      score: monitorRisk ? clamp(monitorRisk * 100, 0, 100) : 45,
-      weight: 0.05,
-      status: cnyesEvent.missing ? 'missing' : monitorRisk >= 0.7 ? 'warn' : 'info',
-      source: cnyesEvent.url ?? 'cnyes.headline',
-      source_date: cnyesEvent.sourceDate ?? regimeState?.run_date ?? null,
-      detail: `${cnyesEvent.detail}；LPPLS=${lppls ?? 'n/a'} Hawkes=${hawkes ?? 'n/a'}`,
-      missing_reason: cnyesEvent.missing ? 'cnyes_headline_missing' : undefined,
+      raw_value: monitorsMissing ? null : monitorRisk,
+      value: monitorsMissing ? 'n/a' : `LPPLS ${lppls ?? 'n/a'} / Hawkes ${hawkes ?? 'n/a'}`,
+      score: monitorRisk ? clamp(monitorRisk * 100, 0, 100) : M,
+      weight: W.event_monitors,
+      status: monitorsMissing ? 'missing' : monitorRisk >= P.eventMonitorWarn ? 'warn' : 'info',
+      source: 'market_regime_state.monitors',
+      source_date: regimeState?.run_date ?? null,
+      detail: `LPPLS=${lppls ?? 'n/a'} Hawkes=${hawkes ?? 'n/a'}`,
+      missing_reason: monitorsMissing ? 'event_monitors_missing' : undefined,
     }),
   ]
 
@@ -614,7 +548,7 @@ export async function buildMarketRegimeFactorPacket(
     schema_version: 'market-regime-factor-packet-v1',
     date,
     score,
-    level: riskLevel(score),
+    level: scoreToRiskLevel(score, levelThresholds),
     factors,
     contributions,
     sources,

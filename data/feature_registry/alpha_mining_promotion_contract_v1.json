@@ -47,14 +47,13 @@
       "enabled_after_first_telemetry": true,
       "inputs": [
         "accepted_candidate_count",
-        "effective_feature_count",
+        "family_count",
         "median_novelty",
         "median_similarity_penalty",
         "median_max_similarity",
-        "holdout_sharpe_decay",
         "pbo_failure_rate",
-        "finlab_confirm_pass_rate",
-        "runtime_seconds"
+        "runtime_seconds",
+        "previous_run_outputs"
       ],
       "population_bounds": [
         32,
@@ -72,11 +71,53 @@
         0.08,
         0.35
       ],
-      "rule": "Increase exploration when accepted candidates or novelty are low; decrease exploration when PBO failure, holdout decay, or runtime pressure is high."
+      "rule": "Start from the previous completed run's actual population/generations/top_n (not the static defaults). Increase exploration when accepted candidates are low; shrink when survivors are ample; reduce generations/top_n under PBO failure or runtime pressure. Every extra trial raises the cumulative effective-trial DSR hurdle."
+    },
+    "research_protocol": {
+      "schema_version": "strategy-mining-research-protocol-v3",
+      "window_mode": "rolling",
+      "train_sessions": 504,
+      "validation_sessions": 252,
+      "holdout_sessions": 126,
+      "purge_sessions": 21,
+      "embargo_sessions": 5,
+      "holdout_not_before": "2026-11-08",
+      "holdout_not_before_reason": "runs up to 2026-11-07 optimised and gated on 2026-01-01..run date; that data is burned as a holdout",
+      "min_holdout_sessions_for_gate": 60,
+      "execution_lag_sessions": 1,
+      "fill_price": "close",
+      "commission_rate": 0.001425,
+      "sell_tax_rate": 0.003,
+      "benchmark": "tradable_universe_equal_weight",
+      "min_factor_weight_coverage": 0.5,
+      "cross_sectional_min_varying_date_ratio": 0.5,
+      "direction_ic_horizon_sessions": 21,
+      "label_signature_date_stride": 5,
+      "novelty_neighbours": 10,
+      "feature_triage_window": {
+        "start": "2023-01-01",
+        "end": "2026-06-15"
+      },
+      "selection_gate": {
+        "min_validation_excess_sharpe": 0.75,
+        "min_train_excess_sharpe": 0.0,
+        "min_deflated_sharpe_probability": 0.95,
+        "max_selection_drawdown": 0.35,
+        "max_turnover": 0.95,
+        "regime_min_observations": 40,
+        "regime_min_excess_return_annualized": -0.15
+      },
+      "holdout_gate": {
+        "holm_alpha": 0.05,
+        "regime_min_observations": 20,
+        "regime_min_excess_return_annualized": -0.15,
+        "finlab_confirm_min_monthly_sharpe": 0.5,
+        "finlab_confirm_require_positive_alpha": true
+      }
     },
     "novelty_contract": {
-      "base": "Jaccard factor-set novelty",
-      "adjusted": "formal137 pairwise abs rank corr penalty/bonus",
+      "base": "kNN candidate-to-archive formal137 similarity (mean of the nearest neighbours)",
+      "adjusted": "formal137 pairwise abs rank corr; missing pairs count as duplicates (fail closed)",
       "high_duplicate_floor": "nearest abs rank corr >= 0.8",
       "related_cluster_floor": "0.4 <= nearest abs rank corr < 0.8"
     }
@@ -140,7 +181,12 @@
     "l1_5_diversity_compare",
     "l2_l3_retention_compare",
     "l4_buy_stability_compare",
-    "live_vs_backtest_divergence_after_observe"
+    "live_vs_backtest_divergence_after_observe",
+    "sealed_holdout_evaluated_once_for_gate_finalists",
+    "holm_family_includes_prior_overlapping_holdouts",
+    "cumulative_effective_trial_count",
+    "benchmark_relative_beta_and_regime_breakdown",
+    "recorded_factor_directions"
   ],
   "promotion_guardrails": {
     "no_direct_daily_buy_path": true,

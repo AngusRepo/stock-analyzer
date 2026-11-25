@@ -75,49 +75,20 @@ def _read_finlab86(path: Path, limit: int) -> list[dict[str, str]]:
 
 
 def _build_base_universe(args: argparse.Namespace):
+    """formal137 registry universe: adjusted pricing, raw factor panels, registry directions.
+
+    Used by the replay tools (robustness / confirm_existing / active12) that rebuild positions for
+    already-mined rows. The search itself goes through miner._build_mining_context.
+    """
     ns = argparse.Namespace(
         factor_json=args.factor_json,
         factor_universe="unified_registry_v1",
         feature_registry=args.feature_registry,
-        monthly_mining_config=args.monthly_mining_config,
         similarity_contract=args.similarity_contract,
-        similarity_pairs=args.similarity_pairs,
-        disable_monthly_mining_config=True,
         start_date=args.start_date,
         end_date=args.end_date,
-        train_start=args.train_start,
-        train_end=args.train_end,
-        validation_start=args.validation_start,
-        validation_end=args.validation_end,
-        holdout_start=args.holdout_start,
-        holdout_end=args.holdout_end,
         universe=args.universe,
-        top_k=args.top_k,
-        max_symbols=args.max_symbols,
-        min_factors=args.min_factors,
-        max_factors=args.max_factors,
-        fee_tax_cost=args.fee_tax_cost,
-        seed=args.seed,
-        random_trials=0,
-        optuna_trials=0,
-        deap_population=0,
-        deap_generations=0,
-        pymoo_population=0,
-        pymoo_generations=0,
-        finlab_confirm_top_n=0,
-        pbo_folds=args.pbo_folds,
-        promote_min_validation_sharpe=1.0,
-        promote_min_holdout_sharpe=1.0,
-        promote_min_full_cagr=0.0,
-        promote_max_full_drawdown=0.35,
-        promote_max_turnover=0.95,
-        promote_min_deflated_sharpe_probability=0.95,
-        promote_family_factor_jaccard=0.50,
-        promote_family_category_jaccard=0.67,
-        resample=args.resample,
-        position_limit=args.position_limit,
-        trade_at_price=args.trade_at_price,
-        output_dir=str(args.output_dir),
+        max_symbols=getattr(args, "max_symbols", 0),
     )
     return miner._build_unified_registry_factor_universe(ns)
 
@@ -163,6 +134,9 @@ def _materialize_finlab86(
             source="finlab701_research_supplement",
             category=str(row.get("dataset_lane") or row.get("group") or "finlab701"),
             direction=float(direction),
+            # direction_mode was picked on the FinLab701 triage window (2023-01..2026-06), which
+            # overlaps validation/holdout; mining re-derives it on the train window.
+            direction_source="full_window_triage",
         )
         materialized.append(
             {
@@ -188,6 +162,25 @@ def _materialize_finlab86(
     }
 
 
+def _row_candidate(
+    row: dict[str, Any],
+    meta: dict[str, Any],
+    *,
+    legacy_direction_mode: str = "fail_closed",
+) -> tuple[Any, str]:
+    """Candidate for a mined row, scored with the row's recorded directions (fail closed if absent)."""
+    directions, source = miner._resolve_candidate_directions(row, meta, legacy_direction_mode=legacy_direction_mode)
+    cand = miner.Candidate(
+        candidate_id=str(row["candidate_id"]),
+        algorithm=str(row.get("algorithm") or "recursive_beam"),
+        factor_ids=list(row["factor_ids"]),
+        weights=list(row["weights"]),
+        combine=str(row.get("combine") or "weighted_sum"),
+        directions=directions,
+    )
+    return cand, source
+
+
 def _position_for_row(
     row: dict[str, Any],
     *,
@@ -196,14 +189,10 @@ def _position_for_row(
     close: pd.DataFrame,
     tradable: pd.DataFrame,
     args: argparse.Namespace,
+    legacy_direction_mode: str | None = None,
 ) -> pd.DataFrame:
-    cand = miner.Candidate(
-        candidate_id=str(row["candidate_id"]),
-        algorithm=str(row.get("algorithm") or "recursive_beam"),
-        factor_ids=list(row["factor_ids"]),
-        weights=list(row["weights"]),
-        combine=str(row.get("combine") or "weighted_sum"),
-    )
+    mode = legacy_direction_mode or str(getattr(args, "legacy_direction_mode", "fail_closed") or "fail_closed")
+    cand, _source = _row_candidate(row, meta, legacy_direction_mode=mode)
     score = miner._candidate_score(cand, values, meta)
     if score is None:
         return pd.DataFrame(False, index=close.index, columns=close.columns)
@@ -211,7 +200,13 @@ def _position_for_row(
     return miner._rebalance_position(raw, args.resample).reindex(index=close.loc[args.start_date : args.end_date].index, columns=close.columns).fillna(False).astype(bool)
 
 
-def _load_active_positions(close: pd.DataFrame, args: argparse.Namespace) -> tuple[dict[str, pd.DataFrame], dict[str, Any], dict[str, pd.Series]]:
+def _load_active_positions(
+    close: pd.DataFrame,
+    args: argparse.Namespace,
+    *,
+    end: str | None = None,
+) -> tuple[dict[str, pd.DataFrame], dict[str, Any], dict[str, pd.Series]]:
+    """Active strategy positions, and their net returns on sessions <= end (default args.end_date)."""
     tech = compare._load_module(compare.TECH_RUNNER, "stockvision_alpha223_tech")
     ns = argparse.Namespace(
         base_start_date=args.start_date,
@@ -226,21 +221,22 @@ def _load_active_positions(close: pd.DataFrame, args: argparse.Namespace) -> tup
         include_active_specs=True,
         active_spec_json=args.active_spec_json,
         base_results_csv=args.base_results_csv,
-        fee_tax_cost=args.fee_tax_cost,
+        # compare tool's own (turnover x cost) parameter; returns below use the miner cost model.
+        fee_tax_cost=miner.TW_COMMISSION_RATE + miner.TW_SELL_TAX_RATE,
         extra_slippage_bps=[0],
         include_yearly=False,
     )
     positions, metadata, _active_close, warnings = compare._build_positions(ns, tech)
     active_positions: dict[str, pd.DataFrame] = {}
     active_returns: dict[str, pd.Series] = {}
-    close_slice = close.loc[args.start_date : args.end_date]
+    close_slice = close.loc[args.start_date : end or args.end_date]
     for sid, pos in positions.items():
         meta_row = metadata.get(sid)
         if meta_row is None or meta_row.group != "active_strategy_spec":
             continue
         aligned = pos.reindex(index=close_slice.index, columns=close_slice.columns).fillna(False).astype(bool)
         active_positions[sid] = aligned
-        active_returns[sid] = miner._portfolio_returns(aligned, close_slice, fee_tax_cost=args.fee_tax_cost)
+        active_returns[sid] = miner._portfolio_returns(aligned, close_slice)
     return active_positions, {"warnings": warnings, "active_count": len(active_positions)}, active_returns
 
 
@@ -267,17 +263,26 @@ def _latest_jaccard(left: pd.DataFrame, right: pd.DataFrame) -> float:
 def _active_overlap(
     row: dict[str, Any],
     *,
-    values: dict[str, pd.DataFrame],
-    meta: dict[str, Any],
-    close: pd.DataFrame,
-    tradable: pd.DataFrame,
+    ctx: Any,
     active_positions: dict[str, pd.DataFrame],
     active_returns: dict[str, pd.Series],
-    args: argparse.Namespace,
 ) -> dict[str, Any]:
-    close_slice = close.loc[args.start_date : args.end_date]
-    position = _position_for_row(row, values=values, meta=meta, close=close, tradable=tradable, args=args)
-    returns = miner._portfolio_returns(position, close_slice, fee_tax_cost=args.fee_tax_cost)
+    """Return correlation / holding overlap vs the active book, on the SELECTION sample only."""
+    selection_end = ctx.windows["selection_end"]
+    cand, _source = _row_candidate(row, ctx.meta)
+    score = miner._candidate_score(
+        cand, ctx.values, ctx.meta,
+        min_weight_coverage=float(ctx.protocol["min_factor_weight_coverage"]),
+    )
+    if score is None:
+        return {}
+    raw = miner._candidate_position(cand, score, ctx, selection_end)
+    position = miner._rebalance_position(raw, ctx.args.resample)
+    returns = miner._candidate_returns(position, ctx, selection_end)
+    # Compare on the window that is reported (selection sample), not the warm-up before it.
+    selection_start = ctx.windows["selection_start"]
+    position = position.loc[selection_start:selection_end]
+    returns = returns.loc[selection_start:selection_end]
     corr_rows: list[tuple[str, float]] = []
     jaccard_rows: list[tuple[str, float, float]] = []
     for sid, active_ret in active_returns.items():
@@ -291,6 +296,7 @@ def _active_overlap(
     max_abs_corr = max(corr_rows, key=lambda item: abs(item[1])) if corr_rows else (None, None)
     max_jaccard = max(jaccard_rows, key=lambda item: item[1]) if jaccard_rows else (None, None, None)
     return {
+        "active_overlap_window": [ctx.windows["selection_start"], selection_end],
         "max_active_return_corr_id": max_corr[0],
         "max_active_return_corr": max_corr[1],
         "max_active_abs_return_corr_id": max_abs_corr[0],
@@ -304,22 +310,19 @@ def _active_overlap(
 
 
 def _rank_score(row: dict[str, Any]) -> float:
-    validation = row.get("validation") or {}
-    holdout = row.get("holdout") or {}
-    full = row.get("full") or {}
-    full_cagr = float(full.get("cagr") or 0.0)
-    full_sharpe = float(full.get("sharpe") or 0.0)
-    val_sharpe = float(validation.get("sharpe") or 0.0)
-    holdout_sharpe = float(holdout.get("sharpe") or 0.0)
-    drawdown = abs(float(full.get("max_drawdown") or 0.0))
+    """Beam-ranking / report score from SELECTION-sample metrics only (never the holdout)."""
+    validation_excess = row.get("validation_excess") or {}
+    train_excess = row.get("train_excess") or {}
+    selection = row.get("selection") or {}
+    selection_cagr = float(selection.get("cagr") or 0.0)
+    drawdown = abs(float(selection.get("max_drawdown") or 0.0))
     corr = float(row.get("max_active_abs_return_corr") or 0.0)
     jaccard = float(row.get("max_active_all_period_jaccard") or 0.0)
     turnover = float(row.get("turnover") or 0.0)
     return (
-        full_sharpe * 0.30
-        + val_sharpe * 0.20
-        + holdout_sharpe * 0.15
-        + full_cagr * 0.60
+        float(validation_excess.get("excess_sharpe") or 0.0) * 0.35
+        + float(train_excess.get("excess_sharpe") or 0.0) * 0.15
+        + selection_cagr * 0.60
         + float(row.get("novelty") or 0.0) * 0.15
         - corr * 0.75
         - jaccard * 4.00
@@ -331,47 +334,17 @@ def _rank_score(row: dict[str, Any]) -> float:
 def _evaluate(
     candidate: Any,
     *,
-    values: dict[str, pd.DataFrame],
-    meta: dict[str, Any],
-    close: pd.DataFrame,
-    tradable: pd.DataFrame,
+    ctx: Any,
     active_positions: dict[str, pd.DataFrame],
     active_returns: dict[str, pd.Series],
-    args: argparse.Namespace,
-    archive: list[set[str]],
-    n_trials_hint: int,
-    similarity_pair_map: dict[tuple[str, str], float],
-    similarity_feature_meta: dict[str, dict[str, Any]],
 ) -> dict[str, Any]:
-    row = miner._evaluate_candidate(
-        candidate,
-        values=values,
-        meta=meta,
-        close=close,
-        tradable=tradable,
-        args=args,
-        archive=archive,
-        n_trials_hint=n_trials_hint,
-        similarity_pair_map=similarity_pair_map,
-        similarity_feature_meta=similarity_feature_meta,
-    )
+    row = miner._evaluate_candidate(candidate, ctx)
     if row.get("status") == "ok":
-        row.update(
-            _active_overlap(
-                row,
-                values=values,
-                meta=meta,
-                close=close,
-                tradable=tradable,
-                active_positions=active_positions,
-                active_returns=active_returns,
-                args=args,
-            )
-        )
+        row.update(_active_overlap(row, ctx=ctx, active_positions=active_positions, active_returns=active_returns))
         row["alpha223_score"] = _rank_score(row)
-        row["factor_sources"] = [meta[fid].source for fid in row["factor_ids"]]
-        row["factor_categories"] = [meta[fid].category for fid in row["factor_ids"]]
-        row["has_finlab86"] = any(str(meta[fid].source) == "finlab701_research_supplement" for fid in row["factor_ids"])
+        row["factor_sources"] = [ctx.meta[fid].source for fid in row["factor_ids"]]
+        row["factor_categories"] = [ctx.meta[fid].category for fid in row["factor_ids"]]
+        row["has_finlab86"] = any(str(ctx.meta[fid].source) == "finlab701_research_supplement" for fid in row["factor_ids"])
     else:
         row["alpha223_score"] = -999.0
     return row
@@ -384,19 +357,12 @@ def _candidate_key(factors: list[str]) -> tuple[str, ...]:
 def _recursive_beam_search(
     *,
     factor_ids: list[str],
-    values: dict[str, pd.DataFrame],
-    meta: dict[str, Any],
-    close: pd.DataFrame,
-    tradable: pd.DataFrame,
+    ctx: Any,
     active_positions: dict[str, pd.DataFrame],
     active_returns: dict[str, pd.Series],
     args: argparse.Namespace,
 ) -> list[dict[str, Any]]:
-    similarity_contract = miner._load_similarity_contract(Path(args.similarity_contract))
-    similarity_pair_map = miner._load_similarity_pair_map(Path(args.similarity_pairs))
-    similarity_feature_meta = miner._similarity_feature_meta(similarity_contract)
     rows: list[dict[str, Any]] = []
-    archive: list[set[str]] = []
     seen: set[tuple[str, ...]] = set()
 
     def eval_factors(name: str, factors: list[str], weights: list[float] | None = None) -> dict[str, Any]:
@@ -408,23 +374,11 @@ def _recursive_beam_search(
         if weights is None or len(weights) != len(selected):
             weights = [1.0] * len(selected)
         cand = miner.Candidate(name, "recursive_beam", selected, weights, combine="weighted_sum")
-        row = _evaluate(
-            cand,
-            values=values,
-            meta=meta,
-            close=close,
-            tradable=tradable,
-            active_positions=active_positions,
-            active_returns=active_returns,
-            args=args,
-            archive=archive,
-            n_trials_hint=args.max_evals,
-            similarity_pair_map=similarity_pair_map,
-            similarity_feature_meta=similarity_feature_meta,
-        )
+        row = _evaluate(cand, ctx=ctx, active_positions=active_positions, active_returns=active_returns)
+        row.pop("_label_signature", None)
         rows.append(row)
         if row.get("status") == "ok":
-            archive.append(set(selected))
+            ctx.archive.append(set(selected))
         return row
 
     _progress(f"evaluating singles: {len(factor_ids)}")
@@ -441,7 +395,7 @@ def _recursive_beam_search(
     finlab_seed = [
         fid
         for fid in factor_ids
-        if str(meta[fid].source) == "finlab701_research_supplement"
+        if str(ctx.meta[fid].source) == "finlab701_research_supplement"
     ][: args.finlab_seed_pool]
     seed_factors = list(dict.fromkeys(seed_factors + finlab_seed))
     beam = ranked_singles[: args.beam_width]
@@ -479,162 +433,156 @@ def _recursive_beam_search(
 def _pymoo_search(
     *,
     factor_ids: list[str],
-    values: dict[str, pd.DataFrame],
-    meta: dict[str, Any],
-    close: pd.DataFrame,
-    tradable: pd.DataFrame,
+    ctx: Any,
     active_positions: dict[str, pd.DataFrame],
     active_returns: dict[str, pd.Series],
     args: argparse.Namespace,
 ) -> list[dict[str, Any]]:
-    similarity_contract = miner._load_similarity_contract(Path(args.similarity_contract))
-    similarity_pair_map = miner._load_similarity_pair_map(Path(args.similarity_pairs))
-    similarity_feature_meta = miner._similarity_feature_meta(similarity_contract)
-    archive: list[set[str]] = []
-
-    def evaluate(cand: Any, *, n_trials_hint: int) -> dict[str, Any]:
-        row = _evaluate(
-            cand,
-            values=values,
-            meta=meta,
-            close=close,
-            tradable=tradable,
-            active_positions=active_positions,
-            active_returns=active_returns,
-            args=args,
-            archive=archive,
-            n_trials_hint=n_trials_hint,
-            similarity_pair_map=similarity_pair_map,
-            similarity_feature_meta=similarity_feature_meta,
-        )
-        if row.get("status") == "ok":
-            archive.append(set(row.get("factor_ids") or []))
-        return row
+    def evaluate(cand: Any, *, n_trials_hint: int | None = None) -> dict[str, Any]:
+        del n_trials_hint  # trial counting is run-level (effective trials)
+        return _evaluate(cand, ctx=ctx, active_positions=active_positions, active_returns=active_returns)
 
     _progress(
         "running pymoo NSGA-III + novelty: "
         f"population={args.pymoo_population}, generations={args.pymoo_generations}, factors={len(factor_ids)}"
     )
-    return miner._run_pymoo(factor_ids, evaluate, args, archive)
-
-
-def _finlab_confirm(rows: list[dict[str, Any]], *, values, meta, close, tradable, args) -> list[dict[str, Any]]:
-    selected = sorted(
-        [row for row in rows if row.get("status") == "ok"],
-        key=lambda row: float(row.get("alpha223_score") or -999.0),
-        reverse=True,
-    )[: args.finlab_confirm_top_n]
-    confirm_args = argparse.Namespace(
-        resample=args.resample,
-        trade_at_price=args.trade_at_price,
-        position_limit=args.position_limit,
+    return miner._run_pymoo(
+        factor_ids,
+        evaluate,
+        ctx.args,
+        ctx.archive,
+        ctx.label_archive,
+        search_contract="portfolio_top_k_v1",
+        population=args.pymoo_population,
+        generations=args.pymoo_generations,
     )
-    ab = miner._load_module(miner.AB_RUNNER, "stockvision_alpha223_confirm_ab")
-    out: list[dict[str, Any]] = []
-    for row in selected:
-        pos = _position_for_row(row, values=values, meta=meta, close=close, tradable=tradable, args=args)
-        confirm = ab._run_sim(
-            row_id=f"alpha223_{row['candidate_id']}",
-            kind="alpha223_recursive_confirm",
-            meta={
-                "factor_ids": row.get("factor_ids"),
-                "weights": row.get("weights"),
-                "alpha223_score": row.get("alpha223_score"),
-                "max_active_return_corr": row.get("max_active_return_corr"),
-                "max_active_all_period_jaccard": row.get("max_active_all_period_jaccard"),
-                "has_finlab86": row.get("has_finlab86"),
-            },
-            position=pos,
-            args=confirm_args,
-        )
-        out.append(confirm)
-    return out
+
+
+WINDOW_KEYS = ("train_start", "train_end", "validation_start", "validation_end", "holdout_start", "holdout_end")
+
+
+def _miner_args(args: argparse.Namespace) -> argparse.Namespace:
+    """Miner run arguments (same parser as the monthly miner, so every protocol default applies)."""
+    argv = [
+        "--end-date", str(args.end_date),
+        "--start-date", str(args.start_date),
+        "--factor-json", str(args.factor_json),
+        "--feature-registry", str(args.feature_registry),
+        "--monthly-mining-config", str(args.monthly_mining_config),
+        "--similarity-contract", str(args.similarity_contract),
+        "--similarity-pairs", str(args.similarity_pairs),
+        "--algorithm", "pymoo",
+        "--universe", str(args.universe),
+        "--top-k", str(args.top_k),
+        "--max-symbols", str(args.max_symbols),
+        "--min-factors", str(args.min_factors),
+        "--max-factors", str(args.max_factors),
+        "--pymoo-population", str(args.pymoo_population),
+        "--pymoo-generations", str(args.pymoo_generations),
+        "--finlab-confirm-top-n", str(args.finlab_confirm_top_n),
+        "--pbo-folds", str(args.pbo_folds),
+        "--resample", str(args.resample),
+        "--position-limit", str(args.position_limit),
+        "--trade-at-price", str(args.trade_at_price),
+        "--window-mode", str(args.window_mode),
+        "--output-dir", str(args.output_dir),
+    ]
+    if args.seed is not None:
+        argv += ["--seed", str(args.seed)]
+    for key in WINDOW_KEYS:
+        value = getattr(args, key, None)
+        if value:
+            argv += [f"--{key.replace('_', '-')}", str(value)]
+    margs = miner.build_arg_parser().parse_args(argv)
+    override: dict[str, Any] = dict(getattr(args, "research_protocol_override", None) or {})
+    if margs.window_mode == "fixed":
+        override["window_mode"] = "fixed"
+    if override:
+        margs.research_protocol_override = override
+    margs.disable_monthly_mining_config = bool(getattr(args, "disable_monthly_mining_config", False))
+    if getattr(args, "prior_ledger_json", ""):
+        margs.prior_multiple_testing_runs = json.loads(Path(args.prior_ledger_json).read_text(encoding="utf-8"))
+    return margs
+
+
+def _finlab86_triage_blocking_gate(args: argparse.Namespace, windows: dict[str, Any], materialized: int) -> str | None:
+    """FinLab86 keep-list and direction_mode were chosen on a window that may overlap evaluation."""
+    triage_end = str(getattr(args, "finlab86_triage_end", "") or "")
+    if materialized <= 0:
+        return None
+    if not triage_end:
+        return "finlab86_triage_window_unknown"
+    if pd.Timestamp(triage_end) > pd.Timestamp(windows["train_end"]):
+        return "finlab86_triage_window_overlaps_evaluation"
+    return None
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
     started = time.time()
-    _progress("building formal137 universe")
-    close, tradable, values, meta, universe_info = _build_base_universe(args)
-    formal_count = len(values)
-    _progress(f"formal137 mapped={formal_count}")
-
+    margs = _miner_args(args)
     finlab86_rows = _read_finlab86(Path(args.finlab86_csv), args.limit_finlab86)
-    finlab86_info = _materialize_finlab86(
-        rows=finlab86_rows,
-        close=close,
-        tradable=tradable,
-        values=values,
-        meta=meta,
-        args=args,
-    )
-    factor_ids = sorted(values.keys())
-    _progress(f"combined universe mapped={len(factor_ids)} formal={formal_count} finlab86={finlab86_info['materialized']}")
 
-    _progress("building active 11 positions")
-    active_positions, active_info, active_returns = _load_active_positions(close, args)
+    def extend(close: pd.DataFrame, tradable: pd.DataFrame, values: dict[str, pd.DataFrame], meta: dict[str, Any]) -> dict[str, Any]:
+        formal_count = len(values)
+        info = _materialize_finlab86(rows=finlab86_rows, close=close, tradable=tradable, values=values, meta=meta, args=args)
+        info["formal137_mapped"] = formal_count
+        info["triage_window_end"] = getattr(args, "finlab86_triage_end", None)
+        return info
+
+    _progress("building formal137 + finlab86 universe on the miner protocol")
+    ctx, universe_info, factor_ids = miner._build_mining_context(margs, extend_universe=extend)
+    finlab86_info = universe_info["universe_extension"]
+    gate = _finlab86_triage_blocking_gate(args, ctx.windows, int(finlab86_info["materialized"]))
+    if gate:
+        margs.pre_holdout_blocking_gates = [*(getattr(margs, "pre_holdout_blocking_gates", None) or []), gate]
+    _progress(
+        f"universe mapped={len(factor_ids)} formal={finlab86_info['formal137_mapped']} finlab86={finlab86_info['materialized']}; "
+        f"selection {ctx.windows['selection_start']}..{ctx.windows['selection_end']}"
+    )
+
+    _progress("building active positions (selection sample)")
+    active_positions, active_info, active_returns = _load_active_positions(ctx.close, args, end=ctx.windows["selection_end"])
     _progress(f"active positions ready: {len(active_positions)}")
 
     rows: list[dict[str, Any]] = []
     enabled = str(args.algorithm or "pymoo").strip().lower()
+    search_kwargs = dict(factor_ids=factor_ids, ctx=ctx, active_positions=active_positions, active_returns=active_returns, args=args)
     if enabled in {"pymoo", "both"}:
-        rows.extend(
-            _pymoo_search(
-                factor_ids=factor_ids,
-                values=values,
-                meta=meta,
-                close=close,
-                tradable=tradable,
-                active_positions=active_positions,
-                active_returns=active_returns,
-                args=args,
-            )
-        )
+        rows.extend(_pymoo_search(**search_kwargs))
     if enabled in {"recursive_beam", "both"}:
-        rows.extend(
-            _recursive_beam_search(
-                factor_ids=factor_ids,
-                values=values,
-                meta=meta,
-                close=close,
-                tradable=tradable,
-                active_positions=active_positions,
-                active_returns=active_returns,
-                args=args,
-            )
-        )
-    ok_rows = [row for row in rows if row.get("status") == "ok"]
+        rows.extend(_recursive_beam_search(**search_kwargs))
+
+    report = miner._finalize_mining(rows, ctx, universe_info, factor_ids, t0=started)
+    ok_rows = [row for row in report["rows"] if row.get("status") == "ok"]
     ranked = sorted(ok_rows, key=lambda row: float(row.get("alpha223_score") or -999.0), reverse=True)
-    confirm = _finlab_confirm(rows, values=values, meta=meta, close=close, tradable=tradable, args=args) if args.finlab_confirm_top_n > 0 else []
-    return {
-        "schema_version": "stockvision-alpha223-recursive-search-v1",
-        "generated_at": pd.Timestamp.utcnow().isoformat(),
-        "allowed_use": "research_only",
-        "decision_effect": "none",
-        "runtime_seconds": round(time.time() - started, 3),
-        "config": vars(args),
-        "universe": {
-            "formal137_mapped": formal_count,
-            "finlab86_requested": finlab86_info["requested"],
-            "finlab86_materialized": finlab86_info["materialized"],
-            "combined_mapped": len(factor_ids),
-            "formal_universe_info": {key: value for key, value in universe_info.items() if key not in {"factor_meta"}},
-            "finlab86": finlab86_info,
-        },
-        "active": active_info,
-        "summary": {
-            "evaluated": len(rows),
-            "ok": len(ok_rows),
-            "top_candidates": ranked[: args.report_top_n],
-        },
-        "rows": rows,
-        "finlab_confirm": confirm,
-    }
+    report.update(
+        {
+            "schema_version": "stockvision-alpha223-recursive-search-v2",
+            "alpha223_config": vars(args),
+            "universe": {
+                "formal137_mapped": finlab86_info["formal137_mapped"],
+                "finlab86_requested": finlab86_info["requested"],
+                "finlab86_materialized": finlab86_info["materialized"],
+                "combined_mapped": len(factor_ids),
+                "finlab86": finlab86_info,
+            },
+            "active": active_info,
+            "alpha223_summary": {
+                "evaluated": len(rows),
+                "ok": len(ok_rows),
+                "ranking_basis": "selection_sample_only",
+                "top_candidates": ranked[: args.report_top_n],
+            },
+        }
+    )
+    return report
 
 
 def _write_outputs(report: dict[str, Any], args: argparse.Namespace) -> dict[str, str]:
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-    stem = f"alpha223_recursive_{args.universe}_{args.start_date}_{args.end_date}_seed{args.seed}".replace("-", "")
+    seed = (report.get("config") or {}).get("seed")
+    stem = f"alpha223_recursive_{args.universe}_{args.start_date}_{args.end_date}_seed{seed}".replace("-", "")
     json_path = output_dir / f"{stem}.json"
     rows_path = output_dir / f"{stem}_rows.csv"
     top_path = output_dir / f"{stem}_top.csv"
@@ -642,7 +590,7 @@ def _write_outputs(report: dict[str, Any], args: argparse.Namespace) -> dict[str
     summary_path = output_dir / f"{stem}_summary.json"
     json_path.write_text(json.dumps(report, ensure_ascii=False, indent=2, default=_json_default), encoding="utf-8")
     pd.DataFrame(report["rows"]).to_csv(rows_path, index=False, encoding="utf-8-sig")
-    pd.DataFrame(report["summary"]["top_candidates"]).to_csv(top_path, index=False, encoding="utf-8-sig")
+    pd.DataFrame(report["alpha223_summary"]["top_candidates"]).to_csv(top_path, index=False, encoding="utf-8-sig")
     pd.DataFrame(report["finlab_confirm"]).to_csv(confirm_path, index=False, encoding="utf-8-sig")
     summary = {
         "json": str(json_path),
@@ -650,14 +598,14 @@ def _write_outputs(report: dict[str, Any], args: argparse.Namespace) -> dict[str
         "top_csv": str(top_path),
         "finlab_confirm_csv": str(confirm_path),
         "runtime_seconds": report["runtime_seconds"],
-        "universe": {
-            "formal137_mapped": report["universe"]["formal137_mapped"],
-            "finlab86_requested": report["universe"]["finlab86_requested"],
-            "finlab86_materialized": report["universe"]["finlab86_materialized"],
-            "combined_mapped": report["universe"]["combined_mapped"],
-        },
+        "universe": {key: value for key, value in report["universe"].items() if key != "finlab86"},
         "active": report["active"],
-        "summary": report["summary"],
+        "walk_forward_windows": report["walk_forward_windows"],
+        "multiple_testing": report["multiple_testing"],
+        "holdout_seal": report["holdout_seal"],
+        "blocking_gates": report["blocking_gates"],
+        "gate_finalists": report["gate_finalists"],
+        "alpha223_summary": report["alpha223_summary"],
     }
     summary_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2, default=_json_default), encoding="utf-8")
     return {
@@ -669,7 +617,7 @@ def _write_outputs(report: dict[str, Any], args: argparse.Namespace) -> dict[str
     }
 
 
-def main() -> int:
+def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Research-only recursive alpha search over formal137 plus FinLab86 supplement candidates.")
     parser.add_argument("--factor-json", default=str(ROOT / "worker" / ".tmp-test-run-codex" / "alphabuilders_factors_fresh.json"))
     parser.add_argument("--feature-registry", default=str(ROOT / "data" / "feature_registry" / "unified_feature_registry_v1.json"))
@@ -677,16 +625,14 @@ def main() -> int:
     parser.add_argument("--similarity-contract", default=str(ROOT / "data" / "feature_registry" / "formal137_similarity_contract_v1.json"))
     parser.add_argument("--similarity-pairs", default=str(ROOT / "output" / "feature_universe_triage" / "formal137_pairwise_similarity_long_20260617.csv"))
     parser.add_argument("--finlab86-csv", default=str(FINLAB86_PATH))
+    parser.add_argument("--finlab86-triage-end", default="2026-06-15", help="last session of the FinLab701 triage that produced the keep list")
     parser.add_argument("--active-spec-json", default=str(ROOT / "output" / "finlab_strategy_backtests" / "current_active_11_strategy_specs.json"))
     parser.add_argument("--base-results-csv", default=str(ROOT / "output" / "finlab_technical_strategy12_backtests" / "technical_strategy12_sii_otc_20230101_20260615_results.csv"))
-    parser.add_argument("--start-date", default="2023-01-01")
-    parser.add_argument("--end-date", default="2026-06-15")
-    parser.add_argument("--train-start", default="2023-01-01")
-    parser.add_argument("--train-end", default="2024-12-31")
-    parser.add_argument("--validation-start", default="2025-01-01")
-    parser.add_argument("--validation-end", default="2025-12-31")
-    parser.add_argument("--holdout-start", default="2026-01-01")
-    parser.add_argument("--holdout-end", default="2026-06-15")
+    parser.add_argument("--start-date", default="2021-01-01", help="data load start; must cover the train window")
+    parser.add_argument("--end-date", required=True, help="last session of the run (as-of date)")
+    parser.add_argument("--window-mode", choices=["rolling", "fixed"], default="rolling")
+    for key in WINDOW_KEYS:
+        parser.add_argument(f"--{key.replace('_', '-')}", default=None, help="only with --window-mode fixed")
     parser.add_argument("--universe", choices=["sii", "sii_otc"], default="sii")
     parser.add_argument("--algorithm", choices=["pymoo", "recursive_beam", "both"], default="pymoo")
     parser.add_argument("--top-k", type=int, default=10)
@@ -705,8 +651,7 @@ def main() -> int:
     parser.add_argument("--min-overlap-symbols", type=int, default=80)
     parser.add_argument("--min-coverage", type=float, default=0.15)
     parser.add_argument("--min-rank-std", type=float, default=0.01)
-    parser.add_argument("--fee-tax-cost", type=float, default=0.004425)
-    parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--seed", type=int, default=None, help="default: derived from --end-date")
     parser.add_argument("--pbo-folds", type=int, default=8)
     parser.add_argument("--resample", default="M")
     parser.add_argument("--position-limit", type=float, default=0.10)
@@ -714,22 +659,27 @@ def main() -> int:
     parser.add_argument("--finlab-confirm-top-n", type=int, default=12)
     parser.add_argument("--report-top-n", type=int, default=20)
     parser.add_argument("--progress-every", type=int, default=10)
+    parser.add_argument("--prior-ledger-json", default="", help="JSON list of prior runs' multiple_testing ledgers")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
-    args = parser.parse_args()
+    return parser
+
+
+def main() -> int:
+    args = build_arg_parser().parse_args()
     report = run(args)
     paths = _write_outputs(report, args)
     payload = {
         **paths,
         "runtime_seconds": report["runtime_seconds"],
-        "universe": {
-            "formal137_mapped": report["universe"]["formal137_mapped"],
-            "finlab86_requested": report["universe"]["finlab86_requested"],
-            "finlab86_materialized": report["universe"]["finlab86_materialized"],
-            "combined_mapped": report["universe"]["combined_mapped"],
-        },
-        "evaluated": report["summary"]["evaluated"],
-        "ok": report["summary"]["ok"],
-        "top_candidates": report["summary"]["top_candidates"][:5],
+        "universe": {key: value for key, value in report["universe"].items() if key != "finlab86"},
+        "blocking_gates": report["blocking_gates"],
+        "holdout_seal_status": (report.get("holdout_seal") or {}).get("status"),
+        "evaluated": report["alpha223_summary"]["evaluated"],
+        "ok": report["alpha223_summary"]["ok"],
+        "top_candidates": [
+            {key: row.get(key) for key in ("candidate_id", "factor_ids", "alpha223_score", "fitness")}
+            for row in report["alpha223_summary"]["top_candidates"][:5]
+        ],
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2, default=_json_default))
     return 0

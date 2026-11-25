@@ -207,3 +207,51 @@ test('scheduler status keeps both of two concurrent same-day logs when the aggre
     assert.equal(degraded.jobs.find((row) => row.id === survivor)!.lastStatus, 'success')
   } finally { sql.close() }
 })
+
+test('an older day the aggregate still holds as running reads its per-task key; settled older rows are not re-read', async () => {
+  const today = '2026-11-24'
+  const nowMs = Date.parse('2026-11-24T14:00:00Z')
+  const sql = new DatabaseSync(':memory:')
+  sql.exec(`CREATE TABLE pipeline_stage_runs (
+    business_date TEXT,stage TEXT,canonical_run_id TEXT,status TEXT,cursor_key TEXT,
+    processed_count INTEGER DEFAULT 0,persisted_count INTEGER DEFAULT 0,expected_count INTEGER,
+    attempt_count INTEGER DEFAULT 0,queued_at TEXT,started_at TEXT,completed_at TEXT,
+    lease_owner TEXT,lease_expires_at TEXT,last_error TEXT,updated_at TEXT,
+    PRIMARY KEY(business_date,stage))`)
+  sql.exec(fs.readFileSync('domain-migrations/ops/0011_scheduler_execution_tickets.sql', 'utf8'))
+  const statement = (query: string, args: any[] = []): any => ({
+    bind: (...v: any[]) => statement(query, v),
+    all: async () => ({ success: true, results: sql.prepare(query).all(...args) }),
+    first: async () => sql.prepare(query).get(...args) ?? null,
+    run: async () => ({ success: true, meta: { changes: Number(sql.prepare(query).run(...args).changes) } }),
+  })
+  const db = { prepare: statement }
+  const values = new Map<string, string>()
+  const reads: string[] = []
+  const kv = {
+    get: async (key: string, type?: string) => {
+      reads.push(key)
+      const value = values.get(key)
+      return value == null ? null : type === 'json' ? JSON.parse(value) : value
+    },
+    put: async (key: string, value: string) => { values.set(key, value) },
+    list: async () => ({ keys: [], list_complete: true }),
+  }
+  const entry = (task: string, date: string, status: string, timestamp: string, summary = status) =>
+    ({ task, status, summary, duration_ms: 1, run_date: date, timestamp })
+  // 11-20: the aggregate kept the finalize wait; the per-task key (source of truth) holds the later success.
+  values.set('scheduler:run:daily:2026-11-20', JSON.stringify({
+    'indicator-queue': entry('indicator-queue', '2026-11-20', 'running', '2026-11-20T14:15:08.000Z', 'finalize wait 1/4 attempt=1'),
+    adapt: entry('adapt', '2026-11-20', 'success', '2026-11-20T14:00:00.000Z'),
+  }))
+  values.set('scheduler:run:indicator-queue:2026-11-20', JSON.stringify(
+    entry('indicator-queue', '2026-11-20', 'success', '2026-11-20T14:15:47.000Z', 'indicators queued')))
+  try {
+    const result = await getSchedulerStatus({ DB: db, OPS_DB: db, KV: kv } as any, today, nowMs)
+    const job = result.jobs.find((row) => row.id === 'indicator-queue')! as any
+    const index = job.history7d.length - 1 - 4 // oldest first; 11-20 is four days before today
+    assert.equal(job.history7d[index], 'success', 'the 11-20 cell reads the per-task success, not the stale aggregate')
+    assert.equal(reads.filter((key) => key === 'scheduler:run:indicator-queue:2026-11-20').length, 1)
+    assert.equal(reads.includes('scheduler:run:adapt:2026-11-20'), false, 'a settled older row costs no extra read')
+  } finally { sql.close() }
+})

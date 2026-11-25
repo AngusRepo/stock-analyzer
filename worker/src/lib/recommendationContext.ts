@@ -121,6 +121,7 @@ export interface HardGateSummary {
   median_daily_traded_value_twd: number | null
   min_median_daily_traded_value_twd: number | null
   liquidity_capacity_passed: boolean | null
+  universe_passed: boolean | null
   maturity_impact: string | null
   notes: string[]
 }
@@ -141,6 +142,7 @@ export interface HardGateSummaryInput {
   medianDailyTradedValueTwd?: unknown
   minMedianDailyTradedValueTwd?: unknown
   liquidityCapacityPassed?: unknown
+  universePassed?: unknown
   maturityImpact?: unknown
 }
 
@@ -615,10 +617,14 @@ export function buildHardGateSummary(input: HardGateSummaryInput): HardGateSumma
   const liquidityCapacityPassed = input.liquidityCapacityPassed == null
     ? null
     : boolFromUnknown(input.liquidityCapacityPassed)
+  // A persisted L0 universe drop (restriction, zero volume, price range) blocks even though
+  // L0.5 never ran; a missing universe row (null) is unknown and blocks nothing.
+  const universePassed = input.universePassed == null ? null : boolFromUnknown(input.universePassed)
   const hardBlocked = tradabilityTier === 'blocked'
     || boardType === 'ETF'
     || boardType === 'UNKNOWN'
     || liquidityCapacityPassed === false
+    || universePassed === false
     || (recommendationLane === 'research_only' && !eligibleForMl && !eligibleForPendingBuy)
   const notes = [
     eligibleForMl ? 'ml_evaluation_allowed' : 'ml_evaluation_blocked',
@@ -629,6 +635,7 @@ export function buildHardGateSummary(input: HardGateSummaryInput): HardGateSumma
       : liquidityCapacityPassed
         ? 'liquidity_capacity_passed'
         : 'liquidity_capacity_blocked',
+    ...(universePassed === false ? ['universe_dropped_at_l0'] : []),
   ]
 
   return {
@@ -654,6 +661,7 @@ export function buildHardGateSummary(input: HardGateSummaryInput): HardGateSumma
     median_daily_traded_value_twd: finiteOrNull(input.medianDailyTradedValueTwd),
     min_median_daily_traded_value_twd: finiteOrNull(input.minMedianDailyTradedValueTwd),
     liquidity_capacity_passed: liquidityCapacityPassed,
+    universe_passed: universePassed,
     maturity_impact: cleanTextOrNull(input.maturityImpact),
     notes,
   }

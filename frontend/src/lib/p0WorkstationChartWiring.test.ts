@@ -38,7 +38,8 @@ assert(!modelPoolPage.includes('UpgradeTrackPanelV2'), 'ModelPool page should no
 assert(modelPoolPage.includes('!isRetiredModelName(name)'), 'ModelPool page should filter retired ML')
 assert(!modelPoolPage.includes('{false &&'), 'ModelPool page should not hide legacy UI in false branches')
 assert(!modelPoolPage.includes('<Model' + 'PoolHealthChart'), 'ModelPool page should not render a duplicate health chart')
-assert(modelPoolPage.includes('L2 TimesFM sidecar、L3 active-8 ML'), 'ModelPool copy should describe the active model flow')
+// eba146b5 rewrote the page description in zh-TW around the ensemble / serving-vs-maturity split.
+assert(modelPoolPage.includes('description="正式 ensemble、八模型角色、證據成熟度與下一個 cohort。模型選擇與服務狀態分開呈現。"'), 'ModelPool copy should describe the active model flow')
 
 const strategyLabPage = fs.readFileSync(strategyLabPagePath, 'utf8')
 const viteConfig = fs.readFileSync(viteConfigPath, 'utf8')
@@ -51,7 +52,8 @@ assert(strategyLabPage.includes('StrategyLineageInspector'), 'Strategy Lab shoul
 assert(!strategyLabPage.includes('Action Lanes'), 'Strategy Lab should remove unrelated experiment action lanes')
 assert(!strategyLabPage.includes('Registry / Evidence Inspector'), 'Strategy Lab should remove unrelated registry inspector UI')
 assert(!strategyLabPage.includes('Pre-trade Spec + Dry-run'), 'Strategy Lab should remove pre-trade spec and dry-run duplication')
-assert(strategyLabPage.includes('policy?.evidence.production_effect'), 'Strategy adaptive state must render the backend production-effect contract')
+// 40cb11ea split the read-time preview (previewPolicy) from the formal lane production-effect owner.
+assert(strategyLabPage.includes('previewPolicy?.evidence.production_effect') && strategyLabPage.includes('strategyLanes?.formal.production_effect'), 'Strategy adaptive state must render the backend production-effect contract')
 assert(viteConfig.includes("devOptions: { enabled: process.env.VITE_PWA_DEV === '1' }"), 'Vite PWA dev service worker should remain opt-in')
 
 console.log('p0WorkstationChartWiring: OK')

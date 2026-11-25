@@ -115,3 +115,23 @@ def test_reference_us_symbol_and_emerging_are_not_tradable():
         {'symbol':'7777','market':'ROTC','listed_date':'2000-01-01','delisted_date':None}])
     dataset.prices = pl.DataFrame({'symbol':['2330','6488','NVDA','7777'],'date':['2026-09-10']*4})
     assert dataset.get_universe_at('2026-09-10') == {'2330','6488'}
+
+
+def test_dashboard_backtest_snapshot_drops_price_rows_without_observed_close(monkeypatch):
+    from services import backtest_service
+
+    frames = {
+        "stocks": pl.DataFrame([{"id": 1, "symbol": "2330", "name": "TSMC"}]),
+        "prices": pl.DataFrame([
+            {"stock_id": 1, "date": "2026-03-30", "open": 900.0, "close": 905.0, "volume": 1000},
+            {"stock_id": 1, "date": "2026-03-31", "open": None, "close": None, "volume": None},
+            {"stock_id": 1, "date": "2026-04-01", "open": 905.0, "close": 918.0, "volume": 1200},
+        ]),
+        "signals": pl.DataFrame([{"stock_id": 1, "prediction_date": "2026-03-30", "signal": "BUY"}]),
+    }
+    monkeypatch.setattr(backtest_service, "read_snapshot_component", lambda manifest, name, required=True: frames.get(name))
+
+    stocks, prices, signals = backtest_service._load_backtest_inputs_from_snapshot({})
+
+    assert [(r["date"], r["close"]) for r in prices[1]] == [("2026-03-30", 905.0), ("2026-04-01", 918.0)]
+    assert stocks == [{"id": 1, "symbol": "2330", "name": "TSMC"}] and len(signals[1]) == 1

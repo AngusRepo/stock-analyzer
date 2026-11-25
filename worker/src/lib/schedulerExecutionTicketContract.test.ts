@@ -44,7 +44,7 @@ const policyIndex = route.indexOf('shouldRunScheduledTask({ task')
 const executionIndex = route.indexOf('const result = await fn()')
 assert(admissionIndex > 0 && admissionIndex < policyIndex && policyIndex < executionIndex)
 assert.match(fs.readFileSync('src/lib/adminTriggerWorkerDomainTasks.ts', 'utf8'),
-  /taskName === 'retention-archive-only' && isMaintenanceLeaseBusy\(result\)[\s\S]*throw new Error\(result.reason\)/)
+  /taskName === 'retention-archive-only' && isMaintenanceLeaseBusy\(result\)[\s\S]*retentionArchiveDayStarved\([\s\S]*throw new Error\(`retention_archive_only_no_success_for_business_date:\$\{result.reason\}`\)/)
 assert.match(route, /schedulerDeliveryIdentity\(c\.req\.raw\.headers\)/)
 assert.match(route, /databaseForDataDomain\(c\.env, 'ops'\)/)
 assert.match(route, /schedulerTicketId,/)

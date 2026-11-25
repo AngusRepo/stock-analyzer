@@ -88,3 +88,77 @@ export function evaluateL05LiquidityCapacity(
         : 'median_daily_traded_value_below_min',
   }
 }
+
+/**
+ * Compact L0.5 receipt carried on the always-persisted `scoring` funnel item.
+ * The `universe` stage is non-critical and the D1 persistence cap truncates it,
+ * so the capacity result must also travel on a row that is never dropped.
+ * Policy constants are recovered from the checksum on read.
+ */
+export interface L05LiquidityCapacityCompactReceipt {
+  policy_checksum: string
+  observed_sessions: number
+  median_daily_traded_value_twd: number | null
+  mean_daily_traded_value_twd: number | null
+  min_median_daily_traded_value_twd: number
+  passed: boolean
+}
+
+function roundedTwdOrNull(value: number | null): number | null {
+  return value == null || !Number.isFinite(value) ? null : Math.round(value)
+}
+
+export function compactL05LiquidityCapacityReceipt(
+  receipt: L05LiquidityCapacityReceipt,
+): L05LiquidityCapacityCompactReceipt {
+  return {
+    policy_checksum: receipt.policy_checksum,
+    observed_sessions: receipt.observed_sessions,
+    median_daily_traded_value_twd: roundedTwdOrNull(receipt.median_daily_traded_value_twd),
+    mean_daily_traded_value_twd: roundedTwdOrNull(receipt.mean_daily_traded_value_twd),
+    min_median_daily_traded_value_twd: receipt.min_median_daily_traded_value_twd,
+    passed: receipt.passed,
+  }
+}
+
+export interface L05LiquidityCapacityEvidenceView {
+  policy_version: string | null
+  policy_checksum: string | null
+  metric: string | null
+  window_sessions: number | null
+  observed_sessions: number | null
+  median_daily_traded_value_twd: number | null
+  mean_daily_traded_value_twd: number | null
+  min_median_daily_traded_value_twd: number | null
+  maturity_impact: string | null
+  passed: boolean
+}
+
+function finiteOrNullValue(value: unknown): number | null {
+  if (value == null || value === '') return null
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
+/** Malformed or absent receipts return null (unknown), never a failed gate. */
+export function expandL05LiquidityCapacityCompactReceipt(raw: unknown): L05LiquidityCapacityEvidenceView | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const record = raw as Record<string, unknown>
+  if (typeof record.passed !== 'boolean') return null
+  const checksum = typeof record.policy_checksum === 'string' && record.policy_checksum.trim()
+    ? record.policy_checksum.trim()
+    : null
+  const knownPolicy = checksum === L05_LIQUIDITY_CAPACITY_POLICY_CHECKSUM
+  return {
+    policy_version: knownPolicy ? L05_LIQUIDITY_CAPACITY_POLICY.schema_version : null,
+    policy_checksum: checksum,
+    metric: knownPolicy ? L05_LIQUIDITY_CAPACITY_POLICY.metric : null,
+    window_sessions: knownPolicy ? L05_LIQUIDITY_CAPACITY_POLICY.window_sessions : null,
+    observed_sessions: finiteOrNullValue(record.observed_sessions),
+    median_daily_traded_value_twd: finiteOrNullValue(record.median_daily_traded_value_twd),
+    mean_daily_traded_value_twd: finiteOrNullValue(record.mean_daily_traded_value_twd),
+    min_median_daily_traded_value_twd: finiteOrNullValue(record.min_median_daily_traded_value_twd),
+    maturity_impact: knownPolicy ? L05_LIQUIDITY_CAPACITY_POLICY.maturity_impact : null,
+    passed: record.passed,
+  }
+}

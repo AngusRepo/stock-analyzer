@@ -17,6 +17,10 @@ import os
 import asyncio
 from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
+from services.json_logging import RootTicketMiddleware, configure_json_logging
+
+# One JSON object per log line (Cloud Logging jsonPayload); same levels as before (root WARNING).
+configure_json_logging()
 from services.modal_client import batch_predict_contract
 from services.trading_config_loader import DEFAULT_REQUIRED_CONFIG
 from routers import paper_corporate, paired_nav, research_validation, news
@@ -52,6 +56,8 @@ def _cors_origins() -> list[str]:
     ]
     return list(dict.fromkeys(origin for origin in defaults if origin))
 
+# L1 correlation: the Worker's X-Root-Ticket-Id reaches every log line and Cloud Run Job env.
+app.add_middleware(RootTicketMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins(),

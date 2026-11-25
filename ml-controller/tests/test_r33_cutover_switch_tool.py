@@ -496,3 +496,80 @@ def test_checkout_changes_ignore_the_callers_git_environment(checkout, monkeypat
 def test_checkout_changes_report_modified_staged_hidden_and_untracked_code(checkout, change, expected):
     change(checkout)
     assert expected in checkout.changes()
+
+
+def _held_table_world(prepare_world, monkeypatch, estimator):
+    from services import r33_crossfit_serving as serving
+    held = {'inputs': {'estimator': estimator}, 'payload_checksum': 'h' * 64}
+    prepare_world.args.serving_table.write_text(json.dumps(held))
+    seen = []
+
+    def rebuild(bundle, *, bucket, ops_query, round_trip_cost, estimator):
+        seen.append(estimator)
+        return held, {'passed': True}
+    monkeypatch.setattr(serving, 'rebuild_and_check', rebuild)
+    monkeypatch.setattr(tool._bucket().blob, 'exists', lambda self: self.name in prepare_world.blobs, raising=False)
+    return held, seen
+
+
+@pytest.mark.parametrize('estimator', ['r33-purged-cv-hinge-v1', 'r33-purged-crossfit-recalibrated-v1'])
+def test_prepare_rebuilds_with_the_tables_own_estimator_and_never_overwrites_its_stored_table(
+        prepare_world, monkeypatch, estimator):
+    from services import r33_crossfit_serving as serving
+    from services.r33_monthly_lifecycle import BUNDLE_PREFIX
+    _, seen = _held_table_world(prepare_world, monkeypatch, estimator)
+    path = f"{BUNDLE_PREFIX}/{prepare_world.bundle['cohort_id']}/{serving.table_name(estimator)}"
+    prepare_world.blobs[path] = serving.table_bytes({'inputs': {'estimator': estimator}, 'payload_checksum': 's' * 64})
+    with pytest.raises(RuntimeError, match='stored_serving_table_differs'):
+        tool.prepare(prepare_world.args)
+    assert seen == [estimator]
+
+
+@pytest.mark.parametrize('migrated', [True, False])
+def test_a_new_estimator_in_a_stored_cohort_goes_to_the_recalibration_check(prepare_world, monkeypatch, tmp_path,
+                                                                            migrated):
+    # The legacy table stays at its own path; prepare hands the live object and Wei's approval to
+    # r33_switch.prepare, which refuses a same-cohort swap without that approval. Before learning
+    # 0072 the second row of the cohort cannot be inserted, so prepare stops before any write.
+    from services import r33_crossfit_serving as serving
+    from services import r33_switch
+    from services.r33_monthly_lifecycle import BUNDLE_PREFIX
+    held, _ = _held_table_world(prepare_world, monkeypatch, serving.HINGE_ESTIMATOR)
+    cohort = prepare_world.bundle['cohort_id']
+    prepare_world.blobs[f"{BUNDLE_PREFIX}/{cohort}/{serving.TABLE_NAME}"] = b'{"legacy": true}'
+    live = {'artifact_id': 'r33-roster:' + cohort + ':live', 'payload_checksum': 'l' * 64}
+
+    probe = json.loads((ROOT / 'tools/d1/overrides.json').read_text())['probes']['learning'][tool.MIGRATION_0072]
+
+    class Learning:
+        def query(self, sql, params):
+            if sql == probe:
+                return [{'ok': 1 if migrated else 0}]
+            if 'active8_ensemble_artifacts_v1' in sql:
+                return [{'payload_json': json.dumps(live), 'payload_checksum': live['payload_checksum']}]
+            return [{'plan_id': 'p' * 64, 'artifact_id': live['artifact_id'], 'cohort_id': cohort}]
+    monkeypatch.setattr(tool, '_learning', lambda: Learning())
+    approval = tmp_path / 'recalibration.json'
+    approval.write_text(json.dumps({'schema_version': r33_switch.RECALIBRATION_SCHEMA}))
+    (tmp_path / 'evidence.json').write_text('{}')
+    (tmp_path / 'wei.json').write_text('{}')
+    for name, value in dict(recalibration_approval=approval, source_evidence=tmp_path / 'evidence.json',
+                            wei_approval=tmp_path / 'wei.json', swing_hard_stop_pct=-0.1, swing_max_hold_sessions=10,
+                            business_date='2026-11-24', effective_signal_date='2026-11-24',
+                            source_reference='SYNTHETIC').items():
+        setattr(prepare_world.args, name, value)
+    captured = {}
+
+    def stop(**kwargs):
+        captured.update(kwargs)
+        raise RuntimeError('reached_r33_switch_prepare')
+    monkeypatch.setattr(r33_switch, 'prepare', stop)
+    if not migrated:
+        with pytest.raises(RuntimeError, match='recalibration_needs_learning_migration_0072'):
+            tool.prepare(prepare_world.args)
+        assert captured == {}
+        return
+    with pytest.raises(RuntimeError, match='reached_r33_switch_prepare'):
+        tool.prepare(prepare_world.args)
+    assert captured['serving_table'] == held and captured['live_ensemble'] == live
+    assert captured['recalibration_approval'] == {'schema_version': r33_switch.RECALIBRATION_SCHEMA}

@@ -1,5 +1,6 @@
 import type { Bindings } from '../types'
 import { controllerFetch } from './controllerClient'
+import { opsCorrelationHeaders } from './opsRuntimeScope'
 import { twToday } from './dateUtils'
 
 function resolveScreenerJobDate(runDate?: string | null): string {
@@ -26,6 +27,7 @@ export async function runScreenerV2(
 
   const res = await controllerFetch(env, `/screener/v2/run?${params.toString()}`, {
     method: 'POST',
+    headers: opsCorrelationHeaders(),
     jsonBody: {
       run_date: twDate,
       chain_run_id: options.chainRunId || undefined,

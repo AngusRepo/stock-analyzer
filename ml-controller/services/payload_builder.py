@@ -178,6 +178,34 @@ class PredictPayload:
 # Shared market env loader (one-shot, all stocks share)
 # ?????????????????????????????????????????????????????????????????????????????
 
+# Frozen v1 stored-risk level cuts. Owner: trading:risk_config.portfolio.riskLevelThresholds.storedV1
+# (Worker riskConfig.ts default); this fallback reconstruction only mirrors it.
+STORED_RISK_V1_LEVEL_CUTS_DEFAULT = (25.0, 45.0, 65.0, 85.0)
+
+
+def _stored_risk_v1_level_cuts() -> tuple[float, ...]:
+    try:
+        cfg = kv_client.get_json("trading:risk_config", default=None) or {}
+        cuts = ((cfg.get("portfolio") or {}).get("riskLevelThresholds") or {}).get("storedV1")
+    except Exception:  # noqa: BLE001 - KV unavailable keeps the frozen v1 default
+        cuts = None
+    if (isinstance(cuts, list) and len(cuts) == 4
+            and all(isinstance(c, (int, float)) and not isinstance(c, bool) and math.isfinite(c) and 0 <= c <= 100 for c in cuts)
+            and all(cuts[i] < cuts[i + 1] for i in range(3))):
+        return tuple(float(c) for c in cuts)
+    if cuts is not None:
+        # The Worker blocks on the same invalid value; this fallback history keeps the frozen v1 cuts but says so.
+        logger.error("[payload_builder] trading:risk_config storedV1 invalid, using frozen v1 cuts: %r", cuts)
+    return STORED_RISK_V1_LEVEL_CUTS_DEFAULT
+
+
+def _stored_risk_v1_level(score: float, cuts: tuple[float, ...]) -> str:
+    for cut, name in zip(cuts, ("green", "yellow", "orange", "red")):
+        if score <= cut:
+            return name
+    return "black"
+
+
 def _load_market_symbol_price_rows(
     symbols: list[str],
     run_date: str,
@@ -398,6 +426,7 @@ def load_market_env(
         logger.info(f"[payload_builder] Breadth computed for {len(breadth_by_date)} dates")
 
     if etf_rows:
+        v1_level_cuts: tuple[float, ...] | None = None  # read lazily, once, only when a fallback row is built
         for i, row in enumerate(etf_rows):
             date_str = row["date"]
             close = float(row["close"])
@@ -447,7 +476,9 @@ def load_market_env(
             if bull_alignment is not None and bull_alignment < 20: risk_score += 8
             elif bull_alignment is not None and bull_alignment < 30: risk_score += 4
             risk_score = min(100, risk_score)
-            risk_level = "green" if risk_score <= 25 else "yellow" if risk_score <= 45 else "orange" if risk_score <= 65 else "red" if risk_score <= 85 else "black"
+            if v1_level_cuts is None:
+                v1_level_cuts = _stored_risk_v1_level_cuts()
+            risk_level = _stored_risk_v1_level(risk_score, v1_level_cuts)
 
             history_map[date_str] = {
                 "market_proxy_symbol": "0050",

@@ -3,6 +3,7 @@ import { sendReportToChannels, type DiscordEmbed } from './notify'
 import { formatPendingBuyBriefing } from './pendingBuyBriefingSummary'
 import { buildPendingBuyStateSummary } from './pendingBuyStateSummary'
 import { loadPendingBuySnapshot } from './pendingBuyStore'
+import { premarketPublicationDisplayMeta } from './premarketEventChain'
 import {
   readScoreV2Snapshot,
   serializeScoreV2Snapshot,
@@ -246,7 +247,9 @@ export async function generateDailyReport(env: Bindings, reportDate = twDateToda
   }
 
   const pendingSnapshot = await loadPendingBuySnapshot(env, reportDate, { allowFallbackRecent: false })
-  const pendingState = buildPendingBuyStateSummary(pendingSnapshot.pendingBuys, pendingSnapshot.meta)
+  // An unpublished run (no finalized daily plan by 08:45) reports as a failed flow, not ready.
+  const pendingState = buildPendingBuyStateSummary(pendingSnapshot.pendingBuys,
+    await premarketPublicationDisplayMeta(env, reportDate, pendingSnapshot.meta))
   embeds.push({
     title: 'Pending Buy State',
     color: pendingState.state === 'ready_to_execute' ? 0x2ecc71 : pendingState.state === 'closed' ? 0x95a5a6 : 0xf1c40f,

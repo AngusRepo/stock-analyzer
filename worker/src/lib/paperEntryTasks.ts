@@ -120,6 +120,16 @@ import {
 import { l4SparseSizingFromWatchPoints, resolveL4SparseBudgetFloor } from './l4SparseAllocationSizing'
 import { withD1ReadRetry } from './d1TransientRetry'
 import { getRiskConfig } from './riskConfig'
+import { normalizeCanonicalMarketRiskLevel } from './marketRiskRuntime'
+
+/** L2 medium-risk sizing scale for a canonical level; levels outside medium_risk_levels (default none) get 1. */
+export function mediumRiskScaleFor(level: unknown, l2: { medium_risk_scale?: number; medium_risk_levels?: unknown }): number {
+  const canonical = normalizeCanonicalMarketRiskLevel(level)
+  const levels = Array.isArray(l2?.medium_risk_levels) ? l2.medium_risk_levels : []
+  const scale = l2?.medium_risk_scale
+  if (!canonical || !levels.includes(canonical)) return 1.0
+  return typeof scale === 'number' && Number.isFinite(scale) ? Math.min(1, Math.max(0, scale)) : 1.0
+}
 import { validateOrder } from './validateOrder'
 import { assessPositionCorrelation } from './positionRiskDistribution'
 import {
@@ -953,6 +963,8 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     ),
     regimeFamily: String(marketRisk.regime_family ?? (marketRisk.regimeState as any)?.family ?? '').trim() || null,
     targetExposureCap: cb.targetExposurePct ?? null,
+    blackTargetExposure: riskCfg.portfolio.blackTargetExposure,
+    slotFloorCapByLevel: riskCfg.portfolio.slotFloorCapByLevel,
   }
 
   const distributionEnabled = Boolean((cfg as any).l4Distribution)
@@ -2495,7 +2507,9 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
 
     const atr14 = atrMap.get(pending.symbol) ?? price * cfg.exit.fallbackAtrPct
     const dailyRemaining = DAILY_BUY_LIMIT - dailyBuyTotal
-    const mediumRiskDampen = marketRisk.risk_level === 'medium' ? cfg.L2_formula.medium_risk_scale : 1.0
+    // The canonical levels in L2_formula.medium_risk_levels (default none) scale the kelly / risk_pct path;
+    // backtest_engine reads the same field. The L4 sparse-weight path is not scaled.
+    const mediumRiskDampen = mediumRiskScaleFor(marketRisk.risk_level, cfg.L2_formula)
     const stopPct = paperSwingOwner ? .08 : Math.max(
       cfg.position.minStopPct,
       paperOr15Owner && executionStopLoss != null

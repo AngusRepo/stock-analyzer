@@ -700,7 +700,7 @@ export function buildAdminWorkerDomainTaskMap(
         if (terminalPolicyClosureFailure || !materializationValidated) {
           await propagateStrategyLearningTerminalFailure(runStateDb, {
             businessDate: runDate, canonicalRunId: runState.canonical_run_id,
-          }, c.env.KV)
+          }, c.env.KV, { postVerifyEntryWrittenByCaller: true })
         }
         await Promise.allSettled([
           logSchedulerResult(c.env.KV, 'strategy-learning', {
@@ -1493,7 +1493,22 @@ export function buildAdminWorkerDomainTaskMap(
     },
     'kv-config-drift': async () => {
       const { runKvConfigDriftCheck } = await import('./kvConfigDigest')
-      return runKvConfigDriftCheck(c.env.KV)
+      const { runStoredRiskV2DriftCheck } = await import('./marketRiskMaterialization')
+      const { getRiskConfig } = await import('./riskConfig')
+      const { twDaysAgo } = await import('./dateUtils')
+      // Both checks always run; either drift fails the task so the scheduler alerts.
+      const [kvResult, storedV2] = await Promise.allSettled([
+        runKvConfigDriftCheck(c.env.KV),
+        getRiskConfig(c.env.KV).then(config => runStoredRiskV2DriftCheck(
+          databaseForDataDomain(c.env, 'core'), config.portfolio, twDaysAgo(45))),
+      ])
+      const kvSummary = kvResult.status === 'fulfilled' ? kvResult.value : String((kvResult.reason as Error)?.message ?? kvResult.reason)
+      const v2Summary = storedV2.status === 'fulfilled'
+        ? storedV2.value.summary + (storedV2.value.ok ? '' : ' ' + JSON.stringify(storedV2.value.failures.slice(0, 10)))
+        : 'stored_risk_v2_drift_error ' + String((storedV2.reason as Error)?.message ?? storedV2.reason)
+      const summary = kvSummary + ' | ' + v2Summary
+      if (kvResult.status === 'rejected' || storedV2.status === 'rejected' || !storedV2.value.ok) throw new Error(summary)
+      return summary
     },
     'storage-integrity-audit': async () => {
       const { runArtifactIntegrityAudit } = await import('./artifactLifecycle')
@@ -1728,10 +1743,14 @@ export function buildAdminWorkerDomainTaskMap(
       const result = taskName === 'audit-json-retention'
         ? await runWithMaintenanceLease(databaseForDataDomain(c.env, 'ops'), lease)
         : await runWithMaintenanceLeaseYielding(databaseForDataDomain(c.env, 'ops'), lease, MAINTENANCE_LEASE_YIELD_WAIT_MS)
-      // This job is the only daily cold-archive writer. A busy lease must
-      // retry, not close its scheduler ticket as a successful no-op.
+      // This job is the only daily cold-archive writer. A busy tick closes as skipped (not a 5xx
+      // that makes Scheduler redispatch into the same busy lease); the next tick retries, and the
+      // window's final tick fails when its business date archived nothing.
       if (taskName === 'retention-archive-only' && isMaintenanceLeaseBusy(result)) {
-        throw new Error(result.reason)
+        const { retentionArchiveDayStarved } = await import('./retentionArchiveDailyGuarantee')
+        if (await retentionArchiveDayStarved(databaseForDataDomain(c.env, 'ops'), schedulerContext.schedulerTicketId)) {
+          throw new Error(`retention_archive_only_no_success_for_business_date:${result.reason}`)
+        }
       }
       return summarizeMaintenanceLeaseResult(result)
     }

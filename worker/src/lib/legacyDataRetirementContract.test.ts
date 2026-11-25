@@ -71,10 +71,10 @@ assert.match(archive, /loadCandidateRows\(targetDb, target, cutoffDate, limitPer
 assert.match(dashboard, /prediction_date IS NOT NULL/)
 assert.doesNotMatch(dashboard, /COALESCE\(prediction_date, substr\(generated_at/)
 assert.match(manifest, /"id": "legacy-strategy-evidence-migration"/)
-assert.match(manifest, /"id": "legacy-hot-data-retirement"/)
-const scheduledRetirement = JSON.parse(manifest).jobs.find((job: { id?: string }) => (
-  job.id === 'legacy-hot-data-retirement'
-))
-assert.ok(scheduledRetirement)
-assert.doesNotMatch(String(scheduledRetirement.query ?? ''), /confirm_retirement=/)
-assert.match(String(scheduledRetirement.description ?? ''), /read-only/)
+// D9 step 4: the scheduled read-only audit root is retired; the task stays manual-only.
+const parsedManifest = JSON.parse(manifest)
+assert.ok(parsedManifest.deleteJobIds.includes('legacy-hot-data-retirement'))
+assert.ok(!parsedManifest.jobs.some((job: { id?: string }) => job.id === 'legacy-hot-data-retirement'))
+assert.ok(!parsedManifest.jobs.some((job: { task?: string; query?: string }) => (
+  job.task === 'legacy-hot-data-retirement' || /confirm_retirement=/.test(String(job.query ?? ''))
+)))

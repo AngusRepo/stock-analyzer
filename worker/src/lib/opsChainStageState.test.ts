@@ -19,7 +19,7 @@ import {
 import { bindOpsRuntimeRootTicket, opsCorrelationHeaders, opsRuntimeTicket, setOpsRuntimeTicket, withOpsRuntimeScope } from './opsRuntimeScope'
 import { logSchedulerRunResult } from './schedulerRunLogger'
 
-const migration = fs.readFileSync('domain-migrations/ops/0025_ops_chain_stage_state.sql', 'utf8')
+const migration = fs.readFileSync('domain-migrations/ops/0027_ops_chain_stage_state.sql', 'utf8')
 const ticketsMigration = fs.readFileSync('domain-migrations/ops/0011_scheduler_execution_tickets.sql', 'utf8')
 const FRIDAY = '2026-11-20'
 const MONDAY = '2026-11-23'

@@ -267,6 +267,9 @@ type MarketSeriesCandidate = {
 type MarketSeriesPoint = {
   date: string
   close: number
+  // Source-reported move; futures quote it against the prior settlement price, not the prior close.
+  reportedChange?: number | null
+  reportedChangePct?: number | null
 }
 
 function numberOrNull(value: unknown): number | null {
@@ -323,20 +326,22 @@ function buildIndexSnapshot(
   points: MarketSeriesPoint[],
   source: string,
 ) {
-  const byDate = new Map<string, number>()
+  const byDate = new Map<string, MarketSeriesPoint>()
   for (const point of points) {
-    if (Number.isFinite(point.close)) byDate.set(point.date, point.close)
+    if (Number.isFinite(point.close)) byDate.set(point.date, point)
   }
-  const series = [...byDate.entries()]
-    .map(([date, close]) => ({ date, close }))
-    .filter((point) => Number.isFinite(point.close))
+  const series = [...byDate.values()]
     .sort((a, b) => a.date.localeCompare(b.date))
     .slice(-30)
-  const current = series.at(-1)?.close ?? null
-  const date = series.at(-1)?.date ?? null
+  const latest = series.at(-1)
+  const current = latest?.close ?? null
+  const date = latest?.date ?? null
   const prev = series.length >= 2 ? series.at(-2)?.close ?? null : null
-  const change = current != null && prev != null ? current - prev : null
-  const changePct = current != null && prev ? (change! / prev) * 100 : null
+  const reportedChange = numberOrNull(latest?.reportedChange)
+  const reportedChangePct = numberOrNull(latest?.reportedChangePct)
+  const hasReported = reportedChange != null && reportedChangePct != null
+  const change = hasReported ? reportedChange : current != null && prev != null ? current - prev : null
+  const changePct = hasReported ? reportedChangePct : current != null && prev ? (change! / prev) * 100 : null
 
   return {
     symbol,
@@ -409,10 +414,12 @@ async function loadFinlabSeries(
         ? await query.bind(...candidate.binds).all<any>()
         : await query.all<any>()
       const points = (result.results ?? [])
-        .map((row: any) => {
+        .map((row: any): MarketSeriesPoint | null => {
           const date = String(row.date ?? row.trading_date ?? row.data_date ?? '').slice(0, 10)
           const close = numberOrNull(row.close ?? row.value ?? row.current ?? row.price)
-          return date && close != null ? { date, close } : null
+          return date && close != null
+            ? { date, close, reportedChange: numberOrNull(row.change), reportedChangePct: numberOrNull(row.change_pct) }
+            : null
         })
         .filter((point): point is MarketSeriesPoint => Boolean(point))
 
@@ -1916,7 +1923,7 @@ async function loadCanonicalRegimeRiskDetail(db: D1Database) {
 }
 
 market.get('/indices', async (c) => {
-  const data = await withCache(c.env.KV, 'market:indices:finlab-clean:v17-taifex-controller-live-night', async () => {
+  const data = await withCache(c.env.KV, 'market:indices:finlab-clean:v18-futures-settlement-change', async () => {
     const [canonicalTwii, finlabTwoii, finlabTxfDay, finlabTxfNight, taifexDay, taifexNight, twseOfficialTwii] = await Promise.all([
       loadCanonicalTwiiSeries(databaseForDataDomain(c.env, 'market')),
       loadFinlabSeries(databaseForDataDomain(c.env, 'market'), 'TWOII', '櫃買指數', [
@@ -1938,7 +1945,7 @@ market.get('/indices', async (c) => {
       ]),
       loadFinlabSeries(databaseForDataDomain(c.env, 'market'), 'TXF', '台指期貨', [
         {
-          sql: "SELECT date, close FROM canonical_futures_daily WHERE symbol IN (?, ?) AND session = 'day' AND close > 1000 ORDER BY date DESC, contract_month ASC LIMIT 30",
+          sql: "SELECT date, close, change, change_pct FROM canonical_futures_daily WHERE symbol IN (?, ?) AND session = 'day' AND close > 1000 ORDER BY date DESC, contract_month ASC LIMIT 30",
           binds: ['TXF', 'TX'],
           source: 'FinLab canonical_futures_daily',
         },
@@ -1960,7 +1967,7 @@ market.get('/indices', async (c) => {
       ]),
       loadFinlabSeries(databaseForDataDomain(c.env, 'market'), 'TXF', '台指期貨夜盤', [
         {
-          sql: "SELECT date, close FROM canonical_futures_daily WHERE symbol IN (?, ?) AND session = 'night' AND close > 1000 ORDER BY date DESC, contract_month ASC LIMIT 30",
+          sql: "SELECT date, close, change, change_pct FROM canonical_futures_daily WHERE symbol IN (?, ?) AND session = 'night' AND close > 1000 ORDER BY date DESC, contract_month ASC LIMIT 30",
           binds: ['TXF', 'TX'],
           source: 'FinLab canonical_futures_daily night',
         },

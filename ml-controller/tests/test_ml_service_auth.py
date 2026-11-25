@@ -76,6 +76,29 @@ def test_http_fallback_posts_send_the_token(monkeypatch):
     assert all(headers.get("X-Service-Token") == "unit-token" for _, headers in seen)
 
 
+def test_http_batch_without_production_token_raises_instead_of_no_signal(monkeypatch):
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setattr(modal_client, "_USE_MODAL", False)
+    monkeypatch.setattr(modal_client, "_ML_SERVICE_URL", "https://ml.invalid")
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            raise AssertionError("must not reach ml-service without a token")
+
+    monkeypatch.setattr(modal_client.httpx, "AsyncClient", _Client)
+    with pytest.raises(MlServiceTokenMissing):
+        asyncio.run(modal_client._http_batch("/predict/v2", [{"symbol": "2330"}]))
+
+
 def test_regime_compute_production_without_token_is_500_before_upstream(monkeypatch):
     from routers import regime
 

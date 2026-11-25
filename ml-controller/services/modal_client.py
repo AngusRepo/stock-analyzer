@@ -17,7 +17,7 @@ import hashlib
 import json
 import httpx
 
-from services.ml_service_auth import ml_service_headers
+from services.ml_service_auth import MlServiceTokenMissing, ml_service_headers
 
 logger = logging.getLogger(__name__)
 
@@ -1052,6 +1052,9 @@ async def _http_post_one(client: httpx.AsyncClient, url: str, payload: dict) -> 
             "error": f"HTTP {resp.status_code}",
             "signal": "NO_SIGNAL", "direction": "neutral", "confidence": 0.0,
         }
+    except MlServiceTokenMissing:
+        # A missing production token is a config error: fail the batch, never per-stock NO_SIGNAL.
+        raise
     except Exception as e:
         return {
             "stock_id": payload.get("stock_id", 0),

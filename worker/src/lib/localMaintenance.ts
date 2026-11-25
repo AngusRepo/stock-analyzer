@@ -1,6 +1,7 @@
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { twToday } from './dateUtils'
 import type { Bindings } from '../types'
+import { MARKET_RISK_LATEST_CACHE_KEYS } from './marketRiskMaterialization'
 
 const D1_SAFE_IN_BIND_LIMIT = 90
 
@@ -42,7 +43,8 @@ export async function runMorningWarmup(env: Bindings, options: { healthProbe?: b
     }
   }
 
-  const keysToDelete = ['market:risk:latest', 'market:overview']
+  // Every served /market/risk key version, so warmup never keeps a stale runtime level.
+  const keysToDelete = [...MARKET_RISK_LATEST_CACHE_KEYS, 'market:overview']
   await Promise.allSettled(keysToDelete.map((key) => env.KV.delete(key)))
 
   try {

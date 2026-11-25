@@ -4,6 +4,7 @@ import { publishedAlphaModelOrder } from './alphaModelRoster'
 import { ACTIVE8_OOF_CONTINUATION_MAX_ATTEMPTS } from './active8OofContinuationPolicy'
 import type { Bindings } from '../types'
 import { controllerFetch, controllerJson, controllerPostJson } from './controllerClient'
+import { opsCorrelationHeaders } from './opsRuntimeScope'
 import { invalidateModelPoolReadCache } from './modelPoolReadCache'
 import { readCurrentExpectedReturnServingState, type ExpectedReturnOwner } from './expectedReturnServingState'
 import { nextTwTradingDate } from './schedulerPolicy'
@@ -111,6 +112,7 @@ async function runOptunaResearch(env: Bindings, options: OptunaResearchOptions) 
 
   const resp = await controllerFetch(env, '/optuna/research_sweep/run', {
     method: 'POST',
+    headers: opsCorrelationHeaders(),
     jsonBody: buildOptunaSweepRequestBody(options),
     timeoutMs: 60_000,
   })
@@ -197,6 +199,7 @@ export async function runGaProductionShadowDaily(
   requireController(env)
   const resp = await controllerFetch(env, '/optuna/ga_shadow/daily/run', {
     method: 'POST',
+    headers: opsCorrelationHeaders(),
     jsonBody: {
       run_date: options.runDate,
       run_id: options.runId,
@@ -513,6 +516,7 @@ export async function runActive8OofLifecycle(
   }
   const resp = await controllerFetch(env, '/walk_forward/oof/lifecycle', {
     method: 'POST',
+    headers: opsCorrelationHeaders(),
     jsonBody: {
       model_profile_schema_version: modelProfile,
       cadence,
@@ -621,6 +625,7 @@ export async function runAllocatorEvFusionRefresh(env: Bindings, runDate?: strin
 
   const resp = await controllerFetch(env, '/allocator_ev_fusion/refresh', {
     method: 'POST',
+    headers: opsCorrelationHeaders(),
     jsonBody: {
       cadence,
       evidence_mode: 'purged_oof',
@@ -745,6 +750,7 @@ export async function runAllocatorEvFeatureSnapshotBackfill(
 
   const resp = await controllerFetch(env, '/allocator_ev_fusion/feature_snapshots/backfill', {
     method: 'POST',
+    headers: opsCorrelationHeaders(),
     jsonBody: {
       start_date: params.startDate,
       end_date: params.endDate,
@@ -842,6 +848,7 @@ export async function runMonthlyStrategyMining(
 
   const resp = await controllerFetch(env, '/strategy_mining/monthly_pymoo/run', {
     method: 'POST',
+    headers: opsCorrelationHeaders(),
     jsonBody: {
       run_id: runId,
       cadence: 'monthly',
@@ -995,6 +1002,7 @@ export async function runWeeklyBacktestResearchBundle(env: Bindings, runDate?: s
   try {
     resp = await controllerFetch(env, '/backtest/research-bundle/run', {
       method: 'POST',
+      headers: opsCorrelationHeaders(),
       jsonBody: buildBacktestResearchBundleRequestBody(resolvedRunDate, runId),
       timeoutMs: 60_000,
     })

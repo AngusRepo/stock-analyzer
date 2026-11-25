@@ -21,10 +21,10 @@ from routers.optuna import (
 )
 from routers.pipeline import CallbackWorkerError, _callback_worker
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-)
+# One JSON object per line (Cloud Logging jsonPayload, with root_ticket_id when set).
+from services.json_logging import configure_json_logging  # noqa: E402
+
+configure_json_logging(logging.INFO)
 logger = logging.getLogger("optuna_job")
 
 

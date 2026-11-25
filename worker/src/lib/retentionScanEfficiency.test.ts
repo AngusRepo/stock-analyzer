@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { DatabaseSync } from 'node:sqlite'
 import { test } from 'node:test'
-import { buildRetentionArchiveOnlyQuery, retentionR2PolicyConfig } from './retentionArchiveOnly'
+import { buildRetentionArchiveOnlyQuery, retentionArchiveOnlyBinds, retentionR2PolicyConfig } from './retentionArchiveOnly'
 import { recentMarketRowsScan } from './retentionMarketScan'
 
 const day = (n: number) => new Date(Date.UTC(2020, 0, 1 + n)).toISOString().slice(0, 10)
@@ -27,14 +27,14 @@ for (const [table, key] of [['stock_prices','stock_id'], ['technical_indicators'
    const expected = db.prepare(`SELECT rowid FROM ${table} WHERE substr(date,1,10) < ? AND (${originalEligibility(table,key)}) ORDER BY substr(date,1,10),rowid`).all(cutoff).map(r=>r.rowid)
    const actual: unknown[] = []; let cursor: {cursor_date: string; cursor_key: string} | null = null
    for (let page=0;page<100;page++) {
-    const rows = db.prepare(buildRetentionArchiveOnlyQuery(source,cursor)).all(...(cursor ? [cutoff,cursor.cursor_date,cursor.cursor_key,17] : [cutoff,17]))
+    const rows = db.prepare(buildRetentionArchiveOnlyQuery(source,cursor)).all(...retentionArchiveOnlyBinds(source,cutoff,cursor,17) as string[])
     if (!rows.length) break
     actual.push(...rows.map(r=>r.__cursor_key));const last=rows.at(-1)!
     cursor={cursor_date:String(last.__archive_date),cursor_key:String(last.__cursor_key)}
    }
    assert.deepEqual(actual,expected)
    assert.ok(cursor)
-   const plan=db.prepare('EXPLAIN QUERY PLAN '+buildRetentionArchiveOnlyQuery(source,cursor)).all(cutoff,cursor.cursor_date,cursor.cursor_key,17).map(r=>String(r.detail)).join('\n')
+   const plan=db.prepare('EXPLAIN QUERY PLAN '+buildRetentionArchiveOnlyQuery(source,cursor)).all(...retentionArchiveOnlyBinds(source,cutoff,cursor,17) as string[]).map(r=>String(r.detail)).join('\n')
    assert.match(plan,new RegExp(`SEARCH ${table} USING INDEX by_date \\(date>\\? AND date<\\?\\)`))
   } finally { db.close() }
  })
@@ -57,6 +57,65 @@ test('empty archive probes compute the anchor once per symbol, not once per hist
   const oldCalls=run(originalEligibility('stock_prices','stock_id'))
   const newCalls=run(recentMarketRowsScan('stock_prices','stock_id'))
   assert.equal(oldCalls,10_000);assert.equal(newCalls,20)
+ } finally { db.close() }
+})
+
+test('archive pages over UNIQUE(symbol,date) tables stop at the global 500th date and read protected rows once', () => {
+ const db = new DatabaseSync(':memory:')
+ try {
+  db.exec('CREATE TABLE chip_data(symbol TEXT NOT NULL,date TEXT NOT NULL,value REAL,UNIQUE(symbol,date)); CREATE INDEX by_date ON chip_data(date,symbol)')
+  const put = db.prepare('INSERT INTO chip_data VALUES(?,?,?)')
+  // Full history, every third day missing, listed late, delisted early, and too short.
+  for (let i=0;i<700;i++) {
+   put.run('full',day(i),i)
+   if (i%3) put.run('gappy',day(i),i)
+   if (i>=150) put.run('young',day(i),i)
+   if (i<520) put.run('delisted',day(i),i)
+   if (i>=600) put.run('short',day(i),i)
+  }
+  let anchors = 0, visits = 0
+  db.function('anchor_probe', value => { anchors++; return value })
+  db.function('visit', value => { visits++; return value })
+  const configured = retentionR2PolicyConfig('canonical_market_hot_v1')!.sources.find(s => s.datasetId==='chip_data')!
+  assert.ok(configured.archiveScan)
+  const source = { ...configured, archiveScan: { ...configured.archiveScan,
+   eligibilitySql: configured.archiveScan.eligibilitySql.replace('SELECT newer.date FROM','SELECT anchor_probe(newer.date) FROM') } }
+  // Count the page scan's own index visits; the eligibility subqueries alias the table.
+  const counted = (sql: string) => sql.replace('chip_data.date IS NOT NULL', 'visit(chip_data.date) IS NOT NULL')
+  // The former page: the 500th-date bound as a second, separate upper bound.
+  const twoBounds = (sql: string) => counted(sql.replace(`min(?, ${source.archiveScan.dateBoundSql})`, '?')
+   .replace(`AND (${source.archiveScan.eligibilitySql})`, `AND (chip_data.date < ${source.archiveScan.dateBoundSql} AND ${source.archiveScan.eligibilitySql})`))
+  const cutoff = day(650)
+  const expected = db.prepare(`SELECT rowid FROM chip_data WHERE date < ? AND (${originalEligibility('chip_data','symbol')}) ORDER BY date,rowid`).all(cutoff).map(r=>r.rowid)
+  assert.equal(expected.length, 270) // full 200, young 50, delisted 20, gappy and short none
+  const pageBinds = (cursor: {cursor_date: string; cursor_key: string} | null) => retentionArchiveOnlyBinds(source,cutoff,cursor,40) as string[]
+  const actual: unknown[] = []; let cursor: {cursor_date: string; cursor_key: string} | null = null
+  for (let page=0;page<100;page++) {
+   anchors = 0
+   const rows = db.prepare(counted(buildRetentionArchiveOnlyQuery(source,cursor))).all(...pageBinds(cursor))
+   // One anchor per symbol per page; gappy and short have no 500th row to probe.
+   if (rows.length) assert.equal(anchors, 3)
+   if (!rows.length) break
+   actual.push(...rows.map(r=>r.__cursor_key)); const last=rows.at(-1)!
+   cursor={cursor_date:String(last.__archive_date),cursor_key:String(last.__cursor_key)}
+  }
+  assert.deepEqual(actual,expected)
+  assert.ok(cursor)
+  // The final (empty) page ends its date range at the 500th date, not the cutoff.
+  visits = 0
+  assert.equal(db.prepare(counted(buildRetentionArchiveOnlyQuery(source,cursor))).all(...pageBinds(cursor)).length, 0)
+  const oneBound = visits
+  visits = 0
+  assert.equal(db.prepare(twoBounds(buildRetentionArchiveOnlyQuery(source,cursor))).all(...pageBinds(cursor)).length, 0)
+  const former = visits
+  assert.ok(former > 1500, `former final page visits ${former}`) // every row from the 500th date to the cutoff
+  assert.ok(oneBound < 20, `final page visits ${oneBound}`)
+  const plan = db.prepare('EXPLAIN QUERY PLAN '+buildRetentionArchiveOnlyQuery(source,null)).all(cutoff,40).map(r=>String(r.detail)).join('\n')
+  // Protected rows are gathered once, through index ranges, into an uncorrelated list.
+  assert.match(plan,/SEARCH chip_data USING (COVERING )?INDEX \w+ \(date<\?\)/)
+  assert.match(plan,/LIST SUBQUERY/)
+  assert.match(plan,/SEARCH protected USING COVERING INDEX \w+ \(symbol=\? AND date>\? AND date<\?\)/)
+  assert.doesNotMatch(plan,/CORRELATED SCALAR SUBQUERY[^\n]*\n[^\n]*retention_market_anchors/)
  } finally { db.close() }
 })
 

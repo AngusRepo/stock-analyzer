@@ -155,10 +155,11 @@ def main():
                     o, h, l, c, v = row.get("Open"), row.get("High"), row.get("Low"), row.get("Close"), row.get("Volume")
                     if c is None or str(c) == "nan":
                         continue
-                    # Escape single quotes in case
+                    # Raw quotes only: a raw close never stands in for adj_close, and the
+                    # legacy stock_prices.adj_close column is scheduled for drop.
                     sql_stmts.append(
-                        f"INSERT OR IGNORE INTO stock_prices (stock_id, date, open, high, low, close, adj_close, volume) "
-                        f"VALUES ({stock_id}, '{date}', {float(o):.2f}, {float(h):.2f}, {float(l):.2f}, {float(c):.2f}, {float(c):.2f}, {int(v or 0)});"
+                        f"INSERT OR IGNORE INTO stock_prices (stock_id, date, open, high, low, close, volume) "
+                        f"VALUES ({stock_id}, '{date}', {float(o):.2f}, {float(h):.2f}, {float(l):.2f}, {float(c):.2f}, {int(v or 0)});"
                     )
                     batch_rows += 1
             except:

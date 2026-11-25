@@ -2,7 +2,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, relative, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import {
   buildConfidenceContext,
   confidenceForSymbol,
@@ -191,14 +192,15 @@ test('loadConfidenceContext falls back to the activated plan and fails closed on
 })
 
 test('only the recommendations route reads display confidence; no decision code imports it', () => {
-  const root = new URL('..', import.meta.url).pathname
+  // fileURLToPath, not URL.pathname: on Windows pathname is '/D:/...' and the walk fails with ENOENT.
+  const root = fileURLToPath(new URL('..', import.meta.url))
   const importers: string[] = []
   const walk = (dir: string) => {
     for (const name of readdirSync(dir)) {
       const path = join(dir, name)
       if (statSync(path).isDirectory()) walk(path)
       else if (/\.tsx?$/.test(name) && !name.endsWith('.test.ts') && !path.endsWith('lib/recommendationConfidence.ts')
-        && /from '[^']*recommendationConfidence'/.test(readFileSync(path, 'utf8'))) importers.push(path.slice(root.length))
+        && /from '[^']*recommendationConfidence'/.test(readFileSync(path, 'utf8'))) importers.push(relative(root, path).split(sep).join('/'))
     }
   }
   walk(root)

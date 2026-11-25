@@ -94,6 +94,15 @@ test('daily evidence and raw comparison inputs survive a later timing-only audit
  assert.equal(result.or15?.conditions?.window,false)
 })
 
+test('R2b: daily evidence is kept when the MA60 verdict is unknown',()=>{
+ const rows=[{symbol:'2330',kind:'or15' as const,status:'pass',reason:'swing_or15_vwap_relative_strength',created_at:'2026-10-05 01:20:10',
+ detail_json:JSON.stringify({signal:{conditions:{plan:true,ma60:null,opening_limit:true},benchmarkPreviousClose:100}})},
+ {symbol:'2330',kind:'or15' as const,status:'defer',reason:'swing_next_bar_submission_missed',created_at:'2026-10-05 02:01:10',detail_json:JSON.stringify({signal:{conditions:{window:false}}})}]
+ const result=buildPendingBuyExecutionPreviews(rows,'or15-5m-orl8-20-v1').get('2330')!
+ assert.equal(result.daily_assessment?.conditions?.opening_limit,true)
+ assert.equal(result.daily_assessment?.conditions?.ma60,null)
+})
+
 test('missing broker book still advances the daily baseline without authorizing entry',()=>{
  const rows=[
   {symbol:'3004',kind:'or15' as const,status:'error',reason:'or15_market_data_unavailable',created_at:'2026-10-06 04:15:11',detail_json:JSON.stringify({stage:'authoritative_market_data'})},

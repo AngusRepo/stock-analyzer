@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 import math
+import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 from statistics import mean, median
@@ -10,11 +11,15 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from feature_triage_window import triage_paths  # noqa: E402
+
+TRIAGE_INPUTS = triage_paths()  # window from pymoo_monthly_mining_config_v1 research_protocol.feature_triage_window
 REGISTRY = ROOT / "data" / "feature_registry" / "unified_feature_registry_v1.json"
-STRATEGY95_BEST = ROOT / "output" / "finlab_strategy95_backtests" / "strategy95_factors_sii_20230101_20260615_top10_bothdir_best.csv"
-ML106_BEST = ROOT / "output" / "finlab_ml_feature_backtests" / "ml106_features_sii_20230101_20260615_top10_bothdir_best.csv"
-OVERLAP_JSON = ROOT / "output" / "feature_strategy_overlap_numeric" / "feature_strategy_overlap_sii_20230101_20260615.json"
-OVERLAP_PAIRS = ROOT / "output" / "feature_strategy_overlap_numeric" / "feature_strategy_overlap_sii_20230101_20260615_pairs_ge_0_6.csv"
+STRATEGY95_BEST = TRIAGE_INPUTS["strategy95_best"]
+ML106_BEST = TRIAGE_INPUTS["ml106_best"]
+OVERLAP_JSON = TRIAGE_INPUTS["overlap_json"]
+OVERLAP_PAIRS = TRIAGE_INPUTS["overlap_pairs"]
 OUT_DIR = ROOT / "output" / "feature_universe_triage"
 
 

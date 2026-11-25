@@ -124,10 +124,27 @@ function annualizedVolPct(closes: number[]): number | null {
   const variance = returns.reduce((sum, value) => sum + Math.pow(value - mean, 2), 0) / Math.max(1, returns.length - 1)
   return Math.round(Math.sqrt(variance) * Math.sqrt(252) * 1000) / 10
 }
-async function buildMarketRiskFallback(reason: string) {
-  const [vixCloses, twiiCloses] = await Promise.all([
+// The level Paper buys/halts use (riskChain → P3), not the factor packet level; null only if it cannot be built.
+function loadRuntimeMarketRisk(env: Bindings) {
+  // One clock for the runtime's decision date and the display's awaiting check.
+  const computedAt = new Date().toISOString()
+  return getRiskConfig(env.KV)
+    .then(riskConfig => resolveCanonicalMarketRisk({
+      core: databaseForDataDomain(env, 'core'),
+      market: databaseForDataDomain(env, 'market'),
+    }, env.KV, riskConfig))
+    .then(context => runtimeMarketRiskDisplay(context, computedAt))
+    .catch((error) => {
+      console.warn('[market/risk] canonical runtime level failed', error)
+      return null
+    })
+}
+
+async function buildMarketRiskFallback(env: Bindings, reason: string) {
+  const [vixCloses, twiiCloses, runtimeRisk] = await Promise.all([
     fetchYahooCloses('^VIX', '5d'),
     fetchYahooCloses('^TWII', '3mo'),
+    loadRuntimeMarketRisk(env),
   ])
   const vix = vixCloses.length ? Math.round(vixCloses[vixCloses.length - 1] * 10) / 10 : null
   const twiiVol20 = annualizedVolPct(twiiCloses)
@@ -144,8 +161,13 @@ async function buildMarketRiskFallback(reason: string) {
     marginRatio: null,
     limitDownCount: null,
     limitDownPct: null,
-    riskScore: 50,
-    riskLevel: 'local_fallback',
+    // No market_risk row: score and level are unknown, never a placeholder value.
+    riskScore: null,
+    riskLevel: null,
+    riskOwner: 'market_risk_unavailable',
+    riskStatus: 'unavailable',
+    riskUnavailableReason: reason,
+    runtimeRisk,
     riskSummary: `本機 market_risk 資料不可用，暫以 Yahoo VIX / TWII 20日波動率顯示。原因：${reason}`,
     calculatedAt: new Date().toISOString(),
     contextFactors: [],
@@ -221,6 +243,9 @@ import { FunnelArchiveReader, isAuditPointerEvidence, visitArchivedFunnelEvidenc
 import { loadFunnelStageStrategyRows } from '../lib/funnelStageStrategyRows'
 import { readMarketRegimeState } from '../lib/marketRegimeState'
 import { loadMarketRegimeFactorPacket } from '../lib/marketRegimeFactorPacket'
+import { resolveCanonicalMarketRisk } from '../lib/marketRiskRuntime'
+import { getRiskConfig } from '../lib/riskConfig'
+import { runtimeMarketRiskDisplay } from '../lib/marketRiskDisplay'
 import { buildMarketOptimisticOutlook } from '../lib/marketOutlook'
 import { loadRecommendationEvidenceLinks } from '../lib/recommendationEvidenceLinks'
 import { SCORE_V2_VERSION } from '../lib/scoreV2Taxonomy'
@@ -2505,7 +2530,7 @@ ml.get('/predict/:stockId', async (c) => {
 
 // GET /api/market/risk — 取最新大盤風險（快取30分鐘）
 market.get('/risk', async (c) => {
-  const cacheKey = 'market:risk:latest:v20-finlab-risk-detail-oi-delta'
+  const cacheKey = 'market:risk:latest:v21-runtime-level'
   const cached = await c.env.KV.get(cacheKey)
   if (cached) return c.json(JSON.parse(cached))
 
@@ -2517,13 +2542,13 @@ market.get('/risk', async (c) => {
     ).first<any>()
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    const fallback = await buildMarketRiskFallback(message)
+    const fallback = await buildMarketRiskFallback(c.env, message)
     await c.env.KV.put(cacheKey, JSON.stringify(fallback), { expirationTtl: 300 }).catch(() => {})
     return c.json(fallback)
   }
 
   if (!row) {
-    const fallback = await buildMarketRiskFallback('market_risk_empty')
+    const fallback = await buildMarketRiskFallback(c.env, 'market_risk_empty')
     await c.env.KV.put(cacheKey, JSON.stringify(fallback), { expirationTtl: 300 }).catch(() => {})
     return c.json(fallback)
   }
@@ -2569,7 +2594,7 @@ market.get('/risk', async (c) => {
     databaseForDataDomain(c.env, 'market'),
     row.date,
   ).catch(() => null)
-  const [canonicalOverview, creditTradingBase, institutionalFlows, regimeContext, usMarketSignal, globalEventContext, marketRiskDetail] = await Promise.all([
+  const [canonicalOverview, creditTradingBase, institutionalFlows, regimeContext, usMarketSignal, globalEventContext, marketRiskDetail, runtimeRisk] = await Promise.all([
     loadCanonicalMarketOverview(databaseForDataDomain(c.env, 'market')),
     loadCanonicalCreditTrading(databaseForDataDomain(c.env, 'market')),
     loadCanonicalInstitutionalFlows(databaseForDataDomain(c.env, 'market')),
@@ -2577,6 +2602,7 @@ market.get('/risk', async (c) => {
     loadLatestUsMarketSignal(databaseForDataDomain(c.env, 'market')),
     loadGdeltGlobalEventContext(databaseForDataDomain(c.env, 'market')),
     loadMarketRiskDetailBreakdown(databaseForDataDomain(c.env, 'market')),
+    loadRuntimeMarketRisk(c.env),
   ])
   const creditTrading = creditTradingBase
   const businessCycle = regimeContext?.businessCycle ?? businessCycleFromFactorPacket(factorPacket, row.date)
@@ -2628,6 +2654,7 @@ market.get('/risk', async (c) => {
     riskLevel:              factorPacket?.level ?? row.risk_level,
     riskOwner:              factorPacket ? 'market_regime_factor_packets' : 'market_risk_fallback',
     riskStatus:             factorPacket ? 'ready' : 'degraded',
+    runtimeRisk,
     riskSummary:            packetSummary,
     calculatedAt:           row.calculated_at,
     breadthSnapshot:        canonicalOverview?.breadthSnapshot ?? null,
@@ -2685,7 +2712,10 @@ market.get('/risk', async (c) => {
     contextFactors,
   }
 
-  await c.env.KV.put(cacheKey, JSON.stringify(data), { expirationTtl: 1800 })
+  // The runtime level flips at the TW date change, and a non-ready one when a late receipt lands: re-read sooner.
+  const untilTwMidnight = 86400 - Math.floor(((Date.now() + 8 * 3600_000) % 86400_000) / 1000)
+  const ttl = Math.max(60, Math.min(runtimeRisk?.status === 'ready' ? 1800 : 300, untilTwMidnight))
+  await c.env.KV.put(cacheKey, JSON.stringify(data), { expirationTtl: ttl })
   return c.json(data)
 })
 

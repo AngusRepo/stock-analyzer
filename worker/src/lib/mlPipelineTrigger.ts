@@ -1,4 +1,5 @@
 import { twToday } from './dateUtils'
+import { opsCorrelationHeaders } from './opsRuntimeScope'
 import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { assertMarketDataReady, type MarketDataReadinessResult } from './marketDataReadiness'
@@ -60,7 +61,7 @@ export async function runMLAndRiskV2(
       throw new Error(`market risk unavailable; pipeline blocked: ${e?.message ?? e}`)
     }
 
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+    const headers: Record<string, string> = { 'Content-Type': 'application/json', ...opsCorrelationHeaders() }
     if (env.ML_CONTROLLER_SECRET) headers['X-Controller-Token'] = env.ML_CONTROLLER_SECRET
 
     // A completed Modal bundle is reusable only after the exact continuation

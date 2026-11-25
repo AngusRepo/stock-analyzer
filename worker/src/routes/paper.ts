@@ -36,6 +36,7 @@ import { runDailySnapshot, type RescoreSellParams } from '../lib/paperWorkerTask
 import { loadPendingBuyRunHistory, loadPendingBuySnapshot } from '../lib/pendingBuyStore'
 import { loadPendingBuyExecutionPreviews } from '../lib/pendingBuyExecutionPreview'
 import { buildPendingBuyStateSummary } from '../lib/pendingBuyStateSummary'
+import { premarketPublicationDisplayMeta, projectExpiredRunHistory } from '../lib/premarketEventChain'
 import { computePaperTotalValue, getUnsettledSettlementSummary } from '../lib/paperAccountValue'
 import { corporateAccountRiskBounds } from '../lib/paperCorporateActions'
 import { isTwIntradayTradingMinute } from '../lib/twMarketSession'
@@ -1274,7 +1275,9 @@ paper.get('/pending-buys', async (c) => {
   c.header('Cache-Control', 'no-store, max-age=0')
   const twToday = new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
   const snapshot = await loadPendingBuySnapshot(c.env, twToday, { allowFallbackRecent: false })
-  const displayMeta = await reconcileLegacyP6DisplayMeta(c.env, snapshot.date, snapshot.meta as Record<string, any> | null)
+  let displayMeta = await reconcileLegacyP6DisplayMeta(c.env, snapshot.date, snapshot.meta as Record<string, any> | null)
+  // A run that never became today's finalized daily plan by 08:45 is shown as a failed flow, not ready.
+  displayMeta = await premarketPublicationDisplayMeta(c.env, snapshot.date, displayMeta)
   const state = buildPendingBuyStateSummary(snapshot.pendingBuys, displayMeta)
   const sourceRecoDate = await resolvePendingBuySourceRecoDate(
     c.env,
@@ -1323,7 +1326,7 @@ paper.get('/pending-buys', async (c) => {
     completedBuys: (runHistory.runs.find((run) => run.trade_date === snapshot.date && run.run_id === Number(snapshot.meta?.run_id))?.items ?? [])
       .filter((item) => ['filled','skipped','cancelled','expired','rejected'].includes(item.execution_status ?? ''))
       .map(removeLegacyPendingBuyScoreFields),
-    runHistory: stripLegacyPendingBuyRunHistory(runHistory),
+    runHistory: projectExpiredRunHistory(stripLegacyPendingBuyRunHistory(runHistory), snapshot.meta?.run_id, displayMeta),
   })
 })
 

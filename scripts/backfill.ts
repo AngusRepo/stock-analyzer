@@ -284,11 +284,16 @@ async function backfillStock(stock: { id: number; symbol: string; market: string
     }
 
     if (priceRows.length) {
+      // Raw quotes only, upserted like the live writer (twseApi.ts): a raw close never stands in for
+      // adj_close, and a conflict keeps the row's canonical adj_close/avg_price (REPLACE would NULL them).
       const stmts = priceRows.map(p => ({
-        sql: `INSERT OR REPLACE INTO stock_prices
-                (stock_id, date, open, high, low, close, adj_close, volume)
-              VALUES (?,?,?,?,?,?,?,?)`,
-        params: [stock.id, p.date, p.open, p.max, p.min, p.close, p.close, p.Trading_Volume],
+        sql: `INSERT INTO stock_prices
+                (stock_id, date, open, high, low, close, volume)
+              VALUES (?,?,?,?,?,?,?)
+              ON CONFLICT(stock_id, date) DO UPDATE SET
+                open=excluded.open, high=excluded.high, low=excluded.low,
+                close=excluded.close, volume=excluded.volume`,
+        params: [stock.id, p.date, p.open, p.max, p.min, p.close, p.Trading_Volume],
       }))
       await d1Batch(stmts)
       priceCount = priceRows.length

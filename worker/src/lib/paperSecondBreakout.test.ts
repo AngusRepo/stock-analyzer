@@ -19,6 +19,15 @@ function actual(symbol:keyof typeof fixtures,clock:string):SwingEntryInput {
  const f=fixtures[symbol]
  return {...input([]),...f,nowMs:Date.parse(f.tradeDate+'T'+clock+':00+08:00'),limitUp:f.previousClose*1.1,maxBuyPrice:f.previousClose*1.1}
 }
+test('R2b: 0050 below MA60 still allows the second breakout and its authorization',()=>{
+ const below=(x:SwingEntryInput)=>({...x,benchmarkPriorCloses:x.benchmarkPriorCloses.map((r,i,a)=>({...r,close:i===a.length-1?100:101}))})
+ const x=below(input([100,100,100,100,102,104]))
+ const s=assessSecondBreakout(x,0)
+ assert.equal(s.status,'passed');assert.equal(s.triggerKind,'second');assert.equal(s.triggerMs,open+25*MIN)
+ assert.deepEqual(s,assessSecondBreakout(input([100,100,100,100,102,104]),0))
+ const auth=authorizeSecondBreakout({...x,nowMs:open+25*MIN+1},s).authorization
+ assert.equal(auth?.action,'pass');assert.equal(auth?.conditions?.ma60,false);assert.ok(auth!.ma60!>100)
+})
 test('first strong remains unchanged; first weak waits and later S uses recomputed ATR',()=>{
  const strong=input([100,100,100,101]);const r=assessSecondBreakout(strong,0)
  assert.equal(r.triggerKind,'first');assert.equal(r.triggerMs,open+20*MIN)

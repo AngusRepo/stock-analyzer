@@ -52,8 +52,9 @@ def _contract_paths() -> list[Path]:
 
 @lru_cache(maxsize=1)
 def load_contract() -> dict:
+    from .pit_contract import _exists  # a non-root host (CI runner) cannot stat /root: not its copy
     for path in _contract_paths():
-        if path.exists():
+        if _exists(path):
             return json.loads(path.read_text(encoding="utf-8"))
     raise FileNotFoundError("market_conditioner_contract_missing")
 
@@ -376,11 +377,15 @@ def apply_block(X: np.ndarray, dates, feature_names: list[str], conditioner: dic
     return out, names, receipt
 
 
-# Champion GPU families the gate does not wait for (Wei 11/1). The 7 TimeXer folds hold their L4s until the
-# end of the cohort; once every other champion GPU call is done they are the only champion L4s (7 + 1
-# challenger = 8 of the workspace's 10; the other 2 serve a TimeXer input Modal reschedules after a
-# preemption, since the champion sets no retries). Every other family, including one added later, is waited for.
-GATE_EXEMPT_GPU_FAMILIES = ("TimeXer",)
+# Champion GPU families the gate does not wait for (Wei 11/1: TimeXer). The 7 TimeXer folds hold their L4s until
+# the end of the cohort; the workspace's remaining L4s serve a TimeXer input Modal reschedules after a
+# preemption, since the champion sets no retries. GNN (X-DEC-W4A-FU): its function is pinned to one container and
+# its folds run back to back on it (11/9: one every ~9.7 min from 02:43:58 to 03:22:36 UTC, no gap), so one
+# challenger L4 cannot delay it, and it is the cohort's last GPU family: waiting for it put the whole TabM tail
+# behind champion_done (11/9: gate and champion_done both at 03:22, mkt9 6/7 and mkt0 0/7 at the cap). With it
+# running: 7 TimeXer + 1 GNN + 1 challenger = 9 of 10 (R33 core4 roster: 1 + 1). Every other family, including
+# one added later, is waited for.
+GATE_EXEMPT_GPU_FAMILIES = ("TimeXer", "GNN")
 # Re-check interval while a TimeXer input still waits for an L4 (other workspace GPU jobs can hold one).
 BACKLOG_POLL_S = 15
 # Wei 11/1: the champion results are final first, then the challengers finish on the freed GPUs. The tail
@@ -491,9 +496,11 @@ class GpuGate:
 
 
 GPU_CHALLENGER_FUNCTIONS = {TABM_FUNCTION}
-# Run order of the L4 challengers (Wei 11/1): mkt16 first. From a common start on R32 receipts with #113 and the
-# CUDA graph d6a915a9, the gate opens at ~0.8-1.1 h and the champion is final at ~1.2-1.55 h: about 1-15 of
-# the 21 folds run one at a time before that, the rest in the tail, 7 at a time, in ~4-11 min.
+# Run order of the L4 challengers (Wei 11/1): mkt16 first. 11/9 (core4) on this code: the gate would open with
+# the last champion TabM fold (02:39:41 UTC), 43 min before champion_done (03:22:37); one container runs the 21
+# folds in ~26 min (11/24 measurement, real mkt16/mkt9/mkt0 blocks: 99 s cold, ~72 s warm, 1537 s), so they finish
+# before the tail unless the first L4 takes over ~17 min to arrive (11/9: ~12.5 min; 11/24: 4.6 min). What is
+# left runs in the tail, up to 7 at a time.
 GPU_ARM_ORDER = ("mkt16", "mkt9", "mkt0")
 
 

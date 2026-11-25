@@ -226,6 +226,7 @@ import { loadRecommendationEvidenceLinks } from '../lib/recommendationEvidenceLi
 import { SCORE_V2_VERSION } from '../lib/scoreV2Taxonomy'
 import { getAdaptiveParamsForRegime } from '../lib/adaptiveConfig'
 import { fetchTaifexDayClose, fetchTaifexNightClose } from '../lib/twseApi'
+import { finLabRegimeContextD1CategoryScope, finLabRegimeContextScopePredicate } from '../lib/finlabSourceContract'
 
 // ════════════════════════════════════════════════════════════════════════════
 // MARKET routes
@@ -1385,6 +1386,11 @@ function derivePutCallOpenInterestRatio(rows: CanonicalRegimeContextRow[]): Cano
 }
 
 const LARGE_TRADER_MIN_INDEX_OI = 50_000
+const LARGE_TRADER_INDEX_CATEGORY = new RegExp(
+  (finLabRegimeContextD1CategoryScope().tw_taifex_futures_large_trader ?? [])
+    .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') || '(?!)',
+  'i',
+)
 
 function largeTraderCategoryPriority(category: string) {
   if (/所有契約|all contracts|total/i.test(category)) return 0
@@ -1411,7 +1417,7 @@ function selectLargeTraderScope(rows: CanonicalRegimeContextRow[], topN: 5 | 10)
 
   for (const date of dates) {
     const dateRows = rows.filter((row) => row.date === date)
-    const indexRows = dateRows.filter((row) => /臺股期貨|台股期貨|TX\+MTX|台指|臺指/i.test(row.category))
+    const indexRows = dateRows.filter((row) => LARGE_TRADER_INDEX_CATEGORY.test(row.category))
     const scopedRows = indexRows.length ? indexRows : dateRows
     const groups = new Map<string, CanonicalRegimeContextRow[]>()
     for (const row of scopedRows) {
@@ -1491,6 +1497,7 @@ function contextFactor(
 
 async function loadCanonicalRegimeContext(db: D1Database) {
   try {
+    const regimeScope = finLabRegimeContextScopePredicate()
     const { results } = await db.prepare(
       `SELECT date, dataset, field, category, value, text_value, source
        FROM canonical_regime_context_daily
@@ -1502,17 +1509,10 @@ async function loadCanonicalRegimeContext(db: D1Database) {
          'world_index',
          'margin_context'
        )
-       AND (
-         dataset NOT IN ('tw_taifex_futures_large_trader', 'tw_taifex_option_large_trader')
-         OR category LIKE '%臺股期貨%'
-         OR category LIKE '%台股期貨%'
-         OR category LIKE '%TX+MTX%'
-         OR category LIKE '%台指%'
-         OR category LIKE '%臺指%'
-       )
+       AND ${regimeScope.sql}
        ORDER BY date DESC
        LIMIT 720`
-    ).all<any>()
+    ).bind(...regimeScope.binds).all<any>()
     const rows: CanonicalRegimeContextRow[] = (results ?? [])
       .map((row: any) => ({
         date: String(row.date ?? '').slice(0, 10),

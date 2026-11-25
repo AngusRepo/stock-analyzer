@@ -368,7 +368,7 @@ async function countReadinessRows(
 }
 
 /**
- * One day of regime context is ~15k rows written in chunks, so a row per dataset does not show the
+ * One day of regime context is ~1k rows (large-trader rows kept to d1_category_scope) written in chunks, so a row per dataset does not show the
  * day was materialized. It counts as written once a FinLab daily run for that date left its OPS_DB
  * receipt (inserted only after the market write is acknowledged) and the table holds at least the
  * rows that receipt acknowledged.

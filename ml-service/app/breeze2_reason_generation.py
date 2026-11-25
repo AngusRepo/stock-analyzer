@@ -284,6 +284,10 @@ class Breeze2ModelNotAllowed(ValueError):
     """The requested model_id is not an allowlisted Breeze2 repo."""
 
 
+class Breeze2RevisionNotPinned(RuntimeError):
+    """No 40-hex model revision is configured, so the model must not run."""
+
+
 def allowed_model_ids() -> frozenset[str]:
     configured = os.environ.get("BREEZE2_REASON_MODEL_ID", "").strip()
     return frozenset(model for model in (DEFAULT_MODEL_ID, configured) if model)
@@ -341,7 +345,7 @@ def _decode_breeze2_output(raw_text: str, prompt_engine: Any) -> str:
 def _generate_with_transformers(payload: dict[str, Any], model_id: str, prompt: str) -> dict[str, dict[str, Any]]:
     revision = model_revision()
     if not revision:
-        raise RuntimeError("breeze2_model_revision_not_pinned")
+        raise Breeze2RevisionNotPinned("breeze2_model_revision_not_pinned")
     from transformers import AutoTokenizer, GenerationConfig  # type: ignore
     import torch
 
@@ -378,8 +382,12 @@ def generate_breeze2_reason_generation(payload: dict[str, Any]) -> dict[str, Any
         return build_fallback_breeze2_reason_generation(payload, model_id=model_id, error="execute_model_false")
     try:
         reasons = _generate_with_transformers(payload, model_id, prompt)
+    except Breeze2RevisionNotPinned:
+        return build_fallback_breeze2_reason_generation(payload, model_id=model_id, error="breeze2_model_revision_not_pinned")
     except Exception as exc:  # noqa: BLE001 - shadow provider must fail open to fallback.
-        return build_fallback_breeze2_reason_generation(payload, model_id=model_id, error=f"{type(exc).__name__}: {exc}")
+        # The report goes back over HTTP: keep the exception text in the server log, return its type only.
+        print(f"[Breeze2] model generation failed: {type(exc).__name__}: {exc}")
+        return build_fallback_breeze2_reason_generation(payload, model_id=model_id, error=type(exc).__name__)
     report = {
         "schema_version": REPORT_SCHEMA_VERSION,
         "generated_at": _utc_now(),

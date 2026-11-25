@@ -1,6 +1,6 @@
 /** The daily readiness chain as a Canvas panel: one band per phase, the main lane left to right with arrows,
  * side stages (watchdogs, fan-out work that does not gate the lane) on a second row. Positions come from dag.json. */
-import { C, STATUS, STATUS_LABELS_JSONATA, gp, statusMappings } from './lib.mjs'
+import { C, STATUS_COLOR, STATUS_LABELS_JSONATA, gp, statusMappings } from './lib.mjs'
 
 const SLOTS = 13
 const SLOT_W = 100 / SLOTS
@@ -30,7 +30,7 @@ function node(id, stage, left, top, next, w = NODE_W, h = NODE_H) {
         color: { fixed: C.line }, size: { fixed: 1.5, min: 1, max: 10 } }] : [] },
     label(`l_${id}`, stage.label, place(left, top + h * 0.05, w, h * 0.55), { color: C.txt }),
     { ...label(`t_${id}`, '', place(left, top + h * 0.55, w, h * 0.4)),
-      config: { align: 'center', valign: 'middle', size: 10, color: { field: `s_${id}`, fixed: C.sub }, text: { mode: 'field', field: `t_${id}`, fixed: '' } } },
+      config: { align: 'center', valign: 'middle', size: 10, color: { field: `c_${id}`, fixed: C.sub }, text: { mode: 'field', field: `t_${id}`, fixed: '' } } },
   ]
 }
 
@@ -49,13 +49,19 @@ export function chainElements(dag) {
       elements.push(label(`side_${phaseId}`, '↑ 旁支（不擋主線）', place(left(phase.side.length), top + SIDE_TOP, SLOT_W * 2, NODE_H), { align: 'left' }))
     }
   })
-  const legend = ['completed', 'running', 'not_started', 'at_risk', 'overdue', 'stuck', 'failed', 'skipped']
-  legend.forEach((status, i) => elements.push(label(`lg_${status}`, `■ ${STATUS[status][0]}`,
-    place(100 - (legend.length - i) * 6.4, 0.5, 6.4, TITLE_H), { color: STATUS[status][1], align: 'left' })))
+  // One swatch per colour; the node text names the exact status.
+  const legend = [['completed', '完成'], ['running', '執行中'], ['not_started', '未開始'], ['overdue', '逾時／趕不上截止'], ['failed', '失敗／卡住／漏跑']]
+  const widths = [5, 6, 6, 11, 11]
+  let left = 100 - widths.reduce((sum, w) => sum + w, 0)
+  legend.forEach(([status, name], i) => {
+    elements.push(label(`lg_${status}`, `■ ${name}`, place(left, 0.5, widths[i], TITLE_H),
+      { color: STATUS_COLOR(status, status === 'completed' ? 'edge' : 'text'), align: 'left' }))
+    left += widths[i]
+  })
   return elements
 }
 
-/** One wide row: s_<stage> (status → border and text colour), b_<stage> (fill), t_<stage> (status and its clock time). */
+/** One wide row: s_<stage> (status → border), b_<stage> (fill), c_<stage> (label colour), t_<stage> (status and its clock time). */
 export const CHAIN_PIVOT = `(
   $label := ${STATUS_LABELS_JSONATA};
   $hm := function($t) { $t ? $fromMillis($toMillis($t), '[H01]:[m01]', '+0800') : '' };
@@ -67,6 +73,7 @@ export const CHAIN_PIVOT = `(
   $merge(rows[active = true and display_position != null].{
     's_' & stage_id: display_status,
     'b_' & stage_id: 'f_' & display_status,
+    'c_' & stage_id: 'c_' & display_status,
     't_' & stage_id: $trim($lookup($label, display_status) & ' ' & $clock($))
   })
 )`
@@ -106,6 +113,6 @@ export function chainCanvas(title, target, dag, x, y, w, h) {
     options: { inlineEditing: false, showAdvancedTypes: false, panZoom: false, infinitePan: false, tooltip: { mode: 'none' },
       root: { type: 'frame', name: 'root', placement: { left: 0, top: 0, width: 100, height: 100 }, constraint: { horizontal: 'left', vertical: 'top' },
         background: fixed('transparent'), border: fixed('transparent'), elements: dag ? chainElements(dag) : [] } },
-    fieldConfig: { defaults: { mappings: statusMappings({ fills: true }), color: { mode: 'thresholds' },
+    fieldConfig: { defaults: { mappings: statusMappings('canvas'), color: { mode: 'thresholds' },
       thresholds: { mode: 'absolute', steps: [{ color: C.idle, value: null }] } }, overrides: [] } }
 }

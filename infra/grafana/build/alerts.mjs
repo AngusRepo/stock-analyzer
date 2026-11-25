@@ -34,11 +34,11 @@ const rules = [
   // checks are judged against the expected-completed data date, so `fail` is data that should be there; `warn` (one day of lag) is not paged.
   rule('sv-data-not-ready', '資料就緒：該到的資料沒到', q('/v1/data-readiness', { root: `{ 'n': $count(checks[status = 'fail']) }`, columns: [N('n', 'n')] }),
     { severity: 'warning', summary: '價格、籌碼、技術指標或首頁資料匯入有 fail。看「今天」頁的資料就緒表。', forDuration: '15m' }),
-  // Chained predicates: a null projection is dropped before the comparison.
+  // The first predicate drops databases without a projection (null) before the comparison.
   rule('sv-d1-capacity', 'D1 容量：使用率 ≥ 80% 或 30 天內會滿', q('/v1/capacity', {
-    root: `{ 'n': $count(rows[utilization_pct >= 80]) + $count(rows[$type(projected_days_to_critical_90pct) = 'number'][projected_days_to_critical_90pct <= 30]) }`,
+    root: `{ 'n': $count(rows[utilization_pct >= 80]) + $count(rows[projected_days_to_critical_90pct != null][projected_days_to_critical_90pct <= 30]) }`,
     columns: [N('n', 'n')] }),
-    { severity: 'warning', summary: '有 D1 資料庫使用率達 80%，或依成長速度 30 天內會到 90%。看「健康」頁的容量表。', forDuration: '30m' }),
+    { severity: 'warning', summary: '有 D1 資料庫使用率達 80%，或依成長速度 30 天內會到 90%。看「資源與模型」頁的容量表。', forDuration: '30m' }),
   // No rows and query errors both mean the monitoring Worker did not answer: that is the alert.
   { ...rule('sv-monitoring-silent', '監控端點拿不到資料', q('/v1/trading-day', { root: `{ 'n': rows ? 0 : 1 }`, columns: [N('n', 'n')] }),
     { severity: 'critical', summary: '監控 Worker 沒有回應或回應格式不對；其他規則此時無法判斷。', noData: 'Alerting', forDuration: '5m' }), execErrState: 'Alerting' },

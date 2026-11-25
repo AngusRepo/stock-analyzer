@@ -413,7 +413,7 @@
       "source": "monitoring-worker"
      },
      "annotations": {
-      "summary": "有 D1 資料庫使用率達 80%，或依成長速度 30 天內會到 90%。看「健康」頁的容量表。",
+      "summary": "有 D1 資料庫使用率達 80%，或依成長速度 30 天內會到 90%。看「資源與模型」頁的容量表。",
       "dashboard": "/d/sv-today"
      },
      "data": [
@@ -429,7 +429,7 @@
         "type": "json",
         "parser": "backend",
         "format": "table",
-        "root_selector": "([{ 'n': $count(rows[utilization_pct >= 80]) + $count(rows[$type(projected_days_to_critical_90pct) = 'number'][projected_days_to_critical_90pct <= 30]) }])",
+        "root_selector": "([{ 'n': $count(rows[utilization_pct >= 80]) + $count(rows[projected_days_to_critical_90pct != null][projected_days_to_critical_90pct <= 30]) }])",
         "columns": [
          {
           "selector": "n",

@@ -84,7 +84,7 @@ export const FIXTURE_TABLES: Record<string, { binding: string; tables: string[] 
   market: { binding: 'MARKET_DB', tables: ['stock_prices', 'chip_data', 'technical_indicators', 'canonical_market_daily',
     'canonical_market_index_daily', 'canonical_futures_daily', 'canonical_market_summary_daily', 'canonical_institutional_amount_daily',
     'canonical_regime_context_daily', 'external_evidence_items', 'source_quality_metrics'] },
-  ops: { binding: 'OPS_DB', tables: ['storage_capacity_daily'] },
+  ops: { binding: 'OPS_DB', tables: ['storage_capacity_daily', 'pipeline_stage_runs'] },
   learning: { binding: 'LEARNING_DB', tables: ['strategy_route_calibration_runs_v1', 'rfs_sparse_comparisons_v1'] },
   paper: { binding: 'PAPER_DB', tables: ['paper_order_intents', 'l4_portfolio_plans_v1', 'l4_portfolio_head_v1'] },
   execution: { binding: 'EXECUTION_DB', tables: ['broker_execution_intents'] },
@@ -154,4 +154,119 @@ export function weekdays(last: string, count: number): string[] {
     if (dow !== 0 && dow !== 6) out.push(date)
   }
   return out
+}
+
+type ReceiptStatus = 'completed' | 'failed' | 'blocked' | 'waiting'
+
+/** Sub-stage progress of one business date, as the main Worker's progress callbacks leave it in pipeline_stage_runs. */
+export type StageProgressSeed = {
+  finlab?: {
+    /** Must equal the finlab-v4-backfill state row's run_id, or the cards show no record. */
+    runId: string
+    /** acquire / validate / publish in order; a phase not listed has not started. Only the last may be running or waiting. */
+    phases: Array<'completed' | 'running' | 'failed' | 'waiting'>
+    startedAt: string
+    /** Length of each ended phase (default 10 min). */
+    phaseMs?: number
+    observedAt?: string
+    dispatchAttempt?: number
+  }
+  pipeline?: {
+    runId: string
+    /** The durable pipeline_execution row; waiting + lastError 'awaiting_premarket' is an accepted L3 seal. */
+    execution: { status: 'queued' | 'running' | 'waiting' | 'success' | 'error'; lastError?: string | null }
+    /** Omit for a run that has reported no phase yet. `runId` differing from the execution's is a previous run's progress. */
+    progress?: {
+      runId?: string
+      phase: string
+      status: 'running' | 'waiting' | 'completed' | 'failed' | 'blocked'
+      /** Phase receipts in order, each `phaseMs` long (default 4 min) from `startedAt`. */
+      done: Array<string | { phase: string; status: ReceiptStatus }>
+      startedAt: string
+      phaseMs?: number
+      observedAt?: string
+    }
+    batches?: Array<{ phase: 'input_prep' | 'prepare_prediction_request'; completed: number; total: number }>
+  }
+}
+
+const iso = (ms: number) => new Date(ms).toISOString()
+
+/** Replaces the date's progress rows (finlab_progress, pipeline_execution, pipeline_progress, pipeline_batches:*). */
+export async function seedStageProgress(db: D1Database, date: string, seed: StageProgressSeed): Promise<void> {
+  await db.prepare(`DELETE FROM pipeline_stage_runs WHERE business_date = ? AND stage IN ('finlab_progress', 'pipeline_execution',
+    'pipeline_progress', 'pipeline_batches:input_prep', 'pipeline_batches:prepare_prediction_request')`).bind(date).run()
+  const rows: Array<Record<string, unknown>> = []
+  const { finlab, pipeline } = seed
+  if (finlab) {
+    const step = finlab.phaseMs ?? 10 * 60_000
+    const start = Date.parse(finlab.startedAt)
+    const phases = finlab.phases.map((status, i) => ({
+      phase: (['acquire', 'validate', 'publish'] as const)[i], status, started_at: iso(start + i * step),
+      ...(status === 'running' ? {} : { completed_at: iso(start + (i + 1) * step), elapsed_ms: step }),
+    }))
+    const last = finlab.phases.at(-1)
+    const observed = finlab.observedAt ?? iso(start + finlab.phases.length * step - (last === 'running' ? step / 2 : 0))
+    rows.push({
+      business_date: date, stage: 'finlab_progress', canonical_run_id: finlab.runId, started_at: phases[0].started_at, updated_at: observed,
+      status: last === 'running' ? 'running' : finlab.phases.includes('failed') ? 'error' : last === 'completed' && phases.length === 3 ? 'success' : 'waiting',
+      cursor_key: JSON.stringify({ run_id: finlab.runId, run_date: date, dispatch_attempt: finlab.dispatchAttempt ?? 1, sequence: phases.length * 2,
+        observed_at: observed, phases }),
+    })
+  }
+  if (pipeline) {
+    rows.push({ business_date: date, stage: 'pipeline_execution', canonical_run_id: pipeline.runId, status: pipeline.execution.status,
+      last_error: pipeline.execution.lastError ?? null, updated_at: pipeline.progress?.startedAt ?? `${date}T00:00:00.000Z` })
+    const progress = pipeline.progress
+    if (progress) {
+      const step = progress.phaseMs ?? 4 * 60_000
+      const start = Date.parse(progress.startedAt)
+      const receipts = progress.done.map((item, i) => ({
+        phase: typeof item === 'string' ? item : item.phase, status: typeof item === 'string' ? 'completed' : item.status,
+        elapsed_ms: step, started_at: iso(start + i * step), completed_at: iso(start + (i + 1) * step),
+      }))
+      const phaseStart = start + receipts.length * step
+      const observed = progress.observedAt ?? iso(phaseStart + step / 2)
+      const runId = progress.runId ?? pipeline.runId
+      const execution = `${runId}-exec-1`
+      rows.push({
+        business_date: date, stage: 'pipeline_progress', canonical_run_id: runId, status: 'running', started_at: iso(start), updated_at: observed,
+        cursor_key: JSON.stringify({ phase: progress.phase, status: progress.status, started_at: iso(start), phase_started_at: iso(phaseStart),
+          observed_at: observed, execution_id: execution, completed: receipts, executions: { [execution]: receipts } }),
+      })
+      for (const batch of pipeline.batches ?? []) {
+        rows.push({ business_date: date, stage: `pipeline_batches:${batch.phase}`, canonical_run_id: runId, status: 'running', updated_at: observed,
+          cursor_key: JSON.stringify({ stage_id: 'a'.repeat(64), phase: batch.phase, completed: batch.completed, total: batch.total, observed_at: observed }) })
+      }
+    }
+  }
+  await insertRows(db, 'pipeline_stage_runs', rows)
+}
+
+/** Pipeline phases in run order: the six cards' phases through the L3 seal, then pre-market L4. */
+export const PIPELINE_RUN_PHASES = ['node_load_inputs', 'node_load_market_env', 'node_attach_serving_context', 'node_prepare_l2_inputs',
+  'input_snapshot', 'input_prep', 'node_build_payloads', 'node_prepare_sequence_inputs', 'node_l2_timesfm_enrich', 'seal_l2_inputs',
+  'prepare_prediction_request', 'dispatch_prediction', 'modal_inference', 'node_l3_formal_predict', 'seal_l3_results',
+  'node_compute_personas', 'node_recommend', 'node_write_d1']
+
+/** A mid-run evening as of `nowMs`: FinLab published all three phases; the pipeline is in L2 (TimesFM) with the
+ * input, snapshot, feature-batch and assembly cards done. The state rows to go with it: finlab-v4-backfill
+ * success with run_id `finlab-<date>`, pipeline running. */
+export function midRunProgress(date: string, nowMs: number): StageProgressSeed {
+  const pipelineStart = nowMs - (8 * 4 + 2) * 60_000
+  return {
+    finlab: { runId: `finlab-${date}`, phases: ['completed', 'completed', 'completed'], startedAt: iso(pipelineStart - 60 * 60_000) },
+    pipeline: { runId: `pipeline-${date}`, execution: { status: 'running' }, batches: [{ phase: 'input_prep', completed: 8, total: 8 }],
+      progress: { phase: 'node_l2_timesfm_enrich', status: 'running', done: PIPELINE_RUN_PHASES.slice(0, 8), startedAt: iso(pipelineStart) } },
+  }
+}
+
+/** A finished day: every phase has its receipt and the durable pipeline stage is success. State rows: both parents
+ * success, finlab-v4-backfill with run_id `finlab-<date>`. */
+export function finishedProgress(date: string): StageProgressSeed {
+  return {
+    finlab: { runId: `finlab-${date}`, phases: ['completed', 'completed', 'completed'], startedAt: `${date}T10:20:00.000Z` },
+    pipeline: { runId: `pipeline-${date}`, execution: { status: 'success' }, batches: [{ phase: 'input_prep', completed: 8, total: 8 }],
+      progress: { phase: 'node_export_dataset_snapshot', status: 'completed', done: PIPELINE_RUN_PHASES, startedAt: `${date}T15:40:00.000Z` } },
+  }
 }

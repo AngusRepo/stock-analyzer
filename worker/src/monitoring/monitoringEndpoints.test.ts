@@ -3,9 +3,12 @@ import { readFileSync } from 'node:fs'
 import { after, before, test } from 'node:test'
 import { STRATEGY_ROUTE_CHALLENGER_VERSION } from '../lib/strategyRouteCalibration'
 import { CHAIN_ID, CHAIN_ROOT_STAGE } from './chain'
+import { PROGRESS_SQL, PROGRESS_STAGES } from './chainSubStages'
 import { MATERIALIZATION_SOURCES } from './dataReadiness'
+import { FINLAB_STAGE_CARDS } from './judgment/finlabStageCards'
+import { PIPELINE_STAGE_CARDS } from './judgment/pipelineStageCards'
 import { createMonitoringHandler, ROUTES, SLOW_TTL_S, TIMELINE_TTL_S } from './index'
-import { day, insertRows, startFixture, tableScans, tempSorts, weekdays, type Fixture } from './monitoringFixture.testSupport'
+import { day, finishedProgress, insertRows, midRunProgress, seedStageProgress, startFixture, tableScans, tempSorts, weekdays, type Fixture } from './monitoringFixture.testSupport'
 import type { ExecutedQuery } from './readOnlyD1'
 import { accessHeaders, accessKeys, fakeCache, TEST_AUD, TEST_TEAM, TEST_TOKEN } from './monitoringAuth.testSupport'
 
@@ -22,6 +25,15 @@ const STAGES = ['market-close-refresh', 'finlab-v4-backfill', 'finlab-backfill-w
   'active8-oof-daily', 'allocator-ev-lifecycle-watchdog']
 /** Full catalog for X and X−1. Section 5's ≤ 50 assumed 25 stages; with 33 the floor is 66 (reported to the owner). */
 const STATE_MAX_ROWS_READ = 2 * STAGES.length
+/** Trading days of the 14 calendar days ending at X (10). The 14-day history is one state row per stage per day;
+ * state and alerts read it too (ETA, failures_14d): all of it without the memo, X and X−1 only with it. */
+const HISTORY_DATES = weekdays(X, 14).filter((date) => date >= day(X, -13))
+const HISTORY_MAX_ROWS_READ = HISTORY_DATES.length * STAGES.length
+/** Sub-stage progress for X and X−1: one primary-key seek per (date, stage), at most one row each. D1 bills the
+ * index entry and the table row (measured: 10 rows → 22, 8 → 20, none → 4). */
+const PROGRESS_MAX_ROWS_READ = 2 * 2 * PROGRESS_STAGES.length + 4
+const FINLAB_CARDS = FINLAB_STAGE_CARDS.map((card) => card.id as string)
+const PIPELINE_CARDS = PIPELINE_STAGE_CARDS.map((card) => card.id as string)
 /** 10 trading days × 33 stages × 3 transitions; section 5's ≤ 750 assumed 25 stages (reported). */
 const TIMELINE_MAX_ROWS_READ = 10 * STAGES.length * 3
 
@@ -159,11 +171,21 @@ async function endpoint(path: string, maxRowsRead: number) {
   return result.body
 }
 
-test('/v1/chain/state: X and X−1 by primary-key seek, 2 × catalog rows, DAG-annotated', async () => {
-  const body = await endpoint('/v1/chain/state', STATE_MAX_ROWS_READ)
-  assert.deepEqual([body.business_date, body.previous_business_date], [X, XPREV])
-  assert.equal(body.rows.length, X_ROWS.length + STAGES.length)
-  assert.ok(body.rows.slice(0, X_ROWS.length).every((row: any) => row.business_date === X), 'X first, DAG order')
+test('/v1/chain/state: X and X−1 by primary-key seek, DAG-annotated, sub-stage cards without a progress record', async () => {
+  const body = await endpoint('/v1/chain/state', HISTORY_MAX_ROWS_READ + PROGRESS_MAX_ROWS_READ)
+  assert.deepEqual([body.business_date, body.previous_business_date, body.active_business_date], [X, XPREV, X])
+  // X has the FinLab parent only (3 cards); X−1 has both parents (9 cards).
+  assert.equal(body.rows.length, X_ROWS.length + FINLAB_CARDS.length + STAGES.length + FINLAB_CARDS.length + PIPELINE_CARDS.length)
+  assert.ok(body.rows.slice(0, X_ROWS.length + FINLAB_CARDS.length).every((row: any) => row.business_date === X && row.active), 'X first, DAG order')
+  assert.equal(body.rows.filter((row: any) => !row.sub_stage).length, X_ROWS.length + STAGES.length)
+  // No progress row at all: every card says so; a parent's success is never a card's.
+  const cards = body.rows.filter((row: any) => row.sub_stage)
+  assert.ok(cards.every((row: any) => row.status === 'pending' && row.started_at === null && row.completed_at === null && row.run_id === null))
+  const finlabCards = cards.filter((row: any) => row.parent_stage_id === 'finlab-v4-backfill')
+  assert.ok(finlabCards.every((row: any) => row.visual_status === 'waiting' && row.status_label === '無階段紀錄' && row.summary.startsWith('無階段紀錄')))
+  const pipelineCards = cards.filter((row: any) => row.parent_stage_id === 'pipeline')
+  assert.deepEqual(pipelineCards.map((row: any) => [row.business_date, row.stage_id, row.visual_status, row.summary]),
+    PIPELINE_CARDS.map((id) => [XPREV, id, 'not_started', '本輪尚未開始']))
   const update = body.rows.find((row: any) => row.business_date === X && row.stage_id === 'update')
   assert.deepEqual([update.visual_status, update.phase, update.alerts], ['running', 'sources', ['stuck']])
   const failed = body.rows.find((row: any) => row.stage_id === 'finlab-v4-backfill' && row.business_date === X)
@@ -172,7 +194,7 @@ test('/v1/chain/state: X and X−1 by primary-key seek, 2 × catalog rows, DAG-a
 })
 
 test('/v1/chain/alerts: failed / overdue / stuck / missed per the contract', async () => {
-  const body = await endpoint('/v1/chain/alerts', STATE_MAX_ROWS_READ)
+  const body = await endpoint('/v1/chain/alerts', HISTORY_MAX_ROWS_READ)
   const got = body.rows.map((row: any) => `${row.stage_id}:${row.kind}`).sort()
   assert.deepEqual(got, [
     'finlab-v4-backfill:failed', // error, deadline not passed yet
@@ -188,7 +210,7 @@ test('/v1/chain/alerts: failed / overdue / stuck / missed per the contract', asy
 test('/v1/chain/alerts: missed root, chain absent after the configured deadline', async () => {
   await fx.raw.OPS_DB.prepare("UPDATE ops_chain_stage_state_v1 SET status = 'pending', started_at = NULL, completed_at = NULL WHERE business_date = ? AND stage_id = ?")
     .bind(X, CHAIN_ROOT_STAGE).run()
-  const body = await endpoint('/v1/chain/alerts', STATE_MAX_ROWS_READ)
+  const body = await endpoint('/v1/chain/alerts', HISTORY_MAX_ROWS_READ)
   assert.ok(body.rows.some((row: any) => row.stage_id === CHAIN_ROOT_STAGE && row.kind === 'missed' && row.business_date === X))
   await fx.raw.OPS_DB.prepare("UPDATE ops_chain_stage_state_v1 SET status = 'success' WHERE business_date = ? AND stage_id = ?").bind(X, CHAIN_ROOT_STAGE).run()
 })
@@ -198,6 +220,252 @@ test('/v1/chain/timeline?days=14: primary-key range, 10 trading days of transiti
   assert.equal(body.from, day(X, -13))
   assert.equal(body.truncated, false)
   assert.ok(body.rows.length > 800 && body.rows.every((row: any) => row.time === row.transition_at))
+})
+
+test('/v1/chain/history?days=14: final state per stage per day, repeat failures; alerts carry failures_14d', async () => {
+  const set = (sql: string, ...binds: unknown[]) => fx.raw.OPS_DB.prepare(sql).bind(...binds).run()
+  await set("UPDATE ops_chain_stage_state_v1 SET status = 'error', error = 'FinLab margin dates missing' WHERE stage_id = 'finlab-v4-backfill' AND business_date IN (?, ?)",
+    '2026-11-19', '2026-11-20')
+  await set("UPDATE ops_chain_stage_state_v1 SET attempt = 2 WHERE stage_id = 'update' AND business_date = ?", '2026-11-18')
+  try {
+    const body = await endpoint('/v1/chain/history?days=14', HISTORY_MAX_ROWS_READ)
+    assert.deepEqual([body.from, body.to, body.truncated], [day(X, -13), X, false])
+    assert.equal(body.rows.length, (HISTORY_DATES.length - 1) * STAGES.length + X_ROWS.length)
+    assert.deepEqual(body.rows.map((row: any) => row.business_date), [...body.rows.map((row: any) => row.business_date)].sort(), 'oldest first')
+    const cell = (date: string, stage: string) => body.rows.find((row: any) => row.business_date === date && row.stage_id === stage)
+    const retried = cell('2026-11-18', 'update')
+    assert.deepEqual([retried.time, retried.status, retried.attempt, retried.result, retried.optional], ['2026-11-17T16:00:00.000Z', 'success', 2, 'retry_success', false])
+    assert.equal(cell('2026-11-17', 'update').result, 'success')
+    assert.deepEqual([cell(X, 'finlab-backfill-watchdog').optional, cell(X, 'finlab-backfill-watchdog').result], [true, 'error'])
+    assert.deepEqual(body.repeat_failures.map((item: any) => [item.stage_id, item.failures, item.repeat, item.last_failed_date, item.dates]), [
+      ['finlab-v4-backfill', 3, true, X, `2026-11-19,2026-11-20,${X}`],
+      ['finlab-backfill-watchdog', 1, false, X, X],
+    ])
+    assert.equal(body.repeat_failures[0].last_error, 'FinLab margin dates missing')
+    const alerts = await endpoint('/v1/chain/alerts', HISTORY_MAX_ROWS_READ)
+    assert.deepEqual(Object.fromEntries(alerts.rows.map((row: any) => [`${row.stage_id}:${row.kind}`, row.failures_14d])), {
+      'finlab-v4-backfill:failed': 3, 'finlab-backfill-watchdog:failed': 1, 'regime-compute:overdue': 0, 'update:stuck': 0,
+    })
+  } finally {
+    await set("UPDATE ops_chain_stage_state_v1 SET status = 'success', error = NULL WHERE stage_id = 'finlab-v4-backfill' AND business_date IN (?, ?)", '2026-11-19', '2026-11-20')
+    await set("UPDATE ops_chain_stage_state_v1 SET attempt = 1 WHERE stage_id = 'update' AND business_date = ?", '2026-11-18')
+  }
+})
+
+test('/v1/chain/state: ETA from the typical finishing offset, at risk before the deadline passes, chain summary', async () => {
+  const set = (sql: string, ...binds: unknown[]) => fx.raw.OPS_DB.prepare(sql).bind(...binds).run()
+  // The seeded history finishes stage i at root start + floor(i / 4) h + (i % 4) × 15 min; verify-v2 (i = 13) at +195 min.
+  await set("UPDATE ops_chain_stage_state_v1 SET started_at = '2026-11-24T06:00:00Z', completed_at = '2026-11-24T06:10:00Z' WHERE business_date = ? AND stage_id = ?", X, CHAIN_ROOT_STAGE)
+  await set("UPDATE ops_chain_stage_state_v1 SET expected_by = '2026-11-24T09:00:00.000Z' WHERE business_date = ? AND stage_id = 'verify-v2'", X)
+  try {
+    // 14:30 TW: the chain started 30 minutes ago and no deadline has passed yet.
+    const early = Date.parse('2026-11-24T06:30:00Z')
+    const keys = await accessKeys()
+    const handler = createMonitoringHandler({ now: () => early, fetch: keys.fetcher, cache: null, onQuery: (query) => queries.push(query) })
+    const env = { ...fx.env, ACCESS_TEAM_DOMAIN: TEST_TEAM, ACCESS_AUD: TEST_AUD, MONITORING_READ_TOKEN: TEST_TOKEN }
+    const body = await (await handler(new Request('https://monitoring.test/v1/chain/state', { headers: await accessHeaders(keys, early) }), env)).json() as any
+    const eta = (stage: string, date = X) => {
+      const row = body.rows.find((item: any) => item.business_date === date && item.stage_id === stage)
+      return [row.typical_done_offset_min, row.eta, row.eta_margin_min, row.at_risk, row.alerts]
+    }
+    assert.deepEqual(eta('verify-v2'), [195, '2026-11-24T09:15:00.000Z', -15, true, []], 'typically done 15 minutes after its deadline: at risk, not overdue')
+    assert.deepEqual(eta('update'), [45, '2026-11-24T06:45:00.000Z', 555, false, []])
+    assert.deepEqual(eta('finlab-v4-backfill').slice(0, 4), [15, null, null, false], 'ended stages have no ETA')
+    assert.deepEqual(eta('daily-report', XPREV).slice(0, 4), [270, null, null, false])
+    const [today, previous] = body.current
+    assert.deepEqual([today.business_date, today.required_total, today.required_done, today.failed, today.root_started_at, today.elapsed_min,
+      today.worst_margin_min, today.worst_margin_stage], [X, X_ROWS.length - 1, 2, 2, '2026-11-24T06:00:00.000Z', 30, -15, 'verify-v2'])
+    // X−1 ended: elapsed is root start to its last finish (i = 32: +8 h), not to now.
+    assert.deepEqual([previous.business_date, previous.required_total, previous.required_done, previous.failed, previous.elapsed_min,
+      previous.worst_margin_min, previous.worst_margin_stage], [XPREV, STAGES.length, STAGES.length, 0, 480, null, null])
+  } finally {
+    await set("UPDATE ops_chain_stage_state_v1 SET expected_by = '2026-11-24T16:00:00Z' WHERE business_date = ? AND stage_id = 'verify-v2'", X)
+  }
+  // 23:00 TW: a stage past its typical finishing time is expected no earlier than now.
+  const late = (await call('/v1/chain/state')).body.rows.filter((row: any) => row.business_date === X)
+  const at = (stage: string) => { const row = late.find((item: any) => item.stage_id === stage); return [row.eta, row.eta_margin_min, row.at_risk] }
+  assert.deepEqual(at('regime-compute'), [new Date(NOW).toISOString(), -30, true], 'overdue implies at risk')
+  assert.deepEqual(at('verify-v2'), [new Date(NOW).toISOString(), 60, false])
+})
+
+/** /v1/chain/state at another clock; `cache` keeps the memo across calls of one handler. */
+async function stateAt(now: number, cache: unknown = null, path = '/v1/chain/state') {
+  const keys = await accessKeys()
+  const handler = createMonitoringHandler({ now: () => now, fetch: keys.fetcher, cache: cache as never, onQuery: (query) => queries.push(query) })
+  const env = { ...fx.env, ACCESS_TEAM_DOMAIN: TEST_TEAM, ACCESS_AUD: TEST_AUD, MONITORING_READ_TOKEN: TEST_TOKEN }
+  return await (await handler(new Request(`https://monitoring.test${path}`, { headers: await accessHeaders(keys, now) }), env)).json() as any
+}
+
+test('/v1/chain/state: the 9 sub-stage cards from pipeline_stage_runs, only for the run each parent names', async () => {
+  const db = fx.raw.OPS_DB
+  const set = (sql: string, ...binds: unknown[]) => db.prepare(sql).bind(...binds).run()
+  const finlabRun = (date: string, run: string | null) => set("UPDATE ops_chain_stage_state_v1 SET run_id = ? WHERE business_date = ? AND stage_id = 'finlab-v4-backfill'", run, date)
+  const cardsOf = (body: any, date: string, parent: string) => body.rows.filter((row: any) => row.business_date === date && row.parent_stage_id === parent)
+  const counts = (body: any) => body.current.map((item: any) => [item.business_date, item.required_total, item.required_done, item.failed])
+  // X mid-run: FinLab in its second phase, the pipeline (a running state row) in L2. X−1: a finished day.
+  await set("UPDATE ops_chain_stage_state_v1 SET status = 'running', error = NULL, completed_at = NULL, started_at = '2026-11-24T14:35:00Z' WHERE business_date = ? AND stage_id = 'finlab-v4-backfill'", X)
+  await insertRows(db, 'ops_chain_stage_state_v1', [{ business_date: X, chain_id: CHAIN_ID, stage_id: 'pipeline', status: 'running', attempt: 1,
+    run_id: 'ticket-run', execution_name: 'pipeline-v2-exec', started_at: '2026-11-24T14:20:00Z', expected_by: '2026-11-25T00:00:00.000Z', updated_at: '2026-11-24T14:20:00Z' }])
+  const withoutProgress = counts(await stateAt(NOW))
+  try {
+    await finlabRun(X, `finlab-${X}`)
+    await finlabRun(XPREV, `finlab-${XPREV}`)
+    await seedStageProgress(db, XPREV, finishedProgress(XPREV))
+    await seedStageProgress(db, X, { ...midRunProgress(X, NOW),
+      finlab: { runId: `finlab-${X}`, phases: ['completed', 'running'], startedAt: '2026-11-24T14:35:00.000Z' } })
+    const start = queries.length
+    const body = await stateAt(NOW)
+    assert.ok(body.rows_read <= HISTORY_MAX_ROWS_READ + PROGRESS_MAX_ROWS_READ, `rows_read=${body.rows_read}`)
+    measured['/v1/chain/state (18 cards, progress seeded)'] = body.rows_read
+
+    // One primary-key seek per (date, stage): 4 progress rows a date here (index entry + table row each).
+    const read = queries.slice(start).filter((query) => query.sql === PROGRESS_SQL)
+    assert.deepEqual(read.map((query) => query.rowsRead), [20])
+    const plan = (await db.prepare(`EXPLAIN QUERY PLAN ${PROGRESS_SQL}`).bind(X, XPREV).all<{ detail: string }>()).results.map((row) => row.detail)
+    assert.deepEqual(plan, ['SEARCH pipeline_stage_runs USING INDEX sqlite_autoindex_pipeline_stage_runs_1 (business_date=? AND stage=?)'])
+
+    const finlab = cardsOf(body, X, 'finlab-v4-backfill')
+    assert.deepEqual(finlab.map((row: any) => [row.stage_id, row.status, row.visual_status, row.display_status, row.started_at, row.completed_at]), [
+      ['finlab-acquire', 'success', 'completed', 'completed', '2026-11-24T14:35:00.000Z', '2026-11-24T14:45:00.000Z'],
+      ['finlab-validate', 'running', 'running', 'running', '2026-11-24T14:45:00.000Z', null],
+      ['finlab-publish', 'pending', 'waiting', 'waiting', null, null],
+    ])
+    assert.deepEqual(finlab.map((row: any) => [row.label, row.phase, row.run_id, row.summary]), [
+      ['FinLab 資料取得', 'sources', `finlab-${X}`, '取得所需來源與必要格式整理'],
+      ['FinLab 整理與驗證', 'sources', `finlab-${X}`, '跨資料集完整性驗證與推論輸入組合'],
+      ['FinLab 發布與交接', 'sources', `finlab-${X}`, '等待前一階段完成'],
+    ])
+    const pipeline = cardsOf(body, X, 'pipeline')
+    assert.deepEqual(pipeline.map((row: any) => [row.stage_id, row.visual_status, row.status, row.summary]), [
+      ['pipeline-inputs', 'completed', 'success', '階段已完成'],
+      ['pipeline-snapshot', 'completed', 'success', '階段已完成'],
+      ['pipeline-feature-batches', 'completed', 'success', '階段已完成 · 特徵批次 8/8'],
+      ['pipeline-features', 'completed', 'success', '階段已完成'],
+      ['pipeline-l2', 'running', 'running', 'L2 時序特徵'],
+      ['pipeline-l3', 'waiting', 'pending', '等待L2 特徵增強完成'],
+    ])
+    // The canonical run of pipeline_execution, not the ticket run the state row holds.
+    assert.ok(pipeline.every((row: any) => row.run_id === `pipeline-${X}` && row.phase === 'models' && row.status_label))
+    assert.ok(pipeline.slice(0, 4).every((row: any) => row.started_at && row.completed_at) && pipeline[4].started_at && pipeline[4].completed_at === null)
+    assert.deepEqual([pipeline[5].started_at, pipeline[5].completed_at], [null, null])
+    const done = [...cardsOf(body, XPREV, 'finlab-v4-backfill'), ...cardsOf(body, XPREV, 'pipeline')]
+    assert.deepEqual(done.map((row: any) => row.stage_id), [...FINLAB_CARDS, ...PIPELINE_CARDS])
+    assert.ok(done.every((row: any) => row.visual_status === 'completed' && row.status === 'success' && row.started_at && row.completed_at && !row.active))
+
+    // Cards are display rows only: no deadline, alert or ETA; parents stay; the counts are the catalog stages'.
+    const cards = body.rows.filter((row: any) => row.sub_stage)
+    assert.equal(cards.length, 18)
+    assert.ok(cards.every((row: any) => row.expected_by === null && row.alerts.length === 0 && row.eta === null && row.eta_margin_min === null
+      && row.typical_done_offset_min === null && row.at_risk === false && row.display_position === row.position && row.position != null))
+    assert.deepEqual(counts(body), withoutProgress)
+    assert.deepEqual(counts(body), [[X, X_ROWS.length, 2, 1], [XPREV, STAGES.length, STAGES.length, 0]])
+    const alerts = (await call('/v1/chain/alerts')).body.rows.map((row: any) => row.stage_id)
+    assert.ok(!alerts.some((id: string) => FINLAB_CARDS.includes(id) || PIPELINE_CARDS.includes(id)))
+    // display_position: the panel's order, cards in place of their parents, ml-predict nowhere.
+    const day1 = body.rows.filter((row: any) => row.business_date === XPREV)
+    for (const id of ['finlab-v4-backfill', 'pipeline', 'ml-predict']) {
+      const parent = day1.find((row: any) => row.stage_id === id)
+      assert.deepEqual([parent.sub_stage, parent.parent_stage_id, parent.display_position, parent.position], [false, null, null, null], id)
+    }
+    const shown = day1.filter((row: any) => row.display_position != null)
+    assert.deepEqual(shown.map((row: any) => row.display_position), shown.map((_: unknown, index: number) => index))
+    assert.equal(shown.length, STAGES.length - 3 + 9)
+    assert.deepEqual(shown.slice(1, 4).map((row: any) => row.stage_id), FINLAB_CARDS)
+    assert.ok(PIPELINE_CARDS.includes(body.current[0].stage_id) || FINLAB_CARDS.includes(body.current[0].stage_id) || STAGES.includes(body.current[0].stage_id))
+
+    // With the memo, a poll past the route TTL reads X, X−1 and the progress rows.
+    let clock = NOW
+    const cache = fakeCache(() => clock)
+    await stateAt(clock, cache)
+    clock += (TIMELINE_TTL_S + 61) * 1000
+    const warm = await stateAt(clock, cache)
+    assert.ok(warm.rows_read <= STATE_MAX_ROWS_READ + PROGRESS_MAX_ROWS_READ, `warm=${warm.rows_read}`)
+    measured['warm /v1/chain/state (18 cards, progress seeded)'] = warm.rows_read
+
+    // Another run's progress is no record: FinLab by the state row's run_id, the pipeline by pipeline_execution's run.
+    await finlabRun(X, 'another-run')
+    await seedStageProgress(db, X, { ...midRunProgress(X, NOW), pipeline: { runId: `pipeline-${X}`, execution: { status: 'running' },
+      progress: { runId: 'older-run', phase: 'node_l2_timesfm_enrich', status: 'running', done: ['node_load_inputs'], startedAt: '2026-11-24T14:20:00.000Z' } } })
+    const other = await stateAt(NOW)
+    assert.ok(cardsOf(other, X, 'finlab-v4-backfill').every((row: any) => row.status === 'pending' && row.status_label === '無階段紀錄' && row.run_id === null && row.started_at === null))
+    assert.deepEqual(cardsOf(other, X, 'pipeline').map((row: any) => [row.visual_status, row.summary, row.run_id]), PIPELINE_CARDS.map(() => ['not_started', '本輪尚未開始', null]))
+    // A dispatch attempt the state row names that is newer than the progress: the progress is a previous attempt's.
+    await finlabRun(X, `finlab-${X}`)
+    await set("UPDATE ops_chain_stage_state_v1 SET summary = 'triggered FinLab watchdog dispatch reservation run_id=r dispatch_attempt=2' WHERE business_date = ? AND stage_id = 'finlab-v4-backfill'", X)
+    assert.ok(cardsOf(await stateAt(NOW), X, 'finlab-v4-backfill').every((row: any) => row.status_label === '無階段紀錄'))
+    await set("UPDATE ops_chain_stage_state_v1 SET summary = NULL WHERE business_date = ? AND stage_id = 'finlab-v4-backfill'", X)
+
+    // A failed parent: the card in flight failed itself (failed), the cards behind it never ran (blocked).
+    await set("UPDATE ops_chain_stage_state_v1 SET status = 'error', error = 'pipeline_l2_failed' WHERE business_date = ? AND stage_id = 'pipeline'", X)
+    await seedStageProgress(db, X, { ...midRunProgress(X, NOW), finlab: { runId: `finlab-${X}`, phases: ['completed', 'failed'], startedAt: '2026-11-24T14:35:00.000Z' } })
+    const failed = await stateAt(NOW)
+    assert.deepEqual(cardsOf(failed, X, 'finlab-v4-backfill').map((row: any) => [row.status, row.visual_status, row.display_status, row.completed_at]), [
+      ['success', 'completed', 'completed', '2026-11-24T14:45:00.000Z'], ['error', 'blocked', 'failed', '2026-11-24T14:55:00.000Z'], ['pending', 'waiting', 'waiting', null]])
+    assert.deepEqual(cardsOf(failed, X, 'pipeline').slice(4).map((row: any) => [row.stage_id, row.status, row.visual_status, row.display_status, row.error]), [
+      ['pipeline-l2', 'error', 'blocked', 'failed', 'pipeline_l2_failed'], ['pipeline-l3', 'blocked', 'blocked', 'blocked', null]])
+    assert.equal(failed.current[0].failed, 2, 'the pipeline row and the watchdog row; no card')
+    await set("UPDATE ops_chain_stage_state_v1 SET status = 'running', error = NULL WHERE business_date = ? AND stage_id = 'pipeline'", X)
+
+    // L3 sealed: pipeline_execution waits on awaiting_premarket. The state row stays running with its own summary.
+    const sealedRun = { runId: `pipeline-${X}`, execution: { status: 'waiting' as const, lastError: 'awaiting_premarket' } }
+    await seedStageProgress(db, X, { pipeline: { ...sealedRun, progress: { phase: 'awaiting_premarket', status: 'waiting',
+      done: ['node_load_inputs', 'node_load_market_env', 'node_attach_serving_context', 'node_prepare_l2_inputs', 'node_build_payloads',
+        'node_prepare_sequence_inputs', 'seal_l2_inputs', 'prepare_prediction_request', 'dispatch_prediction', 'modal_inference', 'node_l3_formal_predict', 'seal_l3_results'],
+      startedAt: '2026-11-24T13:00:00.000Z' } } })
+    const sealed = await stateAt(NOW)
+    assert.deepEqual(cardsOf(sealed, X, 'pipeline').map((row: any) => [row.visual_status, row.summary]), [
+      ['completed', '階段已完成'], ['noop', '本輪無子作業紀錄'], ['noop', '本輪無子作業紀錄'], ['completed', '階段已完成'], ['completed', '階段已完成'], ['completed', '階段已完成']])
+    const parent = sealed.rows.find((row: any) => row.business_date === X && row.stage_id === 'pipeline')
+    assert.deepEqual([parent.status, parent.summary, parent.run_id], ['running', null, 'ticket-run'])
+    // The seal alone (no progress row) proves L3 and nothing else.
+    await seedStageProgress(db, X, { pipeline: sealedRun })
+    assert.deepEqual(cardsOf(await stateAt(NOW), X, 'pipeline').map((row: any) => row.visual_status),
+      ['not_started', 'not_started', 'not_started', 'not_started', 'not_started', 'completed'])
+  } finally {
+    await seedStageProgress(db, X, {})
+    await seedStageProgress(db, XPREV, {})
+    await set("DELETE FROM ops_chain_stage_state_v1 WHERE business_date = ? AND stage_id = 'pipeline'", X)
+    await set("UPDATE ops_chain_stage_state_v1 SET status = 'error', error = 'FinLab margin dates missing', run_id = NULL, summary = NULL, started_at = NULL, completed_at = '2026-11-24T07:00:00Z' WHERE business_date = ? AND stage_id = 'finlab-v4-backfill'", X)
+    await finlabRun(XPREV, null)
+  }
+})
+
+test('/v1/chain/state: active_business_date is X once it has rows, else the chain still in flight (X−1)', async () => {
+  const flags = (body: any) => [body.business_date, body.active_business_date, body.current.map((item: any) => item.active),
+    [...new Set(body.rows.map((row: any) => `${row.business_date}:${row.active}`))]]
+  assert.deepEqual(flags(await stateAt(NOW)), [X, X, [true, false], [`${X}:true`, `${XPREV}:false`]])
+  // 11/25 (Wed) 08:00 TW: X = 11/25 has no row until its 18:10 root; the chain in flight is 11/24's.
+  assert.deepEqual(flags(await stateAt(Date.parse('2026-11-25T00:00:00Z'))), ['2026-11-25', X, [false, true], [`${X}:true`]])
+  // Neither date has rows: X.
+  assert.deepEqual(flags(await stateAt(NOW, null, '/v1/chain/state?date=2026-10-01')), ['2026-10-01', '2026-10-01', [true, false], []])
+})
+
+test('/v1/chain/state: display_status is failed > overdue > stuck > at risk, else the visual status', async () => {
+  const set = (sql: string, ...binds: unknown[]) => fx.raw.OPS_DB.prepare(sql).bind(...binds).run()
+  const expectedBy = (stage: string, at: string) => set('UPDATE ops_chain_stage_state_v1 SET expected_by = ? WHERE business_date = ? AND stage_id = ?', at, X, stage)
+  const shown = (body: any, stage: string, date = X) => {
+    const row = body.rows.find((item: any) => item.business_date === date && item.stage_id === stage)
+    return [row.status, row.display_status, row.visual_status, row.alerts, row.at_risk]
+  }
+  await set("UPDATE ops_chain_stage_state_v1 SET started_at = '2026-11-24T06:00:00Z' WHERE business_date = ? AND stage_id = ?", X, CHAIN_ROOT_STAGE)
+  await expectedBy('verify-v2', '2026-11-24T14:00:00.000Z')
+  await expectedBy('regime-compute', '2026-11-24T07:00:00.000Z')
+  try {
+    const late = await stateAt(NOW) // 23:00 TW
+    assert.deepEqual(shown(late, 'verify-v2'), ['running', 'overdue', 'running', ['overdue'], true], 'an overdue running row')
+    assert.deepEqual(shown(late, 'finlab-v4-backfill'), ['error', 'failed', 'blocked', ['failed'], false])
+    assert.deepEqual(shown(late, 'update'), ['running', 'stuck', 'running', ['stuck'], false])
+    assert.deepEqual(shown(late, 'allocator-ev-readiness'), ['running', 'running', 'running', [], false])
+    assert.deepEqual(shown(late, 'screener').slice(0, 2), ['skipped', late.rows.find((row: any) => row.business_date === X && row.stage_id === 'screener').visual_status])
+    assert.deepEqual(shown(late, 'update', XPREV), ['success', 'completed', 'completed', [], false])
+    // 14:30 TW: regime-compute has not started and typically ends at 15:15, after its 15:00 deadline.
+    const early = await stateAt(Date.parse('2026-11-24T06:30:00Z'))
+    assert.deepEqual(shown(early, 'regime-compute'), ['pending', 'at_risk', 'not_started', [], true], 'an at-risk pending row')
+    assert.deepEqual(shown(early, 'verify-v2'), ['running', 'running', 'running', [], false])
+  } finally {
+    await expectedBy('verify-v2', '2026-11-24T16:00:00Z')
+    await expectedBy('regime-compute', '2026-11-24T14:30:00Z')
+  }
 })
 
 test('/v1/data-readiness: index seeks only, ≤ 20k rows on 2,346-stock sessions', async () => {
@@ -294,9 +562,11 @@ test('memo: a poll past the route TTL re-reads only what changed (counts, timeli
   }
   const expire = (ttl: number) => { clock += (ttl + 1) * 1000 }
   const readiness = `/v1/data-readiness?date=${X}`
-  const cold = { readiness: await get(readiness), timeline: await get('/v1/chain/timeline?days=14'), capacity: await get('/v1/capacity') }
+  const cold = { readiness: await get(readiness), timeline: await get('/v1/chain/timeline?days=14'), capacity: await get('/v1/capacity'),
+    history: await get('/v1/chain/history?days=14') }
   expire(Math.max(SLOW_TTL_S, TIMELINE_TTL_S))
-  const warm = { readiness: await get(readiness), timeline: await get('/v1/chain/timeline?days=14'), capacity: await get('/v1/capacity') }
+  const warm = { readiness: await get(readiness), timeline: await get('/v1/chain/timeline?days=14'), capacity: await get('/v1/capacity'),
+    history: await get('/v1/chain/history?days=14'), state: await get('/v1/chain/state'), alerts: await get('/v1/chain/alerts') }
 
   // The three per-date counts and the breadth join are not repeated: 4 MAX(rowid) seeks instead.
   assert.ok(warm.readiness.rows_read < cold.readiness.rows_read - 12_000, `readiness cold=${cold.readiness.rows_read} warm=${warm.readiness.rows_read}`)
@@ -304,10 +574,21 @@ test('memo: a poll past the route TTL re-reads only what changed (counts, timeli
   // Only X and X−1 are read again (the fixture's X has no transitions yet).
   assert.ok(warm.timeline.rows_read <= 2 * STAGES.length * 3, `timeline cold=${cold.timeline.rows_read} warm=${warm.timeline.rows_read}`)
   assert.deepEqual(warm.timeline.rows, cold.timeline.rows)
+  // History: the ended days come from the memo; state and alerts (ETA, failures_14d) read X and X−1 only.
+  assert.ok(cold.history.rows_read > 8 * STAGES.length && cold.history.rows_read <= HISTORY_MAX_ROWS_READ, `history cold=${cold.history.rows_read}`)
+  assert.ok(warm.history.rows_read <= STATE_MAX_ROWS_READ, `history warm=${warm.history.rows_read}`)
+  assert.deepEqual([warm.history.rows, warm.history.repeat_failures], [cold.history.rows, cold.history.repeat_failures])
+  assert.ok(warm.state.rows_read <= STATE_MAX_ROWS_READ + PROGRESS_MAX_ROWS_READ && warm.alerts.rows_read <= STATE_MAX_ROWS_READ,
+    `state warm=${warm.state.rows_read} alerts warm=${warm.alerts.rows_read}`)
+  assert.equal(warm.state.rows.find((row: any) => row.business_date === XPREV && row.stage_id === 'update').typical_done_offset_min, 45)
   assert.equal(warm.capacity.rows_read, 0)
   assert.deepEqual(warm.capacity.rows, cold.capacity.rows)
   measured['warm /v1/data-readiness'] = warm.readiness.rows_read
   measured['warm /v1/chain/timeline'] = warm.timeline.rows_read
+  measured['cold /v1/chain/history (memo test)'] = cold.history.rows_read
+  measured['warm /v1/chain/history'] = warm.history.rows_read
+  measured['warm /v1/chain/state'] = warm.state.rows_read
+  measured['warm /v1/chain/alerts'] = warm.alerts.rows_read
 
   // One inserted price row: stock_prices is counted again, the other three are not.
   const price = (body: any) => body.checks.find((check: any) => check.id === 'price_freshness').rows_on_latest
@@ -352,5 +633,14 @@ test('materialization lag thresholds match buildDataQualityReport', () => {
     assert.match(text, new RegExp(`failLagDays: ${item.failLagDays},`))
     assert.equal(block[1], item.scope)
     assert.equal(/required: false/.test(text), item.required === false, item.key)
+  }
+})
+
+test('the copied progress validators are the main Worker\'s', () => {
+  const body = (path: string, name: string) => new RegExp(`export function ${name}\\([\\s\\S]*?\\n}\\n`).exec(readFileSync(new URL(path, import.meta.url), 'utf8'))?.[0]
+  const copy = './judgment/stageProgress.ts'
+  for (const [path, name] of [['../lib/finlabStageProgress.ts', 'validFinLabStageProgress'], ['../lib/pipelineProgress.ts', 'validPipelineProgress']]) {
+    assert.ok(body(path, name), name)
+    assert.equal(body(copy, name), body(path, name), name)
   }
 })

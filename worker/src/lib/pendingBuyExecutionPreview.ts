@@ -115,7 +115,8 @@ export function buildPendingBuyExecutionPreviews(rows: ExecutionPreviewRow[], en
         }
         // Keep one complete signal snapshot; minute-only timing events must not erase it.
         if (typeof preview.or15.conditions?.plan === 'boolean') preview.last_or15_assessment = preview.or15
-        if (typeof preview.or15.conditions?.ma60 === 'boolean' && typeof preview.or15.conditions?.opening_limit === 'boolean')
+        // ma60 is evidence only (R2b) and may be null on an executable assessment.
+        if (typeof preview.or15.conditions?.opening_limit === 'boolean')
           preview.daily_assessment = preview.or15
       } else if (row.kind === 's12') {
         const overlay = payload.assist_entry_overlay
@@ -188,7 +189,6 @@ export async function loadPendingBuyExecutionPreviews(
         THEN json_type(detail_json, '$.signal.conditions.plan') IN ('true','false') ELSE 0 END
         THEN 1 ELSE 0 END AS has_assessment,
         CASE WHEN kind='or15' AND CASE WHEN json_valid(detail_json) THEN
-          json_type(detail_json, '$.signal.conditions.ma60') IN ('true','false') AND
           json_type(detail_json, '$.signal.conditions.opening_limit') IN ('true','false') ELSE 0 END
           THEN 1 ELSE 0 END AS has_daily FROM candidate_events
     ), ranked AS (

@@ -43,8 +43,9 @@ function normalize(rows: SwingMinute[], label: 'start' | 'end', open: number, en
 }
 export function assessSwingEntry(input: SwingEntryInput): SwingEntryDecision {
   const conditions: Record<string, boolean | null> = { plan: input.planReady && input.candidateAllowed, position: !input.boughtToday && !input.alreadyHeld, window: null, ma60: null, bars: null, or_touch: null, vwap: null, relative_strength: null, opening_limit: null, quote: null, buy_limit: null, chase: null }
+  let marketEvidence: Partial<SwingEntryDecision> = {}
   const wait = (reason: string, detail: Partial<SwingEntryDecision> = {}): SwingEntryDecision =>
-    ({ action:'defer', reason, policy:SWING_POLICY_VERSION, conditions, ...detail })
+    ({ action:'defer', reason, policy:SWING_POLICY_VERSION, conditions, ...marketEvidence, ...detail })
   const open = time(input.tradeDate,'09:00')
   if (!Number.isFinite(input.nowMs) || !Number.isFinite(open)) return wait('swing_invalid_time')
   if (!input.planReady || !input.candidateAllowed) return wait('swing_plan_not_authorized')
@@ -57,13 +58,23 @@ export function assessSwingEntry(input: SwingEntryInput): SwingEntryDecision {
   if (signalStart > open+(SWING_LAST_ENTRY_MINUTE_FROM_OPEN-5)*MIN) return wait('swing_entry_window_closed')
   // One minute for live scheduling/quote arrival, never catch up a stale prior bar.
   if (input.nowMs-signalMs >= MIN) return wait('swing_waiting_next_bar',{signalMs})
-  const closes=[...input.benchmarkPriorCloses].sort((a,b)=>a.date.localeCompare(b.date)).slice(-60)
-  if (closes.length!==60 || new Set(closes.map(r=>r.date)).size!==60 || closes.some(r=>r.date>=input.tradeDate || !positive(r.close))
-    || closes.at(-1)?.date!==input.previousSession || !positive(input.benchmarkPreviousClose)
-    || Math.abs(closes.at(-1)!.close-input.benchmarkPreviousClose)>1e-8) return wait('swing_ma60_evidence_missing')
-  const ma60=closes.reduce((s,r)=>s+r.close,0)/60
-  conditions.ma60 = input.benchmarkPreviousClose>ma60
-  if (input.benchmarkPreviousClose<=ma60) return wait('swing_market_below_ma60',{ma60,benchmarkPreviousClose:input.benchmarkPreviousClose})
+  // R2b (Wei 10/24): the 0050 MA60 trend is evidence only. It is recorded on every assessment and
+  // never defers an entry; market-level entry restrictions belong to canonical market risk.
+  const sorted=input.benchmarkPriorCloses.filter(r=>typeof r?.date==='string').sort((a,b)=>a.date.localeCompare(b.date))
+  // Relative strength still needs yesterday's 0050 close: the latest daily row, dated exactly
+  // previousSession, once. A wrong previousSession would compare against another day's base.
+  const latest=sorted.at(-1)
+  const referenceOk=positive(input.benchmarkPreviousClose) && latest?.date===input.previousSession
+    && latest.date<input.tradeDate && sorted.filter(r=>r.date===input.previousSession).length===1
+    && Math.abs(latest.close-input.benchmarkPreviousClose)<=1e-8
+  const closes=sorted.slice(-60)
+  const ma60Complete=referenceOk && closes.length===60 && new Set(closes.map(r=>r.date)).size===60
+    && closes.every(r=>positive(r.close))
+  const ma60=ma60Complete ? closes.reduce((s,r)=>s+r.close,0)/60 : undefined
+  conditions.ma60 = ma60==null ? null : input.benchmarkPreviousClose>ma60
+  marketEvidence={ma60,benchmarkPreviousClose:input.benchmarkPreviousClose}
+  if (!positive(input.benchmarkPreviousClose)) return wait('swing_benchmark_previous_close_missing')
+  if (!referenceOk) return wait('swing_benchmark_reference_inconsistent')
   if (!positive(input.previousClose) || !positive(input.maxBuyPrice) || !positive(input.limitUp)) return wait('swing_price_contract_missing')
   let bars:Map<number,SwingMinute>, benchmark:Map<number,SwingMinute>
   try { bars=normalize(input.bars,input.label,open,signalMs); benchmark=normalize(input.benchmarkBars,input.label,open,signalMs) }

@@ -700,7 +700,7 @@ export function buildAdminWorkerDomainTaskMap(
         if (terminalPolicyClosureFailure || !materializationValidated) {
           await propagateStrategyLearningTerminalFailure(runStateDb, {
             businessDate: runDate, canonicalRunId: runState.canonical_run_id,
-          }, c.env.KV)
+          }, c.env.KV, { postVerifyEntryWrittenByCaller: true })
         }
         await Promise.allSettled([
           logSchedulerResult(c.env.KV, 'strategy-learning', {

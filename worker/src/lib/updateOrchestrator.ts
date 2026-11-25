@@ -4210,7 +4210,7 @@ export async function processUpdateBatch(
         const { propagateStrategyLearningFailureAfterWaiting } = await import('./strategyLearningRunState')
         const learningError = await propagateStrategyLearningFailureAfterWaiting(databaseForDataDomain(env, 'ops'), {
           businessDate: triggerTime, canonicalRunId: runId,
-        }, env.KV)
+        }, env.KV, { postVerifyEntryWrittenByCaller: true })
         if (learningError) {
           await logSchedulerResult(env.KV, 'post-verify-chain', {
             status: 'error',
@@ -5085,7 +5085,7 @@ export async function processUpdateBatch(
       if (terminalPolicyClosureFailure || !materializationValidated) {
         await propagateStrategyLearningTerminalFailure(runStateDb, {
           businessDate: triggerTime, canonicalRunId,
-        }, env.KV)
+        }, env.KV, { postVerifyEntryWrittenByCaller: true })
       }
       await Promise.allSettled([
         logSchedulerResult(env.KV, 'strategy-learning', {

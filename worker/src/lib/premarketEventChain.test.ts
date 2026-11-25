@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { l4NativeFixture } from './l4NativeFixture.testSupport'
-import { ensurePremarketEventChain, processPremarketEvent, type PremarketWork } from './premarketEventChain'
+import fs from 'node:fs'
+import { ensurePremarketEventChain, premarketCauseText, premarketPublicationDisplayMeta, processPremarketEvent, projectExpiredRunHistory, type PremarketWork } from './premarketEventChain'
+import { buildPendingBuyStateSummary } from './pendingBuyStateSummary'
+import { formatPendingBuyBriefing } from './pendingBuyBriefingSummary'
 import type { UpdateQueueMsg } from '../types'
 const date='2026-09-14'
 function fixture() {
@@ -338,5 +341,219 @@ test('U17: after the publication target an unfinished chain is overdue, not a ne
   await processPremarketEvent(f.env,f.messages.shift()!,work,f.now())
   f.ports.nowMs=Date.parse(`${date}T08:50:00+08:00`)
   assert.match(await ensurePremarketEventChain(f.env,date,f.now()),/status=skipped premarket_outside_window/,'a published plan stays a quiet skip')
+ }finally{f.close()}
+})
+
+// 11/5, 11/16, 11/20: the chain expired with no pending_buy_runs row and the real blocker overwritten.
+const pendingRuns=(f:ReturnType<typeof fixture>)=>f.sqls.paper.prepare('SELECT trade_date,source_reco_date,status,debate_status,candidate_count,error_message FROM pending_buy_runs ORDER BY id').all() as any[]
+const lastError=(f:ReturnType<typeof fixture>,stage:string)=>(f.sqls.ops.prepare('SELECT last_error FROM pipeline_stage_runs WHERE stage=?').get('premarket_v3:'+stage) as any)?.last_error
+test('expiry keeps the blocking cause and records one explicit no-decision run',async()=>{
+ const f=fixture();f.env.PAPER_DAILY_PLAN_OWNER='premarket_once_v1'
+ try{
+  f.ports.nowMs=Date.parse(date+'T07:00:00+08:00')
+  await ensurePremarketEventChain(f.env,date,f.now())
+  const msg=f.messages.shift()!
+  await assert.rejects(processPremarketEvent(f.env,msg,async()=>{throw new Error('premarket_wait:l3_source')},f.now()),/l3_source/)
+  f.ports.nowMs=Date.parse(date+'T08:46:00+08:00')
+  await processPremarketEvent(f.env,msg,async()=>{throw new Error('must not run')},f.now())
+  assert.equal(lastError(f,'context'),'premarket_session_expired:Error: premarket_wait:l3_source')
+  // A second late delivery neither nests the prefix nor adds a run.
+  await processPremarketEvent(f.env,msg,async()=>{throw new Error('must not run')},f.now())
+  assert.equal(lastError(f,'context'),'premarket_session_expired:Error: premarket_wait:l3_source')
+  f.ports.nowMs=Date.parse(date+'T08:50:00+08:00')
+  const summary=await ensurePremarketEventChain(f.env,date,f.now())
+  assert.match(summary,/^status=error premarket_event_chain overdue=true ready_target=08:45 stage=premarket_v3:context no_decision_record=existing_decision cause=premarket_session_expired:Error: premarket_wait:l3_source$/)
+  const runs=pendingRuns(f)
+  assert.equal(runs.length,1)
+  assert.deepEqual({...runs[0]},{trade_date:date,source_reco_date:null,status:'error',debate_status:'skipped',candidate_count:0,
+   error_message:'premarket_no_decision:context:premarket_session_expired:Error: premarket_wait:l3_source'})
+ }finally{f.close()}
+})
+test('overdue sweep records the terminal controller failure (11/16 shape)',async()=>{
+ const f=fixture();f.env.PAPER_DAILY_PLAN_OWNER='premarket_once_v1'
+ try{
+  const insert=f.sqls.ops.prepare("INSERT INTO pipeline_stage_runs(business_date,stage,canonical_run_id,status,cursor_key,attempt_count,last_error) VALUES(?,?,?,?,?,?,?)")
+  insert.run(date,'premarket_v3:context',date+':premarket-v3','success',JSON.stringify({input:{},output:{signal_date:'2026-09-11'}}),1,null)
+  insert.run(date,'premarket_v3:market-health',date+':premarket-v3','success','{}',1,null)
+  insert.run(date,'premarket_v3:allocate',date+':premarket-v3','error',JSON.stringify({signal_date:'2026-09-11',l3_receipt:{run_id:'r'}}),3,
+   'Error: Controller /pipeline/v2/premarket-resume HTTP 500: Internal Server Error')
+  f.ports.nowMs=Date.parse(date+'T08:50:00+08:00')
+  assert.match(await ensurePremarketEventChain(f.env,date,f.now()),/stage=premarket_v3:allocate no_decision_record=recorded cause=Error: Controller \/pipeline\/v2\/premarket-resume HTTP 500/)
+  assert.match(await ensurePremarketEventChain(f.env,date,f.now()),/no_decision_record=existing_decision/)
+  const runs=pendingRuns(f)
+  // No recommendation date was consumed; the data-quality date check fails this run on its status.
+  assert.equal(runs.length,1);assert.equal(runs[0].status,'error');assert.equal(runs[0].source_reco_date,null)
+  assert.equal(runs[0].error_message,'premarket_no_decision:allocate:Error: Controller /pipeline/v2/premarket-resume HTTP 500: Internal Server Error')
+ }finally{f.close()}
+})
+for(const scenario of ['existing_ready','published','holiday','not_started'])test(`no-decision record never replaces a decision or marks a closed day: ${scenario}`,async()=>{
+ const f=fixture();f.env.PAPER_DAILY_PLAN_OWNER='premarket_once_v1'
+ try{
+  if(scenario==='existing_ready')f.sqls.paper.prepare("INSERT INTO pending_buy_runs(trade_date,status,debate_status,candidate_count) VALUES(?,?,?,?)").run(date,'ready','pending',2)
+  if(scenario==='published')f.sqls.ops.prepare("INSERT INTO pipeline_stage_runs (business_date,stage,canonical_run_id,status,cursor_key) VALUES (?,?,?,?,?)").run(date,'premarket_v3:publish:0',date+':premarket-v3','success',JSON.stringify({output:{ready:true}}))
+  if(scenario==='holiday')f.kvs.set(`holiday:${date}`,'1')
+  f.ports.nowMs=Date.parse(date+'T08:50:00+08:00')
+  const summary=await ensurePremarketEventChain(f.env,date,f.now())
+  const runs=pendingRuns(f)
+  if(scenario==='not_started'){
+   assert.match(summary,/stage=not_started no_decision_record=recorded cause=not_started$/)
+   assert.equal(runs.length,1);assert.equal(runs[0].error_message,'premarket_no_decision:not_started')
+  } else if(scenario==='existing_ready'){
+   assert.match(summary,/no_decision_record=existing_decision/)
+   assert.deepEqual(runs.map(r=>r.status),['ready'])
+  } else {
+   assert.match(summary,/status=skipped/);assert.equal(runs.length,0)
+  }
+ }finally{f.close()}
+})
+test('an unavailable controller backs off (bounded) without burning attempts, then expires with its cause',async()=>{
+ const f=fixture();f.env.PAPER_DAILY_PLAN_OWNER='premarket_once_v1';let calls=0
+ const work:PremarketWork=async()=>{calls++;throw new Error('premarket_wait:controller_unavailable:Controller /pipeline/v2/premarket-resume HTTP 500: Internal Server Error')}
+ try{
+  f.ports.nowMs=Date.parse(date+'T07:20:00+08:00')
+  await ensurePremarketEventChain(f.env,date,f.now())
+  let msg=f.messages.shift()!
+  const delays:number[]=[]
+  for(let i=0;i<5;i++){
+   await assert.rejects(processPremarketEvent(f.env,msg,work,f.now()),/controller_unavailable/)
+   delays.push(f.delays.at(-1)!);msg=f.messages.shift()!
+   // An early redelivery inside the backoff lease is not claimed.
+   await processPremarketEvent(f.env,msg,work,f.now());assert.equal(calls,i+1)
+   f.ports.nowMs+=delays.at(-1)!*1000+1000
+  }
+  assert.deepEqual(delays,[120,240,480,600,600])
+  const row=f.sqls.ops.prepare("SELECT status,attempt_count,last_error FROM pipeline_stage_runs WHERE stage='premarket_v3:context'").get() as any
+  assert.equal(row.status,'waiting');assert.equal(row.attempt_count,0);assert.match(row.last_error,/^backoff_streak=5 Error: premarket_wait:controller_unavailable:/)
+  // A different wait returns to the normal dependency cadence.
+  await assert.rejects(processPremarketEvent(f.env,msg,async()=>{throw new Error('premarket_wait:l3_seal')},f.now()),/l3_seal/)
+  assert.equal(f.delays.at(-1),120)
+  f.ports.nowMs=Date.parse(date+'T08:45:00+08:00')
+  await processPremarketEvent(f.env,f.messages.shift()!,work,f.now())
+  assert.equal(lastError(f,'context'),'premarket_session_expired:Error: premarket_wait:l3_seal')
+  assert.equal(pendingRuns(f).length,1)
+ }finally{f.close()}
+})
+test('controller backoff is clamped to leave a retry before the 08:45 deadline',async()=>{
+ const f=fixture();f.env.PAPER_DAILY_PLAN_OWNER='premarket_once_v1'
+ const work:PremarketWork=async()=>{throw new Error('premarket_wait:controller_unavailable:Controller /x HTTP 503: ')}
+ try{
+  f.ports.nowMs=Date.parse(date+'T08:41:00+08:00')
+  await ensurePremarketEventChain(f.env,date,f.now())
+  f.sqls.ops.prepare("UPDATE pipeline_stage_runs SET last_error=? WHERE stage='premarket_v3:context'")
+   .run('backoff_streak=4 Error: premarket_wait:controller_unavailable:Controller /x HTTP 503: ')
+  await assert.rejects(processPremarketEvent(f.env,f.messages.shift()!,work,f.now()),/controller_unavailable/)
+  assert.equal(f.delays.at(-1),180,'streak 5 would wait 600s; 08:41 leaves 240s minus a 60s margin')
+  f.ports.nowMs=Date.parse(date+'T08:44:40+08:00')
+  await assert.rejects(processPremarketEvent(f.env,f.messages.shift()!,work,f.now()),/controller_unavailable/)
+  assert.equal(f.delays.at(-1),30,'floor of 30s; the next delivery expires the stage with its cause')
+ }finally{f.close()}
+})
+test('premarketCauseText is bounded and drops credentials',()=>{
+ const text=premarketCauseText('Error: token=abc123 Authorization: Bearer xyz /x?key=s3cret&b=2 '+'z'.repeat(500))
+ assert.ok(text.length<=300)
+ assert.doesNotMatch(text,/abc123|xyz|s3cret/)
+ assert.match(text,/token=\[redacted\]/)
+})
+
+// Allocate finishing after 08:45 writes a ready run that trading never acts on (no finalized head).
+function withDailyPlanHeads(f:ReturnType<typeof fixture>){
+ f.sqls.paper.exec(fs.readFileSync(new URL('../../domain-migrations/paper/0007_daily_plan_reviews.sql',import.meta.url),'utf8'))
+ f.env.PAPER_DAILY_PLAN_OWNER='premarket_once_v1'
+}
+const readyMeta={run_id:7,status:'ready',candidate_count:2,error_message:undefined}
+test('an unpublished ready run past the deadline displays as a failed flow with its reason',async()=>{
+ const f=fixture();withDailyPlanHeads(f)
+ try{
+  f.sqls.ops.prepare("INSERT INTO pipeline_stage_runs(business_date,stage,canonical_run_id,status,cursor_key,attempt_count,last_error) VALUES(?,?,?,?,?,?,?)")
+   .run(date,'premarket_v3:publish:0',date+':premarket-v3','error','{}',1,'premarket_session_expired')
+  const late=Date.parse(date+'T09:30:00+08:00')
+  const meta=await premarketPublicationDisplayMeta(f.env,date,readyMeta,late)
+  assert.deepEqual(meta,{...readyMeta,status:'error',original_status:'ready',original_error_message:undefined,publication_state:'expired',
+   error_message:'premarket_publication_expired:publish:0:premarket_session_expired'})
+  const summary=buildPendingBuyStateSummary([],meta as any)
+  assert.equal(summary.state,'error');assert.equal(summary.label,'流程失敗');assert.match(String(summary.error_message),/premarket_publication_expired/)
+  const history=projectExpiredRunHistory({runs:[{run_id:7,status:'ready'},{run_id:6,status:'empty'}]},7,meta)
+  assert.deepEqual(history.runs.map(r=>r.status),['error','empty'])
+  // Before the deadline the same run is still a normal pending publication.
+  assert.equal(await premarketPublicationDisplayMeta(f.env,date,readyMeta,Date.parse(date+'T08:30:00+08:00')),readyMeta)
+  // Display projection writes nothing.
+  assert.equal((f.sqls.paper.prepare('SELECT COUNT(*) AS n FROM pending_buy_runs').get() as any).n,0)
+ }finally{f.close()}
+})
+test('dashboard route and daily report read pending state through the publication projection',()=>{
+ const route=fs.readFileSync(new URL('../routes/paper.ts',import.meta.url),'utf8')
+ assert.match(route,/let displayMeta = await reconcileLegacyP6DisplayMeta\(c\.env, snapshot\.date, snapshot\.meta as Record<string, any> \| null\)\n[^\n]*\n\s+displayMeta = await premarketPublicationDisplayMeta\(c\.env, snapshot\.date, displayMeta\)\n\s+const state = /)
+ assert.match(route,/runHistory: projectExpiredRunHistory\(stripLegacyPendingBuyRunHistory\(runHistory\), snapshot\.meta\?\.run_id, displayMeta\)/)
+ assert.match(route,/const state = buildPendingBuyStateSummary\(snapshot\.pendingBuys, displayMeta\)/)
+ const report=fs.readFileSync(new URL('./dailyReport.ts',import.meta.url),'utf8')
+ assert.match(report,/buildPendingBuyStateSummary\(pendingSnapshot\.pendingBuys,\s+await premarketPublicationDisplayMeta\(env, reportDate, pendingSnapshot\.meta\)\)/)
+})
+for(const scenario of ['halted_with_reason','other_day_head','no_chain','health_only_error'])test(`publication display reason and scope: ${scenario}`,async()=>{
+ const f=fixture();withDailyPlanHeads(f)
+ try{
+  const insert=f.sqls.ops.prepare("INSERT INTO pipeline_stage_runs(business_date,stage,canonical_run_id,status,cursor_key,attempt_count,last_error) VALUES(?,?,?,?,?,?,?)")
+  if(scenario==='other_day_head'){
+   // A head for another trade date (or account) does not finalize today.
+   f.sqls.paper.prepare('INSERT INTO paper_daily_plan_reviews_v1(account_id,trade_date,checksum,plan_id,revision,payload_json) VALUES(?,?,?,?,0,?)').run(1,'2026-09-11','c','p','{}')
+   f.sqls.paper.prepare('INSERT INTO paper_daily_plan_heads_v1(account_id,trade_date,checksum,plan_id) VALUES(?,?,?,?)').run(1,'2026-09-11','c','p')
+   f.sqls.paper.prepare('INSERT INTO paper_daily_plan_reviews_v1(account_id,trade_date,checksum,plan_id,revision,payload_json) VALUES(?,?,?,?,0,?)').run(2,date,'c','p','{}')
+   f.sqls.paper.prepare('INSERT INTO paper_daily_plan_heads_v1(account_id,trade_date,checksum,plan_id) VALUES(?,?,?,?)').run(2,date,'c','p')
+  }
+  if(scenario!=='no_chain'){
+   insert.run(date,'premarket_v3:allocate',date+':premarket-v3','success','{}',1,null)
+   insert.run(date,'premarket_v3:publish:0',date+':premarket-v3',scenario==='health_only_error'?'queued':'error','{}',1,scenario==='health_only_error'?null:'premarket_session_expired:Error: daily_plan_publication_conflict')
+   insert.run(date,'premarket_v3:market-health',date+':premarket-v3','error','{}',3,'Error: broker offline')
+  }
+  const input=scenario==='halted_with_reason'?{...readyMeta,status:'halted',error_message:'circuit_breaker'}:readyMeta
+  const meta=await premarketPublicationDisplayMeta(f.env,date,input,Date.parse(date+'T10:00:00+08:00')) as any
+  assert.equal(meta.status,'error');assert.equal(meta.original_status,input.status)
+  if(scenario==='halted_with_reason')assert.equal(meta.original_error_message,'circuit_breaker')
+  assert.equal(meta.error_message,scenario==='no_chain'?'premarket_publication_expired:not_started'
+   :scenario==='health_only_error'?'premarket_publication_expired:publish:0:queued'
+   :'premarket_publication_expired:publish:0:premarket_session_expired:Error: daily_plan_publication_conflict')
+ }finally{f.close()}
+})
+test('publication display is not an expired flow on a closure announced after the run',async()=>{
+ const f=fixture();withDailyPlanHeads(f)
+ try{
+  f.kvs.set(`holiday:${date}`,'1')
+  assert.equal(await premarketPublicationDisplayMeta(f.env,date,readyMeta,Date.parse(date+'T10:00:00+08:00')),readyMeta)
+  f.kvs.delete(`holiday:${date}`);f.kvs.set(`market:twse_adhoc_closure_check:v1:${date}`,'closed')
+  assert.equal(await premarketPublicationDisplayMeta(f.env,date,readyMeta,Date.parse(date+'T10:00:00+08:00')),readyMeta)
+  f.kvs.delete(`market:twse_adhoc_closure_check:v1:${date}`)
+  f.kvs.set(`market:twse_holiday_schedule:v2:${date.slice(0,4)}`,JSON.stringify({schemaVersion:'twse-holiday-schedule-v2',dates:[date]}))
+  assert.equal(await premarketPublicationDisplayMeta(f.env,date,readyMeta,Date.parse(date+'T10:00:00+08:00')),readyMeta)
+ }finally{f.close()}
+})
+test('publication display reads cached closure state only: no TWSE fetch, no KV write',async()=>{
+ const f=fixture();withDailyPlanHeads(f)
+ const realFetch=globalThis.fetch;const kv=f.env.KV as any;const realPut=kv.put;const realDelete=kv.delete
+ const calls:string[]=[]
+ try{
+  globalThis.fetch=(async(url:string)=>{calls.push('fetch:'+url);throw new Error('no network')}) as typeof fetch
+  kv.put=async(k:string)=>{calls.push('put:'+k)};kv.delete=async(k:string)=>{calls.push('delete:'+k)}
+  const meta=await premarketPublicationDisplayMeta(f.env,date,readyMeta,Date.parse(date+'T10:00:00+08:00')) as any
+  assert.equal(meta.status,'error');assert.deepEqual(calls,[])
+ }finally{globalThis.fetch=realFetch;kv.put=realPut;kv.delete=realDelete;f.close()}
+})
+test('daily briefing keeps the failure reason visible when the failed run still lists items',()=>{
+ const state=buildPendingBuyStateSummary([{symbol:'2330'} as any],{status:'error',error_message:'premarket_publication_expired:publish:0:queued'} as any)
+ const text=formatPendingBuyBriefing([{symbol:'2330',name:'TSMC',ml_entry_price:1,ml_stop_loss:0.9} as any],state)
+ assert.match(text,/^\*\*流程失敗\*\*.*\n狀態異常：premarket_publication_expired:publish:0:queued（以下候選不會執行）\n- \*\*2330 TSMC\*\*/)
+})
+for(const scenario of ['finalized','legacy_owner','error_run','check_unavailable'])test(`publication display leaves executable or non-applicable runs unchanged: ${scenario}`,async()=>{
+ const f=fixture()
+ try{
+  if(scenario!=='check_unavailable')withDailyPlanHeads(f)
+  else f.env.PAPER_DAILY_PLAN_OWNER='premarket_once_v1'
+  if(scenario==='legacy_owner')f.env.PAPER_DAILY_PLAN_OWNER=''
+  if(scenario==='finalized'){
+   f.sqls.paper.prepare('INSERT INTO paper_daily_plan_reviews_v1(account_id,trade_date,checksum,plan_id,revision,payload_json) VALUES(1,?,?,?,0,?)').run(date,'c','p','{}')
+   f.sqls.paper.prepare('INSERT INTO paper_daily_plan_heads_v1(account_id,trade_date,checksum,plan_id) VALUES(1,?,?,?)').run(date,'c','p')
+  }
+  const input=scenario==='error_run'?{...readyMeta,status:'error',error_message:'premarket_no_decision:not_started'}:readyMeta
+  const meta=await premarketPublicationDisplayMeta(f.env,date,input,Date.parse(date+'T09:30:00+08:00'))
+  if(scenario==='check_unavailable')assert.deepEqual(meta,{...readyMeta,publication_check:'unavailable'})
+  else assert.equal(meta,input)
  }finally{f.close()}
 })

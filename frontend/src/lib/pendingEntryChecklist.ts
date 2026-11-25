@@ -41,7 +41,7 @@ export function checklistNumbers(key:string,s:PendingBuyExecutionPreview['or15']
     }
     return `首次訊號 ${evidenceTime(a.firstSignalMs)} · 差額 ${num(a.delta)?a.delta!.toFixed(4):'待補'} ／ 1.5 × ATR5 ${num(a.threshold)?a.threshold!.toFixed(4):'待補'} · ${a.status==='veto'?'當日不再進場':a.status==='passed'?'當日動能資格已通過':'首次訊號資料待補，不改用後續訊號'}`
   }
-  if(key==='ma60') return `0050 昨收 ${price(s.benchmark_previous_close)} ＞ MA60 ${price(s.ma60)}`
+  if(key==='ma60') return `0050 昨收 ${price(s.benchmark_previous_close)} ${num(s.benchmark_previous_close)&&num(s.ma60)?(s.benchmark_previous_close!>s.ma60!?'＞':'≤'):'／'} MA60 ${price(s.ma60)}（市場趨勢僅記錄，不擋單）`
   if(key==='opening_limit') return `ORH ${price(s.or_high)} ／ 漲停 ${price(s.limit_up)}`
   if(key==='or_touch') return `當根最高 ${price(s.signal_high)} ／ ORH ${price(s.or_high)}`
   if(key==='vwap') return `訊號收盤 ${price(s.signal_close)} ／ 累積 VWAP ${price(s.vwap)}${s.vwap_basis==='five_minute_typical'?'（5 分 K 典型價近似）':''}`

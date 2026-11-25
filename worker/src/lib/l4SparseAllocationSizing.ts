@@ -10,6 +10,8 @@ export interface L4SparseAllocationSizingEvidence {
 const WATCH_PREFIX = 'l4_sparse_allocation:'
 
 function finiteNumber(value: unknown): number | null {
+  // Number(null) and Number('') are 0; a missing field must not print as rank=0.
+  if (value == null || value === '') return null
   const n = Number(value)
   return Number.isFinite(n) ? n : null
 }

@@ -368,7 +368,7 @@ async function countReadinessRows(
 }
 
 /**
- * One day of regime context is ~15k rows written in chunks, so a row per dataset does not show the
+ * One day of regime context is ~1k rows (large-trader rows kept to d1_category_scope) written in chunks, so a row per dataset does not show the
  * day was materialized. It counts as written once a FinLab daily run for that date left its OPS_DB
  * receipt (inserted only after the market write is acknowledged) and the table holds at least the
  * rows that receipt acknowledged.
@@ -2042,6 +2042,8 @@ async function runFinalizeContinuation(
 
   const runAsyncScreener = deps.runMarketScreenerAsync
   if (runAsyncScreener) {
+    // L1: queue-driven dispatch has no admitted ticket; carry the evening chain's root id instead.
+    await (await import('./opsRuntimeScope')).bindOpsRuntimeRootTicket(env, triggerTime)
     try {
       const { triggerCanonicalScreenerStage } = await import('./screenerRecoveryWatchdog')
       const screenerResult = await triggerCanonicalScreenerStage(env, {
@@ -2475,6 +2477,8 @@ async function continuePostScreenerPipeline(
 
   try {
     await guard('post_screener:pipeline_dispatch')
+    // L1: carry the evening chain's root id to ml-controller and the pipeline Cloud Run Job.
+    await (await import('./opsRuntimeScope')).bindOpsRuntimeRootTicket(env, triggerTime)
     const summary = await deps.runMLAndRiskV2(env, triggerTime, { prevalidatedEventChain: true })
     if (summary.trim().toUpperCase().startsWith('LOCKED')) {
       const lockedSummary = `pipeline already running for ${triggerTime}; existing run lock preserved`
@@ -2828,6 +2832,12 @@ export async function runMarketCloseRefresh(env: Bindings, force = false, runDat
 
   const started = Date.now()
   const parts: string[] = []
+  // Observability: pre-create today's daily_readiness chain rows (trading days only) and trim
+  // retention. Never throws; the receipt is only a summary field.
+  {
+    const { precreateDailyReadinessChainForDate } = await import('./opsChainStageState')
+    parts.push(await precreateDailyReadinessChainForDate(env, twDate))
+  }
   let sourceWaiting = false
   const supplementalMode = officialSupplementalFetchMode(env)
   const shouldFetchOfficialPrices = supplementalMode !== 'disabled'

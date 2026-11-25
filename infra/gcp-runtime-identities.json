@@ -73,6 +73,7 @@
       "stockvision-cf-api-token",
       "stockvision-stockvision-auth-token",
       "stockvision-ml-controller-secret",
+      "stockvision-ml-service-token",
       "stockvision-modal-token-id",
       "stockvision-modal-token-secret",
       "stockvision-finlab-exec-shioaji-api-key",

@@ -3,6 +3,8 @@
  */
 
 import { resolveReportDeliveryChannel, type ReportDeliveryEnv } from './reportDeliveryChannel'
+import { opsRuntimeEnv, opsRuntimeTicket } from './opsRuntimeScope'
+import { recordSchedulerRunChainStage } from './opsChainStageState'
 
 export type SchedulerRunStatus = 'success' | 'error' | 'blocked' | 'skipped' | 'triggered' | 'running' | 'waiting'
 
@@ -325,8 +327,12 @@ export async function logSchedulerRunResult(
   kv: KVNamespace,
   task: string,
   result: SchedulerRunResultInput,
-  env?: ReportDeliveryEnv,
+  envArg?: ReportDeliveryEnv,
 ): Promise<void> {
+  // Most call sites pass no env; the entrypoint's request scope supplies it, so failures still alert
+  // (pipeline, morning-setup, the evening chain) and chain stage state is recorded.
+  const scopeEnv = opsRuntimeEnv()
+  const env: ReportDeliveryEnv | undefined = envArg ?? scopeEnv
   const requestedDate = String(result.run_date ?? result.date ?? '').trim()
   const today = /^\d{4}-\d{2}-\d{2}$/.test(requestedDate)
     ? requestedDate
@@ -378,13 +384,30 @@ export async function logSchedulerRunResult(
     if (result.strict) throw error
   }
 
-  if (result.status === 'error' && env && resolveReportDeliveryChannel(env) !== 'not_sent:no_channel_configured') {
+  const ticket = opsRuntimeTicket()
+  if (ticket) {
+    // L1 correlation: the same root_ticket_id is sent to ml-controller and its Cloud Run Jobs.
+    console.log(JSON.stringify({ event: 'scheduler_run', task, status: result.status, run_date: today,
+      run_id: result.run_id ?? null, root_ticket_id: ticket.rootTicketId,
+      ticket_id: ticket.task === task ? ticket.ticketId : null }))
+  }
+  // Observability only, after the KV receipt; never throws.
+  if (scopeEnv) await recordSchedulerRunChainStage(task, incoming, scopeEnv)
+
+  // Callers that never passed env (alert source new with the request-scope env) get dedup on every
+  // task, critical ones included (per run when the entry names one), and never alert on a replay.
+  const scopeOnlyEnv = !envArg
+  if (result.status === 'error' && env && !(scopeOnlyEnv && incoming.run_scope === 'historical_replay')
+    && resolveReportDeliveryChannel(env) !== 'not_sent:no_channel_configured') {
     const critical = new Set(['pipeline', 'ml-predict', 'ml', 'recommendation', 'morning-setup', 'paper-trade', 'verify-v2'])
-    const dedupKey = `cron:alert:${task}:${today}`
+    const runKey = incoming.attempt_id ?? incoming.run_id
+    const dedupKey = scopeOnlyEnv && critical.has(task) && runKey
+      ? `cron:alert:${task}:${today}:${runKey}`
+      : `cron:alert:${task}:${today}`
 
     try {
       const already = await kv.get(dedupKey)
-      if (!already || critical.has(task)) {
+      if (!already || (critical.has(task) && !scopeOnlyEnv)) {
         const displayName = getTaskDisplayName(task)
         const message = [
           `Scheduler Fail: ${displayName} (\`${task}\`)`,

@@ -110,6 +110,24 @@ function intradayProfileEntryModel(
     'orange risk may proceed at the original entry when the current ask reaches it and other gates pass')
 }
 
+// OR15-L4 single owner: under an L4 plan the plan cap and canonical black halt own market risk.
+for (const level of ['red', 'black', 'high', 'extreme']) {
+  const decision = evaluatePreTradeExecution(baseInput({ marketRiskLevel: level, marketRiskOwner: 'l4_plan' }))
+  assert(decision.action === 'BUY_AT' && decision.limitPrice === 100,
+    `${level} under the L4 owner must not requote or exhaust: ${JSON.stringify(decision)}`)
+  const legacy = evaluatePreTradeExecution(baseInput({ marketRiskLevel: level }))
+  assert(legacy.action === 'REQUOTE', `${level} without the L4 owner keeps the legacy requote`)
+}
+{
+  const decision = evaluatePreTradeExecution(baseInput({
+    currentPrice: 409.5, bestAsk: 409.5, entryPrice: 409, originalEntry: 434.84, previousClose: 435.5,
+    marketRiskLevel: 'orange', marketRiskOwner: 'l4_plan',
+  }))
+  assert(decision.reason !== 'market_risk_orange_entry_not_reached', 'orange level gate is not repeated under the L4 owner')
+  assert(evaluatePreTradeExecution(baseInput({ marketRiskLevel: 'unknown', marketRiskOwner: 'l4_plan' })).action === 'DEFER',
+    'an unknown market risk still fails closed under the L4 owner')
+}
+
 {
   const decision = evaluatePreTradeExecution(baseInput({
     marketRiskLevel: 'high',

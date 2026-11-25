@@ -68,6 +68,8 @@ export interface PreTradeExecutionInput {
   quoteAgeMs?: number | null
   quoteSource: QuoteSource
   marketRiskLevel?: string | null
+  /** 'l4_plan': the L4 plan cap and canonical black halt own market risk; no level gate is repeated here. */
+  marketRiskOwner?: 'l4_plan' | null
   momentum?: PreTradeMomentumContext | null
   entryModelV2?: EntryPriceModelV2 | null
   openingFastPath?: PreTradeOpeningFastPathContext | null
@@ -199,7 +201,8 @@ export function evaluatePreTradeExecution(input: PreTradeExecutionInput): PreTra
     }
   }
 
-  if (risk === 'orange') {
+  const levelGatesApply = input.marketRiskOwner !== 'l4_plan'
+  if (levelGatesApply && risk === 'orange') {
     const bestAsk = finitePositive(input.bestAsk) ?? currentPrice
     if (currentPrice > entryPrice || bestAsk > entryPrice) {
       return {
@@ -213,7 +216,7 @@ export function evaluatePreTradeExecution(input: PreTradeExecutionInput): PreTra
       }
     }
   }
-  if (DANGEROUS_RISK_LEVELS.has(risk)) {
+  if (levelGatesApply && DANGEROUS_RISK_LEVELS.has(risk)) {
     const retryCount = Number(input.retryCount ?? 0)
     const maxRetries = input.policy.maxRetries ?? 3
     const originalEntry = Number(input.originalEntry ?? entryPrice)

@@ -261,6 +261,134 @@ test('lease contention is bounded and continuation retains its ticket', async ()
     assert.equal(f.ticketRow(ticket.ticket_id).status, 'error')
     assert.match(String(f.ticketRow(ticket.ticket_id).last_error), /maintenance_lease_deferrals_exhausted/)
     assert.equal(f.sql.prepare('SELECT owner_id FROM maintenance_task_leases').get()?.owner_id, 'another-owner')
+    assert.equal(f.ttls.get(failureKey), 20 * 60, 'lease contention cools down for one slot, not 6h')
+  } finally { f.sql.close() }
+})
+
+const leaseOwner = (f: ReturnType<typeof fixture>) => f.sql.prepare('SELECT owner_id FROM maintenance_task_leases').get()?.owner_id
+const holdLease = (f: ReturnType<typeof fixture>, owner: string, heldSeconds = 130) =>
+  f.sql.prepare("INSERT OR REPLACE INTO maintenance_task_leases VALUES('d1_heavy_maintenance','audit-json-retention:queue',?,'2099-01-01',datetime('now',?),'x')")
+    .run(owner, `-${heldSeconds} seconds`)
+
+test('a later step of the same run takes over the lease its earlier delivery leaked', async () => {
+  const f = fixture()
+  try {
+    const ticket = await f.enqueue()
+    const leaked = `audit-json-retention:queue:run=${ticket.run_id}:step=0.0.0.0:leaked`
+    holdLease(f, leaked)
+    // The holder step itself may be a live duplicate delivery: it still yields.
+    await processMaintenanceBacklogDrain(f.env, f.messages[0], openWindow)
+    assert.equal(f.messages[1].leaseRetryAttempt, 1)
+    assert.equal(leaseOwner(f), leaked)
+    await processMaintenanceBacklogDrain(f.env, f.messages[1], openWindow)
+    assert.equal(leaseOwner(f), undefined, 'taken over, then released')
+    const receipt = JSON.parse(String(f.ticketRow(ticket.ticket_id).metadata_json)).maintenance_chunk
+    assert.equal(receipt.result.deferred, 'chunk_retry')
+    assert.equal(receipt.failures, 1)
+    assert.equal(f.messages[2].maintenanceFailureAttempt, 1)
+  } finally { f.sql.close() }
+})
+
+test('a later step never displaces a same-run holder acquired too recently to have leaked', async () => {
+  for (const [heldSeconds, takenOver] of [[30, false], [130, true]] as const) {
+    const f = fixture()
+    try {
+      const ticket = await f.enqueue()
+      // A duplicate delivery of the holder step yielded; its lease_busy continuation is step 0.0.0.1.
+      const holder = `audit-json-retention:queue:run=${ticket.run_id}:step=0.0.0.0:running`
+      holdLease(f, holder, heldSeconds)
+      await processMaintenanceBacklogDrain(f.env, { ...f.messages[0], leaseRetryAttempt: 1 }, openWindow)
+      assert.equal(leaseOwner(f), takenOver ? undefined : holder, `held ${heldSeconds}s`)
+      const receipt = JSON.parse(String(f.ticketRow(ticket.ticket_id).metadata_json)).maintenance_chunk
+      assert.equal(receipt?.failures, takenOver ? 1 : undefined)
+      if (takenOver) assert.equal(f.messages[1].maintenanceFailureAttempt, 1)
+      else assert.equal(f.messages[1].leaseRetryAttempt, 2)
+    } finally { f.sql.close() }
+  }
+})
+
+test('another run, or a later live step of the same run, keeps the lease', async () => {
+  for (const owner of ['audit-json-retention:queue:run=other-run:step=0.0.0.0:x', 'audit-json-retention:queue:run=audit-run-1:step=0.1.0.0:live']) {
+    const f = fixture()
+    try {
+      const ticket = await f.enqueue()
+      holdLease(f, owner)
+      await processMaintenanceBacklogDrain(f.env, { ...f.messages[0], leaseRetryAttempt: 5 }, openWindow)
+      assert.equal(f.messages[1].leaseRetryAttempt, 6, owner)
+      assert.equal(leaseOwner(f), owner)
+      assert.equal(JSON.parse(String(f.ticketRow(ticket.ticket_id).metadata_json)).maintenance_chunk, undefined, owner)
+    } finally { f.sql.close() }
+  }
+})
+
+test('lease release retries once and logs, never replacing the chunk result or error', async (t) => {
+  const { runWithRunStepMaintenanceLease } = await import('./maintenanceLeaseYield')
+  const errors = t.mock.method(console, 'error', () => {})
+  for (const failures of [1, 2]) {
+    const f = fixture()
+    try {
+      const prepare = f.db.prepare
+      let left = failures
+      f.db.prepare = (query: string) => {
+        const statement = prepare(query)
+        const run = statement.run
+        statement.run = async () => {
+          if (query.includes('DELETE FROM maintenance_task_leases') && left-- > 0) throw new Error('D1_ERROR: transient')
+          return run()
+        }
+        return statement
+      }
+      const lease = { taskName: 'audit-json-retention:queue', runId: 'r', step: [0, 0, 0, 0], leaseSeconds: 300 }
+      await assert.rejects(runWithRunStepMaintenanceLease(f.db as any, { ...lease, run: async () => { throw new Error('chunk_fault') } }), /chunk_fault/)
+      assert.equal(leaseOwner(f) === undefined, failures === 1)
+      assert.equal(errors.mock.callCount(), failures === 1 ? 0 : 1)
+    } finally { f.sql.close() }
+  }
+  assert.match(String(errors.mock.calls[0].arguments[0]), /release failed lease_group=d1_heavy_maintenance owner=audit-json-retention:queue:run=r:step=0\.0\.0\.0:/)
+})
+
+test('a chunk fault whose receipt and lease release both failed reaches the terminal ticket', async (t) => {
+  t.mock.method(console, 'error', () => {})
+  const f = fixture()
+  try {
+    const ticket = await f.enqueue()
+    const prepare = f.db.prepare
+    let d1Down = true
+    f.db.prepare = (query: string) => {
+      const statement = prepare(query)
+      const run = statement.run
+      statement.run = async () => {
+        if (d1Down && (query.includes("'$.maintenance_chunk',json(?)") || query.includes('DELETE FROM maintenance_task_leases'))) throw new Error('D1_ERROR: transient')
+        return run()
+      }
+      return statement
+    }
+    await assert.rejects(processMaintenanceBacklogDrain(f.env, f.messages[0], openWindow), /D1_ERROR: transient; chunk_error=audit_json_durable_unknown_target/)
+    d1Down = false
+    assert.match(String(leaseOwner(f)), new RegExp(`^audit-json-retention:queue:run=${ticket.run_id}:step=0\\.0\\.0\\.0:`))
+    assert.equal(JSON.parse(String(f.ticketRow(ticket.ticket_id).metadata_json)).maintenance_chunk, undefined)
+    holdLease(f, 'another-owner')
+    await processMaintenanceBacklogDrain(f.env, { ...f.messages[0], leaseRetryAttempt: 59 }, openWindow)
+    const terminal = f.ticketRow(ticket.ticket_id)
+    assert.equal(terminal.status, 'error')
+    assert.match(String(terminal.last_error), /^maintenance_lease_deferrals_exhausted:.*; last_chunk_error=D1_ERROR: transient; chunk_error=audit_json_durable_unknown_target/)
+    assert.equal(f.ttls.get(failureKey), 20 * 60)
+  } finally { f.sql.close() }
+})
+
+test('a chunk that gets through clears the escaped fault before any later terminal error', async () => {
+  const f = archiveFixture(2)
+  try {
+    const ticket = await f.enqueue('cleared-fault', f.archiveOptions)
+    const chunkErrorKey = `maintenance:backlog-drain:audit-json-retention:chunk-error:${ticket.run_id}`
+    f.values.set(chunkErrorKey, 'D1_ERROR: transient')
+    await processMaintenanceBacklogDrain(f.env, f.messages[0], openWindow)
+    assert.equal(f.values.has(chunkErrorKey), false)
+    holdLease(f, 'another-owner')
+    await processMaintenanceBacklogDrain(f.env, { ...f.messages[1], leaseRetryAttempt: 59 }, openWindow)
+    const terminal = f.ticketRow(ticket.ticket_id)
+    assert.equal(terminal.status, 'error')
+    assert.doesNotMatch(String(terminal.last_error), /last_chunk_error/)
   } finally { f.sql.close() }
 })
 
@@ -482,4 +610,6 @@ test('a failed narrowed chunk retries the original full scope and recovers newly
 test('a D1 overload cools down for one slot instead of the rest of the night', () => {
   assert.equal(auditJsonFailureCooldownSeconds('D1_ERROR: D1 DB is overloaded. Too many resources consumed within a 10 second window.'), 20 * 60)
   assert.equal(auditJsonFailureCooldownSeconds('audit_json_durable_unknown_target'), 6 * 3600)
+  assert.equal(auditJsonFailureCooldownSeconds('maintenance_lease_deferrals_exhausted:maintenance_lease_busy:audit-json-retention:queue:2026-11-24 18:28:40'), 20 * 60)
+  assert.equal(auditJsonFailureCooldownSeconds('maintenance_chunk_retry_exhausted; last_chunk_error=maintenance_lease_deferrals_exhausted:x'), 6 * 3600)
 })

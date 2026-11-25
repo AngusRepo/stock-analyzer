@@ -740,10 +740,15 @@ export async function setupMorningPendingBuys(env: Bindings): Promise<void> {
     const buyRecs = (coreRecommendationRows ?? [])
       .filter(targetBuyGap)
       .map((originalRow) => {
+        // Rank and OPB evidence are only in the recommendation row written for this same plan.
+        const planAllocation = activeL4Plan ? parsePredictionForecastData(originalRow.alpha_allocation) : null
+        const samePlan = planAllocation?.plan_id === activeL4Plan?.plan_id
         const row = activeL4Plan ? { ...originalRow, signal: 'BUY', has_buy_signal: 1,
           alpha_allocation: JSON.stringify({ engine:'sparse_tangent_inverse_risk', expected_return_owner:'l4_distribution',
             selected:true, allocation_weight:activeL4Plan.weights[originalRow.symbol], plan_id:activeL4Plan.plan_id,
-            expected_return:activeL4Plan.targets[originalRow.symbol]?.expected_return_gross }),
+            expected_return:activeL4Plan.targets[originalRow.symbol]?.expected_return_gross,
+            ...(samePlan ? { allocation_rank:planAllocation?.allocation_rank, selection_reason:planAllocation?.selection_reason,
+              opb_controller:planAllocation?.opb_controller } : {}) }),
         } : originalRow
         const foundPrice = marketPriceBySymbol.get(row.symbol)
         const price = activeL4Plan && foundPrice?.date!==sourceRecoDate ? undefined : foundPrice

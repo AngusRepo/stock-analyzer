@@ -70,9 +70,11 @@ assert.match(archive, /cursor\?\.backlog_remaining/)
 assert.match(archive, /loadCandidateRows\(targetDb, target, cutoffDate, limitPerTable, minBlobBytes, null\)/)
 assert.match(dashboard, /prediction_date IS NOT NULL/)
 assert.doesNotMatch(dashboard, /COALESCE\(prediction_date, substr\(generated_at/)
-assert.match(manifest, /"id": "legacy-strategy-evidence-migration"/)
 // D9 step 4: the scheduled read-only audit root is retired; the task stays manual-only.
 const parsedManifest = JSON.parse(manifest)
+// The strategy migration cursor completed on 11/07 and its job was deleted; a scheduler sync must not recreate it.
+assert.ok(parsedManifest.deleteJobIds.includes('legacy-strategy-evidence-migration'))
+assert.ok(!parsedManifest.jobs.some((job: { id?: string }) => job.id === 'legacy-strategy-evidence-migration'))
 assert.ok(parsedManifest.deleteJobIds.includes('legacy-hot-data-retirement'))
 assert.ok(!parsedManifest.jobs.some((job: { id?: string }) => job.id === 'legacy-hot-data-retirement'))
 assert.ok(!parsedManifest.jobs.some((job: { task?: string; query?: string }) => (

@@ -84,11 +84,11 @@ export const SCHEDULER_DEPENDENCY_MAP: Record<string, SchedulerDependencySpec> =
     recommendation: 'Keep the retired root absent; run the coordinator only as explicit manual maintenance.',
   },
   'legacy-strategy-evidence-migration': {
-    task: 'legacy-strategy-evidence-migration', owner: 'gcp_scheduler', consolidationClass: 'manual_maintenance_candidate',
-    currentFunction: 'Drains durable legacy strategy evidence into exact R2 artifacts and compact learning rows.',
+    task: 'legacy-strategy-evidence-migration', owner: 'manual_only', consolidationClass: 'manual_maintenance_candidate',
+    currentFunction: 'Retired as a scheduled root on 2026-11-07 after the migration cursor completed; the task still drains durable legacy strategy evidence into exact R2 artifacts and compact learning rows when triggered manually.',
     replacementOwner: 'manual legacy strategy evidence migration closure runbook',
     upstream: ['strategy-decision-log'], downstream: ['learning-retention-readiness', 'storage-health-check'], requiredBeforeDisable: ['migration backlog must be zero and artifact readback must remain complete'], operatorRisk: 'high',
-    recommendation: 'Disable only after backlog and artifact readback both remain complete.',
+    recommendation: 'Keep the retired root absent; rerun only as explicit manual maintenance if new legacy strategy evidence appears.',
   },
   'legacy-hot-data-retirement': {
     task: 'legacy-hot-data-retirement', owner: 'manual_only', consolidationClass: 'manual_maintenance_candidate',

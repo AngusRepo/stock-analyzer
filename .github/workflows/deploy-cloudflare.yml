@@ -1,6 +1,6 @@
 name: deploy-cloudflare
 
-# Production CD for the Cloudflare Worker and Pages (E-4a). Runs only on main, only after every
+# Production CD for the Cloudflare Worker, the read-only monitoring Worker (Grafana P3) and Pages (E-4a). Runs only on main, only after every
 # pushed main commit since the live version passed its ci `gate`, and only once Wei approves the
 # `production` environment. The Cloudflare token comes from Secret Manager through Workload Identity
 # Federation; the WIF binding maps this file (on main, environment production) to a service account
@@ -14,7 +14,7 @@ on:
       units:
         description: Units to deploy (changed = whatever differs from the live version)
         type: choice
-        options: [changed, worker, pages, all]
+        options: [changed, worker, pages, monitoring, all]
         default: changed
 
 permissions:
@@ -42,6 +42,7 @@ jobs:
     outputs:
       worker: ${{ steps.units.outputs.worker }}
       pages: ${{ steps.units.outputs.pages }}
+      monitoring: ${{ steps.units.outputs.monitoring }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -51,7 +52,9 @@ jobs:
         id: units
         env:
           CHOICE: ${{ github.event_name == 'workflow_dispatch' && inputs.units || 'changed' }}
-        run: python3 tools/deploy_units.py plan --choice "$CHOICE" | tee -a "$GITHUB_OUTPUT"
+          # The monitoring Worker has no public live version: a push plans it from the pushed range.
+          SINCE: ${{ github.event_name == 'push' && github.event.before || '' }}
+        run: python3 tools/deploy_units.py plan --choice "$CHOICE" --since "$SINCE" | tee -a "$GITHUB_OUTPUT"
       - name: Require ci gate on every pushed commit since live
         if: steps.units.outputs.worker == 'true' || steps.units.outputs.pages == 'true'
         env:
@@ -61,7 +64,7 @@ jobs:
 
   cloudflare:
     needs: plan
-    if: needs.plan.outputs.worker == 'true' || needs.plan.outputs.pages == 'true'
+    if: needs.plan.outputs.worker == 'true' || needs.plan.outputs.pages == 'true' || needs.plan.outputs.monitoring == 'true'
     runs-on: ubuntu-latest
     environment: production
     # Up to 100 min waiting for a controller rollout that started first, then the deploy itself.
@@ -75,6 +78,7 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       WORKER: ${{ needs.plan.outputs.worker }}
       PAGES: ${{ needs.plan.outputs.pages }}
+      MONITORING: ${{ needs.plan.outputs.monitoring }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -121,9 +125,9 @@ jobs:
           # The Worker's locked wrangler also deploys Pages and runs the D1 checks.
           (cd worker && npm ci --no-audit --no-fund)
           if [ "$PAGES" = true ]; then (cd frontend && npm ci --no-audit --no-fund); fi
-      # Order: D1 → Worker → Pages (CD_DESIGN.md). Each deploy script re-checks HEAD, a clean tree and its guards.
+      # Order: D1 → Worker → monitoring Worker → Pages (CD_DESIGN.md). Each deploy script re-checks HEAD, a clean tree and its guards.
       - name: Require applied D1 migrations
-        if: steps.tip.outputs.current == 'true' && env.WORKER == 'true'
+        if: steps.tip.outputs.current == 'true' && (env.WORKER == 'true' || env.MONITORING == 'true')
         env:
           CLOUDFLARE_API_TOKEN: ${{ steps.secrets.outputs.cf_token }}
         run: |
@@ -160,6 +164,31 @@ jobs:
             sleep 10
           done
           echo "worker health reports ${live:-nothing}, expected $GITHUB_SHA"; exit 1
+      - name: Deploy monitoring Worker
+        if: steps.tip.outputs.current == 'true' && env.MONITORING == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ steps.secrets.outputs.cf_token }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          # Its live version is readable only through the Cloudflare API (every route is behind Access).
+          live="$(node tools/deploy_monitoring_worker_with_provenance.mjs --live)"
+          if [ "$live" = "$GITHUB_SHA" ]; then echo "monitoring already live at $live"; exit 0; fi
+          # The plan gated from the Worker/Pages live versions; gate the monitoring range too (unknown: HEAD only).
+          base=""
+          if [ -n "$live" ] && git merge-base --is-ancestor "$live" HEAD; then base="$live"
+          elif [ -n "$live" ]; then echo "::error::monitoring live version $live is not in main history; merge it into main before deploying"; exit 1; fi
+          python3 tools/deploy_units.py gate --base "$base"
+          node tools/deploy_monitoring_worker_with_provenance.mjs
+      - name: Verify monitoring Worker
+        if: steps.tip.outputs.current == 'true' && env.MONITORING == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ steps.secrets.outputs.cf_token }}
+        run: |
+          set -e
+          live="$(node tools/deploy_monitoring_worker_with_provenance.mjs --live)"
+          [ "$live" = "$GITHUB_SHA" ] && { echo "monitoring live at $live"; exit 0; }
+          echo "monitoring deployment reports ${live:-nothing}, expected $GITHUB_SHA"; exit 1
       - name: Deploy Pages
         if: steps.tip.outputs.current == 'true' && env.PAGES == 'true'
         env:

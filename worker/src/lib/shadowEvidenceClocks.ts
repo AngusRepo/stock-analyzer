@@ -101,6 +101,15 @@ async function shadowAClock(env: Bindings): Promise<EvidenceClock> {
     'FROM strategy_route_calibration_runs_v1 WHERE candidate_route_version<>? ' +
     'ORDER BY as_of_date DESC, created_at DESC, run_id DESC LIMIT 1',
   ).bind(STRATEGY_ROUTE_CHALLENGER_VERSION).first<Record<string, unknown>>()
+  return shadowAClockFromRows(row, priorRow)
+}
+
+/** Shadow A clock from the latest challenger-version run and the latest run of any other version
+ * (shared with the read-only monitoring Worker, which reads the same rows by index seeks). */
+export function shadowAClockFromRows(
+  row: Record<string, unknown> | null | undefined,
+  priorRow: Record<string, unknown> | null | undefined,
+): EvidenceClock {
   const gate = jsonRecord(row?.gate_json)
   const gateMetadata = jsonRecord(gate._metadata)
   const blockers = stringList(gate.failed_gates ?? gate.blockers)
@@ -247,7 +256,7 @@ export async function rfsClock(env: Bindings): Promise<EvidenceClock> {
   }
 }
 
-type IntentRow = { trade_date: string; symbol: string; side: string; status: string }
+export type IntentRow = { trade_date: string; symbol: string; side: string; status: string }
 
 async function executionParityClock(env: Bindings): Promise<EvidenceClock> {
   const paperDb = databaseForDataDomain(env, 'paper')
@@ -260,8 +269,11 @@ async function executionParityClock(env: Bindings): Promise<EvidenceClock> {
       FROM broker_execution_intents WHERE trade_date >= date('now', '-30 days')
       ORDER BY trade_date DESC, symbol`).all<IntentRow>(),
   ])
-  const paper = paperResult.results ?? []
-  const real = realResult.results ?? []
+  return executionParityClockFromRows(paperResult.results ?? [], realResult.results ?? [])
+}
+
+/** Execution parity clock from the last 30 days of paper and broker intents (shared with the monitoring Worker). */
+export function executionParityClockFromRows(paper: IntentRow[], real: IntentRow[]): EvidenceClock {
   const realKeys = new Set(real.map((row) => `${row.trade_date}|${row.symbol}|${row.side}`))
   const paperKeys = new Set(paper.map((row) => `${row.trade_date}|${row.symbol}|${row.side}`))
   const matched = real.filter((row) => paperKeys.has(`${row.trade_date}|${row.symbol}|${row.side}`)).length

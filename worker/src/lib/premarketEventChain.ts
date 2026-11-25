@@ -2,6 +2,7 @@ import type { Bindings, UpdateQueueMsg } from '../types'
 import { databaseForDataDomain, databaseForTable } from './dataDomainRegistry'
 import { logSchedulerResult } from './schedulerRunLogger'
 import { resolveTwTradingSession } from './schedulerPolicy'
+import { recordedClosure } from './twRecordedClosure'
 import { settlePremarketReadinessTickets } from './premarketReadinessTickets'
 import { premarketPublicationCutoff, premarketPublicationMinutes, premarketPublicationTarget } from './premarketPublicationWindow'
 import { paperAccountId } from './paperExecutionScope'
@@ -88,17 +89,6 @@ async function readChain(env: Bindings, date: string): Promise<ChainRow[]> {
   return (await databaseForDataDomain(env, 'ops').prepare(`SELECT stage,status,cursor_key,last_error FROM pipeline_stage_runs
     WHERE business_date=? AND canonical_run_id=? AND stage LIKE 'premarket_v3:%' ORDER BY created_at,stage`)
     .bind(date, RUN(date)).all<ChainRow>()).results
-}
-
-/** Closure already recorded by resolveTwTradingSession (weekend, holiday key, cached TWSE schedule or
- * ad-hoc check). Cache reads only: a display poll must not fetch TWSE, write KV or alert. */
-async function recordedClosure(kv: KVNamespace, date: string): Promise<boolean> {
-  const day = new Date(`${date}T12:00:00+08:00`).getUTCDay()
-  if (day === 0 || day === 6) return true
-  if (await kv.get(`holiday:${date}`)) return true
-  if (await kv.get(`market:twse_adhoc_closure_check:v1:${date}`) === 'closed') return true
-  const schedule = await kv.get(`market:twse_holiday_schedule:v2:${date.slice(0, 4)}`, 'json') as { dates?: unknown } | null
-  return Array.isArray(schedule?.dates) && schedule.dates.includes(date)
 }
 
 /** Display only. In single-plan mode trading acts only on today's finalized daily-plan head, so a

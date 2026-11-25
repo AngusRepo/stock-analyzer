@@ -8,7 +8,8 @@ frontend imports worker/src).
 Changes are diffed against what each unit runs live, not against the previous main commit, so a
 cancelled, rejected or failed run leaves its changes for the next one.
 
-  plan --choice changed|worker|pages|all     prints `<unit>=true|false` and `gate_base=<sha>`
+  plan --choice changed|worker|pages|monitoring|all [--since <sha>]
+                                              prints `<unit>=true|false` and `gate_base=<sha>`
   gate --base <sha|''>                        requires a passing push-event ci gate on every
                                               pushed main commit in (base, HEAD]
 """
@@ -23,17 +24,24 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+# Public provenance per unit. The monitoring Worker has none (every route is behind Cloudflare Access):
+# the plan decides it from the pushed range (--since), and the cloudflare job reads its live tag through
+# the Cloudflare API, gates from it and skips a commit that is already live.
 LIVE = {
     'worker': ('https://stockvision-worker.angus-solo-dev.workers.dev/api/health', ('provenance', 'sourceSha')),
     'pages': ('https://stockvision-frontend.pages.dev/production-provenance.json', ('sourceSha',)),
 }
+MONITORING_DIR = 'worker/src/monitoring'
 UNITS = {
     'worker': ('worker', 'tools/deploy_worker_with_provenance.mjs'),
     'pages': ('frontend', 'tools/deploy_pages_with_provenance.mjs'),
+    'monitoring': (MONITORING_DIR, 'tools/deploy_monitoring_worker_with_provenance.mjs'),
 }
 # Worker build inputs outside src/; everything else under worker/ (migrations, scripts, notes) is not bundled.
 WORKER_CONFIG = {'worker/wrangler.toml', 'worker/package.json', 'worker/package-lock.json', 'worker/tsconfig.json'}
+MONITORING_CONFIG = {'worker/wrangler.monitoring.toml', 'worker/package.json', 'worker/package-lock.json', 'worker/tsconfig.json'}
 SHARED = {'infra/gcp-scheduler-jobs.json', 'tools/worker_deploy_preflight.mjs'}
+UNIT_SHARED = {'worker': SHARED, 'pages': SHARED, 'monitoring': set()}
 SOURCE = {'.ts', '.tsx', '.js', '.mjs'}
 SPECIFIER = re.compile(r"""(?:\bfrom|\bimport)\s*\(?\s*['"](\.{1,2}/[^'"]+)['"]""")
 TEST = re.compile(r'(^|/)(__tests__|tests?)/|\.(test|spec)[A-Za-z]*\.[a-z]+$')
@@ -55,9 +63,15 @@ def resolve(importer: Path, specifier: str, root: Path):
 
 
 def entries(unit_dir: str, root: Path) -> list[Path]:
-    top = (root / unit_dir / 'src').resolve()
-    return [p.resolve() for p in top.rglob('*')
-            if p.is_file() and p.suffix in SOURCE and not TEST.search(p.relative_to(root.resolve()).as_posix())]
+    """Non-test source of a unit: <dir>/src, or the directory itself when it is a source directory
+    (the monitoring Worker). The main Worker's src excludes the monitoring Worker's own directory."""
+    top = (root / unit_dir / 'src') if (root / unit_dir / 'src').is_dir() else (root / unit_dir)
+    found = []
+    for p in top.resolve().rglob('*'):
+        rel = p.relative_to(root.resolve()).as_posix()
+        if p.is_file() and p.suffix in SOURCE and not TEST.search(rel) and not (unit_dir == 'worker' and rel.startswith(f'{MONITORING_DIR}/')):
+            found.append(p.resolve())
+    return found
 
 
 def outside_inputs(unit_dir: str, root: Path = ROOT) -> set[str]:
@@ -83,14 +97,16 @@ def in_unit(unit: str, path: str) -> bool:
     if TEST.search(path) or path.endswith('.md'):
         return False
     if unit == 'worker':
-        return path in WORKER_CONFIG or path.startswith('worker/src/')
+        return path in WORKER_CONFIG or (path.startswith('worker/src/') and not path.startswith(f'{MONITORING_DIR}/'))
+    if unit == 'monitoring':
+        return path in MONITORING_CONFIG or path.startswith(f'{MONITORING_DIR}/')
     return path.startswith('frontend/')
 
 
 def touched_units(changed: list[str], root: Path = ROOT) -> dict[str, bool]:
     result = {}
     for unit, (unit_dir, script) in UNITS.items():
-        inputs = SHARED | {script} | outside_inputs(unit_dir, root)
+        inputs = UNIT_SHARED[unit] | {script} | outside_inputs(unit_dir, root)
         result[unit] = any(path in inputs or in_unit(unit, path) for path in changed)
     return result
 
@@ -119,14 +135,28 @@ def live_sha(unit: str) -> str:
     return value if isinstance(value, str) and SHA.match(value) else ''
 
 
-def plan(choice: str) -> dict[str, str]:
+def monitoring_planned(choice: str, since: str, head: str) -> bool:
+    """No public live version: a push deploys it when the pushed range touches it. A run that did not
+    deploy it (cancelled, rejected, failed) is retried with units=monitoring; the cloudflare job then
+    reads the live tag, gates from it and skips a commit that is already live."""
+    if choice in ('monitoring', 'all'):
+        return True
+    if choice != 'changed':
+        return False
+    if not since or not SHA.match(since) or not is_ancestor(since, head):
+        print('::notice::monitoring Worker not planned (no pushed range in main history); dispatch units=monitoring to deploy it', file=sys.stderr)
+        return False
+    return touched_units(git('diff', '--name-only', since, head).splitlines())['monitoring']
+
+
+def plan(choice: str, since: str = '') -> dict[str, str]:
     head = git('rev-parse', 'HEAD')
     remote = git('ls-remote', 'origin', 'refs/heads/main').split()[0]
     if remote != head:  # a newer run owns main; it diffs against live, so nothing is lost
         print(f'::notice::main moved to {remote}; leaving the deploy to that run', file=sys.stderr)
-        return {'worker': 'false', 'pages': 'false', 'gate_base': ''}
+        return {'worker': 'false', 'pages': 'false', 'monitoring': 'false', 'gate_base': ''}
     out, bases = {}, []
-    for unit in UNITS:
+    for unit in LIVE:
         live = live_sha(unit)
         if live == head:
             out[unit] = False
@@ -142,6 +172,7 @@ def plan(choice: str) -> dict[str, str]:
             bases.append(live if known else '')
     # Gate every pushed commit since the oldest live version being replaced; an unreadable one gates HEAD only.
     base = '' if not bases or '' in bases else bases[0] if len(bases) == 1 else git('merge-base', *bases)
+    out['monitoring'] = monitoring_planned(choice, since, head)
     return {**{u: str(v).lower() for u, v in out.items()}, 'gate_base': base}
 
 
@@ -189,11 +220,13 @@ def gate(base: str, deadline_s: int = 140 * 60, missing_s: int = 15 * 60) -> Non
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest='action', required=True)
-    sub.add_parser('plan').add_argument('--choice', choices=['changed', 'worker', 'pages', 'all'], default='changed')
+    plan_args = sub.add_parser('plan')
+    plan_args.add_argument('--choice', choices=['changed', 'worker', 'pages', 'monitoring', 'all'], default='changed')
+    plan_args.add_argument('--since', default='', help='the push event before-SHA (monitoring unit only)')
     sub.add_parser('gate').add_argument('--base', default='')
     args = parser.parse_args()
     if args.action == 'plan':
-        for key, value in plan(args.choice).items():
+        for key, value in plan(args.choice, args.since).items():
             print(f'{key}={value}')
     else:
         gate(args.base)

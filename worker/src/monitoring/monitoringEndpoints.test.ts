@@ -2,9 +2,12 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { after, before, test } from 'node:test'
 import { STRATEGY_ROUTE_CHALLENGER_VERSION } from '../lib/strategyRouteCalibration'
-import { CHAIN_ID, CHAIN_ROOT_STAGE } from './chain'
+import { CHAIN_ID, CHAIN_ROOT_STAGE, keyedHistorySql, keyedTimelineSql } from './chain'
 import { PROGRESS_SQL, PROGRESS_STAGES } from './chainSubStages'
 import { MATERIALIZATION_SOURCES } from './dataReadiness'
+import { periodKeys } from './judgment/chainCatalog'
+import { chainStageIds } from './judgment/chainPhases'
+import { STAGES as STAGES_DAG } from './judgment/executionChainDag'
 import { FINLAB_STAGE_CARDS } from './judgment/finlabStageCards'
 import { PIPELINE_STAGE_CARDS } from './judgment/pipelineStageCards'
 import { createMonitoringHandler, ROUTES, SLOW_TTL_S, TIMELINE_TTL_S } from './index'
@@ -194,7 +197,7 @@ test('/v1/chain/state: X and X−1 by primary-key seek, DAG-annotated, sub-stage
 })
 
 test('/v1/chain/alerts: failed / overdue / stuck / missed per the contract', async () => {
-  const body = await endpoint('/v1/chain/alerts', HISTORY_MAX_ROWS_READ)
+  const body = await endpoint('/v1/chain/alerts?chain=daily_readiness', HISTORY_MAX_ROWS_READ)
   const got = body.rows.map((row: any) => `${row.stage_id}:${row.kind}`).sort()
   assert.deepEqual(got, [
     'finlab-v4-backfill:failed', // error, deadline not passed yet
@@ -207,10 +210,27 @@ test('/v1/chain/alerts: failed / overdue / stuck / missed per the contract', asy
   assert.ok(!got.some((item: string) => item.startsWith('indicator-queue')))
 })
 
+test('/v1/chain/alerts: a required stage in error past its expected_by is failed only, never also overdue', async () => {
+  const setStatus = (status: string) => fx.raw.OPS_DB.prepare('UPDATE ops_chain_stage_state_v1 SET status = ? WHERE business_date = ? AND chain_id = ? AND stage_id = ?')
+    .bind(status, X, CHAIN_ID, 'regime-compute').run()
+  await setStatus('error')
+  try {
+    const body = (await call('/v1/chain/alerts?chain=daily_readiness')).body
+    assert.deepEqual(body.rows.filter((row: any) => row.stage_id === 'regime-compute').map((row: any) => row.kind), ['failed'], 'one failure, one alert')
+    assert.deepEqual([body.counts.failed, body.counts.overdue], [3, 0])
+    // A retry back to running that passes the deadline again is overdue.
+    await setStatus('running')
+    const retry = (await call('/v1/chain/alerts?chain=daily_readiness')).body
+    assert.deepEqual(retry.rows.filter((row: any) => row.stage_id === 'regime-compute').map((row: any) => row.kind), ['overdue'])
+  } finally {
+    await setStatus('pending')
+  }
+})
+
 test('/v1/chain/alerts: missed root, chain absent after the configured deadline', async () => {
   await fx.raw.OPS_DB.prepare("UPDATE ops_chain_stage_state_v1 SET status = 'pending', started_at = NULL, completed_at = NULL WHERE business_date = ? AND stage_id = ?")
     .bind(X, CHAIN_ROOT_STAGE).run()
-  const body = await endpoint('/v1/chain/alerts', HISTORY_MAX_ROWS_READ)
+  const body = await endpoint('/v1/chain/alerts?chain=daily_readiness', HISTORY_MAX_ROWS_READ)
   assert.ok(body.rows.some((row: any) => row.stage_id === CHAIN_ROOT_STAGE && row.kind === 'missed' && row.business_date === X))
   await fx.raw.OPS_DB.prepare("UPDATE ops_chain_stage_state_v1 SET status = 'success' WHERE business_date = ? AND stage_id = ?").bind(X, CHAIN_ROOT_STAGE).run()
 })
@@ -242,7 +262,7 @@ test('/v1/chain/history?days=14: final state per stage per day, repeat failures;
       ['finlab-backfill-watchdog', 1, false, X, X],
     ])
     assert.equal(body.repeat_failures[0].last_error, 'FinLab margin dates missing')
-    const alerts = await endpoint('/v1/chain/alerts', HISTORY_MAX_ROWS_READ)
+    const alerts = await endpoint('/v1/chain/alerts?chain=daily_readiness', HISTORY_MAX_ROWS_READ)
     assert.deepEqual(Object.fromEntries(alerts.rows.map((row: any) => [`${row.stage_id}:${row.kind}`, row.failures_14d])), {
       'finlab-v4-backfill:failed': 3, 'finlab-backfill-watchdog:failed': 1, 'regime-compute:overdue': 0, 'update:stuck': 0,
     })
@@ -512,7 +532,7 @@ test('/v1/trading-day and holiday gating: a typhoon closure is not a trading day
   // X−1's daily-report still pending, due 11/24 15:00 TW (on X, the next trading day at pre-creation).
   await fx.raw.OPS_DB.prepare("UPDATE ops_chain_stage_state_v1 SET status = 'pending', expected_by = ? WHERE business_date = ? AND stage_id = 'daily-report'")
     .bind('2026-11-24T07:00:00.000Z', XPREV).run()
-  const overdue = (await call('/v1/chain/alerts')).body.rows.filter((row: any) => row.business_date === XPREV)
+  const overdue = (await call('/v1/chain/alerts?chain=daily_readiness')).body.rows.filter((row: any) => row.business_date === XPREV)
   assert.deepEqual(overdue.map((row: any) => `${row.stage_id}:${row.kind}`), ['daily-report:overdue'])
   await fx.kv.put(`holiday:${X}`, JSON.stringify({ source: 'twse_adhoc', title: '颱風停止上班上課', feed: 'twse.openapi.newsList' }))
   try {
@@ -521,10 +541,10 @@ test('/v1/trading-day and holiday gating: a typhoon closure is not a trading day
     // Default X falls back to the last trading day; the closure date's own rows raise nothing.
     const state = await call('/v1/chain/state')
     assert.deepEqual([state.body.business_date, state.body.x_trading_day], [XPREV, true])
-    const alerts = await call(`/v1/chain/alerts?date=${X}`)
+    const alerts = await call(`/v1/chain/alerts?chain=daily_readiness&date=${X}`)
     assert.equal(alerts.body.x_trading_day, false)
     assert.deepEqual(alerts.body.rows.filter((row: any) => row.business_date === X), [], 'holiday rows raise no alerts')
-    const defaults = await call('/v1/chain/alerts')
+    const defaults = await call('/v1/chain/alerts?chain=daily_readiness')
     assert.deepEqual(defaults.body.rows, [], 'X−2 complete; X−1 deadline fell on the closure date (stale until P2 rewrites it)')
   } finally {
     await fx.kv.delete(`holiday:${X}`)
@@ -537,16 +557,28 @@ test('/v1/chain/alerts: a trading day with no chain row after 18:30 TW is missed
   const base = { ...fx.env, ACCESS_TEAM_DOMAIN: TEST_TEAM, ACCESS_AUD: TEST_AUD, MONITORING_READ_TOKEN: TEST_TOKEN }
   const get = async (now: number, env: object, date: string) => {
     const handler = createMonitoringHandler({ now: () => now, fetch: keys.fetcher, cache: null })
-    const response = await handler(new Request(`https://monitoring.test/v1/chain/alerts?date=${date}`, { headers: await accessHeaders(keys, now) }), env as never)
-    return ((await response.json()) as any).rows.map((row: any) => [row.business_date, row.stage_id, row.kind, row.status])
+    const response = await handler(new Request(`https://monitoring.test/v1/chain/alerts?chain=daily_readiness&date=${date}`, { headers: await accessHeaders(keys, now) }), env as never)
+    const body = (await response.json()) as any
+    flags.push(body.history_available)
+    return body.rows.map((row: any) => [row.business_date, row.stage_id, row.kind, row.status])
   }
-  // Before the seeded chain history: 10/01 (Thu) and its X−1 09/30 have no rows.
+  const flags: boolean[] = []
+  // Before the seeded chain history: 10/01 (Thu) and its X−1 09/30 have no rows, nor does any day of the 14 before:
+  // a chain not started yet (go-live), never missed.
   const at1800 = Date.parse('2026-10-01T10:00:00Z') // 18:00 TW
-  assert.deepEqual(await get(at1800, base, '2026-10-01'), [['2026-09-30', CHAIN_ROOT_STAGE, 'missed', 'absent']], 'X before 18:30: only X−1')
-  assert.deepEqual(await get(at1800 + 31 * 60_000, base, '2026-10-01'), [
-    ['2026-10-01', CHAIN_ROOT_STAGE, 'missed', 'absent'], ['2026-09-30', CHAIN_ROOT_STAGE, 'missed', 'absent']])
-  assert.equal((await get(at1800, { ...base, CHAIN_ROOT_EXPECTED_BY_TW: '17:00' }, '2026-10-01')).length, 2, 'override')
-  assert.deepEqual(await get(NOW, base, '2026-10-03'), [['2026-10-02', CHAIN_ROOT_STAGE, 'missed', 'absent']], 'Saturday itself: no alert')
+  assert.deepEqual([await get(at1800 + 31 * 60_000, base, '2026-10-01'), flags.at(-1)], [[], false], 'no history: not missed')
+  // One earlier row in the lookback (09/25) is the evidence that the chain was being written.
+  const evidence = { business_date: '2026-09-25', chain_id: CHAIN_ID, stage_id: CHAIN_ROOT_STAGE, status: 'success', attempt: 1, updated_at: '2026-09-25T10:10:00Z' }
+  await insertRows(fx.raw.OPS_DB, 'ops_chain_stage_state_v1', [evidence])
+  try {
+    assert.deepEqual(await get(at1800, base, '2026-10-01'), [['2026-09-30', CHAIN_ROOT_STAGE, 'missed', 'absent']], 'X before 18:30: only X−1')
+    assert.deepEqual([await get(at1800 + 31 * 60_000, base, '2026-10-01'), flags.at(-1)], [[
+      ['2026-10-01', CHAIN_ROOT_STAGE, 'missed', 'absent'], ['2026-09-30', CHAIN_ROOT_STAGE, 'missed', 'absent']], true])
+    assert.equal((await get(at1800, { ...base, CHAIN_ROOT_EXPECTED_BY_TW: '17:00' }, '2026-10-01')).length, 2, 'override')
+    assert.deepEqual(await get(NOW, base, '2026-10-03'), [['2026-10-02', CHAIN_ROOT_STAGE, 'missed', 'absent']], 'Saturday itself: no alert')
+  } finally {
+    await fx.raw.OPS_DB.prepare('DELETE FROM ops_chain_stage_state_v1 WHERE business_date = ? AND chain_id = ?').bind(evidence.business_date, CHAIN_ID).run()
+  }
   assert.deepEqual(await get(NOW, base, X), (await get(NOW, base, X)).filter((row: any[]) => row[3] !== 'absent'), 'rows present: no absent alert')
 })
 
@@ -601,6 +633,396 @@ test('memo: a poll past the route TTL re-reads only what changed (counts, timeli
       `inserted=${inserted.rows_read} warm=${warm.readiness.rows_read}`)
   } finally {
     await fx.raw.MARKET_DB.prepare('DELETE FROM stock_prices WHERE stock_id = 999999').run()
+  }
+})
+
+// ── The other three chains (contract "P2b 擴充"). Seeded here, after the daily tests: a business_date range also
+// walks other chains' rows, so the daily tests above measure the table as it is before P2b writes. ──
+const INTRADAY = chainStageIds('intraday_guard')
+const WEEKLY = chainStageIds('weekly_research')
+const MONTHLY = chainStageIds('monthly_artifact')
+const WEEK_KEYS = periodKeys('weekly_research', '2026-11-20', 5) // 11/20 … 10/23
+const MONTH_KEYS = periodKeys('monthly_artifact', '2026-11-07', 3) // 11/07, 10/03, 09/05
+/** Primary-key IN-list reads: each seek bills its rows plus at most two (the probe and the end of the key). */
+const keyedMax = (rows: number, seeks: number) => rows + 2 * seeks
+/** 14 days ending at X: 10 weekdays, X−1..X live. */
+const INTRADAY_HISTORY_DATES = weekdays(X, 10)
+const PAUSED = new Set(['active8-oof-weekly', 'monthly-optuna', 'active8-oof-monthly'])
+// 14:00 TW on X: intraday deadlines up to post-close-price-refresh (13:50) have passed, daily-snapshot's (14:40) not.
+const INTRADAY_NOW = Date.parse('2026-11-24T06:00:00Z')
+const twAt = (date: string, hhmm: string, days = 0) => new Date(Date.parse(`${date}T${hhmm}:00+08:00`) + days * 86_400_000).toISOString()
+
+/** X's intraday guard at 14:00 TW, one row per rule. */
+const INTRADAY_X: Record<string, unknown>[] = [
+  // Repeating stage: one row a day, worst result of the day (an error at 10:31, successes after), never running, no heartbeat.
+  { stage_id: 'intraday-check', status: 'error', started_at: twAt(X, '09:00'), completed_at: twAt(X, '13:30'), updated_at: twAt(X, '13:30'),
+    summary: 'last=success positions guarded', error: 'broker quotes stale at 10:31', expected_by: twAt(X, '09:10') },
+  { stage_id: 'eod-exit', status: 'success', started_at: twAt(X, '13:25'), completed_at: twAt(X, '13:26'), expected_by: twAt(X, '13:30') },
+  { stage_id: 'post-close-price-refresh', status: 'pending', expected_by: twAt(X, '13:50') },
+  { stage_id: 'daily-snapshot', status: 'running', started_at: twAt(X, '13:30'), heartbeat_at: twAt(X, '13:40'), expected_by: twAt(X, '14:40') },
+  { stage_id: 'rescore-10', status: 'success', started_at: twAt(X, '10:00'), completed_at: twAt(X, '10:01'), expected_by: twAt(X, '10:10') },
+  { stage_id: 'rescore-11', status: 'skipped', started_at: twAt(X, '11:00'), completed_at: twAt(X, '11:00'), expected_by: twAt(X, '11:10') },
+  { stage_id: 'rescore-12', status: 'success', started_at: twAt(X, '12:00'), completed_at: twAt(X, '12:01'), expected_by: twAt(X, '12:10') },
+  { stage_id: 'rescore-1230', status: 'success', started_at: twAt(X, '12:30'), completed_at: twAt(X, '12:31'), expected_by: twAt(X, '12:40') },
+]
+
+/** Weekly period 11/20 (Fri) over the weekend: Sunday's validation failed, the root never closed. */
+const WEEKLY_CURRENT: Record<string, Record<string, unknown>> = {
+  'weekly-backtest': { status: 'error', error: 'MC validation: sample window empty', started_at: twAt('2026-11-20', '06:00', 2), completed_at: twAt('2026-11-20', '06:40', 2) },
+  // Optional: a failure only.
+  's12-smcvwap-calibration': { status: 'error', error: 'calibration diverged', started_at: twAt('2026-11-20', '05:00', 2), completed_at: twAt('2026-11-20', '05:10', 2) },
+  'weekly-optuna': { status: 'pending' },
+  // PAUSED in the scheduler manifest: no deadline, never overdue.
+  'active8-oof-weekly': { status: 'pending' },
+  'weekly-readiness': { status: 'pending' },
+}
+
+/** Final rows of one ended period: every stage success at its deadline (PAUSED / optional ones without one). */
+function periodRows(chain: string, key: string, stages: string[], deadline: (stage: string) => string | null, override: Record<string, Record<string, unknown>> = {}) {
+  return stages.map((stage) => {
+    const at = deadline(stage)
+    const done = at ? new Date(Date.parse(at) - 20 * 60_000).toISOString() : twAt(key, '20:00')
+    return { business_date: key, chain_id: chain, stage_id: stage, status: 'success', attempt: 1, optional: STAGES_DAG[stage]?.optional ? 1 : 0,
+      expected_by: at, started_at: new Date(Date.parse(done) - 10 * 60_000).toISOString(), completed_at: done, updated_at: done, ...override[stage] }
+  })
+}
+const WEEKLY_DEADLINES: Record<string, [number, string]> = { 'weekly-audit': [0, '19:00'], 'storage-integrity-audit': [2, '04:00'], 'model-ic-full-check': [0, '20:00'],
+  'weekly-backtest': [2, '07:00'], 'alpha-quality': [2, '06:30'], 'weekly-cleanup': [2, '04:30'], 'weekly-readiness': [2, '12:30'] }
+const weeklyDeadline = (key: string) => (stage: string) => (WEEKLY_DEADLINES[stage] ? twAt(key, WEEKLY_DEADLINES[stage][1], WEEKLY_DEADLINES[stage][0]) : null)
+/** First Sunday of a key's month (the 1st when the month starts on a Sunday). */
+const firstSunday = (key: string) => { const first = Date.parse(`${key.slice(0, 7)}-01T00:00:00Z`); return new Date(first + ((7 - new Date(first).getUTCDay()) % 7) * 86_400_000).toISOString().slice(0, 10) }
+const monthlyDeadline = (key: string) => (stage: string) => ({ 'monthly-strategy-mining': twAt(key, '13:00'), 'monthly-readiness': twAt(firstSunday(key), '13:00') } as Record<string, string>)[stage] ?? null
+
+async function seedOtherChains(db: D1Database) {
+  const state: Record<string, unknown>[] = []
+  for (const date of weekdays(XPREV, 25)) {
+    state.push(...INTRADAY.map((stage, index) => ({ business_date: date, chain_id: 'intraday_guard', stage_id: stage, status: 'success', attempt: 1,
+      started_at: twAt(date, '09:00'), completed_at: twAt(date, `${String(9 + Math.floor(index / 2)).padStart(2, '0')}:${index % 2 ? '30' : '05'}`),
+      updated_at: twAt(date, '13:30'), expected_by: twAt(date, '14:40'), ...(stage === 'intraday-check' ? { summary: 'last=success ok' } : {}) })))
+  }
+  state.push(...INTRADAY_X.map((row) => ({ business_date: X, chain_id: 'intraday_guard', attempt: 1, updated_at: twAt(X, '13:40'), ...row })))
+  for (const key of WEEK_KEYS) {
+    state.push(...periodRows('weekly_research', key, WEEKLY, weeklyDeadline(key), key === WEEK_KEYS[0]
+      ? Object.fromEntries(Object.entries(WEEKLY_CURRENT).map(([stage, row]) => [stage, row.status === 'pending' ? { ...row, started_at: null, completed_at: null } : row]))
+      // The previous period: validation failed too (a repeat), and alpha quality — an ended period raises no alert.
+      : key === WEEK_KEYS[1] ? { 'weekly-backtest': { status: 'error', error: 'MC validation: sample window empty' }, 'alpha-quality': { status: 'error', error: 'old' } } : {}))
+  }
+  for (const key of MONTH_KEYS) {
+    // 11/07: monthly-readiness ran on the 1st (a Sunday), six days before the key; the PAUSED stages never ran.
+    state.push(...periodRows('monthly_artifact', key, MONTHLY, monthlyDeadline(key), key === MONTH_KEYS[0]
+      ? { 'monthly-optuna': { status: 'pending', started_at: null, completed_at: null }, 'active8-oof-monthly': { status: 'pending', started_at: null, completed_at: null } } : {}))
+  }
+  await insertRows(db, 'ops_chain_stage_state_v1', state)
+  // Transitions: created pending, then running, then the final status, for every row that started.
+  const transitions = state.flatMap((row: any) => [
+    { business_date: row.business_date, chain_id: row.chain_id, stage_id: row.stage_id, transition_at: twAt(row.business_date, '00:01'), to_status: 'pending', from_status: null, attempt: 0 },
+    ...(row.started_at ? [{ business_date: row.business_date, chain_id: row.chain_id, stage_id: row.stage_id, transition_at: row.started_at, to_status: 'running', from_status: 'pending', attempt: 1 }] : []),
+    ...(row.started_at && row.status !== 'running' ? [{ business_date: row.business_date, chain_id: row.chain_id, stage_id: row.stage_id, transition_at: row.completed_at, to_status: row.status, from_status: 'running', attempt: 1 }] : []),
+  ])
+  await insertRows(db, 'ops_chain_stage_transitions_v1', transitions)
+}
+
+/** A handler at `now` (the memo across calls when `cache` is given), recording every query. */
+async function callAt(now: number, path: string, cache: unknown = null) {
+  const keys = await accessKeys()
+  const handler = createMonitoringHandler({ now: () => now, fetch: keys.fetcher, cache: cache as never, onQuery: (query) => queries.push(query) })
+  const env = { ...fx.env, ACCESS_TEAM_DOMAIN: TEST_TEAM, ACCESS_AUD: TEST_AUD, MONITORING_READ_TOKEN: TEST_TOKEN }
+  const response = await handler(new Request(`https://monitoring.test${path}`, { headers: await accessHeaders(keys, now) }), env)
+  const start = queries.length
+  const body = await response.json() as any
+  return { status: response.status, body, cache: response.headers.get('x-monitoring-cache'), start }
+}
+/** Cold (no memo), then a memo-backed poll past the route TTL; both rows_read recorded. */
+async function coldWarm(now: number, path: string, coldMax: number, warmMax: number) {
+  const cold = await callAt(now, path)
+  assert.equal(cold.status, 200, JSON.stringify(cold.body))
+  assert.ok(cold.body.rows_read <= coldMax, `${path} cold rows_read=${cold.body.rows_read} > ${coldMax}`)
+  let clock = now
+  const cache = fakeCache(() => clock)
+  await callAt(clock, path, cache)
+  clock += (TIMELINE_TTL_S + 61) * 1000
+  const warm = await callAt(clock, path, cache)
+  assert.equal(warm.cache, 'MISS')
+  assert.ok(warm.body.rows_read <= warmMax, `${path} warm rows_read=${warm.body.rows_read} > ${warmMax}`)
+  // Same rows; only the clock-relative fields (ETA never earlier than now, alert age) move with the later poll.
+  const fixed = (rows: any[]) => rows.map(({ eta, eta_margin_min, minutes, ...row }: any) => row)
+  assert.deepEqual(fixed(warm.body.rows), fixed(cold.body.rows), `${path}: the memo changes nothing`)
+  measured[`cold ${path}`] = cold.body.rows_read
+  measured[`warm ${path}`] = warm.body.rows_read
+  return cold.body
+}
+const alertKeys = (body: any) => body.rows.map((row: any) => `${row.business_date}:${row.stage_id}:${row.kind}`).sort()
+
+test('chain param: unknown chains are 400; daily_readiness is the default of state / timeline / history', async () => {
+  await seedOtherChains(fx.raw.OPS_DB)
+  measured['/v1/chain/history?days=14 (other chains seeded)'] = (await call('/v1/chain/history?days=14')).body.rows_read
+  measured['/v1/chain/timeline?days=14 (other chains seeded)'] = (await call('/v1/chain/timeline?days=14')).body.rows_read
+  measured['/v1/chain/state (other chains seeded)'] = (await call('/v1/chain/state')).body.rows_read
+  for (const path of ['/v1/chain/state?chain=nope', '/v1/chain/timeline?chain=weekly', '/v1/chain/history?chain=all', '/v1/chain/state?chain=all', '/v1/chain/alerts?chain=DAILY_READINESS']) {
+    const result = await call(path)
+    assert.deepEqual([result.status, result.body.error], [400, 'bad_request'], path)
+    assert.match(result.body.detail, /^chain must be one of daily_readiness, intraday_guard, weekly_research, monthly_artifact/)
+  }
+  for (const path of ['/v1/chain/state', '/v1/chain/timeline?days=2', '/v1/chain/history?days=14']) {
+    const [plain, named] = [await call(path), await call(`${path}${path.includes('?') ? '&' : '?'}chain=daily_readiness`)]
+    assert.deepEqual({ ...named.body, generated_at: null }, { ...plain.body, generated_at: null }, path)
+    assert.equal(plain.body.chain_id, 'daily_readiness')
+  }
+})
+
+test('/v1/chain/state?chain=intraday_guard: trading day, the repeating intraday-check row, failed / overdue / stuck', async () => {
+  const body = await coldWarm(INTRADAY_NOW, '/v1/chain/state?chain=intraday_guard',
+    keyedMax(2 * INTRADAY.length, 2) + keyedMax((INTRADAY_HISTORY_DATES.length - 2) * INTRADAY.length, INTRADAY_HISTORY_DATES.length - 2), keyedMax(2 * INTRADAY.length, 2))
+  assert.deepEqual([body.chain_id, body.period, body.business_date, body.previous_business_date, body.x_trading_day, body.active_business_date],
+    ['intraday_guard', 'trading_day', X, XPREV, true, X])
+  assert.equal(body.rows.length, 2 * INTRADAY.length)
+  assert.ok(body.rows.every((row: any) => row.sub_stage === false && row.chain_id === 'intraday_guard'), 'no sub-stage cards')
+  const shown = (stage: string, date = X) => { const row = body.rows.find((item: any) => item.business_date === date && item.stage_id === stage); return [row.status, row.alerts, row.display_status] }
+  assert.deepEqual(shown('intraday-check'), ['error', ['failed'], 'failed'], 'an error past its 09:10 deadline: failed only (same rule as daily)')
+  assert.deepEqual(shown('post-close-price-refresh'), ['pending', ['overdue'], 'overdue'])
+  assert.deepEqual(shown('daily-snapshot'), ['running', ['stuck'], 'stuck'], 'heartbeat 20 minutes old, deadline 14:40 not passed')
+  assert.deepEqual(shown('rescore-11'), ['skipped', [], 'skipped'])
+  const check = body.rows.find((row: any) => row.business_date === X && row.stage_id === 'intraday-check')
+  assert.deepEqual([check.heartbeat_at, check.summary, check.phase, check.position, check.label], [null, 'last=success positions guarded', 'session', 0, 'Intraday check'])
+  assert.deepEqual(body.rows.filter((row: any) => row.business_date === X).map((row: any) => row.stage_id), INTRADAY, 'panel order: columns, then the rescore branch')
+  const [today] = body.current
+  assert.deepEqual([today.business_date, today.trading_day, today.required_total, today.required_done, today.failed, today.root_started_at],
+    [X, true, INTRADAY.length, 5, 1, twAt(X, '09:00')])
+  // ETA counts from Taiwan midnight (the stages are scheduled, not chained): daily-snapshot typically ends 10:30.
+  const snapshot = body.rows.find((row: any) => row.business_date === X && row.stage_id === 'daily-snapshot')
+  assert.deepEqual([snapshot.typical_done_offset_min, snapshot.eta, snapshot.at_risk], [630, new Date(INTRADAY_NOW).toISOString(), false])
+  // Before its first result (08:00 TW), X has no row: the guard in flight is X−1's.
+  const early = (await callAt(Date.parse('2026-11-25T00:00:00Z'), '/v1/chain/state?chain=intraday_guard')).body
+  assert.deepEqual([early.business_date, early.active_business_date], ['2026-11-25', X])
+})
+
+test('/v1/chain/alerts?chain=intraday_guard: missed after 09:10 on a trading day without rows; holidays raise nothing', async () => {
+  const kinds = async (now: number, date: string) => alertKeys((await callAt(now, `/v1/chain/alerts?chain=intraday_guard&date=${date}`)).body)
+  const body = (await callAt(INTRADAY_NOW, '/v1/chain/alerts?chain=intraday_guard')).body
+  assert.deepEqual(alertKeys(body), [`${X}:daily-snapshot:stuck`, `${X}:intraday-check:failed`, `${X}:post-close-price-refresh:overdue`])
+  assert.deepEqual(body.counts, { total: 3, failed: 1, overdue: 1, stuck: 1, missed: 0 })
+  assert.equal(body.rows.find((row: any) => row.kind === 'failed').failures_14d, 1)
+  // 10/01 (Thu) and 09/30 have no intraday rows, nor the 14 days before: not started yet, not missed.
+  const fresh = (await callAt(Date.parse('2026-10-01T01:11:00Z'), '/v1/chain/alerts?chain=intraday_guard&date=2026-10-01')).body
+  assert.deepEqual([fresh.rows, fresh.history_available], [[], false])
+  // With an earlier day in the lookback: X−1 is missed all day, X once 09:10 has passed.
+  await insertRows(fx.raw.OPS_DB, 'ops_chain_stage_state_v1', [{ business_date: '2026-09-25', chain_id: 'intraday_guard', stage_id: 'eod-exit', status: 'success', attempt: 1, updated_at: twAt('2026-09-25', '13:21') }])
+  try {
+    assert.deepEqual(await kinds(Date.parse('2026-10-01T01:09:00Z'), '2026-10-01'), ['2026-09-30:intraday-check:missed'])
+    const missed = (await callAt(Date.parse('2026-10-01T01:11:00Z'), '/v1/chain/alerts?chain=intraday_guard&date=2026-10-01')).body
+    assert.deepEqual(alertKeys(missed), ['2026-09-30:intraday-check:missed', '2026-10-01:intraday-check:missed'])
+    assert.deepEqual([missed.history_available, missed.rows[0].status, missed.rows[0].severity, missed.rows[0].summary, missed.rows[0].expected_by],
+      [true, 'absent', 'critical', 'no chain rows for this trading day', '2026-10-01T01:10:00.000Z'])
+    assert.deepEqual(await kinds(NOW, '2026-10-03'), ['2026-10-02:intraday-check:missed'], 'Saturday itself: no alert')
+  } finally {
+    await fx.raw.OPS_DB.prepare("DELETE FROM ops_chain_stage_state_v1 WHERE business_date = '2026-09-25' AND chain_id = 'intraday_guard'").run()
+  }
+  // A typhoon closure on X: X is not judged; Saturday is not a trading day.
+  await fx.kv.put(`holiday:${X}`, JSON.stringify({ source: 'twse_adhoc', title: '颱風停止上班上課', feed: 'twse.openapi.newsList' }))
+  try {
+    assert.deepEqual(await kinds(INTRADAY_NOW, X), [], 'X closed, X−1 complete')
+  } finally {
+    await fx.kv.delete(`holiday:${X}`)
+  }
+})
+
+test('/v1/chain/state?chain=weekly_research: the period over the weekend, an error, a PAUSED stage never overdue', async () => {
+  // 11/24 (Tue) 23:00 TW: the current period is Friday 11/20's; 11/13 is shown for comparison.
+  const body = await coldWarm(NOW, '/v1/chain/state?chain=weekly_research',
+    keyedMax(2 * WEEKLY.length, 2) + keyedMax((WEEK_KEYS.length - 1) * WEEKLY.length, WEEK_KEYS.length - 1), keyedMax(WEEKLY.length, 1))
+  assert.deepEqual([body.chain_id, body.period, body.business_date, body.previous_business_date, body.x_trading_day, body.active_business_date],
+    ['weekly_research', 'week', '2026-11-20', '2026-11-13', null, '2026-11-20'])
+  assert.equal(body.rows.length, 2 * WEEKLY.length)
+  assert.ok(body.rows.every((row: any) => row.trading_day === null && row.sub_stage === false))
+  const shown = (stage: string, date = '2026-11-20') => { const row = body.rows.find((item: any) => item.business_date === date && item.stage_id === stage); return [row.status, row.alerts, row.display_status] }
+  assert.deepEqual(shown('weekly-backtest'), ['error', ['failed'], 'failed'], 'error past its deadline: failed only')
+  assert.deepEqual(shown('s12-smcvwap-calibration'), ['error', ['failed'], 'failed'], 'optional: failure only')
+  assert.deepEqual(shown('active8-oof-weekly'), ['pending', [], 'not_started'], 'PAUSED: expected_by NULL, never overdue')
+  assert.deepEqual(shown('weekly-optuna'), ['pending', [], 'not_started'])
+  assert.deepEqual(shown('weekly-readiness'), ['pending', ['overdue'], 'overdue'])
+  // The ended previous period is shown, never judged.
+  assert.deepEqual(shown('alpha-quality', '2026-11-13'), ['error', [], 'blocked'])
+  assert.deepEqual(body.rows.filter((row: any) => row.business_date === '2026-11-20').map((row: any) => [row.stage_id, row.phase]).slice(0, 4),
+    [['weekly-audit', 'audit'], ['storage-integrity-audit', 'audit'], ['model-ic-full-check', 'audit'], ['weekly-backtest', 'validation']])
+  assert.equal(body.rows.find((row: any) => row.stage_id === 'weekly-readiness').position, WEEKLY.length - 1, 'the root closes the period')
+  const [current, previous] = body.current
+  assert.deepEqual([current.business_date, current.active, current.trading_day, current.required_total, current.failed], ['2026-11-20', true, null, 8, 2])
+  assert.deepEqual([previous.business_date, previous.active, previous.failed], ['2026-11-13', false, 2])
+  // Holidays do not matter: the period key itself closed (a typhoon Friday) still judges the period.
+  await fx.kv.put('holiday:2026-11-20', JSON.stringify({ source: 'twse_adhoc', title: '颱風停止上班上課', feed: 'twse.openapi.newsList' }))
+  try {
+    assert.deepEqual(alertKeys((await callAt(NOW, '/v1/chain/alerts?chain=weekly_research')).body), [
+      '2026-11-20:s12-smcvwap-calibration:failed', '2026-11-20:weekly-backtest:failed', '2026-11-20:weekly-readiness:overdue'])
+  } finally {
+    await fx.kv.delete('holiday:2026-11-20')
+  }
+})
+
+test('/v1/chain/alerts?chain=weekly_research: counts, repeat failures, missed once Friday 19:00 passes without rows', async () => {
+  const body = (await callAt(NOW, '/v1/chain/alerts?chain=weekly_research')).body
+  assert.deepEqual(body.counts, { total: 3, failed: 2, overdue: 1, stuck: 0, missed: 0 })
+  assert.deepEqual(Object.fromEntries(body.rows.map((row: any) => [`${row.stage_id}:${row.kind}`, row.failures_14d])), {
+    'weekly-backtest:failed': 2, 's12-smcvwap-calibration:failed': 1, 'weekly-readiness:overdue': 0 })
+  // 10/09 (Fri) has no weekly row, nor its previous period 10/02: not started yet, never missed.
+  const at = async (iso: string, date: string) => alertKeys((await callAt(Date.parse(iso), `/v1/chain/alerts?chain=weekly_research&date=${date}`)).body)
+  const fresh = (await callAt(Date.parse('2026-10-09T11:01:00Z'), '/v1/chain/alerts?chain=weekly_research&date=2026-10-09')).body
+  assert.deepEqual([fresh.rows, fresh.history_available], [[], false])
+  // The previous period wrote: not missed at 18:59, missed at 19:01; the ended 10/02 period itself is never judged.
+  await insertRows(fx.raw.OPS_DB, 'ops_chain_stage_state_v1', periodRows('weekly_research', '2026-10-02', WEEKLY, weeklyDeadline('2026-10-02')))
+  try {
+    assert.deepEqual(await at('2026-10-09T10:59:00Z', '2026-10-09'), [])
+    assert.deepEqual(await at('2026-10-09T11:01:00Z', '2026-10-09'), ['2026-10-09:weekly-audit:missed'])
+    // The whole week (Saturday to Thursday) belongs to that Friday.
+    assert.deepEqual(await at('2026-10-14T04:00:00Z', '2026-10-14'), ['2026-10-09:weekly-audit:missed'])
+    const missed = (await callAt(Date.parse('2026-10-11T04:00:00Z'), '/v1/chain/alerts?chain=weekly_research&date=2026-10-11')).body
+    assert.deepEqual([missed.business_date, missed.previous_business_date, missed.x_trading_day, missed.history_available, missed.rows[0].summary, missed.rows[0].expected_by],
+      ['2026-10-09', '2026-10-02', null, true, 'no chain rows for this period', '2026-10-09T11:00:00.000Z'])
+  } finally {
+    await fx.raw.OPS_DB.prepare("DELETE FROM ops_chain_stage_state_v1 WHERE business_date = '2026-10-02' AND chain_id = 'weekly_research'").run()
+  }
+})
+
+test('/v1/chain/state?chain=monthly_artifact: first-Saturday key, the root ran on the 1st, PAUSED stages not overdue; missed', async () => {
+  const body = await coldWarm(NOW, '/v1/chain/state?chain=monthly_artifact',
+    keyedMax(2 * MONTHLY.length, 2) + keyedMax((MONTH_KEYS.length - 1) * MONTHLY.length, MONTH_KEYS.length - 1), keyedMax(MONTHLY.length, 1))
+  assert.deepEqual([body.period, body.business_date, body.previous_business_date, body.active_business_date], ['month', '2026-11-07', '2026-10-03', '2026-11-07'])
+  const rows = body.rows.filter((row: any) => row.business_date === '2026-11-07')
+  assert.deepEqual(rows.map((row: any) => [row.stage_id, row.status, row.expected_by === null, row.alerts]), [
+    ['monthly-strategy-mining', 'success', false, []], ['monthly-optuna', 'pending', true, []], ['active8-oof-monthly', 'pending', true, []], ['monthly-readiness', 'success', false, []]])
+  assert.ok(PAUSED.has('monthly-optuna') && PAUSED.has('active8-oof-monthly'))
+  assert.equal(body.current[0].root_started_at, rows.find((row: any) => row.stage_id === 'monthly-readiness').started_at, 'the earliest start: the root on Sunday 11/01')
+  assert.ok(body.current[0].root_started_at < '2026-11-07', 'before the key')
+  assert.deepEqual((await callAt(NOW, '/v1/chain/alerts?chain=monthly_artifact')).body.counts, { total: 0, failed: 0, overdue: 0, stuck: 0, missed: 0 })
+  // 12/02: the December period (key 12/05) has not begun; the ended November period is the one in flight on the panel.
+  const december = (await callAt(Date.parse('2026-12-02T04:00:00Z'), '/v1/chain/state?chain=monthly_artifact')).body
+  assert.deepEqual([december.business_date, december.previous_business_date, december.active_business_date], ['2026-12-05', '2026-11-07', '2026-11-07'])
+  const at = async (iso: string) => alertKeys((await callAt(Date.parse(iso), '/v1/chain/alerts?chain=monthly_artifact')).body)
+  assert.deepEqual(await at('2026-12-02T04:00:00Z'), [], 'key 12/05: cut-off not passed; November ended, not judged')
+  assert.deepEqual(await at('2026-12-05T05:01:00Z'), ['2026-12-05:monthly-strategy-mining:missed'], 'the previous period (11/07) wrote')
+  // January: neither 2027-01-02 nor the previous period (12/05) has a row: not started, not missed.
+  const january = (await callAt(Date.parse('2027-01-02T05:01:00Z'), '/v1/chain/alerts?chain=monthly_artifact')).body
+  assert.deepEqual([january.business_date, january.previous_business_date, january.history_available, january.rows], ['2027-01-02', '2026-12-05', false, []])
+})
+
+test('/v1/chain/history and /timeline for the other chains: exact keys, last N periods, memo for ended ones', async () => {
+  const intraday = await coldWarm(NOW, '/v1/chain/history?chain=intraday_guard&days=14',
+    keyedMax(INTRADAY_HISTORY_DATES.length * INTRADAY.length, INTRADAY_HISTORY_DATES.length), keyedMax(2 * INTRADAY.length, 2))
+  assert.deepEqual([intraday.from, intraday.days, intraday.periods, intraday.truncated, intraday.rows.length],
+    [day(X, -13), 14, null, false, INTRADAY_HISTORY_DATES.length * INTRADAY.length])
+  assert.deepEqual(intraday.repeat_failures.map((item: any) => [item.stage_id, item.failures]), [['intraday-check', 1]])
+  const weekly = await coldWarm(NOW, '/v1/chain/history?chain=weekly_research', keyedMax(WEEK_KEYS.length * WEEKLY.length, WEEK_KEYS.length), keyedMax(WEEKLY.length, 1))
+  assert.deepEqual([weekly.from, weekly.to, weekly.days, weekly.periods, weekly.period], ['2026-10-23', '2026-11-20', null, 5, 'week'])
+  assert.deepEqual([...new Set(weekly.rows.map((row: any) => row.business_date))], [...WEEK_KEYS].reverse())
+  assert.deepEqual(weekly.repeat_failures.map((item: any) => [item.stage_id, item.failures, item.repeat, item.dates]), [
+    ['weekly-backtest', 2, true, '2026-11-13,2026-11-20'], ['alpha-quality', 1, false, '2026-11-13'], ['s12-smcvwap-calibration', 1, false, '2026-11-20']])
+  const monthly = await coldWarm(NOW, '/v1/chain/history?chain=monthly_artifact', keyedMax(MONTH_KEYS.length * MONTHLY.length, MONTH_KEYS.length), keyedMax(MONTHLY.length, 1))
+  assert.deepEqual([monthly.from, monthly.periods, monthly.rows.length], ['2026-09-05', 3, MONTH_KEYS.length * MONTHLY.length])
+  // Timeline: three transitions a finished row, two a running one, one a pending one.
+  const transitions = (rows: number, started: number, finished: number) => rows + started + finished
+  const tl = await coldWarm(NOW, '/v1/chain/timeline?chain=weekly_research',
+    keyedMax(transitions(WEEK_KEYS.length * WEEKLY.length, WEEK_KEYS.length * WEEKLY.length, WEEK_KEYS.length * WEEKLY.length), WEEK_KEYS.length),
+    keyedMax(3 * WEEKLY.length, 1))
+  assert.deepEqual([tl.chain_id, tl.from, tl.periods, tl.truncated], ['weekly_research', '2026-10-23', 5, false])
+  assert.ok(tl.rows.every((row: any) => row.time === row.transition_at && WEEK_KEYS.includes(row.business_date)))
+  const intradayTimeline = await coldWarm(NOW, '/v1/chain/timeline?chain=intraday_guard&days=2', keyedMax(3 * 2 * INTRADAY.length, 2), keyedMax(3 * 2 * INTRADAY.length, 2))
+  assert.deepEqual([...new Set(intradayTimeline.rows.map((row: any) => row.business_date))], [XPREV, X])
+  await coldWarm(NOW, '/v1/chain/timeline?chain=monthly_artifact', keyedMax(3 * MONTH_KEYS.length * MONTHLY.length, MONTH_KEYS.length), keyedMax(3 * MONTHLY.length, 1))
+  // The keyed reads: one primary-key seek per (business_date, chain_id), no temp B-tree for ORDER BY business_date DESC.
+  for (const sqlText of [keyedHistorySql(10), keyedTimelineSql(5)]) {
+    const binds = [...weekdays(X, sqlText.includes('transitions') ? 5 : 10), 'intraday_guard']
+    const plan = (await fx.raw.OPS_DB.prepare(`EXPLAIN QUERY PLAN ${sqlText}`).bind(...binds).all<{ detail: string }>()).results.map((row) => row.detail)
+    assert.deepEqual(plan.map((detail) => detail.replace(/sqlite_autoindex_\w+/, 'PK')), [sqlText.includes('transitions')
+      ? 'SEARCH ops_chain_stage_transitions_v1 USING PRIMARY KEY (business_date=? AND chain_id=?)'
+      : 'SEARCH ops_chain_stage_state_v1 USING PRIMARY KEY (business_date=? AND chain_id=?)'])
+  }
+})
+
+test('/v1/chain/alerts (default, chain=all): every chain in one response, counts total, counts_by_chain per chain', async () => {
+  const start = queries.length
+  const all = await endpoint('/v1/chain/alerts', 1_000)
+  assert.equal(all.chain_id, 'all')
+  const daily = (await call('/v1/chain/alerts?chain=daily_readiness')).body
+  const each = Object.fromEntries(await Promise.all(['intraday_guard', 'weekly_research', 'monthly_artifact'].map(async (id) => [id, (await call(`/v1/chain/alerts?chain=${id}`)).body])))
+  assert.deepEqual(all.counts_by_chain, { daily_readiness: daily.counts, intraday_guard: each.intraday_guard.counts,
+    weekly_research: each.weekly_research.counts, monthly_artifact: each.monthly_artifact.counts })
+  for (const kind of ['total', 'failed', 'overdue', 'stuck', 'missed']) {
+    assert.equal(all.counts[kind], Object.values(all.counts_by_chain).reduce((sum: number, counts: any) => sum + counts[kind], 0), kind)
+  }
+  assert.deepEqual([all.business_date, all.previous_business_date, all.x_trading_day], [daily.business_date, daily.previous_business_date, daily.x_trading_day])
+  assert.deepEqual(all.chains.map((item: any) => [item.chain_id, item.period, item.business_date]), [
+    ['daily_readiness', 'trading_day', X], ['intraday_guard', 'trading_day', X], ['weekly_research', 'week', '2026-11-20'], ['monthly_artifact', 'month', '2026-11-07']])
+  assert.deepEqual(all.rows.filter((row: any) => row.chain_id === 'daily_readiness').map(({ chain_id, ...row }: any) => row), daily.rows)
+  assert.deepEqual(all.rows.filter((row: any) => row.chain_id === 'weekly_research').map(({ chain_id, ...row }: any) => row), each.weekly_research.rows)
+  assert.ok(all.counts_by_chain.intraday_guard.total > 0 && all.counts_by_chain.weekly_research.total === 3)
+  assert.ok(queries.slice(start).every((query) => query.db === 'OPS_DB'))
+  // Warm: X−1..X of the trading-day chains, the current week / month; everything ended comes from the memo.
+  let clock = NOW
+  const cache = fakeCache(() => clock)
+  await callAt(clock, '/v1/chain/alerts', cache)
+  clock += (TIMELINE_TTL_S + 61) * 1000
+  const warm = (await callAt(clock, '/v1/chain/alerts', cache)).body
+  measured['warm /v1/chain/alerts (all chains)'] = warm.rows_read
+  assert.ok(warm.rows_read <= STATE_MAX_ROWS_READ + keyedMax(2 * INTRADAY.length, 2) + keyedMax(WEEKLY.length, 1) + keyedMax(MONTHLY.length, 1) + 4 * 10,
+    `warm=${warm.rows_read}`)
+  // Per chain: daily and intraday read their 14-day history (failures_14d); week / month only their state.
+  await coldWarm(NOW, '/v1/chain/alerts?chain=daily_readiness', 1_000, STATE_MAX_ROWS_READ + 10)
+  await coldWarm(INTRADAY_NOW, '/v1/chain/alerts?chain=intraday_guard',
+    keyedMax(INTRADAY_HISTORY_DATES.length * INTRADAY.length, INTRADAY_HISTORY_DATES.length), keyedMax(2 * INTRADAY.length, 2))
+  await coldWarm(NOW, '/v1/chain/alerts?chain=weekly_research', keyedMax(2 * WEEKLY.length, 2), keyedMax(WEEKLY.length, 1))
+  await coldWarm(NOW, '/v1/chain/alerts?chain=monthly_artifact', keyedMax(2 * MONTHLY.length, 2), keyedMax(MONTHLY.length, 1))
+})
+
+test('/v1/chain/alerts?chain=intraday_guard: a stalled intraday-check (row not refreshed for 10 minutes, 09:10–13:30) is stuck', async () => {
+  const set = (at: string) => fx.raw.OPS_DB.prepare("UPDATE ops_chain_stage_state_v1 SET updated_at = ? WHERE business_date = ? AND chain_id = 'intraday_guard' AND stage_id = 'intraday-check'")
+    .bind(at, X).run()
+  const stuck = async (now: number) => {
+    const body = (await callAt(now, '/v1/chain/alerts?chain=intraday_guard')).body
+    return [body.counts.stuck, body.rows.filter((row: any) => row.kind === 'stuck').map((row: any) => `${row.stage_id}:${row.since}`)]
+  }
+  const at0930 = Date.parse(twAt(X, '09:30'))
+  try {
+    await set(twAt(X, '09:15'))
+    assert.deepEqual(await stuck(at0930), [1, [`intraday-check:${twAt(X, '09:15')}`]], '15 minutes without a refresh (throttle 5)')
+    const state = (await callAt(at0930, '/v1/chain/state?chain=intraday_guard')).body
+    assert.deepEqual(state.rows.find((row: any) => row.business_date === X && row.stage_id === 'intraday-check').alerts, ['failed', 'stuck'])
+    await set(twAt(X, '09:25'))
+    assert.deepEqual(await stuck(at0930), [0, []], 'refreshed 5 minutes ago')
+    await set(twAt(X, '09:15'))
+    assert.deepEqual(await stuck(INTRADAY_NOW), [1, [`daily-snapshot:${twAt(X, '13:40')}`]], '14:00: after the 13:30 window, never stalled (daily-snapshot: its own heartbeat)')
+    assert.deepEqual(await stuck(Date.parse(twAt(X, '13:29'))), [1, [`intraday-check:${twAt(X, '09:15')}`]])
+    assert.deepEqual(await stuck(Date.parse(twAt(X, '13:30'))), [0, []])
+    await fx.kv.put(`holiday:${X}`, JSON.stringify({ source: 'twse_adhoc', title: '颱風停止上班上課', feed: 'twse.openapi.newsList' }))
+    try {
+      assert.deepEqual(await stuck(at0930), [0, []], 'a closed day is not judged')
+    } finally {
+      await fx.kv.delete(`holiday:${X}`)
+    }
+  } finally {
+    await set(twAt(X, '13:30'))
+  }
+})
+
+test('fresh table (go-live): no chain has history, nothing is missed, history_available false everywhere', async () => {
+  const fresh = await startFixture()
+  try {
+    const keys = await accessKeys()
+    const env = { ...fresh.env, ACCESS_TEAM_DOMAIN: TEST_TEAM, ACCESS_AUD: TEST_AUD, MONITORING_READ_TOKEN: TEST_TOKEN }
+    const get = async (path: string) => {
+      const handler = createMonitoringHandler({ now: () => NOW, fetch: keys.fetcher, cache: null, onQuery: (query) => queries.push(query) })
+      return await (await handler(new Request(`https://monitoring.test${path}`, { headers: await accessHeaders(keys, NOW) }), env)).json() as any
+    }
+    // 11/24 23:00 TW: every first-stage deadline of X (and the current week / month) has passed.
+    const all = await get('/v1/chain/alerts')
+    assert.deepEqual(all.counts, { total: 0, failed: 0, overdue: 0, stuck: 0, missed: 0 })
+    assert.deepEqual(all.chains.map((item: any) => [item.chain_id, item.history_available]),
+      [['daily_readiness', false], ['intraday_guard', false], ['weekly_research', false], ['monthly_artifact', false]])
+    measured['/v1/chain/alerts (fresh table)'] = all.rows_read
+    for (const chain of ['daily_readiness', 'intraday_guard', 'weekly_research', 'monthly_artifact']) {
+      const state = await get(`/v1/chain/state?chain=${chain}`)
+      assert.deepEqual([state.history_available, state.rows], [false, []], chain)
+    }
+  } finally {
+    await fresh.mf.dispose()
   }
 })
 

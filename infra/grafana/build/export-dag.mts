@@ -1,4 +1,4 @@
-/** Exports the daily readiness chain as the dashboards draw it: phases, main lanes, labels, dependencies.
+/** Exports the chains as the dashboards draw them: phases, main lanes, labels, dependencies (daily at the top level, the others under other_chains).
  * Run from worker/ on a checkout that has the monitoring Worker:
  *   node --import tsx ../infra/grafana/build/export-dag.mts <out file> */
 import { writeFileSync } from 'node:fs'
@@ -31,7 +31,20 @@ const dag = {
     optional: Boolean(STAGES[id]?.optional), depends_on: STAGES[id]?.dependsOn ?? null,
   }])),
 }
-const missing = dag.phases.flatMap((phase: { main: string[]; side: string[] }) => [...phase.main, ...phase.side]).filter((id: string) => !dag.stages[id])
+type Phase = { id: string; title: string; caption: string; stages: readonly string[]; main: readonly string[] }
+const { OTHER_CHAIN_PHASES, chainStageIds } = await import(judgment('chainPhases.ts'))
+// The intraday, weekly and monthly chains: no sub-stage cards, one phase list each.
+const otherChains = Object.fromEntries(Object.entries(OTHER_CHAIN_PHASES as Record<string, Phase[]>).map(([chainId, phases]) => {
+  const ids: string[] = chainStageIds(chainId)
+  return [chainId, {
+    phases: phases.map((phase) => ({ id: phase.id, title: phase.title, caption: phase.caption, main: [...phase.main],
+      side: phase.stages.filter((id) => !phase.main.includes(id)) })),
+    catalog: ids.map((id) => ({ id, label: STAGES[id]?.label ?? id })),
+    stages: Object.fromEntries(ids.map((id) => [id, { label: STAGES[id]?.label ?? id, parent: null, optional: Boolean(STAGES[id]?.optional), depends_on: null }])),
+  }]
+}))
+const chains = [dag, ...Object.values(otherChains)] as Array<{ phases: Array<{ main: string[]; side: string[] }>; stages: Record<string, unknown> }>
+const missing = chains.flatMap((chain) => chain.phases.flatMap((phase) => [...phase.main, ...phase.side]).filter((id) => !chain.stages[id]))
 if (missing.length) throw new Error(`phase stages outside the display list: ${missing.join(', ')}`)
-writeFileSync(out, `${JSON.stringify(dag, null, 1)}\n`)
-console.log(`${display.length} stages in ${dag.phases.length} phases → ${out}`)
+writeFileSync(out, `${JSON.stringify({ ...dag, other_chains: otherChains }, null, 1)}\n`)
+console.log(`${display.length} stages in ${dag.phases.length} phases, plus ${Object.entries(otherChains).map(([id, chain]) => `${id} ${chain.catalog.length}`).join(', ')} → ${out}`)

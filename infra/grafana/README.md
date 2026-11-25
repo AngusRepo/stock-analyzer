@@ -6,19 +6,19 @@ Stack：`narrowpeacock3250.grafana.net`，資料夾 `StockVision`。儀表板 JS
 
 | 路徑 | 說明 |
 |---|---|
-| `dashboards/sv-today.json` | 今天：流程鏈（39 站）、近 24 小時起訖、要處理清單、預估餘裕、資料就緒 |
-| `dashboards/sv-health.json` | 健康：每階段 14 天結果、重複失敗、D1 容量、監控讀取成本、Cloud Run／Scheduler |
+| `dashboards/sv-today.json` | 今天：每日鏈（39 站）、盤中守門（8 站）、四條鏈的要處理清單、近 24 小時起訖、預估餘裕、資料就緒 |
+| `dashboards/sv-health.json` | 健康：每週鏈（13 站）、每月鏈（4 站）、每日鏈每階段 14 天結果、四條鏈的重複失敗、D1 容量、監控讀取成本、Cloud Run／Scheduler |
 | `dashboards/sv-model.json` | 模型：evidence clocks、execution parity |
 | `dashboards/gcp-cloud-run-scheduler.json` | Cloud Run／Scheduler 面板的來源（健康頁從這裡取） |
 | `dashboards/fixture/` | 同三頁，查詢改讀內嵌的測試夾具回應（未接線時看版面用）。產生物，不進 repo |
-| `alerts/sv-chain-rules.json` | 四條告警規則，全部 `isPaused: true` |
+| `alerts/sv-chain-rules.json` | 六條告警規則（流程鏈 4、資料就緒、D1 容量），全部 `isPaused: true` |
 | `build/` | 產生器 |
 
 ## 資料來源
 
 | 資料源 | uid | 用在 |
 |---|---|---|
-| Infinity（監控 Worker） | `sv-monitoring` | 三頁所有 `/v1/...` 查詢、四條告警 |
+| Infinity（監控 Worker） | `sv-monitoring` | 三頁所有 `/v1/...` 查詢、六條告警 |
 | Infinity（stack 內建） | `grafanacloud-infinity` | 只有 fixture 版（內嵌資料，不對外連線） |
 | Google Cloud Monitoring | `bg59sppgm7v9cb` | 健康頁 Cloud Run／Scheduler |
 
@@ -48,7 +48,7 @@ node build.mjs --mode fixture   # → dashboards/fixture/*.json
 node alerts.mjs                 # → alerts/sv-chain-rules.json
 ```
 
-- `dag.json`：流程鏈的 phase、主線、站名，來自監控 Worker 的 `judgment/`（和 OBS ExecutionChainPanel 同一份定義）。站有增減時重跑 `export-dag.mts`，Canvas 位置與連線會跟著重排。
+- `dag.json`：流程鏈的 phase、主線、站名，來自監控 Worker 的 `judgment/`（和 OBS ExecutionChainPanel 同一份定義）；盤中、每週、每月三條鏈在 `other_chains`（`judgment/chainPhases.ts`）。站有增減時重跑 `export-dag.mts`，Canvas 位置與連線會跟著重排；三條鏈的面板寬度不夠放下所有站時 `build.mjs` 直接報錯。
 - `fixtures/`：監控 Worker handler 在 Miniflare 測試夾具上的真實回應（產生物，不進 repo；`--mode live` 不需要它）。端點欄位有變動時重跑 `dump-fixtures.mts`，再跑 `--check`。
 
 ## 寫查詢要注意（Infinity backend parser，都實測過）

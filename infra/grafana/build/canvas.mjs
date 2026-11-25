@@ -20,16 +20,16 @@ const label = (name, content, placement, { size = 10, color = C.sub, align = 'ce
   background: fixed('transparent'), border: { ...fixed('transparent'), width: 0 }, connections: [],
   config: { align, valign: 'middle', size, color: { fixed: color }, text: { mode: 'fixed', fixed: content } } })
 
-function node(id, stage, left, top, next) {
-  const box = place(left, top, NODE_W, NODE_H)
+function node(id, stage, left, top, next, w = NODE_W, h = NODE_H) {
+  const box = place(left, top, w, h)
   return [
     { type: 'rectangle', name: `n_${id}`, placement: box, constraint: scale,
       background: { color: { field: `b_${id}`, fixed: '#191b20' } }, border: { color: { field: `s_${id}`, fixed: '#444' }, radius: 6, width: stage.optional ? 1 : 2 },
       config: { align: 'center', valign: 'middle', size: 10, color: { fixed: 'transparent' }, text: { mode: 'fixed', fixed: '' } },
       connections: next ? [{ path: 'straight', targetName: `n_${next}`, source: { x: 1, y: 0 }, target: { x: -1, y: 0 },
         color: { fixed: C.line }, size: { fixed: 1.5, min: 1, max: 10 } }] : [] },
-    label(`l_${id}`, stage.label, place(left, top + 0.6, NODE_W, NODE_H * 0.55), { color: C.txt }),
-    { ...label(`t_${id}`, '', place(left, top + NODE_H * 0.55, NODE_W, NODE_H * 0.4)),
+    label(`l_${id}`, stage.label, place(left, top + h * 0.05, w, h * 0.55), { color: C.txt }),
+    { ...label(`t_${id}`, '', place(left, top + h * 0.55, w, h * 0.4)),
       config: { align: 'center', valign: 'middle', size: 10, color: { field: `s_${id}`, fixed: C.sub }, text: { mode: 'field', field: `t_${id}`, fixed: '' } } },
   ]
 }
@@ -71,11 +71,41 @@ export const CHAIN_PIVOT = `(
   })
 )`
 
+/** Slots a one-band chain needs: each phase as wide as its longer row, half a slot between phases. */
+export const laneSlots = (chain) => chain.phases.reduce((sum, phase) => sum + Math.max(phase.main.length, phase.side.length), 0) + (chain.phases.length - 1) / 2
+
+/** A one-band chain (intraday, weekly, monthly): phases side by side, each with its lane and its side row underneath.
+ * The daily chain's node proportions scaled to a single band; `slots` fixes the node width so panels of different
+ * widths draw nodes of the same size. */
+export function laneElements(chain, slots = laneSlots(chain)) {
+  const slotW = 100 / slots
+  const w = slotW * 0.93
+  const h = NODE_H * 3
+  const mainTop = MAIN_TOP * 3
+  const sideTop = mainTop + h + 7.5
+  const elements = []
+  let first = 0
+  for (const phase of chain.phases) {
+    const left = (slot) => (first + slot) * slotW + slotW * 0.035
+    elements.push(label(`lane_${phase.id}`, phase.title, place(left(0), 1, slotW * Math.max(phase.main.length, 2), TITLE_H * 3), { size: 12, align: 'left' }))
+    phase.main.forEach((id, slot) => elements.push(...node(id, chain.stages[id], left(slot), mainTop, phase.main[slot + 1], w, h)))
+    phase.side.forEach((id, slot) => elements.push(...node(id, chain.stages[id], left(slot), sideTop, null, w, h)))
+    first += Math.max(phase.main.length, phase.side.length) + 0.5
+  }
+  return elements
+}
+
+export function laneCanvas(title, target, chain, x, y, w, h, slots) {
+  const panel = chainCanvas(title, target, null, x, y, w, h)
+  panel.options.root.elements = laneElements(chain, slots)
+  return panel
+}
+
 export function chainCanvas(title, target, dag, x, y, w, h) {
   return { type: 'canvas', title, gridPos: gp(x, y, w, h), datasource: target.datasource, targets: [target],
     options: { inlineEditing: false, showAdvancedTypes: false, panZoom: false, infinitePan: false, tooltip: { mode: 'none' },
       root: { type: 'frame', name: 'root', placement: { left: 0, top: 0, width: 100, height: 100 }, constraint: { horizontal: 'left', vertical: 'top' },
-        background: fixed('transparent'), border: fixed('transparent'), elements: chainElements(dag) } },
+        background: fixed('transparent'), border: fixed('transparent'), elements: dag ? chainElements(dag) : [] } },
     fieldConfig: { defaults: { mappings: statusMappings({ fills: true }), color: { mode: 'thresholds' },
       thresholds: { mode: 'absolute', steps: [{ color: C.idle, value: null }] } }, overrides: [] } }
 }

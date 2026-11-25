@@ -77,9 +77,11 @@ const declaredOrder = (...targets) => ({ id: 'organize', options: { excludeByNam
 
 export const text = (content, x, y, w, h) => ({ type: 'text', title: '', transparent: true, gridPos: gp(x, y, w, h), options: { mode: 'markdown', content } })
 
+/** `target`: one query, or several with the same columns, whose rows are stacked (merge). */
 export function table(title, target, x, y, w, h, o = {}) {
-  return { type: 'table', title, description: o.desc ?? '', gridPos: gp(x, y, w, h), datasource: target.datasource, targets: [target],
-    transformations: [declaredOrder(target), ...(o.sort ? [{ id: 'sortBy', options: { fields: {}, sort: [{ field: o.sort, desc: Boolean(o.desc_sort) }] } }] : [])],
+  const targets = [target].flat()
+  return { type: 'table', title, description: o.desc ?? '', gridPos: gp(x, y, w, h), datasource: targets[0].datasource, targets,
+    transformations: [...(targets.length > 1 ? [{ id: 'merge', options: {} }] : []), declaredOrder(targets[0]), ...(o.sort ? [{ id: 'sortBy', options: { fields: {}, sort: [{ field: o.sort, desc: Boolean(o.desc_sort) }] } }] : [])],
     options: { showHeader: true, cellHeight: 'sm', footer: { show: false } },
     fieldConfig: { defaults: { custom: { align: 'left', inspect: false }, noValue: '—' }, overrides: overridesFor(o) } }
 }

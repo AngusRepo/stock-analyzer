@@ -29,12 +29,3045 @@
  },
  "panels": [
   {
-   "type": "status-history",
-   "title": "每個階段近 14 天的最終結果（一格＝一個業務日）",
-   "description": "",
+   "type": "canvas",
+   "title": "每週研究（業務日＝該週週五；週五晚到週日跑；下排＝選配）",
    "gridPos": {
     "x": 0,
     "y": 0,
+    "w": 16,
+    "h": 6
+   },
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "sv-monitoring"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "type": "json",
+     "parser": "backend",
+     "format": "table",
+     "root_selector": "([(\n  $label := {\"completed\":\"完成\",\"success\":\"完成\",\"noop\":\"無事可做\",\"retry_success\":\"重試後完成\",\"running\":\"執行中\",\"waiting\":\"等待中\",\"not_started\":\"未開始\",\"pending\":\"未開始\",\"out_of_window\":\"未到時段\",\"skipped\":\"略過\",\"stale\":\"待確認\",\"at_risk\":\"趕不上截止\",\"attention\":\"應跑未跑\",\"overdue\":\"逾時\",\"stuck\":\"卡住\",\"missed\":\"漏跑\",\"failed\":\"失敗\",\"error\":\"失敗\",\"blocked\":\"中止\",\"ready\":\"就緒\",\"ok\":\"正常\",\"warn\":\"注意\",\"fail\":\"未過\",\"critical\":\"重大\",\"warning\":\"注意\",\"healthy\":\"正常\",\"pending_maturity\":\"等待成熟\",\"pass\":\"通過\",\"collecting\":\"收集中\",\"not_applicable_no_real_intents\":\"不適用（沒有真實下單）\",\"owner_read_unavailable\":\"讀不到來源\"};\n  $hm := function($t) { $t ? $fromMillis($toMillis($t), '[H01]:[m01]', '+0800') : '' };\n  $clock := function($r) {\n    $r.display_status in ['not_started', 'out_of_window', 'waiting', 'overdue', 'at_risk', 'stuck']\n      ? ($r.expected_by ? '截止 ' & $hm($r.expected_by) : '')\n      : $r.display_status = 'running' ? $hm($r.started_at) & ' 起' : $hm($r.completed_at ? $r.completed_at : $r.started_at)\n  };\n  $merge(rows[active = true and display_position != null].{\n    's_' & stage_id: display_status,\n    'b_' & stage_id: 'f_' & display_status,\n    't_' & stage_id: $trim($lookup($label, display_status) & ' ' & $clock($))\n  })\n)])",
+     "columns": [],
+     "filters": [],
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-monitoring"
+     },
+     "source": "url",
+     "url": "/v1/chain/state?chain=weekly_research",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
+    }
+   ],
+   "options": {
+    "inlineEditing": false,
+    "showAdvancedTypes": false,
+    "panZoom": false,
+    "infinitePan": false,
+    "tooltip": {
+     "mode": "none"
+    },
+    "root": {
+     "type": "frame",
+     "name": "root",
+     "placement": {
+      "left": 0,
+      "top": 0,
+      "width": 100,
+      "height": 100
+     },
+     "constraint": {
+      "horizontal": "left",
+      "vertical": "top"
+     },
+     "background": {
+      "color": {
+       "fixed": "transparent"
+      }
+     },
+     "border": {
+      "color": {
+       "fixed": "transparent"
+      }
+     },
+     "elements": [
+      {
+       "type": "text",
+       "name": "lane_audit",
+       "placement": {
+        "left": 0.35000000000000003,
+        "top": 1,
+        "right": 69.65,
+        "bottom": 84
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "left",
+        "valign": "middle",
+        "size": 12,
+        "color": {
+         "fixed": "#8E919A"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": "週五稽核"
+        }
+       }
+      },
+      {
+       "type": "rectangle",
+       "name": "n_weekly-audit",
+       "placement": {
+        "left": 0.35000000000000003,
+        "top": 18,
+        "right": 90.35000000000001,
+        "bottom": 47.5
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "field": "b_weekly-audit",
+         "fixed": "#191b20"
+        }
+       },
+       "border": {
+        "color": {
+         "field": "s_weekly-audit",
+         "fixed": "#444"
+        },
+        "radius": 6,
+        "width": 2
+       },
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "transparent"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": ""
+        }
+       },
+       "connections": [
+        {
+         "path": "straight",
+         "targetName": "n_storage-integrity-audit",
+         "source": {
+          "x": 1,
+          "y": 0
+         },
+         "target": {
+          "x": -1,
+          "y": 0
+         },
+         "color": {
+          "fixed": "#5c606b"
+         },
+         "size": {
+          "fixed": 1.5,
+          "min": 1,
+          "max": 10
+         }
+        }
+       ]
+      },
+      {
+       "type": "text",
+       "name": "l_weekly-audit",
+       "placement": {
+        "left": 0.35000000000000003,
+        "top": 19.725,
+        "right": 90.35000000000001,
+        "bottom": 61.300000000000004
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "#D0D2D8"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": "Weekly audit"
+        }
+       }
+      },
+      {
+       "type": "text",
+       "name": "t_weekly-audit",
+       "placement": {
+        "left": 0.35000000000000003,
+        "top": 36.975,
+        "right": 90.35000000000001,
+        "bottom": 49.224999999999994
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "field": "s_weekly-audit",
+         "fixed": "#8E919A"
+        },
+        "text": {
+         "mode": "field",
+         "field": "t_weekly-audit",
+         "fixed": ""
+        }
+       }
+      },
+      {
+       "type": "rectangle",
+       "name": "n_storage-integrity-audit",
+       "placement": {
+        "left": 10.35,
+        "top": 18,
+        "right": 80.35000000000001,
+        "bottom": 47.5
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "field": "b_storage-integrity-audit",
+         "fixed": "#191b20"
+        }
+       },
+       "border": {
+        "color": {
+         "field": "s_storage-integrity-audit",
+         "fixed": "#444"
+        },
+        "radius": 6,
+        "width": 2
+       },
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "transparent"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": ""
+        }
+       },
+       "connections": [
+        {
+         "path": "straight",
+         "targetName": "n_model-ic-full-check",
+         "source": {
+          "x": 1,
+          "y": 0
+         },
+         "target": {
+          "x": -1,
+          "y": 0
+         },
+         "color": {
+          "fixed": "#5c606b"
+         },
+         "size": {
+          "fixed": 1.5,
+          "min": 1,
+          "max": 10
+         }
+        }
+       ]
+      },
+      {
+       "type": "text",
+       "name": "l_storage-integrity-audit",
+       "placement": {
+        "left": 10.35,
+        "top": 19.725,
+        "right": 80.35000000000001,
+        "bottom": 61.300000000000004
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "#D0D2D8"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": "Storage integrity"
+        }
+       }
+      },
+      {
+       "type": "text",
+       "name": "t_storage-integrity-audit",
+       "placement": {
+        "left": 10.35,
+        "top": 36.975,
+        "right": 80.35000000000001,
+        "bottom": 49.224999999999994
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "field": "s_storage-integrity-audit",
+         "fixed": "#8E919A"
+        },
+        "text": {
+         "mode": "field",
+         "field": "t_storage-integrity-audit",
+         "fixed": ""
+        }
+       }
+      },
+      {
+       "type": "rectangle",
+       "name": "n_model-ic-full-check",
+       "placement": {
+        "left": 20.35,
+        "top": 18,
+        "right": 70.35000000000001,
+        "bottom": 47.5
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "field": "b_model-ic-full-check",
+         "fixed": "#191b20"
+        }
+       },
+       "border": {
+        "color": {
+         "field": "s_model-ic-full-check",
+         "fixed": "#444"
+        },
+        "radius": 6,
+        "width": 2
+       },
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "transparent"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": ""
+        }
+       },
+       "connections": []
+      },
+      {
+       "type": "text",
+       "name": "l_model-ic-full-check",
+       "placement": {
+        "left": 20.35,
+        "top": 19.725,
+        "right": 70.35000000000001,
+        "bottom": 61.300000000000004
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "#D0D2D8"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": "Model IC full"
+        }
+       }
+      },
+      {
+       "type": "text",
+       "name": "t_model-ic-full-check",
+       "placement": {
+        "left": 20.35,
+        "top": 36.975,
+        "right": 70.35000000000001,
+        "bottom": 49.224999999999994
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "field": "s_model-ic-full-check",
+         "fixed": "#8E919A"
+        },
+        "text": {
+         "mode": "field",
+         "field": "t_model-ic-full-check",
+         "fixed": ""
+        }
+       }
+      },
+      {
+       "type": "text",
+       "name": "lane_validation",
+       "placement": {
+        "left": 35.35,
+        "top": 1,
+        "right": 34.650000000000006,
+        "bottom": 84
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "left",
+        "valign": "middle",
+        "size": 12,
+        "color": {
+         "fixed": "#8E919A"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": "驗證與研究"
+        }
+       }
+      },
+      {
+       "type": "rectangle",
+       "name": "n_weekly-backtest",
+       "placement": {
+        "left": 35.35,
+        "top": 18,
+        "right": 55.35000000000001,
+        "bottom": 47.5
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "field": "b_weekly-backtest",
+         "fixed": "#191b20"
+        }
+       },
+       "border": {
+        "color": {
+         "field": "s_weekly-backtest",
+         "fixed": "#444"
+        },
+        "radius": 6,
+        "width": 2
+       },
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "transparent"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": ""
+        }
+       },
+       "connections": [
+        {
+         "path": "straight",
+         "targetName": "n_alpha-quality",
+         "source": {
+          "x": 1,
+          "y": 0
+         },
+         "target": {
+          "x": -1,
+          "y": 0
+         },
+         "color": {
+          "fixed": "#5c606b"
+         },
+         "size": {
+          "fixed": 1.5,
+          "min": 1,
+          "max": 10
+         }
+        }
+       ]
+      },
+      {
+       "type": "text",
+       "name": "l_weekly-backtest",
+       "placement": {
+        "left": 35.35,
+        "top": 19.725,
+        "right": 55.35000000000001,
+        "bottom": 61.300000000000004
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "#D0D2D8"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": "Validation / MC"
+        }
+       }
+      },
+      {
+       "type": "text",
+       "name": "t_weekly-backtest",
+       "placement": {
+        "left": 35.35,
+        "top": 36.975,
+        "right": 55.35000000000001,
+        "bottom": 49.224999999999994
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "field": "s_weekly-backtest",
+         "fixed": "#8E919A"
+        },
+        "text": {
+         "mode": "field",
+         "field": "t_weekly-backtest",
+         "fixed": ""
+        }
+       }
+      },
+      {
+       "type": "rectangle",
+       "name": "n_alpha-quality",
+       "placement": {
+        "left": 45.35,
+        "top": 18,
+        "right": 45.349999999999994,
+        "bottom": 47.5
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "field": "b_alpha-quality",
+         "fixed": "#191b20"
+        }
+       },
+       "border": {
+        "color": {
+         "field": "s_alpha-quality",
+         "fixed": "#444"
+        },
+        "radius": 6,
+        "width": 2
+       },
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "transparent"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": ""
+        }
+       },
+       "connections": [
+        {
+         "path": "straight",
+         "targetName": "n_active8-oof-weekly",
+         "source": {
+          "x": 1,
+          "y": 0
+         },
+         "target": {
+          "x": -1,
+          "y": 0
+         },
+         "color": {
+          "fixed": "#5c606b"
+         },
+         "size": {
+          "fixed": 1.5,
+          "min": 1,
+          "max": 10
+         }
+        }
+       ]
+      },
+      {
+       "type": "text",
+       "name": "l_alpha-quality",
+       "placement": {
+        "left": 45.35,
+        "top": 19.725,
+        "right": 45.349999999999994,
+        "bottom": 61.300000000000004
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "#D0D2D8"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": "Alpha quality"
+        }
+       }
+      },
+      {
+       "type": "text",
+       "name": "t_alpha-quality",
+       "placement": {
+        "left": 45.35,
+        "top": 36.975,
+        "right": 45.349999999999994,
+        "bottom": 49.224999999999994
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "field": "s_alpha-quality",
+         "fixed": "#8E919A"
+        },
+        "text": {
+         "mode": "field",
+         "field": "t_alpha-quality",
+         "fixed": ""
+        }
+       }
+      },
+      {
+       "type": "rectangle",
+       "name": "n_active8-oof-weekly",
+       "placement": {
+        "left": 55.35,
+        "top": 18,
+        "right": 35.349999999999994,
+        "bottom": 47.5
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "field": "b_active8-oof-weekly",
+         "fixed": "#191b20"
+        }
+       },
+       "border": {
+        "color": {
+         "field": "s_active8-oof-weekly",
+         "fixed": "#444"
+        },
+        "radius": 6,
+        "width": 2
+       },
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "transparent"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": ""
+        }
+       },
+       "connections": []
+      },
+      {
+       "type": "text",
+       "name": "l_active8-oof-weekly",
+       "placement": {
+        "left": 55.35,
+        "top": 19.725,
+        "right": 35.349999999999994,
+        "bottom": 61.300000000000004
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "#D0D2D8"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": "Active-8 weekly"
+        }
+       }
+      },
+      {
+       "type": "text",
+       "name": "t_active8-oof-weekly",
+       "placement": {
+        "left": 55.35,
+        "top": 36.975,
+        "right": 35.349999999999994,
+        "bottom": 49.224999999999994
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "field": "s_active8-oof-weekly",
+         "fixed": "#8E919A"
+        },
+        "text": {
+         "mode": "field",
+         "field": "t_active8-oof-weekly",
+         "fixed": ""
+        }
+       }
+      },
+      {
+       "type": "rectangle",
+       "name": "n_weekly-optuna",
+       "placement": {
+        "left": 35.35,
+        "top": 60,
+        "right": 55.35000000000001,
+        "bottom": 5.5
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "field": "b_weekly-optuna",
+         "fixed": "#191b20"
+        }
+       },
+       "border": {
+        "color": {
+         "field": "s_weekly-optuna",
+         "fixed": "#444"
+        },
+        "radius": 6,
+        "width": 1
+       },
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "transparent"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": ""
+        }
+       },
+       "connections": []
+      },
+      {
+       "type": "text",
+       "name": "l_weekly-optuna",
+       "placement": {
+        "left": 35.35,
+        "top": 61.725,
+        "right": 55.35000000000001,
+        "bottom": 19.299999999999997
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "#D0D2D8"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": "Drift research"
+        }
+       }
+      },
+      {
+       "type": "text",
+       "name": "t_weekly-optuna",
+       "placement": {
+        "left": 35.35,
+        "top": 78.975,
+        "right": 55.35000000000001,
+        "bottom": 7.225000000000005
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "field": "s_weekly-optuna",
+         "fixed": "#8E919A"
+        },
+        "text": {
+         "mode": "field",
+         "field": "t_weekly-optuna",
+         "fixed": ""
+        }
+       }
+      },
+      {
+       "type": "rectangle",
+       "name": "n_sector-leaders",
+       "placement": {
+        "left": 45.35,
+        "top": 60,
+        "right": 45.349999999999994,
+        "bottom": 5.5
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "field": "b_sector-leaders",
+         "fixed": "#191b20"
+        }
+       },
+       "border": {
+        "color": {
+         "field": "s_sector-leaders",
+         "fixed": "#444"
+        },
+        "radius": 6,
+        "width": 1
+       },
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "transparent"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": ""
+        }
+       },
+       "connections": []
+      },
+      {
+       "type": "text",
+       "name": "l_sector-leaders",
+       "placement": {
+        "left": 45.35,
+        "top": 61.725,
+        "right": 45.349999999999994,
+        "bottom": 19.299999999999997
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "#D0D2D8"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": "Sector leaders"
+        }
+       }
+      },
+      {
+       "type": "text",
+       "name": "t_sector-leaders",
+       "placement": {
+        "left": 45.35,
+        "top": 78.975,
+        "right": 45.349999999999994,
+        "bottom": 7.225000000000005
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "field": "s_sector-leaders",
+         "fixed": "#8E919A"
+        },
+        "text": {
+         "mode": "field",
+         "field": "t_sector-leaders",
+         "fixed": ""
+        }
+       }
+      },
+      {
+       "type": "text",
+       "name": "lane_closure",
+       "placement": {
+        "left": 70.35,
+        "top": 1,
+        "right": 9.650000000000006,
+        "bottom": 84
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "left",
+        "valign": "middle",
+        "size": 12,
+        "color": {
+         "fixed": "#8E919A"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": "回放與收尾"
+        }
+       }
+      },
+      {
+       "type": "rectangle",
+       "name": "n_weekly-cleanup",
+       "placement": {
+        "left": 70.35,
+        "top": 18,
+        "right": 20.350000000000005,
+        "bottom": 47.5
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "field": "b_weekly-cleanup",
+         "fixed": "#191b20"
+        }
+       },
+       "border": {
+        "color": {
+         "field": "s_weekly-cleanup",
+         "fixed": "#444"
+        },
+        "radius": 6,
+        "width": 2
+       },
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "transparent"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": ""
+        }
+       },
+       "connections": [
+        {
+         "path": "straight",
+         "targetName": "n_weekly-readiness",
+         "source": {
+          "x": 1,
+          "y": 0
+         },
+         "target": {
+          "x": -1,
+          "y": 0
+         },
+         "color": {
+          "fixed": "#5c606b"
+         },
+         "size": {
+          "fixed": 1.5,
+          "min": 1,
+          "max": 10
+         }
+        }
+       ]
+      },
+      {
+       "type": "text",
+       "name": "l_weekly-cleanup",
+       "placement": {
+        "left": 70.35,
+        "top": 19.725,
+        "right": 20.350000000000005,
+        "bottom": 61.300000000000004
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "#D0D2D8"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": "Weekly cleanup"
+        }
+       }
+      },
+      {
+       "type": "text",
+       "name": "t_weekly-cleanup",
+       "placement": {
+        "left": 70.35,
+        "top": 36.975,
+        "right": 20.350000000000005,
+        "bottom": 49.224999999999994
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "field": "s_weekly-cleanup",
+         "fixed": "#8E919A"
+        },
+        "text": {
+         "mode": "field",
+         "field": "t_weekly-cleanup",
+         "fixed": ""
+        }
+       }
+      },
+      {
+       "type": "rectangle",
+       "name": "n_weekly-readiness",
+       "placement": {
+        "left": 80.35,
+        "top": 18,
+        "right": 10.350000000000005,
+        "bottom": 47.5
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "field": "b_weekly-readiness",
+         "fixed": "#191b20"
+        }
+       },
+       "border": {
+        "color": {
+         "field": "s_weekly-readiness",
+         "fixed": "#444"
+        },
+        "radius": 6,
+        "width": 2
+       },
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "transparent"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": ""
+        }
+       },
+       "connections": []
+      },
+      {
+       "type": "text",
+       "name": "l_weekly-readiness",
+       "placement": {
+        "left": 80.35,
+        "top": 19.725,
+        "right": 10.350000000000005,
+        "bottom": 61.300000000000004
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "#D0D2D8"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": "Weekly root"
+        }
+       }
+      },
+      {
+       "type": "text",
+       "name": "t_weekly-readiness",
+       "placement": {
+        "left": 80.35,
+        "top": 36.975,
+        "right": 10.350000000000005,
+        "bottom": 49.224999999999994
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "field": "s_weekly-readiness",
+         "fixed": "#8E919A"
+        },
+        "text": {
+         "mode": "field",
+         "field": "t_weekly-readiness",
+         "fixed": ""
+        }
+       }
+      },
+      {
+       "type": "rectangle",
+       "name": "n_adaptive-meta-policy-replay",
+       "placement": {
+        "left": 70.35,
+        "top": 60,
+        "right": 20.350000000000005,
+        "bottom": 5.5
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "field": "b_adaptive-meta-policy-replay",
+         "fixed": "#191b20"
+        }
+       },
+       "border": {
+        "color": {
+         "field": "s_adaptive-meta-policy-replay",
+         "fixed": "#444"
+        },
+        "radius": 6,
+        "width": 1
+       },
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "transparent"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": ""
+        }
+       },
+       "connections": []
+      },
+      {
+       "type": "text",
+       "name": "l_adaptive-meta-policy-replay",
+       "placement": {
+        "left": 70.35,
+        "top": 61.725,
+        "right": 20.350000000000005,
+        "bottom": 19.299999999999997
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "#D0D2D8"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": "Meta replay"
+        }
+       }
+      },
+      {
+       "type": "text",
+       "name": "t_adaptive-meta-policy-replay",
+       "placement": {
+        "left": 70.35,
+        "top": 78.975,
+        "right": 20.350000000000005,
+        "bottom": 7.225000000000005
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "field": "s_adaptive-meta-policy-replay",
+         "fixed": "#8E919A"
+        },
+        "text": {
+         "mode": "field",
+         "field": "t_adaptive-meta-policy-replay",
+         "fixed": ""
+        }
+       }
+      },
+      {
+       "type": "rectangle",
+       "name": "n_s12-smcvwap-calibration",
+       "placement": {
+        "left": 80.35,
+        "top": 60,
+        "right": 10.350000000000005,
+        "bottom": 5.5
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "field": "b_s12-smcvwap-calibration",
+         "fixed": "#191b20"
+        }
+       },
+       "border": {
+        "color": {
+         "field": "s_s12-smcvwap-calibration",
+         "fixed": "#444"
+        },
+        "radius": 6,
+        "width": 1
+       },
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "transparent"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": ""
+        }
+       },
+       "connections": []
+      },
+      {
+       "type": "text",
+       "name": "l_s12-smcvwap-calibration",
+       "placement": {
+        "left": 80.35,
+        "top": 61.725,
+        "right": 10.350000000000005,
+        "bottom": 19.299999999999997
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "#D0D2D8"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": "S12 calibration"
+        }
+       }
+      },
+      {
+       "type": "text",
+       "name": "t_s12-smcvwap-calibration",
+       "placement": {
+        "left": 80.35,
+        "top": 78.975,
+        "right": 10.350000000000005,
+        "bottom": 7.225000000000005
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "field": "s_s12-smcvwap-calibration",
+         "fixed": "#8E919A"
+        },
+        "text": {
+         "mode": "field",
+         "field": "t_s12-smcvwap-calibration",
+         "fixed": ""
+        }
+       }
+      },
+      {
+       "type": "rectangle",
+       "name": "n_linucb-multiplier-replay",
+       "placement": {
+        "left": 90.35,
+        "top": 60,
+        "right": 0.350000000000005,
+        "bottom": 5.5
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "field": "b_linucb-multiplier-replay",
+         "fixed": "#191b20"
+        }
+       },
+       "border": {
+        "color": {
+         "field": "s_linucb-multiplier-replay",
+         "fixed": "#444"
+        },
+        "radius": 6,
+        "width": 1
+       },
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "transparent"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": ""
+        }
+       },
+       "connections": []
+      },
+      {
+       "type": "text",
+       "name": "l_linucb-multiplier-replay",
+       "placement": {
+        "left": 90.35,
+        "top": 61.725,
+        "right": 0.350000000000005,
+        "bottom": 19.299999999999997
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "#D0D2D8"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": "LinUCB replay"
+        }
+       }
+      },
+      {
+       "type": "text",
+       "name": "t_linucb-multiplier-replay",
+       "placement": {
+        "left": 90.35,
+        "top": 78.975,
+        "right": 0.350000000000005,
+        "bottom": 7.225000000000005
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "field": "s_linucb-multiplier-replay",
+         "fixed": "#8E919A"
+        },
+        "text": {
+         "mode": "field",
+         "field": "t_linucb-multiplier-replay",
+         "fixed": ""
+        }
+       }
+      }
+     ]
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "mappings": [
+      {
+       "type": "value",
+       "options": {
+        "completed": {
+         "text": "完成",
+         "color": "#56A64B",
+         "index": 0
+        },
+        "f_completed": {
+         "text": "f",
+         "color": "#15231a",
+         "index": 1
+        },
+        "success": {
+         "text": "完成",
+         "color": "#56A64B",
+         "index": 2
+        },
+        "f_success": {
+         "text": "f",
+         "color": "#15231a",
+         "index": 3
+        },
+        "noop": {
+         "text": "無事可做",
+         "color": "#56A64B",
+         "index": 4
+        },
+        "f_noop": {
+         "text": "f",
+         "color": "#15231a",
+         "index": 5
+        },
+        "retry_success": {
+         "text": "重試後完成",
+         "color": "#EAB839",
+         "index": 6
+        },
+        "f_retry_success": {
+         "text": "f",
+         "color": "#2b2610",
+         "index": 7
+        },
+        "running": {
+         "text": "執行中",
+         "color": "#5794F2",
+         "index": 8
+        },
+        "f_running": {
+         "text": "f",
+         "color": "#14233d",
+         "index": 9
+        },
+        "waiting": {
+         "text": "等待中",
+         "color": "#5794F2",
+         "index": 10
+        },
+        "f_waiting": {
+         "text": "f",
+         "color": "#14233d",
+         "index": 11
+        },
+        "not_started": {
+         "text": "未開始",
+         "color": "#6E7079",
+         "index": 12
+        },
+        "f_not_started": {
+         "text": "f",
+         "color": "#191b20",
+         "index": 13
+        },
+        "pending": {
+         "text": "未開始",
+         "color": "#6E7079",
+         "index": 14
+        },
+        "f_pending": {
+         "text": "f",
+         "color": "#191b20",
+         "index": 15
+        },
+        "out_of_window": {
+         "text": "未到時段",
+         "color": "#6E7079",
+         "index": 16
+        },
+        "f_out_of_window": {
+         "text": "f",
+         "color": "#191b20",
+         "index": 17
+        },
+        "skipped": {
+         "text": "略過",
+         "color": "#4B4F58",
+         "index": 18
+        },
+        "f_skipped": {
+         "text": "f",
+         "color": "#191b20",
+         "index": 19
+        },
+        "stale": {
+         "text": "待確認",
+         "color": "#6E7079",
+         "index": 20
+        },
+        "f_stale": {
+         "text": "f",
+         "color": "#191b20",
+         "index": 21
+        },
+        "at_risk": {
+         "text": "趕不上截止",
+         "color": "#EAB839",
+         "index": 22
+        },
+        "f_at_risk": {
+         "text": "f",
+         "color": "#2b2610",
+         "index": 23
+        },
+        "attention": {
+         "text": "應跑未跑",
+         "color": "#FF9830",
+         "index": 24
+        },
+        "f_attention": {
+         "text": "f",
+         "color": "#33240f",
+         "index": 25
+        },
+        "overdue": {
+         "text": "逾時",
+         "color": "#FF9830",
+         "index": 26
+        },
+        "f_overdue": {
+         "text": "f",
+         "color": "#33240f",
+         "index": 27
+        },
+        "stuck": {
+         "text": "卡住",
+         "color": "#B877D9",
+         "index": 28
+        },
+        "f_stuck": {
+         "text": "f",
+         "color": "#2a1c38",
+         "index": 29
+        },
+        "missed": {
+         "text": "漏跑",
+         "color": "#E02F44",
+         "index": 30
+        },
+        "f_missed": {
+         "text": "f",
+         "color": "#391418",
+         "index": 31
+        },
+        "failed": {
+         "text": "失敗",
+         "color": "#E02F44",
+         "index": 32
+        },
+        "f_failed": {
+         "text": "f",
+         "color": "#391418",
+         "index": 33
+        },
+        "error": {
+         "text": "失敗",
+         "color": "#E02F44",
+         "index": 34
+        },
+        "f_error": {
+         "text": "f",
+         "color": "#391418",
+         "index": 35
+        },
+        "blocked": {
+         "text": "中止",
+         "color": "#E02F44",
+         "index": 36
+        },
+        "f_blocked": {
+         "text": "f",
+         "color": "#391418",
+         "index": 37
+        },
+        "ready": {
+         "text": "就緒",
+         "color": "#56A64B",
+         "index": 38
+        },
+        "ok": {
+         "text": "正常",
+         "color": "#56A64B",
+         "index": 39
+        },
+        "warn": {
+         "text": "注意",
+         "color": "#FF9830",
+         "index": 40
+        },
+        "fail": {
+         "text": "未過",
+         "color": "#E02F44",
+         "index": 41
+        },
+        "critical": {
+         "text": "重大",
+         "color": "#E02F44",
+         "index": 42
+        },
+        "warning": {
+         "text": "注意",
+         "color": "#FF9830",
+         "index": 43
+        },
+        "healthy": {
+         "text": "正常",
+         "color": "#56A64B",
+         "index": 44
+        },
+        "pending_maturity": {
+         "text": "等待成熟",
+         "color": "#6E7079",
+         "index": 45
+        },
+        "pass": {
+         "text": "通過",
+         "color": "#56A64B",
+         "index": 46
+        },
+        "collecting": {
+         "text": "收集中",
+         "color": "#5794F2",
+         "index": 47
+        },
+        "not_applicable_no_real_intents": {
+         "text": "不適用（沒有真實下單）",
+         "color": "#6E7079",
+         "index": 48
+        },
+        "owner_read_unavailable": {
+         "text": "讀不到來源",
+         "color": "#FF9830",
+         "index": 49
+        }
+       }
+      }
+     ],
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#6E7079",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "id": 1
+  },
+  {
+   "type": "canvas",
+   "title": "每月 artifact（業務日＝每月第一個週六）",
+   "gridPos": {
+    "x": 16,
+    "y": 0,
+    "w": 8,
+    "h": 6
+   },
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "sv-monitoring"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "type": "json",
+     "parser": "backend",
+     "format": "table",
+     "root_selector": "([(\n  $label := {\"completed\":\"完成\",\"success\":\"完成\",\"noop\":\"無事可做\",\"retry_success\":\"重試後完成\",\"running\":\"執行中\",\"waiting\":\"等待中\",\"not_started\":\"未開始\",\"pending\":\"未開始\",\"out_of_window\":\"未到時段\",\"skipped\":\"略過\",\"stale\":\"待確認\",\"at_risk\":\"趕不上截止\",\"attention\":\"應跑未跑\",\"overdue\":\"逾時\",\"stuck\":\"卡住\",\"missed\":\"漏跑\",\"failed\":\"失敗\",\"error\":\"失敗\",\"blocked\":\"中止\",\"ready\":\"就緒\",\"ok\":\"正常\",\"warn\":\"注意\",\"fail\":\"未過\",\"critical\":\"重大\",\"warning\":\"注意\",\"healthy\":\"正常\",\"pending_maturity\":\"等待成熟\",\"pass\":\"通過\",\"collecting\":\"收集中\",\"not_applicable_no_real_intents\":\"不適用（沒有真實下單）\",\"owner_read_unavailable\":\"讀不到來源\"};\n  $hm := function($t) { $t ? $fromMillis($toMillis($t), '[H01]:[m01]', '+0800') : '' };\n  $clock := function($r) {\n    $r.display_status in ['not_started', 'out_of_window', 'waiting', 'overdue', 'at_risk', 'stuck']\n      ? ($r.expected_by ? '截止 ' & $hm($r.expected_by) : '')\n      : $r.display_status = 'running' ? $hm($r.started_at) & ' 起' : $hm($r.completed_at ? $r.completed_at : $r.started_at)\n  };\n  $merge(rows[active = true and display_position != null].{\n    's_' & stage_id: display_status,\n    'b_' & stage_id: 'f_' & display_status,\n    't_' & stage_id: $trim($lookup($label, display_status) & ' ' & $clock($))\n  })\n)])",
+     "columns": [],
+     "filters": [],
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-monitoring"
+     },
+     "source": "url",
+     "url": "/v1/chain/state?chain=monthly_artifact",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
+    }
+   ],
+   "options": {
+    "inlineEditing": false,
+    "showAdvancedTypes": false,
+    "panZoom": false,
+    "infinitePan": false,
+    "tooltip": {
+     "mode": "none"
+    },
+    "root": {
+     "type": "frame",
+     "name": "root",
+     "placement": {
+      "left": 0,
+      "top": 0,
+      "width": 100,
+      "height": 100
+     },
+     "constraint": {
+      "horizontal": "left",
+      "vertical": "top"
+     },
+     "background": {
+      "color": {
+       "fixed": "transparent"
+      }
+     },
+     "border": {
+      "color": {
+       "fixed": "transparent"
+      }
+     },
+     "elements": [
+      {
+       "type": "text",
+       "name": "lane_monthly",
+       "placement": {
+        "left": 0.7000000000000001,
+        "top": 1,
+        "right": 19.299999999999997,
+        "bottom": 84
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "left",
+        "valign": "middle",
+        "size": 12,
+        "color": {
+         "fixed": "#8E919A"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": "每月 artifact"
+        }
+       }
+      },
+      {
+       "type": "rectangle",
+       "name": "n_monthly-strategy-mining",
+       "placement": {
+        "left": 0.7000000000000001,
+        "top": 18,
+        "right": 80.69999999999999,
+        "bottom": 47.5
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "field": "b_monthly-strategy-mining",
+         "fixed": "#191b20"
+        }
+       },
+       "border": {
+        "color": {
+         "field": "s_monthly-strategy-mining",
+         "fixed": "#444"
+        },
+        "radius": 6,
+        "width": 2
+       },
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "transparent"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": ""
+        }
+       },
+       "connections": [
+        {
+         "path": "straight",
+         "targetName": "n_monthly-optuna",
+         "source": {
+          "x": 1,
+          "y": 0
+         },
+         "target": {
+          "x": -1,
+          "y": 0
+         },
+         "color": {
+          "fixed": "#5c606b"
+         },
+         "size": {
+          "fixed": 1.5,
+          "min": 1,
+          "max": 10
+         }
+        }
+       ]
+      },
+      {
+       "type": "text",
+       "name": "l_monthly-strategy-mining",
+       "placement": {
+        "left": 0.7000000000000001,
+        "top": 19.725,
+        "right": 80.69999999999999,
+        "bottom": 61.300000000000004
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "#D0D2D8"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": "Strategy mining"
+        }
+       }
+      },
+      {
+       "type": "text",
+       "name": "t_monthly-strategy-mining",
+       "placement": {
+        "left": 0.7000000000000001,
+        "top": 36.975,
+        "right": 80.69999999999999,
+        "bottom": 49.224999999999994
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "field": "s_monthly-strategy-mining",
+         "fixed": "#8E919A"
+        },
+        "text": {
+         "mode": "field",
+         "field": "t_monthly-strategy-mining",
+         "fixed": ""
+        }
+       }
+      },
+      {
+       "type": "rectangle",
+       "name": "n_monthly-optuna",
+       "placement": {
+        "left": 20.7,
+        "top": 18,
+        "right": 60.699999999999996,
+        "bottom": 47.5
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "field": "b_monthly-optuna",
+         "fixed": "#191b20"
+        }
+       },
+       "border": {
+        "color": {
+         "field": "s_monthly-optuna",
+         "fixed": "#444"
+        },
+        "radius": 6,
+        "width": 2
+       },
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "transparent"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": ""
+        }
+       },
+       "connections": [
+        {
+         "path": "straight",
+         "targetName": "n_active8-oof-monthly",
+         "source": {
+          "x": 1,
+          "y": 0
+         },
+         "target": {
+          "x": -1,
+          "y": 0
+         },
+         "color": {
+          "fixed": "#5c606b"
+         },
+         "size": {
+          "fixed": 1.5,
+          "min": 1,
+          "max": 10
+         }
+        }
+       ]
+      },
+      {
+       "type": "text",
+       "name": "l_monthly-optuna",
+       "placement": {
+        "left": 20.7,
+        "top": 19.725,
+        "right": 60.699999999999996,
+        "bottom": 61.300000000000004
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "#D0D2D8"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": "Monthly search"
+        }
+       }
+      },
+      {
+       "type": "text",
+       "name": "t_monthly-optuna",
+       "placement": {
+        "left": 20.7,
+        "top": 36.975,
+        "right": 60.699999999999996,
+        "bottom": 49.224999999999994
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "field": "s_monthly-optuna",
+         "fixed": "#8E919A"
+        },
+        "text": {
+         "mode": "field",
+         "field": "t_monthly-optuna",
+         "fixed": ""
+        }
+       }
+      },
+      {
+       "type": "rectangle",
+       "name": "n_active8-oof-monthly",
+       "placement": {
+        "left": 40.7,
+        "top": 18,
+        "right": 40.699999999999996,
+        "bottom": 47.5
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "field": "b_active8-oof-monthly",
+         "fixed": "#191b20"
+        }
+       },
+       "border": {
+        "color": {
+         "field": "s_active8-oof-monthly",
+         "fixed": "#444"
+        },
+        "radius": 6,
+        "width": 2
+       },
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "transparent"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": ""
+        }
+       },
+       "connections": [
+        {
+         "path": "straight",
+         "targetName": "n_monthly-readiness",
+         "source": {
+          "x": 1,
+          "y": 0
+         },
+         "target": {
+          "x": -1,
+          "y": 0
+         },
+         "color": {
+          "fixed": "#5c606b"
+         },
+         "size": {
+          "fixed": 1.5,
+          "min": 1,
+          "max": 10
+         }
+        }
+       ]
+      },
+      {
+       "type": "text",
+       "name": "l_active8-oof-monthly",
+       "placement": {
+        "left": 40.7,
+        "top": 19.725,
+        "right": 40.699999999999996,
+        "bottom": 61.300000000000004
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "#D0D2D8"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": "Active-8 monthly"
+        }
+       }
+      },
+      {
+       "type": "text",
+       "name": "t_active8-oof-monthly",
+       "placement": {
+        "left": 40.7,
+        "top": 36.975,
+        "right": 40.699999999999996,
+        "bottom": 49.224999999999994
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "field": "s_active8-oof-monthly",
+         "fixed": "#8E919A"
+        },
+        "text": {
+         "mode": "field",
+         "field": "t_active8-oof-monthly",
+         "fixed": ""
+        }
+       }
+      },
+      {
+       "type": "rectangle",
+       "name": "n_monthly-readiness",
+       "placement": {
+        "left": 60.7,
+        "top": 18,
+        "right": 20.699999999999996,
+        "bottom": 47.5
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "field": "b_monthly-readiness",
+         "fixed": "#191b20"
+        }
+       },
+       "border": {
+        "color": {
+         "field": "s_monthly-readiness",
+         "fixed": "#444"
+        },
+        "radius": 6,
+        "width": 2
+       },
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "transparent"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": ""
+        }
+       },
+       "connections": []
+      },
+      {
+       "type": "text",
+       "name": "l_monthly-readiness",
+       "placement": {
+        "left": 60.7,
+        "top": 19.725,
+        "right": 20.699999999999996,
+        "bottom": 61.300000000000004
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "#D0D2D8"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": "Monthly root"
+        }
+       }
+      },
+      {
+       "type": "text",
+       "name": "t_monthly-readiness",
+       "placement": {
+        "left": 60.7,
+        "top": 36.975,
+        "right": 20.699999999999996,
+        "bottom": 49.224999999999994
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "field": "s_monthly-readiness",
+         "fixed": "#8E919A"
+        },
+        "text": {
+         "mode": "field",
+         "field": "t_monthly-readiness",
+         "fixed": ""
+        }
+       }
+      }
+     ]
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "mappings": [
+      {
+       "type": "value",
+       "options": {
+        "completed": {
+         "text": "完成",
+         "color": "#56A64B",
+         "index": 0
+        },
+        "f_completed": {
+         "text": "f",
+         "color": "#15231a",
+         "index": 1
+        },
+        "success": {
+         "text": "完成",
+         "color": "#56A64B",
+         "index": 2
+        },
+        "f_success": {
+         "text": "f",
+         "color": "#15231a",
+         "index": 3
+        },
+        "noop": {
+         "text": "無事可做",
+         "color": "#56A64B",
+         "index": 4
+        },
+        "f_noop": {
+         "text": "f",
+         "color": "#15231a",
+         "index": 5
+        },
+        "retry_success": {
+         "text": "重試後完成",
+         "color": "#EAB839",
+         "index": 6
+        },
+        "f_retry_success": {
+         "text": "f",
+         "color": "#2b2610",
+         "index": 7
+        },
+        "running": {
+         "text": "執行中",
+         "color": "#5794F2",
+         "index": 8
+        },
+        "f_running": {
+         "text": "f",
+         "color": "#14233d",
+         "index": 9
+        },
+        "waiting": {
+         "text": "等待中",
+         "color": "#5794F2",
+         "index": 10
+        },
+        "f_waiting": {
+         "text": "f",
+         "color": "#14233d",
+         "index": 11
+        },
+        "not_started": {
+         "text": "未開始",
+         "color": "#6E7079",
+         "index": 12
+        },
+        "f_not_started": {
+         "text": "f",
+         "color": "#191b20",
+         "index": 13
+        },
+        "pending": {
+         "text": "未開始",
+         "color": "#6E7079",
+         "index": 14
+        },
+        "f_pending": {
+         "text": "f",
+         "color": "#191b20",
+         "index": 15
+        },
+        "out_of_window": {
+         "text": "未到時段",
+         "color": "#6E7079",
+         "index": 16
+        },
+        "f_out_of_window": {
+         "text": "f",
+         "color": "#191b20",
+         "index": 17
+        },
+        "skipped": {
+         "text": "略過",
+         "color": "#4B4F58",
+         "index": 18
+        },
+        "f_skipped": {
+         "text": "f",
+         "color": "#191b20",
+         "index": 19
+        },
+        "stale": {
+         "text": "待確認",
+         "color": "#6E7079",
+         "index": 20
+        },
+        "f_stale": {
+         "text": "f",
+         "color": "#191b20",
+         "index": 21
+        },
+        "at_risk": {
+         "text": "趕不上截止",
+         "color": "#EAB839",
+         "index": 22
+        },
+        "f_at_risk": {
+         "text": "f",
+         "color": "#2b2610",
+         "index": 23
+        },
+        "attention": {
+         "text": "應跑未跑",
+         "color": "#FF9830",
+         "index": 24
+        },
+        "f_attention": {
+         "text": "f",
+         "color": "#33240f",
+         "index": 25
+        },
+        "overdue": {
+         "text": "逾時",
+         "color": "#FF9830",
+         "index": 26
+        },
+        "f_overdue": {
+         "text": "f",
+         "color": "#33240f",
+         "index": 27
+        },
+        "stuck": {
+         "text": "卡住",
+         "color": "#B877D9",
+         "index": 28
+        },
+        "f_stuck": {
+         "text": "f",
+         "color": "#2a1c38",
+         "index": 29
+        },
+        "missed": {
+         "text": "漏跑",
+         "color": "#E02F44",
+         "index": 30
+        },
+        "f_missed": {
+         "text": "f",
+         "color": "#391418",
+         "index": 31
+        },
+        "failed": {
+         "text": "失敗",
+         "color": "#E02F44",
+         "index": 32
+        },
+        "f_failed": {
+         "text": "f",
+         "color": "#391418",
+         "index": 33
+        },
+        "error": {
+         "text": "失敗",
+         "color": "#E02F44",
+         "index": 34
+        },
+        "f_error": {
+         "text": "f",
+         "color": "#391418",
+         "index": 35
+        },
+        "blocked": {
+         "text": "中止",
+         "color": "#E02F44",
+         "index": 36
+        },
+        "f_blocked": {
+         "text": "f",
+         "color": "#391418",
+         "index": 37
+        },
+        "ready": {
+         "text": "就緒",
+         "color": "#56A64B",
+         "index": 38
+        },
+        "ok": {
+         "text": "正常",
+         "color": "#56A64B",
+         "index": 39
+        },
+        "warn": {
+         "text": "注意",
+         "color": "#FF9830",
+         "index": 40
+        },
+        "fail": {
+         "text": "未過",
+         "color": "#E02F44",
+         "index": 41
+        },
+        "critical": {
+         "text": "重大",
+         "color": "#E02F44",
+         "index": 42
+        },
+        "warning": {
+         "text": "注意",
+         "color": "#FF9830",
+         "index": 43
+        },
+        "healthy": {
+         "text": "正常",
+         "color": "#56A64B",
+         "index": 44
+        },
+        "pending_maturity": {
+         "text": "等待成熟",
+         "color": "#6E7079",
+         "index": 45
+        },
+        "pass": {
+         "text": "通過",
+         "color": "#56A64B",
+         "index": 46
+        },
+        "collecting": {
+         "text": "收集中",
+         "color": "#5794F2",
+         "index": 47
+        },
+        "not_applicable_no_real_intents": {
+         "text": "不適用（沒有真實下單）",
+         "color": "#6E7079",
+         "index": 48
+        },
+        "owner_read_unavailable": {
+         "text": "讀不到來源",
+         "color": "#FF9830",
+         "index": 49
+        }
+       }
+      }
+     ],
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#6E7079",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "id": 2
+  },
+  {
+   "type": "status-history",
+   "title": "每日鏈每個階段近 14 天的最終結果（一格＝一個業務日）",
+   "description": "",
+   "gridPos": {
+    "x": 0,
+    "y": 6,
     "w": 24,
     "h": 13
    },
@@ -289,15 +3322,15 @@
     },
     "overrides": []
    },
-   "id": 1
+   "id": 3
   },
   {
    "type": "table",
-   "title": "14 天內失敗過的階段（2 次以上＝重複失敗）",
+   "title": "近期失敗過的階段（四條鏈；每日／盤中＝14 天，每週＝5 週，每月＝3 個月；2 次以上＝重複失敗）",
    "description": "",
    "gridPos": {
     "x": 0,
-    "y": 13,
+    "y": 19,
     "w": 12,
     "h": 7
    },
@@ -311,8 +3344,13 @@
      "type": "json",
      "parser": "backend",
      "format": "table",
-     "root_selector": "([repeat_failures.{ 'stage': label, 'failures': failures, 'dates': dates, 'error': last_error }])",
+     "root_selector": "([repeat_failures.{ 'chain': '每日', 'stage': label, 'failures': failures, 'dates': dates, 'error': last_error }])",
      "columns": [
+      {
+       "selector": "chain",
+       "text": "鏈",
+       "type": "string"
+      },
       {
        "selector": "stage",
        "text": "階段",
@@ -345,20 +3383,172 @@
       "method": "GET",
       "data": ""
      }
+    },
+    {
+     "refId": "B",
+     "type": "json",
+     "parser": "backend",
+     "format": "table",
+     "root_selector": "([repeat_failures.{ 'chain': '盤中', 'stage': label, 'failures': failures, 'dates': dates, 'error': last_error }])",
+     "columns": [
+      {
+       "selector": "chain",
+       "text": "鏈",
+       "type": "string"
+      },
+      {
+       "selector": "stage",
+       "text": "階段",
+       "type": "string"
+      },
+      {
+       "selector": "failures",
+       "text": "失敗次數",
+       "type": "number"
+      },
+      {
+       "selector": "dates",
+       "text": "失敗的業務日",
+       "type": "string"
+      },
+      {
+       "selector": "error",
+       "text": "最後一次的錯誤",
+       "type": "string"
+      }
+     ],
+     "filters": [],
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-monitoring"
+     },
+     "source": "url",
+     "url": "/v1/chain/history?days=14&chain=intraday_guard",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
+    },
+    {
+     "refId": "C",
+     "type": "json",
+     "parser": "backend",
+     "format": "table",
+     "root_selector": "([repeat_failures.{ 'chain': '每週', 'stage': label, 'failures': failures, 'dates': dates, 'error': last_error }])",
+     "columns": [
+      {
+       "selector": "chain",
+       "text": "鏈",
+       "type": "string"
+      },
+      {
+       "selector": "stage",
+       "text": "階段",
+       "type": "string"
+      },
+      {
+       "selector": "failures",
+       "text": "失敗次數",
+       "type": "number"
+      },
+      {
+       "selector": "dates",
+       "text": "失敗的業務日",
+       "type": "string"
+      },
+      {
+       "selector": "error",
+       "text": "最後一次的錯誤",
+       "type": "string"
+      }
+     ],
+     "filters": [],
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-monitoring"
+     },
+     "source": "url",
+     "url": "/v1/chain/history?days=14&chain=weekly_research",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
+    },
+    {
+     "refId": "D",
+     "type": "json",
+     "parser": "backend",
+     "format": "table",
+     "root_selector": "([repeat_failures.{ 'chain': '每月', 'stage': label, 'failures': failures, 'dates': dates, 'error': last_error }])",
+     "columns": [
+      {
+       "selector": "chain",
+       "text": "鏈",
+       "type": "string"
+      },
+      {
+       "selector": "stage",
+       "text": "階段",
+       "type": "string"
+      },
+      {
+       "selector": "failures",
+       "text": "失敗次數",
+       "type": "number"
+      },
+      {
+       "selector": "dates",
+       "text": "失敗的業務日",
+       "type": "string"
+      },
+      {
+       "selector": "error",
+       "text": "最後一次的錯誤",
+       "type": "string"
+      }
+     ],
+     "filters": [],
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-monitoring"
+     },
+     "source": "url",
+     "url": "/v1/chain/history?days=14&chain=monthly_artifact",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
     }
    ],
    "transformations": [
+    {
+     "id": "merge",
+     "options": {}
+    },
     {
      "id": "organize",
      "options": {
       "excludeByName": {},
       "renameByName": {},
       "indexByName": {
-       "階段": 0,
-       "失敗次數": 1,
-       "失敗的業務日": 2,
-       "最後一次的錯誤": 3
+       "鏈": 0,
+       "階段": 1,
+       "失敗次數": 2,
+       "失敗的業務日": 3,
+       "最後一次的錯誤": 4
       }
+     }
+    },
+    {
+     "id": "sortBy",
+     "options": {
+      "fields": {},
+      "sort": [
+       {
+        "field": "失敗次數",
+        "desc": true
+       }
+      ]
      }
     }
    ],
@@ -417,6 +3607,18 @@
      {
       "matcher": {
        "id": "byName",
+       "options": "鏈"
+      },
+      "properties": [
+       {
+        "id": "custom.width",
+        "value": 48
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
        "options": "失敗次數"
       },
       "properties": [
@@ -440,7 +3642,7 @@
      }
     ]
    },
-   "id": 2
+   "id": 4
   },
   {
    "type": "table",
@@ -448,7 +3650,7 @@
    "description": "",
    "gridPos": {
     "x": 12,
-    "y": 13,
+    "y": 19,
     "w": 12,
     "h": 7
    },
@@ -673,14 +3875,14 @@
      }
     ]
    },
-   "id": 3
+   "id": 5
   },
   {
    "type": "stat",
    "title": "監控自己的讀取成本：每個端點這次回應讀了幾列 D1（端點有快取，儀表板重新整理不會多讀）",
    "gridPos": {
     "x": 0,
-    "y": 20,
+    "y": 26,
     "w": 24,
     "h": 3
    },
@@ -1223,14 +4425,14 @@
      }
     ]
    },
-   "id": 4
+   "id": 6
   },
   {
    "type": "stat",
    "title": "Cloud Run Job 失敗次數（所選時間）",
    "gridPos": {
     "x": 0,
-    "y": 23,
+    "y": 29,
     "w": 6,
     "h": 3
    },
@@ -1300,14 +4502,14 @@
      }
     }
    ],
-   "id": 5
+   "id": 7
   },
   {
    "type": "stat",
    "title": "Cloud Run Job 成功次數（所選時間）",
    "gridPos": {
     "x": 6,
-    "y": 23,
+    "y": 29,
     "w": 6,
     "h": 3
    },
@@ -1364,14 +4566,14 @@
      }
     }
    ],
-   "id": 6
+   "id": 8
   },
   {
    "type": "stat",
    "title": "Scheduler 錯誤日誌（所選時間）",
    "gridPos": {
     "x": 12,
-    "y": 23,
+    "y": 29,
     "w": 6,
     "h": 3
    },
@@ -1441,14 +4643,14 @@
      }
     }
    ],
-   "id": 7
+   "id": 9
   },
   {
    "type": "stat",
    "title": "目前執行中的 Job",
    "gridPos": {
     "x": 18,
-    "y": 23,
+    "y": 29,
     "w": 6,
     "h": 3
    },
@@ -1501,14 +4703,14 @@
      }
     }
    ],
-   "id": 8
+   "id": 10
   },
   {
    "type": "bargauge",
    "title": "各 Job 失敗次數（所選時間）",
    "gridPos": {
     "x": 0,
-    "y": 26,
+    "y": 32,
     "w": 12,
     "h": 9
    },
@@ -1571,14 +4773,14 @@
      "aliasBy": "{{resource.label.job_name}}"
     }
    ],
-   "id": 9
+   "id": 11
   },
   {
    "type": "bargauge",
    "title": "各 Job 成功次數（所選時間）",
    "gridPos": {
     "x": 12,
-    "y": 26,
+    "y": 32,
     "w": 12,
     "h": 9
    },
@@ -1641,14 +4843,14 @@
      "aliasBy": "{{resource.label.job_name}}"
     }
    ],
-   "id": 10
+   "id": 12
   },
   {
    "type": "timeseries",
    "title": "執行中的 Job（依 job）",
    "gridPos": {
     "x": 0,
-    "y": 35,
+    "y": 41,
     "w": 24,
     "h": 8
    },
@@ -1707,14 +4909,14 @@
      "aliasBy": "{{resource.label.job_name}}"
     }
    ],
-   "id": 11
+   "id": 13
   },
   {
    "type": "timeseries",
    "title": "Cloud Run 服務請求（依回應類別）",
    "gridPos": {
     "x": 0,
-    "y": 43,
+    "y": 49,
     "w": 12,
     "h": 8
    },
@@ -1770,14 +4972,14 @@
      "aliasBy": "{{resource.label.service_name}} {{metric.label.response_code_class}}"
     }
    ],
-   "id": 12
+   "id": 14
   },
   {
    "type": "timeseries",
    "title": "Cloud Run 服務延遲 p95",
    "gridPos": {
     "x": 12,
-    "y": 43,
+    "y": 49,
     "w": 12,
     "h": 8
    },
@@ -1825,14 +5027,14 @@
      "aliasBy": "{{resource.label.service_name}}"
     }
    ],
-   "id": 13
+   "id": 15
   },
   {
    "type": "bargauge",
    "title": "各 Scheduler job 錯誤日誌（所選時間）",
    "gridPos": {
     "x": 0,
-    "y": 51,
+    "y": 57,
     "w": 24,
     "h": 8
    },
@@ -1895,7 +5097,7 @@
      "aliasBy": "{{resource.label.job_id}}"
     }
    ],
-   "id": 14
+   "id": 16
   }
  ]
 }

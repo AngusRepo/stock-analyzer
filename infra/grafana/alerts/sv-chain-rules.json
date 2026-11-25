@@ -21,7 +21,7 @@
       "source": "monitoring-worker"
      },
      "annotations": {
-      "summary": "有階段以 error 結束（含只看失敗的階段）。看「今天」頁的要處理清單。",
+      "summary": "四條鏈（每日、盤中、每週、每月）有階段以 error 結束（含只看失敗的階段）。看「今天」頁的要處理清單（有鏈別）。",
       "dashboard": "/d/sv-today"
      },
      "data": [
@@ -119,7 +119,7 @@
       "source": "monitoring-worker"
      },
      "annotations": {
-      "summary": "必要階段過了截止還沒完成，或執行中但 heartbeat 停了超過 15 分鐘。",
+      "summary": "必要階段過了截止還沒完成；或執行中但 heartbeat 停了超過 15 分鐘；或盤中 intraday-check 超過 10 分鐘沒有新結果。",
       "dashboard": "/d/sv-today"
      },
      "data": [
@@ -205,7 +205,7 @@
     },
     {
      "uid": "sv-chain-missed",
-     "title": "流程鏈：交易日沒有起跑",
+     "title": "流程鏈：該跑的鏈沒有起跑",
      "condition": "C",
      "for": "0s",
      "isPaused": true,
@@ -217,7 +217,7 @@
       "source": "monitoring-worker"
      },
      "annotations": {
-      "summary": "交易日過了第一站截止（18:30），收盤更新還沒開始或當天沒有任何狀態列。",
+      "summary": "過了第一站截止還沒有任何狀態列：每日 18:30、盤中 09:10（交易日）、每週週五 19:00、每月第一個週六 13:00。前一期也沒資料時（剛上線）不算。",
       "dashboard": "/d/sv-today"
      },
      "data": [
@@ -302,6 +302,202 @@
      ]
     },
     {
+     "uid": "sv-data-not-ready",
+     "title": "資料就緒：該到的資料沒到",
+     "condition": "C",
+     "for": "15m",
+     "isPaused": true,
+     "noDataState": "OK",
+     "execErrState": "Error",
+     "labels": {
+      "severity": "warning",
+      "system": "stockvision",
+      "source": "monitoring-worker"
+     },
+     "annotations": {
+      "summary": "價格、籌碼、技術指標或首頁資料匯入有 fail。看「今天」頁的資料就緒表。",
+      "dashboard": "/d/sv-today"
+     },
+     "data": [
+      {
+       "refId": "A",
+       "relativeTimeRange": {
+        "from": 600,
+        "to": 0
+       },
+       "datasourceUid": "sv-monitoring",
+       "model": {
+        "refId": "A",
+        "type": "json",
+        "parser": "backend",
+        "format": "table",
+        "root_selector": "([{ 'n': $count(checks[status = 'fail']) }])",
+        "columns": [
+         {
+          "selector": "n",
+          "text": "n",
+          "type": "number"
+         }
+        ],
+        "filters": [],
+        "datasource": {
+         "type": "yesoreyeram-infinity-datasource",
+         "uid": "sv-monitoring"
+        },
+        "source": "url",
+        "url": "/v1/data-readiness",
+        "url_options": {
+         "method": "GET",
+         "data": ""
+        }
+       }
+      },
+      {
+       "refId": "B",
+       "relativeTimeRange": {
+        "from": 600,
+        "to": 0
+       },
+       "datasourceUid": "__expr__",
+       "model": {
+        "refId": "B",
+        "type": "reduce",
+        "datasource": {
+         "type": "__expr__",
+         "uid": "__expr__"
+        },
+        "expression": "A",
+        "reducer": "last"
+       }
+      },
+      {
+       "refId": "C",
+       "relativeTimeRange": {
+        "from": 600,
+        "to": 0
+       },
+       "datasourceUid": "__expr__",
+       "model": {
+        "refId": "C",
+        "type": "threshold",
+        "datasource": {
+         "type": "__expr__",
+         "uid": "__expr__"
+        },
+        "expression": "B",
+        "conditions": [
+         {
+          "evaluator": {
+           "type": "gt",
+           "params": [
+            0
+           ]
+          }
+         }
+        ]
+       }
+      }
+     ]
+    },
+    {
+     "uid": "sv-d1-capacity",
+     "title": "D1 容量：使用率 ≥ 80% 或 30 天內會滿",
+     "condition": "C",
+     "for": "30m",
+     "isPaused": true,
+     "noDataState": "OK",
+     "execErrState": "Error",
+     "labels": {
+      "severity": "warning",
+      "system": "stockvision",
+      "source": "monitoring-worker"
+     },
+     "annotations": {
+      "summary": "有 D1 資料庫使用率達 80%，或依成長速度 30 天內會到 90%。看「健康」頁的容量表。",
+      "dashboard": "/d/sv-today"
+     },
+     "data": [
+      {
+       "refId": "A",
+       "relativeTimeRange": {
+        "from": 600,
+        "to": 0
+       },
+       "datasourceUid": "sv-monitoring",
+       "model": {
+        "refId": "A",
+        "type": "json",
+        "parser": "backend",
+        "format": "table",
+        "root_selector": "([{ 'n': $count(rows[utilization_pct >= 80]) + $count(rows[$type(projected_days_to_critical_90pct) = 'number'][projected_days_to_critical_90pct <= 30]) }])",
+        "columns": [
+         {
+          "selector": "n",
+          "text": "n",
+          "type": "number"
+         }
+        ],
+        "filters": [],
+        "datasource": {
+         "type": "yesoreyeram-infinity-datasource",
+         "uid": "sv-monitoring"
+        },
+        "source": "url",
+        "url": "/v1/capacity",
+        "url_options": {
+         "method": "GET",
+         "data": ""
+        }
+       }
+      },
+      {
+       "refId": "B",
+       "relativeTimeRange": {
+        "from": 600,
+        "to": 0
+       },
+       "datasourceUid": "__expr__",
+       "model": {
+        "refId": "B",
+        "type": "reduce",
+        "datasource": {
+         "type": "__expr__",
+         "uid": "__expr__"
+        },
+        "expression": "A",
+        "reducer": "last"
+       }
+      },
+      {
+       "refId": "C",
+       "relativeTimeRange": {
+        "from": 600,
+        "to": 0
+       },
+       "datasourceUid": "__expr__",
+       "model": {
+        "refId": "C",
+        "type": "threshold",
+        "datasource": {
+         "type": "__expr__",
+         "uid": "__expr__"
+        },
+        "expression": "B",
+        "conditions": [
+         {
+          "evaluator": {
+           "type": "gt",
+           "params": [
+            0
+           ]
+          }
+         }
+        ]
+       }
+      }
+     ]
+    },
+    {
      "uid": "sv-monitoring-silent",
      "title": "監控端點拿不到資料",
      "condition": "C",
@@ -315,7 +511,7 @@
       "source": "monitoring-worker"
      },
      "annotations": {
-      "summary": "監控 Worker 沒有回應或回應格式不對；其他三條規則此時無法判斷。",
+      "summary": "監控 Worker 沒有回應或回應格式不對；其他規則此時無法判斷。",
       "dashboard": "/d/sv-today"
      },
      "data": [

@@ -7,7 +7,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { chainCanvas, CHAIN_PIVOT } from './canvas.mjs'
+import { chainCanvas, CHAIN_PIVOT, laneCanvas, laneSlots } from './canvas.mjs'
 import { C, KPI_KEY, N, S, T, bars, dashboard, kpi, querySource, row, states, statusMappings, table, text, th } from './lib.mjs'
 
 const here = dirname(fileURLToPath(import.meta.url))
@@ -27,8 +27,21 @@ const READINESS = '/v1/data-readiness'
 const CAPACITY = '/v1/capacity'
 const CLOCKS = '/v1/evidence-clocks'
 
-/** Stage names and chain order for responses that carry only stage_id. */
-const NAMES = JSON.stringify(Object.fromEntries(dag.catalog.map((stage) => [stage.id, stage.label])))
+/** The other chains, with the panel's long names shortened to fit a node. */
+const SHORT = { 'active8-oof-weekly': 'Active-8 weekly', 'active8-oof-monthly': 'Active-8 monthly' }
+const OTHER = Object.fromEntries(Object.entries(dag.other_chains).map(([id, chain]) => [id, { ...chain,
+  stages: Object.fromEntries(Object.entries(chain.stages).map(([stageId, stage]) => [stageId, { ...stage, label: SHORT[stageId] ?? stage.label }])) }]))
+/** The three small chains draw nodes of one size: grid columns per slot (weekly's 10 slots fill 16 columns; daily is 24 / 13). */
+const COLS_PER_SLOT = 1.6
+function lanePanel(title, id, x, y, w, h, q) {
+  const slots = w / COLS_PER_SLOT
+  if (slots < laneSlots(OTHER[id])) throw new Error(`${id} needs ${laneSlots(OTHER[id])} slots, ${w} columns give ${slots}`)
+  return laneCanvas(title, q(`${STATE}?chain=${id}`, { root: CHAIN_PIVOT }), OTHER[id], x, y, w, h, slots)
+}
+const CHAIN_NAMES = JSON.stringify({ daily_readiness: '每日', intraday_guard: '盤中', weekly_research: '每週', monthly_artifact: '每月' })
+/** Stage names (every chain) and daily chain order for responses that carry only stage_id. */
+const NAMES = JSON.stringify(Object.fromEntries([...dag.catalog, ...Object.values(OTHER).flatMap((chain) => Object.entries(chain.stages).map(([id, stage]) => ({ id, label: stage.label })))]
+  .map((stage) => [stage.id, stage.label])))
 const ORDER = JSON.stringify(Object.fromEntries(dag.catalog.map((stage, position) => [stage.id, position])))
 const CLOCK = 'time:MM/DD HH:mm'
 /** Rows in chain order, oldest first within a stage: the state panels draw one row per stage in order of first appearance. */
@@ -41,7 +54,7 @@ function today(q) {
   const state = (root, columns, refId) => q(STATE, { root, columns, refId })
   const active = 'current[active = true]'
   return [
-    kpi('現在這條鏈（業務日＝收盤日；盤前與驗證在次一交易日完成）', [
+    kpi('現在這條鏈（業務日＝收盤日；盤前與驗證在次一交易日完成）；要處理／逾時／卡住／漏跑＝四條鏈合計', [
       state(`${active}.{ 'k': 1, 'date': business_date, 'done': $string(required_done) & '／' & $string(required_total), 'failed': failed,
         'elapsed': elapsed_min, 'margin': worst_margin_min, 'tight': worst_margin_stage ? $lookup(${NAMES}, worst_margin_stage) : '—' }`,
         [KPI_KEY, S('date', '業務日'), S('done', '必要階段完成'), N('failed', '失敗階段'), N('elapsed', '已執行'), N('margin', '最緊的餘裕'), S('tight', '最緊的階段')], 'A'),
@@ -53,32 +66,34 @@ function today(q) {
       { name: '卡住', th: th([C.txt, null], [C.stuck, 1]) }, { name: '漏跑', th: th([C.txt, null], [C.bad, 1]) },
     ]),
     chainCanvas('流程鏈（由左到右＝先後；粗框＝必要階段，細框＝只看失敗的階段）', state(CHAIN_PIVOT), dag, 0, 3, 24, 13),
+    lanePanel('盤中守門（交易日 09:00–13:30；下排＝獨立排程的重新評分）', 'intraday_guard', 0, 16, 11, 6, q),
+    table('要處理（四條鏈；全綠時是空的；次數＝近 14 天第幾次失敗）', q(ALERTS, {
+      root: `rows.{ 'chain': $lookup(${CHAIN_NAMES}, chain_id), 'date': business_date, 'stage': $lookup(${NAMES}, stage_id), 'kind': kind, 'minutes': minutes,
+        'times': failures_14d, 'error': error ? error : summary }`,
+      columns: [S('chain', '鏈'), S('date', '業務日'), S('stage', '階段'), S('kind', '狀況'), N('minutes', '已持續'), N('times', '14 天次數'), S('error', '錯誤')] }),
+      11, 16, 13, 6, { status: ['狀況'], num: { '14 天次數': [[C.txt, null], [C.bad, 2]] }, unit: { 已持續: 'm' }, wd: { 鏈: 48, 業務日: 104, 狀況: 64, 已持續: 84, '14 天次數': 88 } }),
     states('state-timeline', '近 24 小時各階段實際起訖', q(TIMELINE, {
       root: `${byChainOrder('rows', 'transition_at')}.{ 'time': transition_at, 'stage': $lookup(${NAMES}, stage_id), 'status': to_status }`,
-      columns: [T('time', 'time'), S('stage', 'stage'), S('status', 'status')] }), 'stage', 0, 16, 14, 17, { opts: { rowHeight: 0.85 } }),
-    table('要處理（全綠時是空的；次數＝近 14 天第幾次失敗）', q(ALERTS, {
-      root: `rows.{ 'date': business_date, 'stage': $lookup(${NAMES}, stage_id), 'kind': kind, 'minutes': minutes, 'times': failures_14d, 'error': error ? error : summary }`,
-      columns: [S('date', '業務日'), S('stage', '階段'), S('kind', '狀況'), N('minutes', '已持續'), N('times', '14 天次數'), S('error', '錯誤')] }),
-      14, 16, 10, 6, { status: ['狀況'], num: { '14 天次數': [[C.txt, null], [C.bad, 2]] }, unit: { 已持續: 'm' }, wd: { 業務日: 104, 狀況: 64, 已持續: 84, '14 天次數': 88 } }),
+      columns: [T('time', 'time'), S('stage', 'stage'), S('status', 'status')] }), 'stage', 0, 22, 14, 17, { opts: { rowHeight: 0.85 } }),
     bars('還沒完成的必要階段：預估完成到截止還剩幾分鐘（最緊的在上）', state(
       `$sort(rows[active = true and eta_margin_min != null], function($a, $b) { $a.eta_margin_min > $b.eta_margin_min }).{ 'stage': label, 'margin': eta_margin_min }`,
-      [S('stage', 'stage'), N('margin', 'margin')]), 'margin', 14, 22, 10, 11,
+      [S('stage', 'stage'), N('margin', 'margin')]), 'margin', 14, 22, 10, 17,
       { mode: 'basic', unit: 'm', max: 600, th: th([C.bad, null], [C.retry, 0], [C.ok, 15]),
         desc: '預估＝這條鏈的起點＋該階段近 14 天的典型完成時間（至少 3 天樣本），不早於現在。' }),
     table('資料就緒', q(READINESS, {
       root: `rows.{ 'label': label, 'status': status, 'value': value, 'latest': latestDate, 'detail': detail }`,
       columns: [S('label', '項目'), S('status', '狀態'), S('value', '筆數'), S('latest', '最新日期'), S('detail', '說明')] }),
-      0, 33, 14, 9, { status: ['狀態'], wd: { 狀態: 64, 筆數: 90, 最新日期: 100 } }),
+      0, 39, 14, 9, { status: ['狀態'], wd: { 狀態: 64, 筆數: 90, 最新日期: 100 } }),
     table('資料新鮮度檢查', q(READINESS, {
       root: `checks.{ 'label': label, 'status': status, 'latest': latest_date, 'lag': lag_days, 'rows': rows_on_latest }`,
       columns: [S('label', '項目'), S('status', '狀態'), S('latest', '最新日期'), N('lag', '落後天數'), N('rows', '當日列數')] }),
-      14, 33, 10, 9, { status: ['狀態'], num: { 落後天數: [[C.txt, null], [C.warn, 1], [C.bad, 3]] }, wd: { 狀態: 64 } }),
-    row('階段明細（進行中那條鏈的每一站）', 42, [
+      14, 39, 10, 9, { status: ['狀態'], num: { 落後天數: [[C.txt, null], [C.warn, 1], [C.bad, 3]] }, wd: { 狀態: 64 } }),
+    row('階段明細（進行中那條鏈的每一站）', 48, [
       table('階段明細', state(
         `rows[active = true].{ 'stage': label, 'status': display_status, 'started': started_at, 'done': completed_at, 'due': expected_by, 'eta': eta,
           'attempt': attempt, 'note': error ? error : summary }`,
         [S('stage', '階段'), S('status', '狀態'), T('started', '開始'), T('done', '完成'), T('due', '截止'), T('eta', '預估完成'), N('attempt', '嘗試'), S('note', '摘要／錯誤')]),
-        0, 43, 24, 16, { status: ['狀態'], unit: { 開始: CLOCK, 完成: CLOCK, 截止: CLOCK, 預估完成: CLOCK }, wd: { 狀態: 90, 嘗試: 56 } }),
+        0, 49, 24, 16, { status: ['狀態'], unit: { 開始: CLOCK, 完成: CLOCK, 截止: CLOCK, 預估完成: CLOCK }, wd: { 狀態: 90, 嘗試: 56 } }),
     ]),
   ]
 }
@@ -103,23 +118,27 @@ function gcpPanels(y) {
 function health(q) {
   const endpoints = [[STATE, '流程鏈狀態'], [ALERTS, '要處理'], [TIMELINE, '起訖'], [HISTORY, '14 天結果'], [READINESS, '資料就緒'], [CAPACITY, '容量'], [CLOCKS, 'evidence clocks']]
   return [
-    states('status-history', '每個階段近 14 天的最終結果（一格＝一個業務日）', q(HISTORY, {
+    lanePanel('每週研究（業務日＝該週週五；週五晚到週日跑；下排＝選配）', 'weekly_research', 0, 0, 16, 6, q),
+    lanePanel('每月 artifact（業務日＝每月第一個週六）', 'monthly_artifact', 16, 0, 8, 6, q),
+    states('status-history', '每日鏈每個階段近 14 天的最終結果（一格＝一個業務日）', q(HISTORY, {
       root: `${byChainOrder('rows', 'time')}.{ 'time': time, 'stage': label, 'result': result }`, columns: [T('time', 'time'), S('stage', 'stage'), S('result', 'result')] }),
-      'stage', 0, 0, 24, 13, { opts: { rowHeight: 0.85, colWidth: 0.92 } }),
-    table('14 天內失敗過的階段（2 次以上＝重複失敗）', q(HISTORY, {
-      root: `repeat_failures.{ 'stage': label, 'failures': failures, 'dates': dates, 'error': last_error }`,
-      columns: [S('stage', '階段'), N('failures', '失敗次數'), S('dates', '失敗的業務日'), S('error', '最後一次的錯誤')] }),
-      0, 13, 12, 7, { num: { 失敗次數: [[C.txt, null], [C.bad, 2]] }, wd: { 失敗次數: 76, 失敗的業務日: 180 } }),
+      'stage', 0, 6, 24, 13, { opts: { rowHeight: 0.85, colWidth: 0.92 } }),
+    // One query per chain, rows stacked: daily and intraday cover 14 days, weekly its last 5 periods, monthly 3.
+    table('近期失敗過的階段（四條鏈；每日／盤中＝14 天，每週＝5 週，每月＝3 個月；2 次以上＝重複失敗）', Object.entries(JSON.parse(CHAIN_NAMES)).map(([id, name], i) =>
+      q(id === 'daily_readiness' ? HISTORY : `${HISTORY}&chain=${id}`, {
+        root: `repeat_failures.{ 'chain': '${name}', 'stage': label, 'failures': failures, 'dates': dates, 'error': last_error }`,
+        columns: [S('chain', '鏈'), S('stage', '階段'), N('failures', '失敗次數'), S('dates', '失敗的業務日'), S('error', '最後一次的錯誤')], refId: 'ABCD'[i] })),
+      0, 19, 12, 7, { num: { 失敗次數: [[C.txt, null], [C.bad, 2]] }, wd: { 鏈: 48, 失敗次數: 76, 失敗的業務日: 180 }, sort: '失敗次數', desc_sort: true }),
     table('資料庫容量與成長（D1 單庫上限 10 GB）', q(CAPACITY, {
       root: `rows.{ 'db': binding_name, 'pct': utilization_pct, 'gb': used_bytes / 1000000000, 'growth': daily_growth_bytes / 1000000,
         'd65': projected_days_to_warning_65pct, 'd90': projected_days_to_critical_90pct }`,
       columns: [S('db', '資料庫'), N('pct', '使用率'), N('gb', '已用'), N('growth', '每日成長'), N('d65', '到 65% 天數'), N('d90', '到 90% 天數')] }),
-      12, 13, 12, 7, { gauge: { 使用率: { max: 100, unit: 'percent', th: th([C.ok, null], [C.retry, 65], [C.bad, 90]) } },
+      12, 19, 12, 7, { gauge: { 使用率: { max: 100, unit: 'percent', th: th([C.ok, null], [C.retry, 65], [C.bad, 90]) } },
         num: { '到 90% 天數': [[C.bad, null], [C.retry, 30], [C.txt, 90]] }, unit: { 已用: 'decgbytes', 每日成長: 'decmbytes' }, sort: '使用率', desc_sort: true }),
     kpi('監控自己的讀取成本：每個端點這次回應讀了幾列 D1（端點有快取，儀表板重新整理不會多讀）',
-      endpoints.map(([path, name], i) => q(path, { root: `{ 'k': 1, 'n': rows_read }`, columns: [KPI_KEY, N('n', name)], refId: 'ABCDEFG'[i] })), 0, 20, 24, 3,
+      endpoints.map(([path, name], i) => q(path, { root: `{ 'k': 1, 'n': rows_read }`, columns: [KPI_KEY, N('n', name)], refId: 'ABCDEFG'[i] })), 0, 26, 24, 3,
       endpoints.map(([, name]) => ({ name, th: th([C.txt, null], [C.retry, 1000], [C.bad, 20000]) }))),
-    ...gcpPanels(23),
+    ...gcpPanels(29),
   ]
 }
 

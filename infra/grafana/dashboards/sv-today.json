@@ -30,7 +30,7 @@
  "panels": [
   {
    "type": "stat",
-   "title": "現在這條鏈（業務日＝收盤日；盤前與驗證在次一交易日完成）",
+   "title": "現在這條鏈（業務日＝收盤日；盤前與驗證在次一交易日完成）；要處理／逾時／卡住／漏跑＝四條鏈合計",
    "gridPos": {
     "x": 0,
     "y": 0,
@@ -47,7 +47,7 @@
      "type": "json",
      "parser": "backend",
      "format": "table",
-     "root_selector": "([current[active = true].{ 'k': 1, 'date': business_date, 'done': $string(required_done) & '／' & $string(required_total), 'failed': failed,\n        'elapsed': elapsed_min, 'margin': worst_margin_min, 'tight': worst_margin_stage ? $lookup({\"market-close-refresh\":\"Close refresh\",\"finlab-v4-backfill\":\"FinLab canonical\",\"finlab-backfill-watchdog\":\"FinLab watchdog\",\"update\":\"Market update\",\"indicator-queue\":\"Indicator queue\",\"regime-compute\":\"HMM regime\",\"strategy-learning-mature-evidence\":\"成熟策略證據\",\"screener\":\"Screener\",\"allocator-ev-readiness\":\"Allocator EV\",\"pipeline\":\"Pipeline · 整體進度\",\"ml-predict\":\"ML Predict · L3 預測\",\"post-pipeline-chain\":\"Pipeline callback\",\"allocator-ev-feature-snapshot-backfill\":\"EV feature snapshot\",\"verify-v2\":\"Verify\",\"post-verify-chain\":\"Verify callback\",\"model-ic-rolling\":\"Model IC rolling\",\"linucb-reward-ledger\":\"Reward ledger\",\"adapt\":\"Adapt params\",\"daily-report\":\"Daily report\",\"paper-active-postmarket\":\"Paper active\",\"obsidian-sync\":\"Obsidian sync\",\"meta-learning-shadow\":\"Meta shadow\",\"strategy-learning\":\"Strategy learning\",\"evening-closure\":\"全鏈完成收據\",\"us-leading\":\"US leading\",\"news-analyst\":\"News analyst\",\"morning-setup\":\"Morning setup\",\"recommendation\":\"Recommendation · L4 推薦\",\"pre-market-warmup\":\"Pre-market\",\"premarket-evidence-watchdog\":\"盤前鏈監看\",\"dataset-snapshot-export\":\"Research snapshot\",\"active8-oof-daily\":\"Active-8 daily evidence\",\"allocator-ev-lifecycle-watchdog\":\"EV lifecycle\"}, worst_margin_stage) : '—' }])",
+     "root_selector": "([current[active = true].{ 'k': 1, 'date': business_date, 'done': $string(required_done) & '／' & $string(required_total), 'failed': failed,\n        'elapsed': elapsed_min, 'margin': worst_margin_min, 'tight': worst_margin_stage ? $lookup({\"market-close-refresh\":\"Close refresh\",\"finlab-v4-backfill\":\"FinLab canonical\",\"finlab-backfill-watchdog\":\"FinLab watchdog\",\"update\":\"Market update\",\"indicator-queue\":\"Indicator queue\",\"regime-compute\":\"HMM regime\",\"strategy-learning-mature-evidence\":\"成熟策略證據\",\"screener\":\"Screener\",\"allocator-ev-readiness\":\"Allocator EV\",\"pipeline\":\"Pipeline · 整體進度\",\"ml-predict\":\"ML Predict · L3 預測\",\"post-pipeline-chain\":\"Pipeline callback\",\"allocator-ev-feature-snapshot-backfill\":\"EV feature snapshot\",\"verify-v2\":\"Verify\",\"post-verify-chain\":\"Verify callback\",\"model-ic-rolling\":\"Model IC rolling\",\"linucb-reward-ledger\":\"Reward ledger\",\"adapt\":\"Adapt params\",\"daily-report\":\"Daily report\",\"paper-active-postmarket\":\"Paper active\",\"obsidian-sync\":\"Obsidian sync\",\"meta-learning-shadow\":\"Meta shadow\",\"strategy-learning\":\"Strategy learning\",\"evening-closure\":\"全鏈完成收據\",\"us-leading\":\"US leading\",\"news-analyst\":\"News analyst\",\"morning-setup\":\"Morning setup\",\"recommendation\":\"Recommendation · L4 推薦\",\"pre-market-warmup\":\"Pre-market\",\"premarket-evidence-watchdog\":\"盤前鏈監看\",\"dataset-snapshot-export\":\"Research snapshot\",\"active8-oof-daily\":\"Active-8 daily evidence\",\"allocator-ev-lifecycle-watchdog\":\"EV lifecycle\",\"intraday-check\":\"Intraday check\",\"eod-exit\":\"EOD exit\",\"post-close-price-refresh\":\"Close price\",\"daily-snapshot\":\"Daily snapshot\",\"rescore-10\":\"10:00 re-score\",\"rescore-11\":\"11:00 re-score\",\"rescore-12\":\"12:00 re-score\",\"rescore-1230\":\"12:30 re-score\",\"weekly-audit\":\"Weekly audit\",\"storage-integrity-audit\":\"Storage integrity\",\"model-ic-full-check\":\"Model IC full\",\"weekly-backtest\":\"Validation / MC\",\"alpha-quality\":\"Alpha quality\",\"active8-oof-weekly\":\"Active-8 weekly\",\"weekly-optuna\":\"Drift research\",\"sector-leaders\":\"Sector leaders\",\"adaptive-meta-policy-replay\":\"Meta replay\",\"s12-smcvwap-calibration\":\"S12 calibration\",\"linucb-multiplier-replay\":\"LinUCB replay\",\"weekly-cleanup\":\"Weekly cleanup\",\"weekly-readiness\":\"Weekly root\",\"monthly-strategy-mining\":\"Strategy mining\",\"monthly-optuna\":\"Monthly search\",\"active8-oof-monthly\":\"Active-8 monthly\",\"monthly-readiness\":\"Monthly root\"}, worst_margin_stage) : '—' }])",
      "columns": [
       {
        "selector": "k",
@@ -617,9 +617,9 @@
        "name": "l_market-close-refresh",
        "placement": {
         "left": 0.45,
-        "top": 6.6,
+        "top": 6.575,
         "right": 92.75769230769231,
-        "bottom": 87.075
+        "bottom": 87.1
        },
        "constraint": {
         "horizontal": "scale",
@@ -757,9 +757,9 @@
        "name": "l_finlab-acquire",
        "placement": {
         "left": 8.142307692307693,
-        "top": 6.6,
+        "top": 6.575,
         "right": 85.06538461538462,
-        "bottom": 87.075
+        "bottom": 87.1
        },
        "constraint": {
         "horizontal": "scale",
@@ -897,9 +897,9 @@
        "name": "l_finlab-validate",
        "placement": {
         "left": 15.834615384615384,
-        "top": 6.6,
+        "top": 6.575,
         "right": 77.37307692307692,
-        "bottom": 87.075
+        "bottom": 87.1
        },
        "constraint": {
         "horizontal": "scale",
@@ -1037,9 +1037,9 @@
        "name": "l_finlab-publish",
        "placement": {
         "left": 23.526923076923076,
-        "top": 6.6,
+        "top": 6.575,
         "right": 69.68076923076923,
-        "bottom": 87.075
+        "bottom": 87.1
        },
        "constraint": {
         "horizontal": "scale",
@@ -1177,9 +1177,9 @@
        "name": "l_update",
        "placement": {
         "left": 31.21923076923077,
-        "top": 6.6,
+        "top": 6.575,
         "right": 61.98846153846154,
-        "bottom": 87.075
+        "bottom": 87.1
        },
        "constraint": {
         "horizontal": "scale",
@@ -1317,9 +1317,9 @@
        "name": "l_indicator-queue",
        "placement": {
         "left": 38.91153846153846,
-        "top": 6.6,
+        "top": 6.575,
         "right": 54.29615384615384,
-        "bottom": 87.075
+        "bottom": 87.1
        },
        "constraint": {
         "horizontal": "scale",
@@ -1457,9 +1457,9 @@
        "name": "l_regime-compute",
        "placement": {
         "left": 46.603846153846156,
-        "top": 6.6,
+        "top": 6.575,
         "right": 46.60384615384615,
-        "bottom": 87.075
+        "bottom": 87.1
        },
        "constraint": {
         "horizontal": "scale",
@@ -1597,9 +1597,9 @@
        "name": "l_strategy-learning-mature-evidence",
        "placement": {
         "left": 54.29615384615385,
-        "top": 6.6,
+        "top": 6.575,
         "right": 38.911538461538456,
-        "bottom": 87.075
+        "bottom": 87.1
        },
        "constraint": {
         "horizontal": "scale",
@@ -1716,9 +1716,9 @@
        "name": "l_screener",
        "placement": {
         "left": 61.98846153846154,
-        "top": 6.6,
+        "top": 6.575,
         "right": 31.219230769230766,
-        "bottom": 87.075
+        "bottom": 87.1
        },
        "constraint": {
         "horizontal": "scale",
@@ -1835,9 +1835,9 @@
        "name": "l_finlab-backfill-watchdog",
        "placement": {
         "left": 0.45,
-        "top": 20.6,
+        "top": 20.575,
         "right": 92.75769230769231,
-        "bottom": 73.075
+        "bottom": 73.1
        },
        "constraint": {
         "horizontal": "scale",
@@ -1954,9 +1954,9 @@
        "name": "l_allocator-ev-readiness",
        "placement": {
         "left": 8.142307692307693,
-        "top": 20.6,
+        "top": 20.575,
         "right": 85.06538461538462,
-        "bottom": 73.075
+        "bottom": 73.1
        },
        "constraint": {
         "horizontal": "scale",
@@ -2170,9 +2170,9 @@
        "name": "l_pipeline-inputs",
        "placement": {
         "left": 0.45,
-        "top": 39.93333333333334,
+        "top": 39.90833333333334,
         "right": 92.75769230769231,
-        "bottom": 53.74166666666666
+        "bottom": 53.76666666666666
        },
        "constraint": {
         "horizontal": "scale",
@@ -2310,9 +2310,9 @@
        "name": "l_pipeline-snapshot",
        "placement": {
         "left": 8.142307692307693,
-        "top": 39.93333333333334,
+        "top": 39.90833333333334,
         "right": 85.06538461538462,
-        "bottom": 53.74166666666666
+        "bottom": 53.76666666666666
        },
        "constraint": {
         "horizontal": "scale",
@@ -2450,9 +2450,9 @@
        "name": "l_pipeline-feature-batches",
        "placement": {
         "left": 15.834615384615384,
-        "top": 39.93333333333334,
+        "top": 39.90833333333334,
         "right": 77.37307692307692,
-        "bottom": 53.74166666666666
+        "bottom": 53.76666666666666
        },
        "constraint": {
         "horizontal": "scale",
@@ -2590,9 +2590,9 @@
        "name": "l_pipeline-features",
        "placement": {
         "left": 23.526923076923076,
-        "top": 39.93333333333334,
+        "top": 39.90833333333334,
         "right": 69.68076923076923,
-        "bottom": 53.74166666666666
+        "bottom": 53.76666666666666
        },
        "constraint": {
         "horizontal": "scale",
@@ -2730,9 +2730,9 @@
        "name": "l_pipeline-l2",
        "placement": {
         "left": 31.21923076923077,
-        "top": 39.93333333333334,
+        "top": 39.90833333333334,
         "right": 61.98846153846154,
-        "bottom": 53.74166666666666
+        "bottom": 53.76666666666666
        },
        "constraint": {
         "horizontal": "scale",
@@ -2849,9 +2849,9 @@
        "name": "l_pipeline-l3",
        "placement": {
         "left": 38.91153846153846,
-        "top": 39.93333333333334,
+        "top": 39.90833333333334,
         "right": 54.29615384615384,
-        "bottom": 53.74166666666666
+        "bottom": 53.76666666666666
        },
        "constraint": {
         "horizontal": "scale",
@@ -2968,9 +2968,9 @@
        "name": "l_dataset-snapshot-export",
        "placement": {
         "left": 0.45,
-        "top": 53.93333333333334,
+        "top": 53.90833333333334,
         "right": 92.75769230769231,
-        "bottom": 39.74166666666666
+        "bottom": 39.76666666666666
        },
        "constraint": {
         "horizontal": "scale",
@@ -3087,9 +3087,9 @@
        "name": "l_allocator-ev-feature-snapshot-backfill",
        "placement": {
         "left": 8.142307692307693,
-        "top": 53.93333333333334,
+        "top": 53.90833333333334,
         "right": 85.06538461538462,
-        "bottom": 39.74166666666666
+        "bottom": 39.76666666666666
        },
        "constraint": {
         "horizontal": "scale",
@@ -3303,9 +3303,9 @@
        "name": "l_us-leading",
        "placement": {
         "left": 54.29615384615385,
-        "top": 39.93333333333334,
+        "top": 39.90833333333334,
         "right": 38.911538461538456,
-        "bottom": 53.74166666666666
+        "bottom": 53.76666666666666
        },
        "constraint": {
         "horizontal": "scale",
@@ -3443,9 +3443,9 @@
        "name": "l_news-analyst",
        "placement": {
         "left": 61.98846153846154,
-        "top": 39.93333333333334,
+        "top": 39.90833333333334,
         "right": 31.219230769230766,
-        "bottom": 53.74166666666666
+        "bottom": 53.76666666666666
        },
        "constraint": {
         "horizontal": "scale",
@@ -3583,9 +3583,9 @@
        "name": "l_morning-setup",
        "placement": {
         "left": 69.68076923076923,
-        "top": 39.93333333333334,
+        "top": 39.90833333333334,
         "right": 23.52692307692308,
-        "bottom": 53.74166666666666
+        "bottom": 53.76666666666666
        },
        "constraint": {
         "horizontal": "scale",
@@ -3723,9 +3723,9 @@
        "name": "l_recommendation",
        "placement": {
         "left": 77.37307692307692,
-        "top": 39.93333333333334,
+        "top": 39.90833333333334,
         "right": 15.834615384615386,
-        "bottom": 53.74166666666666
+        "bottom": 53.76666666666666
        },
        "constraint": {
         "horizontal": "scale",
@@ -3842,9 +3842,9 @@
        "name": "l_pre-market-warmup",
        "placement": {
         "left": 85.06538461538462,
-        "top": 39.93333333333334,
+        "top": 39.90833333333334,
         "right": 8.142307692307693,
-        "bottom": 53.74166666666666
+        "bottom": 53.76666666666666
        },
        "constraint": {
         "horizontal": "scale",
@@ -3961,9 +3961,9 @@
        "name": "l_premarket-evidence-watchdog",
        "placement": {
         "left": 54.29615384615385,
-        "top": 53.93333333333334,
+        "top": 53.90833333333334,
         "right": 38.911538461538456,
-        "bottom": 39.74166666666666
+        "bottom": 39.76666666666666
        },
        "constraint": {
         "horizontal": "scale",
@@ -4177,9 +4177,9 @@
        "name": "l_post-pipeline-chain",
        "placement": {
         "left": 0.45,
-        "top": 73.26666666666667,
+        "top": 73.24166666666667,
         "right": 92.75769230769231,
-        "bottom": 20.408333333333335
+        "bottom": 20.433333333333326
        },
        "constraint": {
         "horizontal": "scale",
@@ -4317,9 +4317,9 @@
        "name": "l_verify-v2",
        "placement": {
         "left": 8.142307692307693,
-        "top": 73.26666666666667,
+        "top": 73.24166666666667,
         "right": 85.06538461538462,
-        "bottom": 20.408333333333335
+        "bottom": 20.433333333333326
        },
        "constraint": {
         "horizontal": "scale",
@@ -4457,9 +4457,9 @@
        "name": "l_post-verify-chain",
        "placement": {
         "left": 15.834615384615384,
-        "top": 73.26666666666667,
+        "top": 73.24166666666667,
         "right": 77.37307692307692,
-        "bottom": 20.408333333333335
+        "bottom": 20.433333333333326
        },
        "constraint": {
         "horizontal": "scale",
@@ -4597,9 +4597,9 @@
        "name": "l_strategy-learning",
        "placement": {
         "left": 23.526923076923076,
-        "top": 73.26666666666667,
+        "top": 73.24166666666667,
         "right": 69.68076923076923,
-        "bottom": 20.408333333333335
+        "bottom": 20.433333333333326
        },
        "constraint": {
         "horizontal": "scale",
@@ -4716,9 +4716,9 @@
        "name": "l_evening-closure",
        "placement": {
         "left": 31.21923076923077,
-        "top": 73.26666666666667,
+        "top": 73.24166666666667,
         "right": 61.98846153846154,
-        "bottom": 20.408333333333335
+        "bottom": 20.433333333333326
        },
        "constraint": {
         "horizontal": "scale",
@@ -4835,9 +4835,9 @@
        "name": "l_active8-oof-daily",
        "placement": {
         "left": 0.45,
-        "top": 87.26666666666667,
+        "top": 87.24166666666667,
         "right": 92.75769230769231,
-        "bottom": 6.408333333333334
+        "bottom": 6.433333333333326
        },
        "constraint": {
         "horizontal": "scale",
@@ -4954,9 +4954,9 @@
        "name": "l_allocator-ev-lifecycle-watchdog",
        "placement": {
         "left": 8.142307692307693,
-        "top": 87.26666666666667,
+        "top": 87.24166666666667,
         "right": 85.06538461538462,
-        "bottom": 6.408333333333334
+        "bottom": 6.433333333333326
        },
        "constraint": {
         "horizontal": "scale",
@@ -5073,9 +5073,9 @@
        "name": "l_model-ic-rolling",
        "placement": {
         "left": 15.834615384615384,
-        "top": 87.26666666666667,
+        "top": 87.24166666666667,
         "right": 77.37307692307692,
-        "bottom": 6.408333333333334
+        "bottom": 6.433333333333326
        },
        "constraint": {
         "horizontal": "scale",
@@ -5192,9 +5192,9 @@
        "name": "l_linucb-reward-ledger",
        "placement": {
         "left": 23.526923076923076,
-        "top": 87.26666666666667,
+        "top": 87.24166666666667,
         "right": 69.68076923076923,
-        "bottom": 6.408333333333334
+        "bottom": 6.433333333333326
        },
        "constraint": {
         "horizontal": "scale",
@@ -5311,9 +5311,9 @@
        "name": "l_adapt",
        "placement": {
         "left": 31.21923076923077,
-        "top": 87.26666666666667,
+        "top": 87.24166666666667,
         "right": 61.98846153846154,
-        "bottom": 6.408333333333334
+        "bottom": 6.433333333333326
        },
        "constraint": {
         "horizontal": "scale",
@@ -5430,9 +5430,9 @@
        "name": "l_daily-report",
        "placement": {
         "left": 38.91153846153846,
-        "top": 87.26666666666667,
+        "top": 87.24166666666667,
         "right": 54.29615384615384,
-        "bottom": 6.408333333333334
+        "bottom": 6.433333333333326
        },
        "constraint": {
         "horizontal": "scale",
@@ -5549,9 +5549,9 @@
        "name": "l_paper-active-postmarket",
        "placement": {
         "left": 46.603846153846156,
-        "top": 87.26666666666667,
+        "top": 87.24166666666667,
         "right": 46.60384615384615,
-        "bottom": 6.408333333333334
+        "bottom": 6.433333333333326
        },
        "constraint": {
         "horizontal": "scale",
@@ -5668,9 +5668,9 @@
        "name": "l_obsidian-sync",
        "placement": {
         "left": 54.29615384615385,
-        "top": 87.26666666666667,
+        "top": 87.24166666666667,
         "right": 38.911538461538456,
-        "bottom": 6.408333333333334
+        "bottom": 6.433333333333326
        },
        "constraint": {
         "horizontal": "scale",
@@ -5787,9 +5787,9 @@
        "name": "l_meta-learning-shadow",
        "placement": {
         "left": 61.98846153846154,
-        "top": 87.26666666666667,
+        "top": 87.24166666666667,
         "right": 31.219230769230766,
-        "bottom": 6.408333333333334
+        "bottom": 6.433333333333326
        },
        "constraint": {
         "horizontal": "scale",
@@ -6482,275 +6482,12 @@
    "id": 2
   },
   {
-   "type": "state-timeline",
-   "title": "近 24 小時各階段實際起訖",
-   "description": "",
+   "type": "canvas",
+   "title": "盤中守門（交易日 09:00–13:30；下排＝獨立排程的重新評分）",
    "gridPos": {
     "x": 0,
     "y": 16,
-    "w": 14,
-    "h": 17
-   },
-   "datasource": {
-    "type": "yesoreyeram-infinity-datasource",
-    "uid": "sv-monitoring"
-   },
-   "targets": [
-    {
-     "refId": "A",
-     "type": "json",
-     "parser": "backend",
-     "format": "table",
-     "root_selector": "([$sort(rows, function($a, $b) {(\n  $pa := $lookup({\"market-close-refresh\":0,\"finlab-v4-backfill\":1,\"finlab-backfill-watchdog\":2,\"update\":3,\"indicator-queue\":4,\"regime-compute\":5,\"strategy-learning-mature-evidence\":6,\"screener\":7,\"allocator-ev-readiness\":8,\"pipeline\":9,\"ml-predict\":10,\"post-pipeline-chain\":11,\"allocator-ev-feature-snapshot-backfill\":12,\"verify-v2\":13,\"post-verify-chain\":14,\"model-ic-rolling\":15,\"linucb-reward-ledger\":16,\"adapt\":17,\"daily-report\":18,\"paper-active-postmarket\":19,\"obsidian-sync\":20,\"meta-learning-shadow\":21,\"strategy-learning\":22,\"evening-closure\":23,\"us-leading\":24,\"news-analyst\":25,\"morning-setup\":26,\"recommendation\":27,\"pre-market-warmup\":28,\"premarket-evidence-watchdog\":29,\"dataset-snapshot-export\":30,\"active8-oof-daily\":31,\"allocator-ev-lifecycle-watchdog\":32}, $a.stage_id); $pb := $lookup({\"market-close-refresh\":0,\"finlab-v4-backfill\":1,\"finlab-backfill-watchdog\":2,\"update\":3,\"indicator-queue\":4,\"regime-compute\":5,\"strategy-learning-mature-evidence\":6,\"screener\":7,\"allocator-ev-readiness\":8,\"pipeline\":9,\"ml-predict\":10,\"post-pipeline-chain\":11,\"allocator-ev-feature-snapshot-backfill\":12,\"verify-v2\":13,\"post-verify-chain\":14,\"model-ic-rolling\":15,\"linucb-reward-ledger\":16,\"adapt\":17,\"daily-report\":18,\"paper-active-postmarket\":19,\"obsidian-sync\":20,\"meta-learning-shadow\":21,\"strategy-learning\":22,\"evening-closure\":23,\"us-leading\":24,\"news-analyst\":25,\"morning-setup\":26,\"recommendation\":27,\"pre-market-warmup\":28,\"premarket-evidence-watchdog\":29,\"dataset-snapshot-export\":30,\"active8-oof-daily\":31,\"allocator-ev-lifecycle-watchdog\":32}, $b.stage_id);\n  $pa > $pb or ($pa = $pb and $a.transition_at > $b.transition_at)\n)}).{ 'time': transition_at, 'stage': $lookup({\"market-close-refresh\":\"Close refresh\",\"finlab-v4-backfill\":\"FinLab canonical\",\"finlab-backfill-watchdog\":\"FinLab watchdog\",\"update\":\"Market update\",\"indicator-queue\":\"Indicator queue\",\"regime-compute\":\"HMM regime\",\"strategy-learning-mature-evidence\":\"成熟策略證據\",\"screener\":\"Screener\",\"allocator-ev-readiness\":\"Allocator EV\",\"pipeline\":\"Pipeline · 整體進度\",\"ml-predict\":\"ML Predict · L3 預測\",\"post-pipeline-chain\":\"Pipeline callback\",\"allocator-ev-feature-snapshot-backfill\":\"EV feature snapshot\",\"verify-v2\":\"Verify\",\"post-verify-chain\":\"Verify callback\",\"model-ic-rolling\":\"Model IC rolling\",\"linucb-reward-ledger\":\"Reward ledger\",\"adapt\":\"Adapt params\",\"daily-report\":\"Daily report\",\"paper-active-postmarket\":\"Paper active\",\"obsidian-sync\":\"Obsidian sync\",\"meta-learning-shadow\":\"Meta shadow\",\"strategy-learning\":\"Strategy learning\",\"evening-closure\":\"全鏈完成收據\",\"us-leading\":\"US leading\",\"news-analyst\":\"News analyst\",\"morning-setup\":\"Morning setup\",\"recommendation\":\"Recommendation · L4 推薦\",\"pre-market-warmup\":\"Pre-market\",\"premarket-evidence-watchdog\":\"盤前鏈監看\",\"dataset-snapshot-export\":\"Research snapshot\",\"active8-oof-daily\":\"Active-8 daily evidence\",\"allocator-ev-lifecycle-watchdog\":\"EV lifecycle\"}, stage_id), 'status': to_status }])",
-     "columns": [
-      {
-       "selector": "time",
-       "text": "time",
-       "type": "timestamp"
-      },
-      {
-       "selector": "stage",
-       "text": "stage",
-       "type": "string"
-      },
-      {
-       "selector": "status",
-       "text": "status",
-       "type": "string"
-      }
-     ],
-     "filters": [],
-     "datasource": {
-      "type": "yesoreyeram-infinity-datasource",
-      "uid": "sv-monitoring"
-     },
-     "source": "url",
-     "url": "/v1/chain/timeline?days=2",
-     "url_options": {
-      "method": "GET",
-      "data": ""
-     }
-    }
-   ],
-   "hideTimeOverride": true,
-   "transformations": [
-    {
-     "id": "partitionByValues",
-     "options": {
-      "fields": [
-       "stage"
-      ],
-      "keepFields": false,
-      "naming": {
-       "asLabels": true
-      }
-     }
-    }
-   ],
-   "options": {
-    "legend": {
-     "showLegend": false
-    },
-    "tooltip": {
-     "mode": "single"
-    },
-    "showValue": "never",
-    "rowHeight": 0.85
-   },
-   "fieldConfig": {
-    "defaults": {
-     "displayName": "${__field.labels.stage}",
-     "mappings": [
-      {
-       "type": "value",
-       "options": {
-        "completed": {
-         "text": "完成",
-         "color": "#56A64B",
-         "index": 0
-        },
-        "success": {
-         "text": "完成",
-         "color": "#56A64B",
-         "index": 1
-        },
-        "noop": {
-         "text": "無事可做",
-         "color": "#56A64B",
-         "index": 2
-        },
-        "retry_success": {
-         "text": "重試後完成",
-         "color": "#EAB839",
-         "index": 3
-        },
-        "running": {
-         "text": "執行中",
-         "color": "#5794F2",
-         "index": 4
-        },
-        "waiting": {
-         "text": "等待中",
-         "color": "#5794F2",
-         "index": 5
-        },
-        "not_started": {
-         "text": "未開始",
-         "color": "rgba(110,112,121,0.12)",
-         "index": 6
-        },
-        "pending": {
-         "text": "未開始",
-         "color": "rgba(110,112,121,0.12)",
-         "index": 7
-        },
-        "out_of_window": {
-         "text": "未到時段",
-         "color": "rgba(110,112,121,0.12)",
-         "index": 8
-        },
-        "skipped": {
-         "text": "略過",
-         "color": "#4B4F58",
-         "index": 9
-        },
-        "stale": {
-         "text": "待確認",
-         "color": "rgba(110,112,121,0.12)",
-         "index": 10
-        },
-        "at_risk": {
-         "text": "趕不上截止",
-         "color": "#EAB839",
-         "index": 11
-        },
-        "attention": {
-         "text": "應跑未跑",
-         "color": "#FF9830",
-         "index": 12
-        },
-        "overdue": {
-         "text": "逾時",
-         "color": "#FF9830",
-         "index": 13
-        },
-        "stuck": {
-         "text": "卡住",
-         "color": "#B877D9",
-         "index": 14
-        },
-        "missed": {
-         "text": "漏跑",
-         "color": "#E02F44",
-         "index": 15
-        },
-        "failed": {
-         "text": "失敗",
-         "color": "#E02F44",
-         "index": 16
-        },
-        "error": {
-         "text": "失敗",
-         "color": "#E02F44",
-         "index": 17
-        },
-        "blocked": {
-         "text": "中止",
-         "color": "#E02F44",
-         "index": 18
-        },
-        "ready": {
-         "text": "就緒",
-         "color": "#56A64B",
-         "index": 19
-        },
-        "ok": {
-         "text": "正常",
-         "color": "#56A64B",
-         "index": 20
-        },
-        "warn": {
-         "text": "注意",
-         "color": "#FF9830",
-         "index": 21
-        },
-        "fail": {
-         "text": "未過",
-         "color": "#E02F44",
-         "index": 22
-        },
-        "critical": {
-         "text": "重大",
-         "color": "#E02F44",
-         "index": 23
-        },
-        "warning": {
-         "text": "注意",
-         "color": "#FF9830",
-         "index": 24
-        },
-        "healthy": {
-         "text": "正常",
-         "color": "#56A64B",
-         "index": 25
-        },
-        "pending_maturity": {
-         "text": "等待成熟",
-         "color": "rgba(110,112,121,0.12)",
-         "index": 26
-        },
-        "pass": {
-         "text": "通過",
-         "color": "#56A64B",
-         "index": 27
-        },
-        "collecting": {
-         "text": "收集中",
-         "color": "#5794F2",
-         "index": 28
-        },
-        "not_applicable_no_real_intents": {
-         "text": "不適用（沒有真實下單）",
-         "color": "rgba(110,112,121,0.12)",
-         "index": 29
-        },
-        "owner_read_unavailable": {
-         "text": "讀不到來源",
-         "color": "#FF9830",
-         "index": 30
-        }
-       }
-      }
-     ],
-     "color": {
-      "mode": "thresholds"
-     },
-     "thresholds": {
-      "mode": "absolute",
-      "steps": [
-       {
-        "color": "#2B2D33",
-        "value": null
-       }
-      ]
-     },
-     "custom": {
-      "fillOpacity": 80,
-      "lineWidth": 0
-     }
-    },
-    "overrides": []
-   },
-   "id": 3
-  },
-  {
-   "type": "table",
-   "title": "要處理（全綠時是空的；次數＝近 14 天第幾次失敗）",
-   "description": "",
-   "gridPos": {
-    "x": 14,
-    "y": 16,
-    "w": 10,
+    "w": 11,
     "h": 6
    },
    "datasource": {
@@ -6763,8 +6500,1412 @@
      "type": "json",
      "parser": "backend",
      "format": "table",
-     "root_selector": "([rows.{ 'date': business_date, 'stage': $lookup({\"market-close-refresh\":\"Close refresh\",\"finlab-v4-backfill\":\"FinLab canonical\",\"finlab-backfill-watchdog\":\"FinLab watchdog\",\"update\":\"Market update\",\"indicator-queue\":\"Indicator queue\",\"regime-compute\":\"HMM regime\",\"strategy-learning-mature-evidence\":\"成熟策略證據\",\"screener\":\"Screener\",\"allocator-ev-readiness\":\"Allocator EV\",\"pipeline\":\"Pipeline · 整體進度\",\"ml-predict\":\"ML Predict · L3 預測\",\"post-pipeline-chain\":\"Pipeline callback\",\"allocator-ev-feature-snapshot-backfill\":\"EV feature snapshot\",\"verify-v2\":\"Verify\",\"post-verify-chain\":\"Verify callback\",\"model-ic-rolling\":\"Model IC rolling\",\"linucb-reward-ledger\":\"Reward ledger\",\"adapt\":\"Adapt params\",\"daily-report\":\"Daily report\",\"paper-active-postmarket\":\"Paper active\",\"obsidian-sync\":\"Obsidian sync\",\"meta-learning-shadow\":\"Meta shadow\",\"strategy-learning\":\"Strategy learning\",\"evening-closure\":\"全鏈完成收據\",\"us-leading\":\"US leading\",\"news-analyst\":\"News analyst\",\"morning-setup\":\"Morning setup\",\"recommendation\":\"Recommendation · L4 推薦\",\"pre-market-warmup\":\"Pre-market\",\"premarket-evidence-watchdog\":\"盤前鏈監看\",\"dataset-snapshot-export\":\"Research snapshot\",\"active8-oof-daily\":\"Active-8 daily evidence\",\"allocator-ev-lifecycle-watchdog\":\"EV lifecycle\"}, stage_id), 'kind': kind, 'minutes': minutes, 'times': failures_14d, 'error': error ? error : summary }])",
+     "root_selector": "([(\n  $label := {\"completed\":\"完成\",\"success\":\"完成\",\"noop\":\"無事可做\",\"retry_success\":\"重試後完成\",\"running\":\"執行中\",\"waiting\":\"等待中\",\"not_started\":\"未開始\",\"pending\":\"未開始\",\"out_of_window\":\"未到時段\",\"skipped\":\"略過\",\"stale\":\"待確認\",\"at_risk\":\"趕不上截止\",\"attention\":\"應跑未跑\",\"overdue\":\"逾時\",\"stuck\":\"卡住\",\"missed\":\"漏跑\",\"failed\":\"失敗\",\"error\":\"失敗\",\"blocked\":\"中止\",\"ready\":\"就緒\",\"ok\":\"正常\",\"warn\":\"注意\",\"fail\":\"未過\",\"critical\":\"重大\",\"warning\":\"注意\",\"healthy\":\"正常\",\"pending_maturity\":\"等待成熟\",\"pass\":\"通過\",\"collecting\":\"收集中\",\"not_applicable_no_real_intents\":\"不適用（沒有真實下單）\",\"owner_read_unavailable\":\"讀不到來源\"};\n  $hm := function($t) { $t ? $fromMillis($toMillis($t), '[H01]:[m01]', '+0800') : '' };\n  $clock := function($r) {\n    $r.display_status in ['not_started', 'out_of_window', 'waiting', 'overdue', 'at_risk', 'stuck']\n      ? ($r.expected_by ? '截止 ' & $hm($r.expected_by) : '')\n      : $r.display_status = 'running' ? $hm($r.started_at) & ' 起' : $hm($r.completed_at ? $r.completed_at : $r.started_at)\n  };\n  $merge(rows[active = true and display_position != null].{\n    's_' & stage_id: display_status,\n    'b_' & stage_id: 'f_' & display_status,\n    't_' & stage_id: $trim($lookup($label, display_status) & ' ' & $clock($))\n  })\n)])",
+     "columns": [],
+     "filters": [],
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-monitoring"
+     },
+     "source": "url",
+     "url": "/v1/chain/state?chain=intraday_guard",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
+    }
+   ],
+   "options": {
+    "inlineEditing": false,
+    "showAdvancedTypes": false,
+    "panZoom": false,
+    "infinitePan": false,
+    "tooltip": {
+     "mode": "none"
+    },
+    "root": {
+     "type": "frame",
+     "name": "root",
+     "placement": {
+      "left": 0,
+      "top": 0,
+      "width": 100,
+      "height": 100
+     },
+     "constraint": {
+      "horizontal": "left",
+      "vertical": "top"
+     },
+     "background": {
+      "color": {
+       "fixed": "transparent"
+      }
+     },
+     "border": {
+      "color": {
+       "fixed": "transparent"
+      }
+     },
+     "elements": [
+      {
+       "type": "text",
+       "name": "lane_session",
+       "placement": {
+        "left": 0.5090909090909091,
+        "top": 1,
+        "right": 41.309090909090905,
+        "bottom": 84
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "left",
+        "valign": "middle",
+        "size": 12,
+        "color": {
+         "fixed": "#8E919A"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": "盤中守門與收盤帳務"
+        }
+       }
+      },
+      {
+       "type": "rectangle",
+       "name": "n_intraday-check",
+       "placement": {
+        "left": 0.5090909090909091,
+        "top": 18,
+        "right": 85.96363636363635,
+        "bottom": 47.5
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "field": "b_intraday-check",
+         "fixed": "#191b20"
+        }
+       },
+       "border": {
+        "color": {
+         "field": "s_intraday-check",
+         "fixed": "#444"
+        },
+        "radius": 6,
+        "width": 2
+       },
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "transparent"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": ""
+        }
+       },
+       "connections": [
+        {
+         "path": "straight",
+         "targetName": "n_eod-exit",
+         "source": {
+          "x": 1,
+          "y": 0
+         },
+         "target": {
+          "x": -1,
+          "y": 0
+         },
+         "color": {
+          "fixed": "#5c606b"
+         },
+         "size": {
+          "fixed": 1.5,
+          "min": 1,
+          "max": 10
+         }
+        }
+       ]
+      },
+      {
+       "type": "text",
+       "name": "l_intraday-check",
+       "placement": {
+        "left": 0.5090909090909091,
+        "top": 19.725,
+        "right": 85.96363636363635,
+        "bottom": 61.300000000000004
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "#D0D2D8"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": "Intraday check"
+        }
+       }
+      },
+      {
+       "type": "text",
+       "name": "t_intraday-check",
+       "placement": {
+        "left": 0.5090909090909091,
+        "top": 36.975,
+        "right": 85.96363636363635,
+        "bottom": 49.224999999999994
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "field": "s_intraday-check",
+         "fixed": "#8E919A"
+        },
+        "text": {
+         "mode": "field",
+         "field": "t_intraday-check",
+         "fixed": ""
+        }
+       }
+      },
+      {
+       "type": "rectangle",
+       "name": "n_eod-exit",
+       "placement": {
+        "left": 15.054545454545455,
+        "top": 18,
+        "right": 71.41818181818181,
+        "bottom": 47.5
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "field": "b_eod-exit",
+         "fixed": "#191b20"
+        }
+       },
+       "border": {
+        "color": {
+         "field": "s_eod-exit",
+         "fixed": "#444"
+        },
+        "radius": 6,
+        "width": 2
+       },
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "transparent"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": ""
+        }
+       },
+       "connections": [
+        {
+         "path": "straight",
+         "targetName": "n_post-close-price-refresh",
+         "source": {
+          "x": 1,
+          "y": 0
+         },
+         "target": {
+          "x": -1,
+          "y": 0
+         },
+         "color": {
+          "fixed": "#5c606b"
+         },
+         "size": {
+          "fixed": 1.5,
+          "min": 1,
+          "max": 10
+         }
+        }
+       ]
+      },
+      {
+       "type": "text",
+       "name": "l_eod-exit",
+       "placement": {
+        "left": 15.054545454545455,
+        "top": 19.725,
+        "right": 71.41818181818181,
+        "bottom": 61.300000000000004
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "#D0D2D8"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": "EOD exit"
+        }
+       }
+      },
+      {
+       "type": "text",
+       "name": "t_eod-exit",
+       "placement": {
+        "left": 15.054545454545455,
+        "top": 36.975,
+        "right": 71.41818181818181,
+        "bottom": 49.224999999999994
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "field": "s_eod-exit",
+         "fixed": "#8E919A"
+        },
+        "text": {
+         "mode": "field",
+         "field": "t_eod-exit",
+         "fixed": ""
+        }
+       }
+      },
+      {
+       "type": "rectangle",
+       "name": "n_post-close-price-refresh",
+       "placement": {
+        "left": 29.599999999999998,
+        "top": 18,
+        "right": 56.872727272727275,
+        "bottom": 47.5
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "field": "b_post-close-price-refresh",
+         "fixed": "#191b20"
+        }
+       },
+       "border": {
+        "color": {
+         "field": "s_post-close-price-refresh",
+         "fixed": "#444"
+        },
+        "radius": 6,
+        "width": 2
+       },
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "transparent"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": ""
+        }
+       },
+       "connections": [
+        {
+         "path": "straight",
+         "targetName": "n_daily-snapshot",
+         "source": {
+          "x": 1,
+          "y": 0
+         },
+         "target": {
+          "x": -1,
+          "y": 0
+         },
+         "color": {
+          "fixed": "#5c606b"
+         },
+         "size": {
+          "fixed": 1.5,
+          "min": 1,
+          "max": 10
+         }
+        }
+       ]
+      },
+      {
+       "type": "text",
+       "name": "l_post-close-price-refresh",
+       "placement": {
+        "left": 29.599999999999998,
+        "top": 19.725,
+        "right": 56.872727272727275,
+        "bottom": 61.300000000000004
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "#D0D2D8"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": "Close price"
+        }
+       }
+      },
+      {
+       "type": "text",
+       "name": "t_post-close-price-refresh",
+       "placement": {
+        "left": 29.599999999999998,
+        "top": 36.975,
+        "right": 56.872727272727275,
+        "bottom": 49.224999999999994
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "field": "s_post-close-price-refresh",
+         "fixed": "#8E919A"
+        },
+        "text": {
+         "mode": "field",
+         "field": "t_post-close-price-refresh",
+         "fixed": ""
+        }
+       }
+      },
+      {
+       "type": "rectangle",
+       "name": "n_daily-snapshot",
+       "placement": {
+        "left": 44.14545454545454,
+        "top": 18,
+        "right": 42.32727272727273,
+        "bottom": 47.5
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "field": "b_daily-snapshot",
+         "fixed": "#191b20"
+        }
+       },
+       "border": {
+        "color": {
+         "field": "s_daily-snapshot",
+         "fixed": "#444"
+        },
+        "radius": 6,
+        "width": 2
+       },
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "transparent"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": ""
+        }
+       },
+       "connections": []
+      },
+      {
+       "type": "text",
+       "name": "l_daily-snapshot",
+       "placement": {
+        "left": 44.14545454545454,
+        "top": 19.725,
+        "right": 42.32727272727273,
+        "bottom": 61.300000000000004
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "#D0D2D8"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": "Daily snapshot"
+        }
+       }
+      },
+      {
+       "type": "text",
+       "name": "t_daily-snapshot",
+       "placement": {
+        "left": 44.14545454545454,
+        "top": 36.975,
+        "right": 42.32727272727273,
+        "bottom": 49.224999999999994
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "field": "s_daily-snapshot",
+         "fixed": "#8E919A"
+        },
+        "text": {
+         "mode": "field",
+         "field": "t_daily-snapshot",
+         "fixed": ""
+        }
+       }
+      },
+      {
+       "type": "rectangle",
+       "name": "n_rescore-10",
+       "placement": {
+        "left": 0.5090909090909091,
+        "top": 60,
+        "right": 85.96363636363635,
+        "bottom": 5.5
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "field": "b_rescore-10",
+         "fixed": "#191b20"
+        }
+       },
+       "border": {
+        "color": {
+         "field": "s_rescore-10",
+         "fixed": "#444"
+        },
+        "radius": 6,
+        "width": 2
+       },
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "transparent"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": ""
+        }
+       },
+       "connections": []
+      },
+      {
+       "type": "text",
+       "name": "l_rescore-10",
+       "placement": {
+        "left": 0.5090909090909091,
+        "top": 61.725,
+        "right": 85.96363636363635,
+        "bottom": 19.299999999999997
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "#D0D2D8"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": "10:00 re-score"
+        }
+       }
+      },
+      {
+       "type": "text",
+       "name": "t_rescore-10",
+       "placement": {
+        "left": 0.5090909090909091,
+        "top": 78.975,
+        "right": 85.96363636363635,
+        "bottom": 7.225000000000005
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "field": "s_rescore-10",
+         "fixed": "#8E919A"
+        },
+        "text": {
+         "mode": "field",
+         "field": "t_rescore-10",
+         "fixed": ""
+        }
+       }
+      },
+      {
+       "type": "rectangle",
+       "name": "n_rescore-11",
+       "placement": {
+        "left": 15.054545454545455,
+        "top": 60,
+        "right": 71.41818181818181,
+        "bottom": 5.5
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "field": "b_rescore-11",
+         "fixed": "#191b20"
+        }
+       },
+       "border": {
+        "color": {
+         "field": "s_rescore-11",
+         "fixed": "#444"
+        },
+        "radius": 6,
+        "width": 2
+       },
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "transparent"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": ""
+        }
+       },
+       "connections": []
+      },
+      {
+       "type": "text",
+       "name": "l_rescore-11",
+       "placement": {
+        "left": 15.054545454545455,
+        "top": 61.725,
+        "right": 71.41818181818181,
+        "bottom": 19.299999999999997
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "#D0D2D8"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": "11:00 re-score"
+        }
+       }
+      },
+      {
+       "type": "text",
+       "name": "t_rescore-11",
+       "placement": {
+        "left": 15.054545454545455,
+        "top": 78.975,
+        "right": 71.41818181818181,
+        "bottom": 7.225000000000005
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "field": "s_rescore-11",
+         "fixed": "#8E919A"
+        },
+        "text": {
+         "mode": "field",
+         "field": "t_rescore-11",
+         "fixed": ""
+        }
+       }
+      },
+      {
+       "type": "rectangle",
+       "name": "n_rescore-12",
+       "placement": {
+        "left": 29.599999999999998,
+        "top": 60,
+        "right": 56.872727272727275,
+        "bottom": 5.5
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "field": "b_rescore-12",
+         "fixed": "#191b20"
+        }
+       },
+       "border": {
+        "color": {
+         "field": "s_rescore-12",
+         "fixed": "#444"
+        },
+        "radius": 6,
+        "width": 2
+       },
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "transparent"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": ""
+        }
+       },
+       "connections": []
+      },
+      {
+       "type": "text",
+       "name": "l_rescore-12",
+       "placement": {
+        "left": 29.599999999999998,
+        "top": 61.725,
+        "right": 56.872727272727275,
+        "bottom": 19.299999999999997
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "#D0D2D8"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": "12:00 re-score"
+        }
+       }
+      },
+      {
+       "type": "text",
+       "name": "t_rescore-12",
+       "placement": {
+        "left": 29.599999999999998,
+        "top": 78.975,
+        "right": 56.872727272727275,
+        "bottom": 7.225000000000005
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "field": "s_rescore-12",
+         "fixed": "#8E919A"
+        },
+        "text": {
+         "mode": "field",
+         "field": "t_rescore-12",
+         "fixed": ""
+        }
+       }
+      },
+      {
+       "type": "rectangle",
+       "name": "n_rescore-1230",
+       "placement": {
+        "left": 44.14545454545454,
+        "top": 60,
+        "right": 42.32727272727273,
+        "bottom": 5.5
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "field": "b_rescore-1230",
+         "fixed": "#191b20"
+        }
+       },
+       "border": {
+        "color": {
+         "field": "s_rescore-1230",
+         "fixed": "#444"
+        },
+        "radius": 6,
+        "width": 2
+       },
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "transparent"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": ""
+        }
+       },
+       "connections": []
+      },
+      {
+       "type": "text",
+       "name": "l_rescore-1230",
+       "placement": {
+        "left": 44.14545454545454,
+        "top": 61.725,
+        "right": 42.32727272727273,
+        "bottom": 19.299999999999997
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "fixed": "#D0D2D8"
+        },
+        "text": {
+         "mode": "fixed",
+         "fixed": "12:30 re-score"
+        }
+       }
+      },
+      {
+       "type": "text",
+       "name": "t_rescore-1230",
+       "placement": {
+        "left": 44.14545454545454,
+        "top": 78.975,
+        "right": 42.32727272727273,
+        "bottom": 7.225000000000005
+       },
+       "constraint": {
+        "horizontal": "scale",
+        "vertical": "scale"
+       },
+       "background": {
+        "color": {
+         "fixed": "transparent"
+        }
+       },
+       "border": {
+        "color": {
+         "fixed": "transparent"
+        },
+        "width": 0
+       },
+       "connections": [],
+       "config": {
+        "align": "center",
+        "valign": "middle",
+        "size": 10,
+        "color": {
+         "field": "s_rescore-1230",
+         "fixed": "#8E919A"
+        },
+        "text": {
+         "mode": "field",
+         "field": "t_rescore-1230",
+         "fixed": ""
+        }
+       }
+      }
+     ]
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "mappings": [
+      {
+       "type": "value",
+       "options": {
+        "completed": {
+         "text": "完成",
+         "color": "#56A64B",
+         "index": 0
+        },
+        "f_completed": {
+         "text": "f",
+         "color": "#15231a",
+         "index": 1
+        },
+        "success": {
+         "text": "完成",
+         "color": "#56A64B",
+         "index": 2
+        },
+        "f_success": {
+         "text": "f",
+         "color": "#15231a",
+         "index": 3
+        },
+        "noop": {
+         "text": "無事可做",
+         "color": "#56A64B",
+         "index": 4
+        },
+        "f_noop": {
+         "text": "f",
+         "color": "#15231a",
+         "index": 5
+        },
+        "retry_success": {
+         "text": "重試後完成",
+         "color": "#EAB839",
+         "index": 6
+        },
+        "f_retry_success": {
+         "text": "f",
+         "color": "#2b2610",
+         "index": 7
+        },
+        "running": {
+         "text": "執行中",
+         "color": "#5794F2",
+         "index": 8
+        },
+        "f_running": {
+         "text": "f",
+         "color": "#14233d",
+         "index": 9
+        },
+        "waiting": {
+         "text": "等待中",
+         "color": "#5794F2",
+         "index": 10
+        },
+        "f_waiting": {
+         "text": "f",
+         "color": "#14233d",
+         "index": 11
+        },
+        "not_started": {
+         "text": "未開始",
+         "color": "#6E7079",
+         "index": 12
+        },
+        "f_not_started": {
+         "text": "f",
+         "color": "#191b20",
+         "index": 13
+        },
+        "pending": {
+         "text": "未開始",
+         "color": "#6E7079",
+         "index": 14
+        },
+        "f_pending": {
+         "text": "f",
+         "color": "#191b20",
+         "index": 15
+        },
+        "out_of_window": {
+         "text": "未到時段",
+         "color": "#6E7079",
+         "index": 16
+        },
+        "f_out_of_window": {
+         "text": "f",
+         "color": "#191b20",
+         "index": 17
+        },
+        "skipped": {
+         "text": "略過",
+         "color": "#4B4F58",
+         "index": 18
+        },
+        "f_skipped": {
+         "text": "f",
+         "color": "#191b20",
+         "index": 19
+        },
+        "stale": {
+         "text": "待確認",
+         "color": "#6E7079",
+         "index": 20
+        },
+        "f_stale": {
+         "text": "f",
+         "color": "#191b20",
+         "index": 21
+        },
+        "at_risk": {
+         "text": "趕不上截止",
+         "color": "#EAB839",
+         "index": 22
+        },
+        "f_at_risk": {
+         "text": "f",
+         "color": "#2b2610",
+         "index": 23
+        },
+        "attention": {
+         "text": "應跑未跑",
+         "color": "#FF9830",
+         "index": 24
+        },
+        "f_attention": {
+         "text": "f",
+         "color": "#33240f",
+         "index": 25
+        },
+        "overdue": {
+         "text": "逾時",
+         "color": "#FF9830",
+         "index": 26
+        },
+        "f_overdue": {
+         "text": "f",
+         "color": "#33240f",
+         "index": 27
+        },
+        "stuck": {
+         "text": "卡住",
+         "color": "#B877D9",
+         "index": 28
+        },
+        "f_stuck": {
+         "text": "f",
+         "color": "#2a1c38",
+         "index": 29
+        },
+        "missed": {
+         "text": "漏跑",
+         "color": "#E02F44",
+         "index": 30
+        },
+        "f_missed": {
+         "text": "f",
+         "color": "#391418",
+         "index": 31
+        },
+        "failed": {
+         "text": "失敗",
+         "color": "#E02F44",
+         "index": 32
+        },
+        "f_failed": {
+         "text": "f",
+         "color": "#391418",
+         "index": 33
+        },
+        "error": {
+         "text": "失敗",
+         "color": "#E02F44",
+         "index": 34
+        },
+        "f_error": {
+         "text": "f",
+         "color": "#391418",
+         "index": 35
+        },
+        "blocked": {
+         "text": "中止",
+         "color": "#E02F44",
+         "index": 36
+        },
+        "f_blocked": {
+         "text": "f",
+         "color": "#391418",
+         "index": 37
+        },
+        "ready": {
+         "text": "就緒",
+         "color": "#56A64B",
+         "index": 38
+        },
+        "ok": {
+         "text": "正常",
+         "color": "#56A64B",
+         "index": 39
+        },
+        "warn": {
+         "text": "注意",
+         "color": "#FF9830",
+         "index": 40
+        },
+        "fail": {
+         "text": "未過",
+         "color": "#E02F44",
+         "index": 41
+        },
+        "critical": {
+         "text": "重大",
+         "color": "#E02F44",
+         "index": 42
+        },
+        "warning": {
+         "text": "注意",
+         "color": "#FF9830",
+         "index": 43
+        },
+        "healthy": {
+         "text": "正常",
+         "color": "#56A64B",
+         "index": 44
+        },
+        "pending_maturity": {
+         "text": "等待成熟",
+         "color": "#6E7079",
+         "index": 45
+        },
+        "pass": {
+         "text": "通過",
+         "color": "#56A64B",
+         "index": 46
+        },
+        "collecting": {
+         "text": "收集中",
+         "color": "#5794F2",
+         "index": 47
+        },
+        "not_applicable_no_real_intents": {
+         "text": "不適用（沒有真實下單）",
+         "color": "#6E7079",
+         "index": 48
+        },
+        "owner_read_unavailable": {
+         "text": "讀不到來源",
+         "color": "#FF9830",
+         "index": 49
+        }
+       }
+      }
+     ],
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#6E7079",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "id": 3
+  },
+  {
+   "type": "table",
+   "title": "要處理（四條鏈；全綠時是空的；次數＝近 14 天第幾次失敗）",
+   "description": "",
+   "gridPos": {
+    "x": 11,
+    "y": 16,
+    "w": 13,
+    "h": 6
+   },
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "sv-monitoring"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "type": "json",
+     "parser": "backend",
+     "format": "table",
+     "root_selector": "([rows.{ 'chain': $lookup({\"daily_readiness\":\"每日\",\"intraday_guard\":\"盤中\",\"weekly_research\":\"每週\",\"monthly_artifact\":\"每月\"}, chain_id), 'date': business_date, 'stage': $lookup({\"market-close-refresh\":\"Close refresh\",\"finlab-v4-backfill\":\"FinLab canonical\",\"finlab-backfill-watchdog\":\"FinLab watchdog\",\"update\":\"Market update\",\"indicator-queue\":\"Indicator queue\",\"regime-compute\":\"HMM regime\",\"strategy-learning-mature-evidence\":\"成熟策略證據\",\"screener\":\"Screener\",\"allocator-ev-readiness\":\"Allocator EV\",\"pipeline\":\"Pipeline · 整體進度\",\"ml-predict\":\"ML Predict · L3 預測\",\"post-pipeline-chain\":\"Pipeline callback\",\"allocator-ev-feature-snapshot-backfill\":\"EV feature snapshot\",\"verify-v2\":\"Verify\",\"post-verify-chain\":\"Verify callback\",\"model-ic-rolling\":\"Model IC rolling\",\"linucb-reward-ledger\":\"Reward ledger\",\"adapt\":\"Adapt params\",\"daily-report\":\"Daily report\",\"paper-active-postmarket\":\"Paper active\",\"obsidian-sync\":\"Obsidian sync\",\"meta-learning-shadow\":\"Meta shadow\",\"strategy-learning\":\"Strategy learning\",\"evening-closure\":\"全鏈完成收據\",\"us-leading\":\"US leading\",\"news-analyst\":\"News analyst\",\"morning-setup\":\"Morning setup\",\"recommendation\":\"Recommendation · L4 推薦\",\"pre-market-warmup\":\"Pre-market\",\"premarket-evidence-watchdog\":\"盤前鏈監看\",\"dataset-snapshot-export\":\"Research snapshot\",\"active8-oof-daily\":\"Active-8 daily evidence\",\"allocator-ev-lifecycle-watchdog\":\"EV lifecycle\",\"intraday-check\":\"Intraday check\",\"eod-exit\":\"EOD exit\",\"post-close-price-refresh\":\"Close price\",\"daily-snapshot\":\"Daily snapshot\",\"rescore-10\":\"10:00 re-score\",\"rescore-11\":\"11:00 re-score\",\"rescore-12\":\"12:00 re-score\",\"rescore-1230\":\"12:30 re-score\",\"weekly-audit\":\"Weekly audit\",\"storage-integrity-audit\":\"Storage integrity\",\"model-ic-full-check\":\"Model IC full\",\"weekly-backtest\":\"Validation / MC\",\"alpha-quality\":\"Alpha quality\",\"active8-oof-weekly\":\"Active-8 weekly\",\"weekly-optuna\":\"Drift research\",\"sector-leaders\":\"Sector leaders\",\"adaptive-meta-policy-replay\":\"Meta replay\",\"s12-smcvwap-calibration\":\"S12 calibration\",\"linucb-multiplier-replay\":\"LinUCB replay\",\"weekly-cleanup\":\"Weekly cleanup\",\"weekly-readiness\":\"Weekly root\",\"monthly-strategy-mining\":\"Strategy mining\",\"monthly-optuna\":\"Monthly search\",\"active8-oof-monthly\":\"Active-8 monthly\",\"monthly-readiness\":\"Monthly root\"}, stage_id), 'kind': kind, 'minutes': minutes,\n        'times': failures_14d, 'error': error ? error : summary }])",
      "columns": [
+      {
+       "selector": "chain",
+       "text": "鏈",
+       "type": "string"
+      },
       {
        "selector": "date",
        "text": "業務日",
@@ -6816,12 +7957,13 @@
       "excludeByName": {},
       "renameByName": {},
       "indexByName": {
-       "業務日": 0,
-       "階段": 1,
-       "狀況": 2,
-       "已持續": 3,
-       "14 天次數": 4,
-       "錯誤": 5
+       "鏈": 0,
+       "業務日": 1,
+       "階段": 2,
+       "狀況": 3,
+       "已持續": 4,
+       "14 天次數": 5,
+       "錯誤": 6
       }
      }
     }
@@ -7072,6 +8214,18 @@
      {
       "matcher": {
        "id": "byName",
+       "options": "鏈"
+      },
+      "properties": [
+       {
+        "id": "custom.width",
+        "value": 48
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
        "options": "業務日"
       },
       "properties": [
@@ -7122,6 +8276,268 @@
    "id": 4
   },
   {
+   "type": "state-timeline",
+   "title": "近 24 小時各階段實際起訖",
+   "description": "",
+   "gridPos": {
+    "x": 0,
+    "y": 22,
+    "w": 14,
+    "h": 17
+   },
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "sv-monitoring"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "type": "json",
+     "parser": "backend",
+     "format": "table",
+     "root_selector": "([$sort(rows, function($a, $b) {(\n  $pa := $lookup({\"market-close-refresh\":0,\"finlab-v4-backfill\":1,\"finlab-backfill-watchdog\":2,\"update\":3,\"indicator-queue\":4,\"regime-compute\":5,\"strategy-learning-mature-evidence\":6,\"screener\":7,\"allocator-ev-readiness\":8,\"pipeline\":9,\"ml-predict\":10,\"post-pipeline-chain\":11,\"allocator-ev-feature-snapshot-backfill\":12,\"verify-v2\":13,\"post-verify-chain\":14,\"model-ic-rolling\":15,\"linucb-reward-ledger\":16,\"adapt\":17,\"daily-report\":18,\"paper-active-postmarket\":19,\"obsidian-sync\":20,\"meta-learning-shadow\":21,\"strategy-learning\":22,\"evening-closure\":23,\"us-leading\":24,\"news-analyst\":25,\"morning-setup\":26,\"recommendation\":27,\"pre-market-warmup\":28,\"premarket-evidence-watchdog\":29,\"dataset-snapshot-export\":30,\"active8-oof-daily\":31,\"allocator-ev-lifecycle-watchdog\":32}, $a.stage_id); $pb := $lookup({\"market-close-refresh\":0,\"finlab-v4-backfill\":1,\"finlab-backfill-watchdog\":2,\"update\":3,\"indicator-queue\":4,\"regime-compute\":5,\"strategy-learning-mature-evidence\":6,\"screener\":7,\"allocator-ev-readiness\":8,\"pipeline\":9,\"ml-predict\":10,\"post-pipeline-chain\":11,\"allocator-ev-feature-snapshot-backfill\":12,\"verify-v2\":13,\"post-verify-chain\":14,\"model-ic-rolling\":15,\"linucb-reward-ledger\":16,\"adapt\":17,\"daily-report\":18,\"paper-active-postmarket\":19,\"obsidian-sync\":20,\"meta-learning-shadow\":21,\"strategy-learning\":22,\"evening-closure\":23,\"us-leading\":24,\"news-analyst\":25,\"morning-setup\":26,\"recommendation\":27,\"pre-market-warmup\":28,\"premarket-evidence-watchdog\":29,\"dataset-snapshot-export\":30,\"active8-oof-daily\":31,\"allocator-ev-lifecycle-watchdog\":32}, $b.stage_id);\n  $pa > $pb or ($pa = $pb and $a.transition_at > $b.transition_at)\n)}).{ 'time': transition_at, 'stage': $lookup({\"market-close-refresh\":\"Close refresh\",\"finlab-v4-backfill\":\"FinLab canonical\",\"finlab-backfill-watchdog\":\"FinLab watchdog\",\"update\":\"Market update\",\"indicator-queue\":\"Indicator queue\",\"regime-compute\":\"HMM regime\",\"strategy-learning-mature-evidence\":\"成熟策略證據\",\"screener\":\"Screener\",\"allocator-ev-readiness\":\"Allocator EV\",\"pipeline\":\"Pipeline · 整體進度\",\"ml-predict\":\"ML Predict · L3 預測\",\"post-pipeline-chain\":\"Pipeline callback\",\"allocator-ev-feature-snapshot-backfill\":\"EV feature snapshot\",\"verify-v2\":\"Verify\",\"post-verify-chain\":\"Verify callback\",\"model-ic-rolling\":\"Model IC rolling\",\"linucb-reward-ledger\":\"Reward ledger\",\"adapt\":\"Adapt params\",\"daily-report\":\"Daily report\",\"paper-active-postmarket\":\"Paper active\",\"obsidian-sync\":\"Obsidian sync\",\"meta-learning-shadow\":\"Meta shadow\",\"strategy-learning\":\"Strategy learning\",\"evening-closure\":\"全鏈完成收據\",\"us-leading\":\"US leading\",\"news-analyst\":\"News analyst\",\"morning-setup\":\"Morning setup\",\"recommendation\":\"Recommendation · L4 推薦\",\"pre-market-warmup\":\"Pre-market\",\"premarket-evidence-watchdog\":\"盤前鏈監看\",\"dataset-snapshot-export\":\"Research snapshot\",\"active8-oof-daily\":\"Active-8 daily evidence\",\"allocator-ev-lifecycle-watchdog\":\"EV lifecycle\",\"intraday-check\":\"Intraday check\",\"eod-exit\":\"EOD exit\",\"post-close-price-refresh\":\"Close price\",\"daily-snapshot\":\"Daily snapshot\",\"rescore-10\":\"10:00 re-score\",\"rescore-11\":\"11:00 re-score\",\"rescore-12\":\"12:00 re-score\",\"rescore-1230\":\"12:30 re-score\",\"weekly-audit\":\"Weekly audit\",\"storage-integrity-audit\":\"Storage integrity\",\"model-ic-full-check\":\"Model IC full\",\"weekly-backtest\":\"Validation / MC\",\"alpha-quality\":\"Alpha quality\",\"active8-oof-weekly\":\"Active-8 weekly\",\"weekly-optuna\":\"Drift research\",\"sector-leaders\":\"Sector leaders\",\"adaptive-meta-policy-replay\":\"Meta replay\",\"s12-smcvwap-calibration\":\"S12 calibration\",\"linucb-multiplier-replay\":\"LinUCB replay\",\"weekly-cleanup\":\"Weekly cleanup\",\"weekly-readiness\":\"Weekly root\",\"monthly-strategy-mining\":\"Strategy mining\",\"monthly-optuna\":\"Monthly search\",\"active8-oof-monthly\":\"Active-8 monthly\",\"monthly-readiness\":\"Monthly root\"}, stage_id), 'status': to_status }])",
+     "columns": [
+      {
+       "selector": "time",
+       "text": "time",
+       "type": "timestamp"
+      },
+      {
+       "selector": "stage",
+       "text": "stage",
+       "type": "string"
+      },
+      {
+       "selector": "status",
+       "text": "status",
+       "type": "string"
+      }
+     ],
+     "filters": [],
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-monitoring"
+     },
+     "source": "url",
+     "url": "/v1/chain/timeline?days=2",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
+    }
+   ],
+   "hideTimeOverride": true,
+   "transformations": [
+    {
+     "id": "partitionByValues",
+     "options": {
+      "fields": [
+       "stage"
+      ],
+      "keepFields": false,
+      "naming": {
+       "asLabels": true
+      }
+     }
+    }
+   ],
+   "options": {
+    "legend": {
+     "showLegend": false
+    },
+    "tooltip": {
+     "mode": "single"
+    },
+    "showValue": "never",
+    "rowHeight": 0.85
+   },
+   "fieldConfig": {
+    "defaults": {
+     "displayName": "${__field.labels.stage}",
+     "mappings": [
+      {
+       "type": "value",
+       "options": {
+        "completed": {
+         "text": "完成",
+         "color": "#56A64B",
+         "index": 0
+        },
+        "success": {
+         "text": "完成",
+         "color": "#56A64B",
+         "index": 1
+        },
+        "noop": {
+         "text": "無事可做",
+         "color": "#56A64B",
+         "index": 2
+        },
+        "retry_success": {
+         "text": "重試後完成",
+         "color": "#EAB839",
+         "index": 3
+        },
+        "running": {
+         "text": "執行中",
+         "color": "#5794F2",
+         "index": 4
+        },
+        "waiting": {
+         "text": "等待中",
+         "color": "#5794F2",
+         "index": 5
+        },
+        "not_started": {
+         "text": "未開始",
+         "color": "rgba(110,112,121,0.12)",
+         "index": 6
+        },
+        "pending": {
+         "text": "未開始",
+         "color": "rgba(110,112,121,0.12)",
+         "index": 7
+        },
+        "out_of_window": {
+         "text": "未到時段",
+         "color": "rgba(110,112,121,0.12)",
+         "index": 8
+        },
+        "skipped": {
+         "text": "略過",
+         "color": "#4B4F58",
+         "index": 9
+        },
+        "stale": {
+         "text": "待確認",
+         "color": "rgba(110,112,121,0.12)",
+         "index": 10
+        },
+        "at_risk": {
+         "text": "趕不上截止",
+         "color": "#EAB839",
+         "index": 11
+        },
+        "attention": {
+         "text": "應跑未跑",
+         "color": "#FF9830",
+         "index": 12
+        },
+        "overdue": {
+         "text": "逾時",
+         "color": "#FF9830",
+         "index": 13
+        },
+        "stuck": {
+         "text": "卡住",
+         "color": "#B877D9",
+         "index": 14
+        },
+        "missed": {
+         "text": "漏跑",
+         "color": "#E02F44",
+         "index": 15
+        },
+        "failed": {
+         "text": "失敗",
+         "color": "#E02F44",
+         "index": 16
+        },
+        "error": {
+         "text": "失敗",
+         "color": "#E02F44",
+         "index": 17
+        },
+        "blocked": {
+         "text": "中止",
+         "color": "#E02F44",
+         "index": 18
+        },
+        "ready": {
+         "text": "就緒",
+         "color": "#56A64B",
+         "index": 19
+        },
+        "ok": {
+         "text": "正常",
+         "color": "#56A64B",
+         "index": 20
+        },
+        "warn": {
+         "text": "注意",
+         "color": "#FF9830",
+         "index": 21
+        },
+        "fail": {
+         "text": "未過",
+         "color": "#E02F44",
+         "index": 22
+        },
+        "critical": {
+         "text": "重大",
+         "color": "#E02F44",
+         "index": 23
+        },
+        "warning": {
+         "text": "注意",
+         "color": "#FF9830",
+         "index": 24
+        },
+        "healthy": {
+         "text": "正常",
+         "color": "#56A64B",
+         "index": 25
+        },
+        "pending_maturity": {
+         "text": "等待成熟",
+         "color": "rgba(110,112,121,0.12)",
+         "index": 26
+        },
+        "pass": {
+         "text": "通過",
+         "color": "#56A64B",
+         "index": 27
+        },
+        "collecting": {
+         "text": "收集中",
+         "color": "#5794F2",
+         "index": 28
+        },
+        "not_applicable_no_real_intents": {
+         "text": "不適用（沒有真實下單）",
+         "color": "rgba(110,112,121,0.12)",
+         "index": 29
+        },
+        "owner_read_unavailable": {
+         "text": "讀不到來源",
+         "color": "#FF9830",
+         "index": 30
+        }
+       }
+      }
+     ],
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#2B2D33",
+        "value": null
+       }
+      ]
+     },
+     "custom": {
+      "fillOpacity": 80,
+      "lineWidth": 0
+     }
+    },
+    "overrides": []
+   },
+   "id": 5
+  },
+  {
    "type": "bargauge",
    "title": "還沒完成的必要階段：預估完成到截止還剩幾分鐘（最緊的在上）",
    "description": "預估＝這條鏈的起點＋該階段近 14 天的典型完成時間（至少 3 天樣本），不早於現在。",
@@ -7129,7 +8545,7 @@
     "x": 14,
     "y": 22,
     "w": 10,
-    "h": 11
+    "h": 17
    },
    "datasource": {
     "type": "yesoreyeram-infinity-datasource",
@@ -7214,7 +8630,7 @@
     },
     "overrides": []
    },
-   "id": 5
+   "id": 6
   },
   {
    "type": "table",
@@ -7222,7 +8638,7 @@
    "description": "",
    "gridPos": {
     "x": 0,
-    "y": 33,
+    "y": 39,
     "w": 14,
     "h": 9
    },
@@ -7526,7 +8942,7 @@
      }
     ]
    },
-   "id": 6
+   "id": 7
   },
   {
    "type": "table",
@@ -7534,7 +8950,7 @@
    "description": "",
    "gridPos": {
     "x": 14,
-    "y": 33,
+    "y": 39,
     "w": 10,
     "h": 9
    },
@@ -7854,14 +9270,14 @@
      }
     ]
    },
-   "id": 7
+   "id": 8
   },
   {
    "type": "row",
    "title": "階段明細（進行中那條鏈的每一站）",
    "gridPos": {
     "x": 0,
-    "y": 42,
+    "y": 48,
     "w": 24,
     "h": 1
    },
@@ -7873,7 +9289,7 @@
      "description": "",
      "gridPos": {
       "x": 0,
-      "y": 43,
+      "y": 49,
       "w": 24,
       "h": 16
      },
@@ -8231,10 +9647,10 @@
        }
       ]
      },
-     "id": 9
+     "id": 10
     }
    ],
-   "id": 8
+   "id": 9
   }
  ]
 }

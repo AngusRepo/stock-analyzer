@@ -4,13 +4,21 @@ import { afterEach, test } from 'node:test'
 import { DatabaseSync } from 'node:sqlite'
 import type { Bindings } from '../types'
 import {
+  CHAIN_DEFINITIONS,
   DAILY_READINESS_STAGE_CATALOG,
+  INTRADAY_GUARD_STAGE_CATALOG,
+  MONTHLY_ARTIFACT_STAGE_CATALOG,
+  WEEKLY_RESEARCH_STAGE_CATALOG,
+  chainStage,
+  chainsOfStage,
   dailyReadinessStage,
+  periodKeyFor,
   stageExpectedByUtc,
 } from './opsChainStageCatalog'
 import {
   CHAIN_STAGE_SQL,
   chainStageTransitionAllowed,
+  precreateChainRows,
   precreateDailyReadinessChain,
   precreateDailyReadinessChainForDate,
   recordChainStage,
@@ -54,9 +62,9 @@ function sqliteOps(options: { fail?: boolean } = {}) {
     },
   } as unknown as D1Database
   const written = () => Number((sql.prepare('SELECT total_changes() AS n').get() as any).n)
-  const row = (date: string, stage: string) => sql.prepare(
+  const row = (date: string, stage: string, chain = 'daily_readiness') => sql.prepare(
     'SELECT * FROM ops_chain_stage_state_v1 WHERE business_date=? AND chain_id=? AND stage_id=?',
-  ).get(date, 'daily_readiness', stage) as Record<string, any> | undefined
+  ).get(date, chain, stage) as Record<string, any> | undefined
   const transitions = (date: string, stage: string) => sql.prepare(
     'SELECT * FROM ops_chain_stage_transitions_v1 WHERE business_date=? AND stage_id=? ORDER BY transition_at, to_status',
   ).all(date, stage) as Array<Record<string, any>>
@@ -557,4 +565,273 @@ test('the writer and scope modules stay out of the native Paper bundle', () => {
     const source = fs.readFileSync(`src/lib/${file}`, 'utf8')
     assert.doesNotMatch(source, /opsChainStage|opsRuntimeScope/, file)
   }
+})
+
+// ── intraday / weekly / monthly chains ──────────────────────────────────────
+
+const INTRADAY = 'intraday_guard'
+const WEEKLY = 'weekly_research'
+const MONTHLY = 'monthly_artifact'
+
+test('catalog: each new chain is exactly one ExecutionChainPanel scope (+ orchestrator), NODES optional flags, no shared stage', () => {
+  const panel = fs.readFileSync('../frontend/src/components/observability/ExecutionChainPanel.tsx', 'utf8')
+  const scopeIds = (from: string, to: string | null) => {
+    const scope = panel.slice(panel.indexOf(`id: '${from}',`), to ? panel.indexOf(`id: '${to}',`) : panel.indexOf('function scopeExecutionStageIds'))
+    const columns = [...scope.matchAll(/\[((?:\s*'[a-z0-9-]+',?)+)\s*\]/g)]
+      .flatMap(match => [...match[1].matchAll(/'([^']+)'/g)].map(id => id[1]))
+    const root = /orchestratorId: '([a-z0-9-]+)'/.exec(scope)?.[1]
+    return [...new Set([...columns, ...(root ? [root] : [])])].sort()
+  }
+  const optionalInPanel = new Set([...panel.matchAll(/'([a-z0-9-]+)': \{ id: '[a-z0-9-]+',[^}]*optional: true/g)].map(m => m[1]))
+  for (const [catalog, from, to] of [
+    [INTRADAY_GUARD_STAGE_CATALOG, 'intraday', 'weekly'],
+    [WEEKLY_RESEARCH_STAGE_CATALOG, 'weekly', 'monthly'],
+    [MONTHLY_ARTIFACT_STAGE_CATALOG, 'monthly', null],
+  ] as const) {
+    assert.deepEqual(catalog.map(entry => entry.stageId).sort(), scopeIds(from, to), from)
+    for (const entry of catalog) {
+      assert.equal(entry.optional, optionalInPanel.has(entry.stageId), entry.stageId)
+      assert.equal(entry.expectedBy === null, entry.optional, entry.stageId)
+      assert.deepEqual(entry.sources, ['scheduler_run_log'], entry.stageId)
+    }
+  }
+  assert.deepEqual([INTRADAY_GUARD_STAGE_CATALOG.length, WEEKLY_RESEARCH_STAGE_CATALOG.length, MONTHLY_ARTIFACT_STAGE_CATALOG.length], [8, 13, 4])
+  // The daily orchestrator (evening-chain) is not a stage; weekly/monthly roots are.
+  assert.deepEqual(scopeIds('daily_readiness', 'intraday').filter(id => id !== 'evening-chain'),
+    DAILY_READINESS_STAGE_CATALOG.map(entry => entry.stageId).sort())
+  // No stage id is in two chains today; the hook would record such a stage in each chain.
+  const all = CHAIN_DEFINITIONS.flatMap(chain => chain.stages.map(entry => entry.stageId))
+  assert.equal(new Set(all).size, all.length, 'a stage id is in two chains')
+  for (const chain of CHAIN_DEFINITIONS) {
+    for (const entry of chain.stages) {
+      assert.deepEqual(chainsOfStage(entry.stageId), [chain.chainId])
+      assert.equal(chainStage(chain.chainId, entry.stageId), entry)
+    }
+  }
+  assert.equal(chainStage(WEEKLY, 'update'), undefined, 'lookup is by (chain, stage)')
+  assert.deepEqual(INTRADAY_GUARD_STAGE_CATALOG.filter(entry => entry.repeat).map(entry => entry.stageId), ['intraday-check'])
+  // The first stage of each period chain is its first scheduled stage (missed-run cut-off).
+  assert.equal(WEEKLY_RESEARCH_STAGE_CATALOG[0].stageId, 'weekly-audit')
+  assert.equal(MONTHLY_ARTIFACT_STAGE_CATALOG[0].stageId, 'monthly-strategy-mining')
+})
+
+test('periodKeyFor: weekly = Friday on or before, monthly = first Saturday of the month; deadlines from the key', () => {
+  const weekly = ['2026-11-20', '2026-11-21', '2026-11-22', '2026-11-23', '2026-11-26'].map(d => periodKeyFor(WEEKLY, d))
+  assert.deepEqual(weekly, ['2026-11-20', '2026-11-20', '2026-11-20', '2026-11-20', '2026-11-20'])
+  assert.equal(periodKeyFor(WEEKLY, '2026-11-27'), '2026-11-27')
+  assert.equal(periodKeyFor(WEEKLY, '2026-11-19'), '2026-11-13')
+  // November 2026 starts on a Sunday: the first-Sunday jobs (11/01) belong to the 11/07 period.
+  assert.deepEqual(['2026-11-01', '2026-11-07', '2026-11-08', '2026-11-30'].map(d => periodKeyFor(MONTHLY, d)),
+    ['2026-11-07', '2026-11-07', '2026-11-07', '2026-11-07'])
+  assert.equal(periodKeyFor(MONTHLY, '2026-12-06'), '2026-12-05')
+  assert.equal(periodKeyFor(MONTHLY, '2026-08-02'), '2026-08-01')
+  assert.equal(periodKeyFor(INTRADAY, FRIDAY), FRIDAY)
+  assert.equal(periodKeyFor('daily_readiness', FRIDAY), FRIDAY)
+  assert.equal(periodKeyFor('nope', FRIDAY), null)
+  assert.equal(periodKeyFor(WEEKLY, '2026-13-40'), null)
+  // Missed-run cut-off from the catalog alone: first stage's deadline of the period.
+  const key = periodKeyFor(WEEKLY, '2026-11-22')!
+  assert.equal(stageExpectedByUtc(key, WEEKLY_RESEARCH_STAGE_CATALOG[0]), '2026-11-20T11:00:00.000Z')
+  assert.equal(stageExpectedByUtc(key, chainStage(WEEKLY, 'weekly-readiness')!), '2026-11-22T04:30:00.000Z')
+  // first_sunday_of_month: 11/01 for the 11/07 key (six days before it), 12/06 for 12/05.
+  const readiness = chainStage(MONTHLY, 'monthly-readiness')!
+  assert.equal(stageExpectedByUtc('2026-11-07', readiness), '2026-11-01T05:00:00.000Z')
+  assert.equal(stageExpectedByUtc('2026-12-05', readiness), '2026-12-06T05:00:00.000Z')
+  assert.equal(stageExpectedByUtc('2026-11-07', MONTHLY_ARTIFACT_STAGE_CATALOG[0]), '2026-11-07T05:00:00.000Z')
+})
+
+test('repeating stage: 271 intraday-check runs → one row, worst result of the day, ≤ 60 writes, no heartbeat', async () => {
+  forbidNetwork()
+  const f = sqliteOps()
+  const kv = tradingKv()
+  const env = envFor(f.db, kv)
+  const realNow = Date.now
+  let clock = Date.parse(`${FRIDAY}T09:00:00+08:00`)
+  Date.now = () => clock
+  const start = f.written()
+  let afterCreate = 0
+  const statusAt = new Map<string, string>()
+  try {
+    await withOpsRuntimeScope(env, async () => {
+      // Two GCP jobs: every minute 09:00–12:59 and 13:00–13:30 TW.
+      for (let minute = 0; minute <= 270; minute++) {
+        clock = Date.parse(`${FRIDAY}T09:00:00+08:00`) + minute * 60_000 + 1_500
+        const status = minute === 90 ? 'error' : minute === 30 ? 'skipped' : 'success'
+        await logSchedulerRunResult(kv, 'intraday-check', { status, summary: `${status} m${minute}`, duration_ms: 3_000,
+          run_id: `intraday-check-${minute}`, run_date: FRIDAY })
+        if (minute === 0) afterCreate = f.written()
+        statusAt.set(String(minute), f.row(FRIDAY, 'intraday-check', INTRADAY)!.status)
+      }
+    })
+  } finally { Date.now = realNow }
+  const row = f.row(FRIDAY, 'intraday-check', INTRADAY)!
+  assert.equal(statusAt.get('0'), 'success')
+  assert.equal(statusAt.get('30'), 'success', 'a skipped minute does not hide a run that already succeeded')
+  assert.equal(statusAt.get('89'), 'success')
+  assert.equal(statusAt.get('90'), 'error')
+  assert.equal(row.status, 'error', 'a later success does not clear the error')
+  // Minute runs + "older than 5 minutes" = one refresh every 6 runs; the last one is ≤ 6 minutes old.
+  assert.match(row.summary, /^last=success success m2(6[4-9]|70)$/, row.summary)
+  assert.equal(row.heartbeat_at, null)
+  assert.equal(row.started_at, new Date(Date.parse(`${FRIDAY}T09:00:01.500+08:00`)).toISOString(), 'first result of the day')
+  assert.ok(row.completed_at >= new Date(Date.parse(`${FRIDAY}T13:24:00+08:00`)).toISOString(), row.completed_at)
+  assert.deepEqual(f.transitions(FRIDAY, 'intraday-check').map(t => `${t.from_status}>${t.to_status}`), ['pending>success', 'success>error'])
+  const creation = afterCreate - start - 2 // first write (state + transition)
+  assert.equal(creation, INTRADAY_GUARD_STAGE_CATALOG.length, 'the first write created the 8 intraday rows')
+  const stageWrites = f.written() - start - creation
+  assert.ok(stageWrites <= 60, `intraday-check rows written ${stageWrites}`)
+  console.log(`[budget] intraday-check 271 runs: ${stageWrites} rows written (+${creation} chain creation)`)
+  // Other intraday rows stay pending with deadlines on the trading date; nothing on the daily chain.
+  assert.equal(f.row(FRIDAY, 'eod-exit', INTRADAY)!.status, 'pending')
+  assert.equal(f.row(FRIDAY, 'eod-exit', INTRADAY)!.expected_by, '2026-11-20T05:30:00.000Z')
+  assert.equal(f.row(FRIDAY, 'market-close-refresh'), undefined)
+  // A running write never reopens a repeating stage.
+  assert.equal(await writeChainStageState(f.db, { chainId: INTRADAY, businessDate: FRIDAY, stageId: 'intraday-check', status: 'running' }), 'unchanged')
+})
+
+test('repeating stage severity: skipped < success < blocked < error; refresh is throttled in SQL too', async () => {
+  const f = sqliteOps()
+  await precreateChainRows(f.db, { chainId: INTRADAY, businessDate: FRIDAY, nowMs: T0 })
+  const at = (minutes: number) => T0 + minutes * 60_000
+  const write = (status: any, minutes: number, extra: Record<string, unknown> = {}) => writeChainStageState(f.db,
+    { chainId: INTRADAY, businessDate: FRIDAY, stageId: 'intraday-check', status, nowMs: at(minutes), ...extra })
+  assert.equal(await write('skipped', 0), 'written')
+  assert.equal(await write('skipped', 1), 'unchanged', 'same status within 5 minutes: 0 rows')
+  assert.equal(await write('success', 2), 'written')
+  assert.equal(await write('skipped', 8), 'refreshed', 'not worse: status kept, last result recorded')
+  assert.equal(f.row(FRIDAY, 'intraday-check', INTRADAY)!.status, 'success')
+  assert.equal(f.row(FRIDAY, 'intraday-check', INTRADAY)!.summary, 'last=skipped')
+  assert.equal(await write('blocked', 9), 'written')
+  assert.equal(await write('success', 20), 'refreshed')
+  assert.equal(await write('error', 21, { error: 'quote feed down' }), 'written')
+  assert.equal(await write('blocked', 30), 'refreshed')
+  const row = f.row(FRIDAY, 'intraday-check', INTRADAY)!
+  assert.equal(row.status, 'error')
+  assert.equal(row.error, 'quote feed down', 'a non-error result keeps the error text')
+  assert.deepEqual(f.transitions(FRIDAY, 'intraday-check').map(t => t.to_status), ['skipped', 'success', 'blocked', 'error'])
+  const early = await f.db.prepare(CHAIN_STAGE_SQL.refresh).bind(FRIDAY, INTRADAY, 'intraday-check', 'x', null, null, null,
+    new Date(at(31)).toISOString(), 'error', new Date(at(26)).toISOString()).run()
+  assert.equal(early.meta.changes, 0)
+  // Non-repeating intraday stages keep the normal rules: the 18:25 settle re-run recovers a 14:20 refusal.
+  const snap = (status: any, minutes: number, runId: string) => writeChainStageState(f.db,
+    { chainId: INTRADAY, businessDate: FRIDAY, stageId: 'daily-snapshot', status, nowMs: at(minutes), runId })
+  assert.equal(await snap('error', 0, 'snap-1420'), 'written')
+  assert.equal(await snap('success', 245, 'snap-1825'), 'written')
+  assert.equal(f.row(FRIDAY, 'daily-snapshot', INTRADAY)!.status, 'success')
+})
+
+test('intraday chain: created on the first write of a trading day only; holidays and weekends write 0 rows', async () => {
+  forbidNetwork()
+  const f = sqliteOps()
+  const kv = tradingKv({ 'holiday:2026-11-24': '1' })
+  const env = envFor(f.db, kv)
+  const start = f.written()
+  await withOpsRuntimeScope(env, async () => {
+    for (const date of ['2026-11-24', '2026-11-21']) {
+      for (const entry of INTRADAY_GUARD_STAGE_CATALOG) {
+        await logSchedulerRunResult(kv, entry.stageId, { status: 'skipped', summary: 'skipped by scheduler policy: holiday', duration_ms: 0, run_date: date })
+        await logSchedulerRunResult(kv, entry.stageId, { status: 'success', summary: 'forced', duration_ms: 0, run_date: date })
+      }
+    }
+  })
+  assert.equal(f.written(), start)
+  assert.equal(await recordChainStage({ chainId: INTRADAY, businessDate: MONDAY, stageId: 'rescore-10', status: 'running' }, env), 'written')
+  assert.equal(f.row(MONDAY, 'rescore-10', INTRADAY)!.status, 'running')
+  assert.equal(f.row(MONDAY, 'intraday-check', INTRADAY)!.status, 'pending')
+  assert.equal(f.row(MONDAY, 'rescore-1230', INTRADAY)!.expected_by, '2026-11-23T04:40:00.000Z')
+})
+
+test('weekly / monthly: period rows created on the first write, on a weekend, keyed by periodKeyFor; PAUSED jobs get no deadline', async () => {
+  forbidNetwork()
+  const f = sqliteOps()
+  const kv = tradingKv()
+  const env = envFor(f.db, kv)
+  const SUNDAY = '2026-11-22'
+  const start = f.written()
+  await withOpsRuntimeScope(env, async () => {
+    // Daily stages on a weekend still write nothing (no daily chain on non-trading days).
+    await logSchedulerRunResult(kv, 'update', { status: 'success', summary: 'x', duration_ms: 0, run_date: SUNDAY })
+    assert.equal(f.written(), start)
+    await logSchedulerRunResult(kv, 'storage-integrity-audit', { status: 'running', summary: 'started (background)', duration_ms: 0, run_id: 'sia-1', run_date: SUNDAY })
+    await logSchedulerRunResult(kv, 'storage-integrity-audit', { status: 'error', summary: 'storage integrity audit failed', duration_ms: 43_000, run_id: 'sia-1', run_date: SUNDAY })
+    await logSchedulerRunResult(kv, 'weekly-audit', { status: 'success', summary: 'ok', duration_ms: 105_000, run_id: 'wa-1', run_date: FRIDAY })
+    await logSchedulerRunResult(kv, 'weekly-readiness', { status: 'error', summary: 'weekly_readiness_blocked', duration_ms: 4_000, run_id: 'wr-1', run_date: SUNDAY })
+    // A Monday re-run of a failed weekend stage belongs to the same period.
+    await logSchedulerRunResult(kv, 'storage-integrity-audit', { status: 'success', summary: 'ok', duration_ms: 40_000, run_id: 'sia-2', run_date: MONDAY })
+  })
+  const rows = f.sql.prepare(`SELECT stage_id, status, expected_by FROM ops_chain_stage_state_v1 WHERE business_date=? AND chain_id=?`).all(FRIDAY, WEEKLY) as any[]
+  assert.equal(rows.length, WEEKLY_RESEARCH_STAGE_CATALOG.length)
+  const byId = new Map(rows.map(r => [r.stage_id, r]))
+  assert.equal(byId.get('storage-integrity-audit').status, 'success')
+  assert.equal(byId.get('weekly-audit').status, 'success')
+  assert.equal(byId.get('weekly-readiness').status, 'error')
+  assert.equal(byId.get('alpha-quality').status, 'pending')
+  assert.equal(byId.get('weekly-cleanup').expected_by, '2026-11-21T20:30:00.000Z')
+  assert.equal(byId.get('active8-oof-weekly').expected_by, null, 'PAUSED in infra/gcp-scheduler-jobs.json: never overdue')
+  assert.equal(byId.get('sector-leaders').expected_by, null)
+  assert.equal(f.sql.prepare(`SELECT COUNT(*) n FROM ops_chain_stage_state_v1 WHERE business_date IN (?, ?, ?)`).get('2026-11-21', SUNDAY, MONDAY)!.n, 0)
+  // Same-millisecond writes (real clock): compare the set of changes, not their order.
+  assert.deepEqual(f.transitions(FRIDAY, 'storage-integrity-audit').map(t => `${t.from_status}>${t.to_status}`).sort(),
+    ['error>success', 'pending>running', 'running>error'])
+
+  // Monthly: November 2026 starts on Sunday; readiness on 11/01 opens the 11/07 period.
+  await withOpsRuntimeScope(env, async () => {
+    await logSchedulerRunResult(kv, 'monthly-readiness', { status: 'error', summary: 'monthly_readiness_blocked', duration_ms: 0, run_id: 'mr-1', run_date: '2026-11-01' })
+    await logSchedulerRunResult(kv, 'monthly-strategy-mining', { status: 'triggered', summary: 'triggered', duration_ms: 0, run_id: 'msm-1', run_date: '2026-11-07' })
+  })
+  const monthly = new Map((f.sql.prepare(`SELECT stage_id, status, expected_by FROM ops_chain_stage_state_v1 WHERE business_date=? AND chain_id=?`)
+    .all('2026-11-07', MONTHLY) as any[]).map(r => [r.stage_id, r]))
+  assert.equal(monthly.size, 4)
+  assert.equal(monthly.get('monthly-readiness').status, 'error')
+  assert.equal(monthly.get('monthly-readiness').expected_by, '2026-11-01T05:00:00.000Z')
+  assert.equal(monthly.get('monthly-strategy-mining').status, 'running')
+  assert.equal(monthly.get('monthly-optuna').expected_by, null, 'PAUSED')
+  assert.equal(monthly.get('active8-oof-monthly').expected_by, null, 'PAUSED')
+  assert.equal(f.row('2026-11-01', 'monthly-readiness', MONTHLY), undefined)
+})
+
+test('retention is per chain: daily/intraday/weekly 35 days, monthly 70 days; one oldest date per creation', async () => {
+  const f = sqliteOps()
+  const count = (chain: string) => (f.sql.prepare(`SELECT COUNT(DISTINCT business_date) n FROM ops_chain_stage_state_v1 WHERE chain_id=?`).get(chain) as any).n
+  await precreateChainRows(f.db, { chainId: MONTHLY, businessDate: '2026-09-05', nowMs: T0 })
+  await precreateChainRows(f.db, { chainId: MONTHLY, businessDate: '2026-10-03', nowMs: T0 })
+  await precreateChainRows(f.db, { chainId: WEEKLY, businessDate: '2026-10-09', nowMs: T0 })
+  await precreateDailyReadinessChain(f.db, { businessDate: '2026-10-09', nextTradingDate: '2026-10-12', nowMs: T0 })
+  // Daily creation on 11/20 trims only the daily chain: the weekly 10/09 rows and monthly rows stay.
+  const daily = await precreateDailyReadinessChain(f.db, { businessDate: FRIDAY, nextTradingDate: MONDAY, nowMs: T0 })
+  assert.equal(daily.deletedState, 33)
+  assert.deepEqual([count('daily_readiness'), count(WEEKLY), count(MONTHLY)], [1, 1, 2])
+  // Weekly creation trims the weekly date older than 35 days.
+  const weekly = await precreateChainRows(f.db, { chainId: WEEKLY, businessDate: FRIDAY, nowMs: T0 })
+  assert.equal(weekly.deletedState, WEEKLY_RESEARCH_STAGE_CATALOG.length)
+  // Monthly 11/07: 10/03 (35 days) and 09/05 (63 days) are both kept — the previous period stays visible.
+  const nov = await precreateChainRows(f.db, { chainId: MONTHLY, businessDate: '2026-11-07', nowMs: T0 })
+  assert.equal(nov.deletedState, 0)
+  assert.equal(count(MONTHLY), 3)
+  const dec = await precreateChainRows(f.db, { chainId: MONTHLY, businessDate: '2026-12-05', nowMs: T0 })
+  assert.equal(dec.deletedState, 4, '09/05 is 91 days old')
+  assert.deepEqual((f.sql.prepare(`SELECT DISTINCT business_date d FROM ops_chain_stage_state_v1 WHERE chain_id=? ORDER BY d`).all(MONTHLY) as any[]).map(r => r.d),
+    ['2026-10-03', '2026-11-07', '2026-12-05'])
+})
+
+test('one weekly period and one monthly period stay within their write budgets', async () => {
+  forbidNetwork()
+  const f = sqliteOps()
+  const kv = tradingKv()
+  const env = envFor(f.db, kv)
+  const start = f.written()
+  await withOpsRuntimeScope(env, async () => {
+    for (const [catalog, date] of [[WEEKLY_RESEARCH_STAGE_CATALOG, '2026-11-22'], [MONTHLY_ARTIFACT_STAGE_CATALOG, '2026-11-07']] as const) {
+      for (const entry of catalog) {
+        // Cloud Run style: dispatch (triggered), callback running, terminal callback.
+        for (const status of ['triggered', 'running', 'success'] as const) {
+          await logSchedulerRunResult(kv, entry.stageId, { status, summary: status, duration_ms: 0, run_id: `${entry.stageId}-1`, run_date: date })
+        }
+      }
+    }
+  })
+  const written = f.written() - start
+  // 13 + 4 rows created, then per stage pending>running and running>success (state + transition each).
+  assert.equal(written, 17 + 17 * 4)
+  console.log(`[budget] one weekly + one monthly period: ${written} rows written`)
 })

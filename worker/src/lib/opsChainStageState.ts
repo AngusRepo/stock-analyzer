@@ -3,6 +3,9 @@
  * - A row is written only when its status changes; the transition log gets one row per change.
  * - Status never regresses: a terminal stage goes back to running only when the attempt increases.
  * - Heartbeat: running, non-Cloud-Run stages only, at most once per 5 minutes, state table only.
+ * - Repeating stages (catalog `repeat`): worst result of the day, last result refreshed at most once
+ *   per 5 minutes (state table only), never running, never a heartbeat.
+ * - Chains other than daily_readiness are created on their period's first write (rows all pending).
  * - Every failure is caught and warned: a write failure never breaks the business flow.
  * - Rollback: wrangler var OPS_CHAIN_STAGE_STATE_WRITES = "0" stops every write.
  * Contract: audits/grafana-obs-eval-20261124/p2p3_contract.md.
@@ -11,7 +14,12 @@ import type { Bindings } from '../types'
 import {
   DAILY_READINESS_CHAIN_ID,
   DAILY_READINESS_STAGE_CATALOG,
-  dailyReadinessStage,
+  type ChainDefinition,
+  type ChainStageCatalogEntry,
+  chainDefinition,
+  chainStage,
+  chainsOfStage,
+  periodKeyFor,
   stageExpectedByUtc,
   twDateOfUtc,
 } from './opsChainStageCatalog'
@@ -21,7 +29,6 @@ import type { SchedulerRunLogEntry } from './schedulerRunLogger'
 export type ChainStageStatus = 'pending' | 'running' | 'success' | 'error' | 'skipped' | 'blocked'
 const TERMINAL = new Set<ChainStageStatus>(['success', 'error', 'skipped', 'blocked'])
 export const CHAIN_STAGE_HEARTBEAT_MIN_MS = 5 * 60_000
-export const CHAIN_STAGE_RETENTION_DAYS = 35
 /** Longest TW market closure (Lunar New Year) is 9 calendar days; T→X lookups search this far back. */
 export const CHAIN_STAGE_TRADE_DATE_LOOKBACK_DAYS = 12
 const TEXT_MAX = 500
@@ -40,7 +47,7 @@ const carry = (column: string) => `CASE WHEN excluded.status='running' AND ${STA
 
 /** Statements, exported so the EXPLAIN QUERY PLAN test checks exactly what runs. */
 export const CHAIN_STAGE_SQL = {
-  read: `SELECT status, attempt, run_id, execution_name, started_at, heartbeat_at
+  read: `SELECT status, attempt, run_id, execution_name, started_at, heartbeat_at, updated_at
     FROM ${STATE} WHERE business_date=? AND chain_id=? AND stage_id=?`,
   // Insert only into a chain that was pre-created (trading day); otherwise update with a
   // compare-and-set on the status/attempt read just before, plus the no-regression rule.
@@ -68,6 +75,10 @@ export const CHAIN_STAGE_SQL = {
     RETURNING status`,
   transition: `INSERT OR IGNORE INTO ${TRANSITIONS} (business_date, chain_id, stage_id, transition_at, to_status,
       from_status, attempt, ticket_id, run_id, summary) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  // Repeating stage, status unchanged: last result only, throttled in SQL like the heartbeat.
+  refresh: `UPDATE ${STATE} SET summary=?4, error=COALESCE(?5, error), run_id=COALESCE(?6, run_id),
+      ticket_id=COALESCE(?7, ticket_id), completed_at=?8, updated_at=?8
+    WHERE business_date=?1 AND chain_id=?2 AND stage_id=?3 AND status=?9 AND updated_at<?10`,
   // Throttled in SQL too: rows_written is 0 unless the last beat (or start) is older than 5 minutes.
   heartbeat: `UPDATE ${STATE} SET heartbeat_at=?4
     WHERE business_date=?1 AND chain_id=?2 AND stage_id=?3 AND status='running' AND execution_name IS NULL
@@ -83,14 +94,17 @@ export const CHAIN_STAGE_SQL = {
     WHERE business_date=?1 AND chain_id=?2 AND stage_id=?3 AND COALESCE(expected_by, '')<>?4`,
   precreate: `INSERT OR IGNORE INTO ${STATE} (business_date, chain_id, stage_id, status, optional, expected_by, attempt, updated_at)
     VALUES (?, ?, ?, 'pending', ?, ?, 0, ?)`,
-  // Retention: one oldest business date per run (a PK seek), so a long closure's catch-up never
-  // turns one day into a burst of deletes; one date is created per trading day, one is removed.
-  retainState: `DELETE FROM ${STATE} WHERE business_date=(SELECT MIN(business_date) FROM ${STATE} WHERE business_date<?)`,
-  retainTransitions: `DELETE FROM ${TRANSITIONS} WHERE business_date=(SELECT MIN(business_date) FROM ${TRANSITIONS} WHERE business_date<?)`,
+  // Retention, per chain: one oldest business date of that chain per creation (a PK range walk that
+  // stops at the first row of the chain), so a long closure's catch-up never turns one day into a
+  // burst of deletes; each creation adds one date of the chain and removes at most one.
+  retainState: `DELETE FROM ${STATE} WHERE chain_id=?2 AND business_date=(SELECT business_date FROM ${STATE}
+    WHERE business_date<?1 AND chain_id=?2 ORDER BY business_date LIMIT 1)`,
+  retainTransitions: `DELETE FROM ${TRANSITIONS} WHERE chain_id=?2 AND business_date=(SELECT business_date FROM ${TRANSITIONS}
+    WHERE business_date<?1 AND chain_id=?2 ORDER BY business_date LIMIT 1)`,
 } as const
 
-/** The pre-create anchor every chain gets first; its presence marks a trading-day chain. */
-const CHAIN_ANCHOR_STAGE = DAILY_READINESS_STAGE_CATALOG[0].stageId
+/** A chain's creation anchor: its first catalog stage; its presence marks a created chain/period. */
+const anchorStage = (chain: ChainDefinition) => chain.stages[0].stageId
 
 export function chainStageWritesEnabled(env: { OPS_CHAIN_STAGE_STATE_WRITES?: string } | undefined): boolean {
   const flag = String(env?.OPS_CHAIN_STAGE_STATE_WRITES ?? '1').trim().toLowerCase()
@@ -144,7 +158,7 @@ export interface ChainStageWrite {
 }
 
 export type ChainStageWriteOutcome =
-  | 'written' | 'unchanged' | 'heartbeat' | 'execution_name' | 'rejected' | 'not_precreated' | 'conflict' | 'invalid'
+  | 'written' | 'unchanged' | 'heartbeat' | 'refreshed' | 'execution_name' | 'rejected' | 'not_precreated' | 'conflict' | 'invalid'
 
 const clip = (value: string | null | undefined): string | null => {
   const text = String(value ?? '').trim()
@@ -156,7 +170,8 @@ export const CHAIN_STAGE_CAS_ATTEMPTS = 3
 
 /** Core write against OPS_DB. Throws on D1 errors; callers use recordChainStage (never throws). */
 export async function writeChainStageState(db: D1Database, input: ChainStageWrite): Promise<ChainStageWriteOutcome> {
-  if (!DATE.test(input.businessDate) || !dailyReadinessStage(input.stageId) || input.status === 'pending') return 'invalid'
+  const chainId = input.chainId ?? DAILY_READINESS_CHAIN_ID
+  if (!DATE.test(input.businessDate) || !chainStage(chainId, input.stageId) || input.status === 'pending') return 'invalid'
   for (let round = 1; ; round++) {
     const outcome = await writeChainStageStateOnce(db, input)
     // A lost race re-reads the row and re-decides; the transition rule still applies to the winner's state.
@@ -165,19 +180,33 @@ export async function writeChainStageState(db: D1Database, input: ChainStageWrit
 }
 
 async function writeChainStageStateOnce(db: D1Database, input: ChainStageWrite): Promise<ChainStageWriteOutcome> {
-  const chainId = input.chainId ?? DAILY_READINESS_CHAIN_ID
-  const entry = dailyReadinessStage(input.stageId)!
+  const chain = chainDefinition(input.chainId ?? DAILY_READINESS_CHAIN_ID)!
+  const entry = chainStage(chain.chainId, input.stageId)!
   const nowMs = input.nowMs ?? Date.now()
   const now = new Date(nowMs).toISOString()
   const attempt = Number.isSafeInteger(input.attempt) && input.attempt! > 0 ? input.attempt! : 0
-  const key = [input.businessDate, chainId, input.stageId] as const
+  const key = [input.businessDate, chain.chainId, input.stageId] as const
   const prior = await db.prepare(CHAIN_STAGE_SQL.read).bind(...key).first<PriorRow & {
-    execution_name: string | null; started_at: string | null; heartbeat_at: string | null }>()
+    execution_name: string | null; started_at: string | null; heartbeat_at: string | null; updated_at: string }>()
+  const upsert = (write: ChainStageWrite) => upsertChainStage(db, chain, key, entry, write, attempt, now, prior)
+
+  if (entry.repeat) {
+    // Sources report only results; a running write would reopen a settled day (and arm stuck checks).
+    if (input.status === 'running') return 'unchanged'
+    const summary = clip(`last=${input.status}${input.summary ? ` ${input.summary}` : ''}`)
+    if (!prior || REPEAT_SEVERITY[input.status] > REPEAT_SEVERITY[prior.status]) return upsert({ ...input, summary })
+    // Not worse than the day so far: keep the status, record the last result at most every 5 minutes.
+    const cutoff = new Date(nowMs - CHAIN_STAGE_HEARTBEAT_MIN_MS).toISOString()
+    if (prior.updated_at >= cutoff) return 'unchanged'
+    const result = await db.prepare(CHAIN_STAGE_SQL.refresh).bind(...key, summary,
+      input.status === 'success' ? null : clip(input.error), clip(input.runId), clip(input.ticketId), now, prior.status, cutoff).run()
+    return Number(result.meta?.changes ?? 0) > 0 ? 'refreshed' : 'unchanged'
+  }
 
   if (prior && prior.status === input.status) {
     if (input.status !== 'running') {
       if (!chainStageTransitionAllowed(prior, { status: input.status, attempt, runId: input.runId })) return 'unchanged'
-      return upsertChainStage(db, key, entry.optional, input, attempt, now, prior)
+      return upsert(input)
     }
     const executionName = clip(input.executionName)
     if (executionName && executionName !== prior.execution_name) {
@@ -192,18 +221,26 @@ async function writeChainStageStateOnce(db: D1Database, input: ChainStageWrite):
     return Number(result.meta?.changes ?? 0) > 0 ? 'heartbeat' : 'unchanged'
   }
   if (prior && !chainStageTransitionAllowed(prior, { status: input.status, attempt, runId: input.runId })) return 'rejected'
-  return upsertChainStage(db, key, entry.optional, input, attempt, now, prior)
+  return upsert(input)
 }
 
-async function upsertChainStage(db: D1Database, key: readonly [string, string, string], optional: boolean,
-  input: ChainStageWrite, attempt: number, now: string, prior: PriorRow | null): Promise<ChainStageWriteOutcome> {
+/**
+ * Repeating stages: the day's status only moves to a worse result. skipped < success < blocked <
+ * error, so a day that ran shows success, and one error (or block) stays until the day ends.
+ */
+const REPEAT_SEVERITY: Record<ChainStageStatus, number> = { pending: 0, running: 0, skipped: 1, success: 2, blocked: 3, error: 4 }
+
+async function upsertChainStage(db: D1Database, chain: ChainDefinition, key: readonly [string, string, string],
+  entry: ChainStageCatalogEntry, input: ChainStageWrite, attempt: number, now: string, prior: PriorRow | null,
+): Promise<ChainStageWriteOutcome> {
   const terminal = TERMINAL.has(input.status)
   const changed = await db.prepare(CHAIN_STAGE_SQL.upsert).bind(
-    ...key, input.status, optional ? 1 : 0, attempt,
+    ...key, input.status, entry.optional ? 1 : 0, attempt,
     clip(input.rootTicketId), clip(input.ticketId), clip(input.runId), clip(input.executionName),
     clip(input.summary), input.status === 'success' ? null : clip(input.error),
-    input.status === 'running' ? now : null, terminal ? now : null, now,
-    prior?.status ?? '', prior?.attempt ?? 0, CHAIN_ANCHOR_STAGE,
+    // A repeating stage never runs; started_at keeps its first result of the day (COALESCE in SQL).
+    input.status === 'running' || entry.repeat ? now : null, terminal ? now : null, now,
+    prior?.status ?? '', prior?.attempt ?? 0, anchorStage(chain),
   ).first<{ status: string }>()
   if (!changed) return prior ? 'conflict' : 'not_precreated'
   await db.prepare(CHAIN_STAGE_SQL.transition).bind(
@@ -294,9 +331,11 @@ export async function recordChainStage(input: ChainStageRecordInput, envArg?: Bi
     if (!chainStageWritesEnabled(env)) return 'disabled'
     const db = env.OPS_DB
     if (!db) return 'no_db'
-    const entry = dailyReadinessStage(input.stageId)
-    if (!entry) return 'not_cataloged'
-    let businessDate = input.businessDate
+    const chain = chainDefinition(input.chainId ?? DAILY_READINESS_CHAIN_ID)
+    const entry = chain && chainStage(chain.chainId, input.stageId)
+    if (!chain || !entry) return 'not_cataloged'
+    // Weekly / monthly: the run's TW date → the period key (weekend runs, Monday re-runs included).
+    let businessDate = chain.period === 'trading_day' ? input.businessDate : periodKeyFor(chain.chainId, input.businessDate) ?? input.businessDate
     if (input.dateKind === 'run_date' && entry.sourceDate === 'trade_date') {
       const resolved = await resolveTradeDateChain(db, businessDate, input.chainId, await schedulerTradeDateCalendar(env))
       if (!resolved) return 'not_precreated'
@@ -307,13 +346,17 @@ export async function recordChainStage(input: ChainStageRecordInput, envArg?: Bi
       businessDate = resolved.businessDate
     }
     const ticket = opsRuntimeTicket()
-    const outcome = await writeChainStageState(db, {
+    const write = () => writeChainStageState(db, {
       ...input,
       businessDate,
       rootTicketId: input.rootTicketId ?? ticket?.rootTicketId ?? null,
       ticketId: input.ticketId ?? (ticket?.task === input.stageId ? ticket.ticketId : null),
       attempt: input.attempt ?? (ticket?.task === input.stageId ? ticket.attempt : undefined),
     })
+    let outcome = await write()
+    // The period's first write creates the whole chain (once per period), then lands.
+    if (outcome === 'not_precreated' && chain.creation === 'first_write'
+      && await createChainOnFirstWrite(env, db, chain, businessDate)) outcome = await write()
     if (outcome === 'written') {
       // L1: one structured line per state change; root_ticket_id joins Worker and Cloud Logging.
       console.log(JSON.stringify({ event: 'ops_chain_stage', chain_id: input.chainId ?? DAILY_READINESS_CHAIN_ID,
@@ -351,10 +394,11 @@ export interface SchedulerRunForChain {
 export async function recordSchedulerRunChainStage(task: string, entry: SchedulerRunForChain, env?: Bindings): Promise<void> {
   try {
     if (entry.run_scope === 'historical_replay' || !entry.run_date) return
-    const stage = dailyReadinessStage(task)
     const status = chainStageStatusFromRun(entry.status)
-    if (stage?.sources.includes('scheduler_run_log') && status) {
-      await recordChainStage({ stageId: task, businessDate: entry.run_date, dateKind: 'run_date', status,
+    // A task in several chains (none today) is recorded in each.
+    for (const chainId of status ? chainsOfStage(task) : []) {
+      if (!chainStage(chainId, task)!.sources.includes('scheduler_run_log')) continue
+      await recordChainStage({ chainId, stageId: task, businessDate: entry.run_date, dateKind: 'run_date', status: status!,
         attempt: attemptFromId(entry.attempt_id), runId: entry.run_id, summary: entry.summary, error: entry.error }, env)
     }
     if (task === 'pipeline') await recordPipelineChildren(entry, env)
@@ -381,23 +425,55 @@ async function recordPipelineChildren(entry: SchedulerRunForChain, env?: Binding
 
 export interface PrecreateResult { inserted: number; deletedState: number; deletedTransitions: number }
 
-/** Pre-create every catalog row as pending for business date X, then trim retention. */
+/**
+ * Create every catalog row of a chain as pending for business date X (idempotent), then trim that
+ * chain's retention. `noDeadline` stages get expected_by NULL (a PAUSED scheduler job never runs).
+ */
+export async function precreateChainRows(db: D1Database, input: {
+  chainId: string; businessDate: string; nextTradingDate?: string | null; nowMs?: number
+  noDeadline?: (stageId: string) => boolean
+}): Promise<PrecreateResult> {
+  const chain = chainDefinition(input.chainId)
+  if (!chain) throw new Error('chain_precreate_chain_unknown')
+  if (!DATE.test(input.businessDate)) throw new Error('chain_precreate_date_invalid')
+  const now = new Date(input.nowMs ?? Date.now()).toISOString()
+  const statements = chain.stages.map(entry => db.prepare(CHAIN_STAGE_SQL.precreate).bind(
+    input.businessDate, chain.chainId, entry.stageId, entry.optional ? 1 : 0,
+    input.noDeadline?.(entry.stageId) ? null : stageExpectedByUtc(input.businessDate, entry, input.nextTradingDate), now))
+  const results = await db.batch(statements)
+  const inserted = results.reduce((sum, r) => sum + Number(r.meta?.changes ?? 0), 0)
+  const cutoff = daysBefore(input.businessDate, chain.retentionDays)
+  const [state, transitions] = await db.batch([
+    db.prepare(CHAIN_STAGE_SQL.retainState).bind(cutoff, chain.chainId),
+    db.prepare(CHAIN_STAGE_SQL.retainTransitions).bind(cutoff, chain.chainId),
+  ])
+  return { inserted, deletedState: Number(state.meta?.changes ?? 0), deletedTransitions: Number(transitions.meta?.changes ?? 0) }
+}
+
+/** Pre-create every daily_readiness row as pending for business date X, then trim retention. */
 export async function precreateDailyReadinessChain(db: D1Database, input: {
   businessDate: string; nextTradingDate: string | null; nowMs?: number
 }): Promise<PrecreateResult> {
-  if (!DATE.test(input.businessDate)) throw new Error('chain_precreate_date_invalid')
-  const now = new Date(input.nowMs ?? Date.now()).toISOString()
-  const statements = DAILY_READINESS_STAGE_CATALOG.map(entry => db.prepare(CHAIN_STAGE_SQL.precreate).bind(
-    input.businessDate, DAILY_READINESS_CHAIN_ID, entry.stageId, entry.optional ? 1 : 0,
-    stageExpectedByUtc(input.businessDate, entry, input.nextTradingDate), now))
-  const results = await db.batch(statements)
-  const inserted = results.reduce((sum, r) => sum + Number(r.meta?.changes ?? 0), 0)
-  const cutoff = daysBefore(input.businessDate, CHAIN_STAGE_RETENTION_DAYS)
-  const [state, transitions] = await db.batch([
-    db.prepare(CHAIN_STAGE_SQL.retainState).bind(cutoff),
-    db.prepare(CHAIN_STAGE_SQL.retainTransitions).bind(cutoff),
-  ])
-  return { inserted, deletedState: Number(state.meta?.changes ?? 0), deletedTransitions: Number(transitions.meta?.changes ?? 0) }
+  return precreateChainRows(db, { ...input, chainId: DAILY_READINESS_CHAIN_ID })
+}
+
+/**
+ * First write of a 'first_write' chain's period: a trading-day chain only on a TW trading day (the
+ * same resolveTwTradingSession owner, so a holiday's policy skips create nothing); weekly / monthly
+ * always (their period key comes from periodKeyFor). Stages the scheduler manifest keeps PAUSED get
+ * no deadline, the cadenceReadiness rule. Returns whether the rows now exist.
+ */
+async function createChainOnFirstWrite(env: Bindings, db: D1Database, chain: ChainDefinition, businessDate: string): Promise<boolean> {
+  if (chain.period === 'trading_day') {
+    const { resolveTwTradingSession } = await import('./schedulerPolicy')
+    if (!(await resolveTwTradingSession(env.KV, businessDate, env)).trading) return false
+  }
+  const { schedulerJobAccounting } = await import('./schedulerManifestGovernance')
+  const result = await precreateChainRows(db, { chainId: chain.chainId, businessDate,
+    noDeadline: stageId => schedulerJobAccounting(stageId).desiredState === 'PAUSED' })
+  console.log(JSON.stringify({ event: 'ops_chain_created', chain_id: chain.chainId, business_date: businessDate,
+    inserted: result.inserted, retention_deleted: result.deletedState + result.deletedTransitions }))
+  return true
 }
 
 /**

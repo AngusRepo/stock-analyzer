@@ -67,7 +67,6 @@ def run(args: argparse.Namespace) -> dict:
         max_symbols=0,
         min_factors=1,
         max_factors=8,
-        fee_tax_cost=0.004425,
         seed=42,
         pbo_folds=8,
         resample=args.resample,
@@ -79,6 +78,7 @@ def run(args: argparse.Namespace) -> dict:
         min_coverage=0.15,
         min_rank_std=0.01,
         progress_every=10,
+        legacy_direction_mode=args.legacy_direction_mode,
     )
     close, tradable, values, meta, universe_info = search._build_base_universe(base_args)
     finlab86_rows = search._read_finlab86(Path(args.finlab86_csv), 0)
@@ -154,6 +154,12 @@ def main() -> int:
     parser.add_argument("--position-limit", type=float, default=0.10)
     parser.add_argument("--trade-at-price", default="close")
     parser.add_argument("--output-dir", default=str(ROOT / "output" / "finlab_alpha223_recursive_search"))
+    parser.add_argument(
+        "--legacy-direction-mode",
+        choices=["fail_closed", "as_mined"],
+        default="fail_closed",
+        help="rows without recorded factor_directions: fail (default) or replay with the pre-v3 as-mined directions",
+    )
     parser.add_argument("--output-csv", default=str(ROOT / "output" / "finlab_alpha223_recursive_search" / "alpha223_low_corr_finlab_confirm.csv"))
     parser.add_argument("--output-json", default=str(ROOT / "output" / "finlab_alpha223_recursive_search" / "alpha223_low_corr_finlab_confirm.json"))
     args = parser.parse_args()

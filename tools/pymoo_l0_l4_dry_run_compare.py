@@ -102,6 +102,7 @@ def _load_confirm_candidates(path: Path, candidate_ids: list[str]) -> list[dict[
                     "factor_ids": [str(x) for x in _parse_literal_list(row.get("factor_ids", ""))],
                     "weights": [float(x) for x in _parse_literal_list(row.get("weights", ""))],
                     "combine": row.get("combine") or "weighted_sum",
+                    "factor_directions": row.get("factor_directions"),
                     "finlab_confirm": {
                         "cagr": _safe_float(row.get("cagr")),
                         "max_drawdown": _safe_float(row.get("max_drawdown")),
@@ -113,6 +114,21 @@ def _load_confirm_candidates(path: Path, candidate_ids: list[str]) -> list[dict[
             )
     order = {candidate_id: idx for idx, candidate_id in enumerate(candidate_ids)}
     return sorted(rows, key=lambda row: order.get(str(row["id"]), 999))
+
+
+def _resolve_directions(alpha: Any, row: dict[str, Any], meta: dict[str, Any], args: argparse.Namespace, recorded_meta: dict[str, Any] | None):
+    """Recorded factor_directions of a confirm row; fail closed for pre-v3 rows unless legacy is explicit."""
+    return alpha._resolve_candidate_directions(
+        {"id": row["id"], "factor_ids": row["factor_ids"], "factor_directions": row.get("factor_directions")},
+        meta,
+        legacy_direction_mode=args.legacy_direction_mode,
+        recorded_factor_meta=recorded_meta,
+    )
+
+
+def _recorded_meta(alpha: Any, args: argparse.Namespace) -> dict[str, Any] | None:
+    path = str(getattr(args, "legacy_mined_report", "") or "")
+    return alpha._load_recorded_factor_meta(Path(path)) if path else None
 
 
 def _latest_index(index: pd.Index, run_date: str) -> pd.Timestamp:
@@ -653,7 +669,7 @@ def _build_layer_report(
     final = list(recommend_result.get("final_recommendations") or [])
     return {
         "schema_version": "stockvision-pymoo-l0-l4-dry-run-compare-v1",
-        "generated_at": pd.Timestamp.utcnow().isoformat(),
+        "generated_at": pd.Timestamp.now("UTC").isoformat(),
         "allowed_use": "research_only_dry_run",
         "decision_effect": "none_no_d1_kv_write",
         "run_date_requested": run_date,
@@ -787,6 +803,8 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
     )
     close, tradable, values, meta, _universe_info = alpha._build_unified_registry_factor_universe(universe_args)
     latest = _latest_index(close.index, args.run_date)
+    recorded_meta = _recorded_meta(alpha, args)
+    direction_sources: dict[str, Any] = {}
     latest_tradable = tradable.reindex(index=close.index, columns=close.columns).loc[latest].fillna(False).astype(bool)
     l0_symbols = sorted(str(symbol) for symbol, flag in latest_tradable.items() if bool(flag))
 
@@ -794,12 +812,15 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
     scores_by_strategy: dict[str, pd.Series] = {}
     strategy_hit_thresholds: dict[str, dict[str, Any]] = {}
     for row in candidates:
+        directions, direction_source = _resolve_directions(alpha, row, meta, args, recorded_meta)
+        direction_sources[str(row["id"])] = {"factor_directions": directions, "direction_source": direction_source}
         cand = alpha.Candidate(
             candidate_id=str(row["id"]).replace("alpha_miner_", ""),
             algorithm=str(row["algorithm"]),
             factor_ids=list(row["factor_ids"]),
             weights=list(row["weights"]),
             combine=str(row["combine"] or "weighted_sum"),
+            directions=directions,
         )
         score = alpha._candidate_score(cand, values, meta)
         if score is None:
@@ -883,6 +904,7 @@ async def run(args: argparse.Namespace) -> dict[str, Any]:
     )
     report["L0_universe_features"]["l0_tradable_symbols"] = len(l0_symbols)
     report["L0_universe_features"]["l1_mode"] = args.l1_mode
+    report["L1_strategy_labeler"]["factor_directions"] = direction_sources
     report["runtime_sec"] = round(time.time() - started, 3)
     return report
 
@@ -914,6 +936,18 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--feature-registry", default=str(ROOT / "data" / "feature_registry" / "unified_feature_registry_v1.json"))
     parser.add_argument("--output-dir", default=str(ROOT / "output" / "pymoo_l0_l4_dry_run_compare"))
+    parser.add_argument(
+        "--legacy-direction-mode",
+        choices=["fail_closed", "as_mined"],
+        default="fail_closed",
+        help="confirm rows without recorded factor_directions: fail (default) or replay with the pre-v3 as-mined directions",
+    )
+    parser.add_argument(
+        "--legacy-mined-report",
+        default="",
+        help="mining report JSON whose factor_universe.factor_meta recorded the as-mined directions "
+        "(required for canonical114 rows; without it the current registry meta stands in)",
+    )
     parser.add_argument("--log-level", default="INFO")
     return parser.parse_args()
 

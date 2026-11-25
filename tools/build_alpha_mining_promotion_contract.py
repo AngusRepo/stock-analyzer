@@ -96,9 +96,12 @@ def build_contract() -> dict[str, Any]:
                 "finlab_confirm_top_n": defaults.get("finlab_confirm_top_n"),
             },
             "adaptive_controller": monthly_config.get("adaptive_controller"),
+            # Walk-forward windows, sealed holdout, cost model and gates come from the monthly config;
+            # the contract mirrors them so promotion review sees the protocol the evidence was built on.
+            "research_protocol": monthly_config.get("research_protocol"),
             "novelty_contract": {
-                "base": "Jaccard factor-set novelty",
-                "adjusted": "formal137 pairwise abs rank corr penalty/bonus",
+                "base": "kNN candidate-to-archive formal137 similarity (mean of the nearest neighbours)",
+                "adjusted": "formal137 pairwise abs rank corr; missing pairs count as duplicates (fail closed)",
                 "high_duplicate_floor": (similarity_contract.get("policy") or {}).get("duplicate_levels", {}).get("high_duplicate"),
                 "related_cluster_floor": (similarity_contract.get("policy") or {}).get("duplicate_levels", {}).get("related_cluster"),
             },
@@ -151,6 +154,11 @@ def build_contract() -> dict[str, Any]:
             "l2_l3_retention_compare",
             "l4_buy_stability_compare",
             "live_vs_backtest_divergence_after_observe",
+            "sealed_holdout_evaluated_once_for_gate_finalists",
+            "holm_family_includes_prior_overlapping_holdouts",
+            "cumulative_effective_trial_count",
+            "benchmark_relative_beta_and_regime_breakdown",
+            "recorded_factor_directions",
         ],
         "promotion_guardrails": {
             "no_direct_daily_buy_path": True,

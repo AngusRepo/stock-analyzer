@@ -135,6 +135,12 @@ def _build_strategy_factor_pool(
     end_date: str,
     columns: list[str],
 ) -> tuple[dict[str, pd.DataFrame], dict[str, dict[str, Any]], dict[str, Any]]:
+    """Return RAW (un-oriented) factor panels plus each factor's declared direction in meta.
+
+    Direction is metadata only. Consumers orient exactly once (the miner in
+    _candidate_score, this module's IC report via _oriented_values); pre-multiplying here
+    made the miner apply it a second time and silently reverse every direction=-1 factor.
+    """
     ab = _load_module(AB_RUNNER, "stockvision_overlap_ab_runner")
     alpha = _load_module(ALPHA_MINER, "stockvision_overlap_alpha_miner")
     spec_runner = _load_module(SPEC_RUNNER, "stockvision_overlap_strategy_spec_runner")
@@ -171,7 +177,7 @@ def _build_strategy_factor_pool(
             missing.append(fid)
             continue
         direction = float(factor.get("direction") or 1.0)
-        factor_values[fid] = _to_float_frame(frame * direction, index, columns)
+        factor_values[fid] = _to_float_frame(frame, index, columns)
         meta[fid] = {
             "id": fid,
             "source": "alphabuilderstw",
@@ -190,7 +196,7 @@ def _build_strategy_factor_pool(
             continue
         fid = f"l1_{leaf}"
         direction = float(alpha.L1_SIGNAL_DIRECTIONS.get(leaf, 1.0))
-        factor_values[fid] = _to_float_frame(frame * direction, index, columns)
+        factor_values[fid] = _to_float_frame(frame, index, columns)
         meta[fid] = {
             "id": fid,
             "source": "stockvision_l1",
@@ -209,6 +215,17 @@ def _build_strategy_factor_pool(
         "ab_mapping": ab_mapping,
     }
     return factor_values, meta, info
+
+
+def _oriented_values(
+    values: dict[str, pd.DataFrame],
+    meta: dict[str, dict[str, Any]],
+) -> dict[str, pd.DataFrame]:
+    """Orient raw factor panels by their declared direction for this module's IC report only."""
+    return {
+        fid: frame * float((meta.get(fid) or {}).get("direction") or 1.0)
+        for fid, frame in values.items()
+    }
 
 
 def _build_ml_feature_pool(
@@ -437,6 +454,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         end_date=args.end_date,
         columns=columns,
     )
+    strategy_values = _oriented_values(strategy_values, strategy_meta)
     print(f"[overlap] strategy factors={len(strategy_values)}", file=sys.stderr, flush=True)
 
     print(f"[overlap] building ML FEATURE_COLS pool", file=sys.stderr, flush=True)

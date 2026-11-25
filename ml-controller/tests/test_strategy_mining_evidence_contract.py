@@ -74,7 +74,12 @@ def test_miner_search_objective_does_not_use_holdout():
     source = (
         Path(__file__).resolve().parents[2] / "tools" / "finlab_alpha_miner_bakeoff.py"
     ).read_text(encoding="utf-8")
-    fitness = source.split("fitness = (", 1)[1].split("return {", 1)[0]
-    assert "holdout_metrics" not in fitness
+    evaluate = source.split("def _evaluate_candidate(", 1)[1].split("\ndef ", 1)[0]
+    fitness = evaluate.split("fitness = (", 1)[1].split("return {", 1)[0]
+    assert "holdout" not in fitness
     assert "full_metrics" not in fitness
-    assert '"fitness_contract": "validation_only_v2_holdout_untouched"' in source
+    assert "holdout_start" not in evaluate and "end_date" not in evaluate
+    assert '"fitness_contract": "selection_sample_excess_v3_holdout_sealed"' in source
+    objectives = source.split("PYMOO_OBJECTIVES = {", 1)[1].split("}", 1)[0]
+    code = "\n".join(line for line in objectives.splitlines() if not line.strip().startswith("#"))
+    assert "holdout" not in code

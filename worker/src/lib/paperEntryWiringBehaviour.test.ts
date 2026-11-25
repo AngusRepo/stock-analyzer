@@ -28,6 +28,7 @@ type Options = {
   signalDate?: string; tradeDate?: string; cash?: number
   boardAsk?: number; oddAsk?: number; oddBookDown?: boolean
   held?: { symbol: string; shares: number; previousClose: number | null }
+  marketLevel?: { level: 'red' | 'black'; score: number }
 }
 
 async function nativeEntry(opts: Options = {}) {
@@ -103,8 +104,8 @@ async function nativeEntry(opts: Options = {}) {
     if (![0, 6].includes(new Date(ms).getUTCDay())) dates.unshift(new Date(ms).toISOString().slice(0, 10))
   f.sqls.core.prepare("INSERT INTO market_risk(date,twii_close,risk_score,risk_level) VALUES(?,30000,10,'green'),(?,30000,10,'green')").run(S, dates.at(-2)!)
   f.sqls.market.prepare('INSERT INTO market_breadth(date,advance_ratio,bull_alignment_pct) VALUES(?,.6,60)').run(S)
-  f.sqls.market.prepare("INSERT INTO market_regime_factor_packets(date,schema_version,score,level,factor_json,contribution_json,source_json,freshness_json,missing_reason_json,lineage_json,generated_at) VALUES(?,'market-regime-factor-packet-v1',10,'green','[]','{}','{}','{}','{}','{}',?)")
-    .run(S, S + 'T14:00:00Z')
+  f.sqls.market.prepare("INSERT INTO market_regime_factor_packets(date,schema_version,score,level,factor_json,contribution_json,source_json,freshness_json,missing_reason_json,lineage_json,generated_at) VALUES(?,'market-regime-factor-packet-v1',?,?,'[]','{}','{}','{}','{}','{}',?)")
+    .run(S, opts.marketLevel?.score ?? 10, opts.marketLevel?.level ?? 'green', S + 'T14:00:00Z')
   f.kvs.set('market_regime_state', JSON.stringify(buildMarketRegimeState({ label: 'bull_market', runDate: S, computedAt: S + 'T14:00:00Z' })))
   f.seedRiskQuality(S)
   f.sqls.learning.exec('CREATE TABLE active8_ensemble_pointer_v1(singleton_id INTEGER PRIMARY KEY,artifact_id TEXT,cohort_id TEXT,payload_checksum TEXT,base_artifact_set_checksum TEXT)')
@@ -281,5 +282,52 @@ test('R14 late counter: at the original deadline the unauthorized signal stays u
     assert.equal(decision?.reason, 'swing_recovery_not_observed_live')
     assert.equal(JSON.parse(decision!.detail_json).bar_source, 'saved_signal')
     assert.deepEqual(x.buys(), [])
+  } finally { x.f.close() }
+})
+
+// OR15-L4 single owner (11/25 6472/2233): the canonical market risk reaches entries only through the L4 plan cap
+// (riskExposureCap) and the black halt; OR15 and the pre-trade policy repeat no level gate.
+const marketEvents = (x: Awaited<ReturnType<typeof nativeEntry>>) => x.events().map(e => [e.event_type, e.status, e.reason])
+test('OR15-L4 red: the plan sized under the red cap buys; no or15_market_risk_guard defer or red requote', { skip }, async () => {
+  const x = await nativeEntry({ marketLevel: { level: 'red', score: 77.8 } })
+  try {
+    const account = (await withPaperExecutionScope(x.f.ports, () => captureL4AccountContext(x.f.env, x.S))).result
+    assert.equal(account.risk_limits.exposure_cap, RISK_CONFIG_FIXTURE.portfolio.redTargetExposure)
+    assert.ok(Object.values(x.plan.weights as Record<string, number>).reduce((a, b) => a + b, 0)
+      <= RISK_CONFIG_FIXTURE.portfolio.redTargetExposure + 1e-8)
+    x.at('09:25:00')
+    await x.run()
+    const reasons = x.events().map(e => e.reason)
+    assert.ok(!reasons.includes('or15_market_risk_guard'), JSON.stringify(marketEvents(x)))
+    assert.ok(!reasons.some(r => /^market_risk_(red|black)$|^risk_requote_exhausted/.test(String(r))), JSON.stringify(marketEvents(x)))
+    const allocator = x.events().find(e => e.status === 'allocator_buy')
+    assert.equal(allocator?.reason, 'l4_target_reconciliation', JSON.stringify(marketEvents(x)))
+    assert.match(JSON.parse(allocator!.detail_json).detail, /market_risk_level=red/)
+    const [buy, ...rest] = x.buys()
+    assert.ok(buy, JSON.stringify(marketEvents(x)))
+    assert.equal(rest.length, 0)
+  } finally { x.f.close() }
+})
+
+for (const blackHaltsNewBuys of [true, false]) test(`OR15-L4 black (blackHaltsNewBuys=${blackHaltsNewBuys}): the plan owner blocks the buy without an execution level gate`, { skip }, async () => {
+  const x = await nativeEntry()
+  try {
+    // The plan was sealed green; the market turns black before the entry check.
+    x.f.sqls.market.prepare("UPDATE market_regime_factor_packets SET level='black',score=95 WHERE date=?").run(x.S)
+    x.f.kvs.set('trading:risk_config', JSON.stringify({ ...RISK_CONFIG_FIXTURE,
+      portfolio: { ...RISK_CONFIG_FIXTURE.portfolio, blackHaltsNewBuys } }))
+    x.at('09:25:00')
+    await x.run()
+    assert.deepEqual(x.buys(), [], JSON.stringify(marketEvents(x)))
+    assert.equal(x.f.sqls.paper.prepare('SELECT COUNT(*) n FROM paper_positions').get()?.n, 0)
+    const reasons = x.events().map(e => e.reason)
+    assert.ok(!reasons.includes('or15_market_risk_guard'))
+    if (blackHaltsNewBuys) assert.ok(reasons.includes('portfolio_risk_halt'), JSON.stringify(marketEvents(x)))
+    else {
+      // Without the halt, black's 0 exposure cap is what leaves the L4 target with no budget.
+      const skipped = x.events().find(e => e.status === 'allocator_skip')
+      assert.equal(skipped?.reason, 'l4_target_met_or_cash_reserved', JSON.stringify(marketEvents(x)))
+      assert.match(JSON.parse(skipped!.detail_json).detail, /market_risk_level=black/)
+    }
   } finally { x.f.close() }
 })

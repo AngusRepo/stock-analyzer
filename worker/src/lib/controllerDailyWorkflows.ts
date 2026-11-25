@@ -3,6 +3,7 @@ import { paperExecutionNow } from './paperExecutionScope'
 import { nextTwTradingDate } from './schedulerPolicy'
 import { reusableHmmState } from './hmmLifecycle'
 import { controllerFetch, controllerJson } from './controllerClient'
+import { opsCorrelationHeaders } from './opsRuntimeScope'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import {
   readCurrentLegacyRegimeLabel,
@@ -242,6 +243,7 @@ export async function runVerifyV2(env: Bindings, runDate?: string, idempotencyKe
   try {
     data = await controllerJson<any>(env, '/verify/run', {
       method: 'POST',
+      headers: opsCorrelationHeaders(),
       jsonBody: {
         lookback_days: 5,
         limit: 600, // page size; controller cursor-pagination drains the mature workset

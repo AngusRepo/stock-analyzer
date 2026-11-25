@@ -88,7 +88,7 @@ const pythonDomainProxyContracts = new Map<string, {
     classMarker: 'class _ResearchD1ClientProxy:',
     factoryMarker: 'return client_for_domain(D1DataDomain.RESEARCH).query(*args, **kwargs)',
     bindingMarker: 'd1_client = _ResearchD1ClientProxy()',
-    expectedQueryCalls: 1,
+    expectedQueryCalls: 7,
   }],
 ])
 

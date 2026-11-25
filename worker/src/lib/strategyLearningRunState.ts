@@ -31,12 +31,18 @@ export function isStrategyLearningTerminalFailure(error: unknown): boolean {
       && message.includes('formal_canonical_head_missing'))
 }
 
+export type TerminalFailurePropagationOptions = {
+  /** The caller writes its own post-verify-chain error entry right after; skip ours (KV allows one write per key per second). */
+  postVerifyEntryWrittenByCaller?: boolean
+}
+
 export async function propagateStrategyLearningTerminalFailure(
   db: D1Database,
   input: { businessDate: string; canonicalRunId: string },
   kv?: KVNamespace,
+  options: TerminalFailurePropagationOptions = {},
 ): Promise<void> {
-  await db.prepare(`
+  const { results: closed } = await db.prepare(`
     UPDATE pipeline_stage_runs SET status='error', completed_at=CURRENT_TIMESTAMP,
       updated_at=CURRENT_TIMESTAMP,
       last_error=(SELECT last_error FROM strategy_learning_runs WHERE business_date=?)
@@ -45,7 +51,20 @@ export async function propagateStrategyLearningTerminalFailure(
       AND EXISTS (SELECT 1 FROM strategy_learning_runs l
         WHERE l.business_date=pipeline_stage_runs.business_date
           AND l.canonical_run_id=pipeline_stage_runs.canonical_run_id AND l.status='error')
-  `).bind(input.businessDate, input.businessDate, input.canonicalRunId).run()
+    RETURNING last_error
+  `).bind(input.businessDate, input.businessDate, input.canonicalRunId).all<{ last_error: string | null }>()
+  // RETURNING names only the row this statement closed (writer-epoch triggers make meta.changes unsafe).
+  // Without this the post-verify-chain scheduler entry stays at its last 'running' (waiting for queued
+  // strategy-learning) write while the stage row is error.
+  if (kv && closed.length > 0 && !options.postVerifyEntryWrittenByCaller) {
+    const error = closed[0].last_error ?? 'strategy_learning_error'
+    const { logSchedulerRunResult } = await import('./schedulerRunLogger')
+    await logSchedulerRunResult(kv, 'post-verify-chain', {
+      status: 'error', duration_ms: 0,
+      summary: `status=failed post-verify-chain closed by strategy-learning terminal failure date=${input.businessDate} error=${error}`,
+      run_id: input.canonicalRunId, run_date: input.businessDate, error, strict: false,
+    })
+  }
   const { closeEveningChainRootAndLog, closeEveningChainRootIfComplete } = await import('./eveningChainRootClosure')
   // The failure itself is the outcome here, so a lost receipt must not mask it with a KV error.
   if (kv) await closeEveningChainRootAndLog(kv, db, { ...input, strict: false })
@@ -62,12 +81,13 @@ export async function propagateStrategyLearningFailureAfterWaiting(
   db: D1Database,
   input: { businessDate: string; canonicalRunId: string },
   kv?: KVNamespace,
+  options: TerminalFailurePropagationOptions = {},
 ): Promise<string | null> {
   const learning = await db.prepare(`
     SELECT status, canonical_run_id, last_error FROM strategy_learning_runs WHERE business_date=?
   `).bind(input.businessDate).first<{ status: string; canonical_run_id: string; last_error: string | null }>()
   if (learning?.status !== 'error' || learning.canonical_run_id !== input.canonicalRunId) return null
-  await propagateStrategyLearningTerminalFailure(db, input, kv)
+  await propagateStrategyLearningTerminalFailure(db, input, kv, options)
   const stage = await db.prepare(`
     SELECT status FROM pipeline_stage_runs
      WHERE business_date=? AND stage='post_verify_chain' AND canonical_run_id=?

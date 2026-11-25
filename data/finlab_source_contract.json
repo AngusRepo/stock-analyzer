@@ -100,6 +100,10 @@
         "taiex_close": { "required": true },
         "official_tpex_index": { "required": true },
         "official_twse_index": { "required": true }
+      },
+      "d1_category_scope": {
+        "tw_taifex_futures_large_trader": ["臺股期貨", "台股期貨", "TX+MTX", "台指", "臺指"],
+        "tw_taifex_option_large_trader": ["臺股期貨", "台股期貨", "TX+MTX", "台指", "臺指"]
       }
     },
     "trading_restrictions": {

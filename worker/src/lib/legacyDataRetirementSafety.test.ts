@@ -33,8 +33,9 @@ assert.equal(LEGACY_DATA_RETIREMENT_POLICY.broad_date_or_version_delete_allowed,
 const source = readFileSync('src/lib/legacyDataRetirementSafety.ts', 'utf8')
 assert.doesNotMatch(source, /DELETE\s+FROM|db\.prepare|\.batch\(/i)
 const scheduler = JSON.parse(readFileSync('../infra/gcp-scheduler-jobs.json', 'utf8'))
-const scheduledRetirement = scheduler.jobs.find((job: { id?: string }) => job.id === 'legacy-hot-data-retirement')
-assert(scheduledRetirement)
-assert.doesNotMatch(String(scheduledRetirement.query ?? ''), /confirm_retirement=/)
+// D9 step 4 retired the scheduled root; no scheduler job may carry a retirement confirmation.
+assert(scheduler.deleteJobIds.includes('legacy-hot-data-retirement'))
+assert(!scheduler.jobs.some((job: { id?: string; task?: string }) => job.id === 'legacy-hot-data-retirement' || job.task === 'legacy-hot-data-retirement'))
+assert(!scheduler.jobs.some((job: { query?: string }) => /confirm_retirement=/.test(String(job.query ?? ''))))
 
 console.log('legacy data retirement safety tests passed')

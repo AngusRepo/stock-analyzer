@@ -1,4 +1,4 @@
-import { recentMarketRowsScan } from './retentionMarketScan'
+import { recentMarketRowsArchiveDateBound, recentMarketRowsArchiveScan, recentMarketRowsScan } from './retentionMarketScan'
 import { recentMarketRows, fundamentalAnchorEligibility, EXECUTION_EVENT_ELIGIBILITY, EXECUTION_LEG_ELIGIBILITY, EXECUTION_INTENT_ELIGIBILITY } from './retentionSourceProtection'
 import type { Bindings } from '../types'
 import type { RetentionClass } from './evidenceArtifactContract'
@@ -40,6 +40,11 @@ export type RetentionArchiveSource = {
   keyExpression: string
   eligibilitySql: string
   scanEligibilitySql?: string
+  /**
+   * Archive-only page predicate: `eligibilitySql` over date < min(cutoff,
+   * `dateBoundSql`) must select exactly the rows of the source eligibilitySql.
+   */
+  archiveScan?: { eligibilitySql: string; dateBoundSql: string }
   deleteTable?: string
   deleteKeyColumn?: string
 }
@@ -96,6 +101,10 @@ function marketSource(table: string, key: string): RetentionArchiveSource {
   return {
     ...tableSource('market', table, 'date', recentMarketRows(table, key)),
     scanEligibilitySql: recentMarketRowsScan(table, key),
+    archiveScan: {
+      eligibilitySql: recentMarketRowsArchiveScan(table, key),
+      dateBoundSql: recentMarketRowsArchiveDateBound(table, key),
+    },
   }
 }
 
@@ -288,8 +297,11 @@ function hasCursor(cursor: ArchiveCursor | null): cursor is { cursor_date: strin
 // Legacy cursors may sit on substr(date) archive dates. The raw date is never
 // below its own 10-character prefix, so `raw >= cursor_date` is implied by the
 // cursor and lets the date index start at the cursor instead of the table head.
+// Market sources archive on their raw YYYY-MM-DD date column, so the same bound
+// is implied there too; without it every market page walked its date index
+// from the oldest row (7d to 2026-11-24: chip_data 4.19M rows per page).
 function boundsLegacyCursor(source: RetentionArchiveSource, cursor: ArchiveCursor | null): boolean {
-  return source.sourceDomain === 'legacy' && hasCursor(cursor)
+  return (source.sourceDomain === 'legacy' || source.archiveScan != null) && hasCursor(cursor)
 }
 
 export function buildRetentionArchiveOnlyQuery(
@@ -317,6 +329,8 @@ export function buildRetentionArchiveOnlyQuery(
   }
   const archiveDate = indexedDates[source.datasetId] === source.dateExpression
     ? source.dateExpression : `substr(${source.dateExpression}, 1, 10)`
+  // One upper bound, so the date index range ends at the tighter of the two.
+  const upperBound = source.archiveScan ? `min(?, ${source.archiveScan.dateBoundSql})` : '?'
   return `
     SELECT * FROM (
       SELECT ${source.keyExpression} AS __cursor_key,
@@ -324,9 +338,9 @@ export function buildRetentionArchiveOnlyQuery(
              ${source.selectSql}
         FROM ${source.fromSql}
        WHERE ${source.dateExpression} IS NOT NULL
-         AND ${source.dateExpression} < ?
+         AND ${source.dateExpression} < ${upperBound}
          ${legacyCursorBound}
-         AND (${source.scanEligibilitySql ?? source.eligibilitySql})
+         AND (${source.archiveScan?.eligibilitySql ?? source.scanEligibilitySql ?? source.eligibilitySql})
     ) archive_rows
    WHERE __archive_date IS NOT NULL
      ${cursorPredicate}

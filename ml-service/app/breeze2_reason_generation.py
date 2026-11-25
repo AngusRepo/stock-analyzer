@@ -10,6 +10,10 @@ import re
 
 REPORT_SCHEMA_VERSION = "breeze2-reason-generation-v1"
 DEFAULT_MODEL_ID = "MediaTek-Research/Llama-Breeze2-3B-Instruct-v0_1"
+# Breeze2 ships custom modeling code, so from_pretrained needs trust_remote_code=True. That
+# code runs in-process: only allowlisted repos, only at a pinned commit, never payload-chosen.
+# Unpinned (no BREEZE2_REASON_MODEL_REVISION and empty default) means no model execution.
+DEFAULT_MODEL_REVISION = ""
 REQUIRED_TRADE_PLAN_FIELDS = (
     "bias",
     "entry",
@@ -276,7 +280,37 @@ def _breeze2_prompt(prompt: str) -> tuple[str, Any, Any]:
     return str(built), None, prompt_engine
 
 
-def _load_breeze2_model(model_id: str):
+class Breeze2ModelNotAllowed(ValueError):
+    """The requested model_id is not an allowlisted Breeze2 repo."""
+
+
+class Breeze2RevisionNotPinned(RuntimeError):
+    """No 40-hex model revision is configured, so the model must not run."""
+
+
+def allowed_model_ids() -> frozenset[str]:
+    configured = os.environ.get("BREEZE2_REASON_MODEL_ID", "").strip()
+    return frozenset(model for model in (DEFAULT_MODEL_ID, configured) if model)
+
+
+def resolve_model_id(payload: dict[str, Any]) -> str:
+    requested = str(payload.get("model_id") or "").strip()
+    model_id = requested or os.environ.get("BREEZE2_REASON_MODEL_ID", "").strip() or DEFAULT_MODEL_ID
+    if model_id not in allowed_model_ids():
+        raise Breeze2ModelNotAllowed(f"breeze2_model_id_not_allowed:{model_id[:120]}")
+    return model_id
+
+
+_COMMIT_SHA_RE = re.compile(r"[0-9a-f]{40}")
+
+
+def model_revision() -> str:
+    """A full 40-hex Hub commit SHA, or "" (a branch or tag name is not a pin)."""
+    revision = os.environ.get("BREEZE2_REASON_MODEL_REVISION", "").strip() or DEFAULT_MODEL_REVISION
+    return revision if _COMMIT_SHA_RE.fullmatch(revision) else ""
+
+
+def _load_breeze2_model(model_id: str, revision: str):
     from transformers import AutoModel  # type: ignore
     import torch
 
@@ -286,6 +320,7 @@ def _load_breeze2_model(model_id: str):
         "low_cpu_mem_usage": True,
         "device_map": "auto",
         "trust_remote_code": True,
+        "revision": revision,
         "img_context_token_id": 128212,
     }
     try:
@@ -308,12 +343,15 @@ def _decode_breeze2_output(raw_text: str, prompt_engine: Any) -> str:
 
 
 def _generate_with_transformers(payload: dict[str, Any], model_id: str, prompt: str) -> dict[str, dict[str, Any]]:
+    revision = model_revision()
+    if not revision:
+        raise Breeze2RevisionNotPinned("breeze2_model_revision_not_pinned")
     from transformers import AutoTokenizer, GenerationConfig  # type: ignore
     import torch
 
     prompt_text, pixel_values, prompt_engine = _breeze2_prompt(prompt)
-    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True, use_fast=False)
-    model = _load_breeze2_model(model_id)
+    tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True, use_fast=False, revision=revision)
+    model = _load_breeze2_model(model_id, revision)
     inputs = tokenizer(prompt_text, return_tensors="pt").to(model.device)
     generation_config = GenerationConfig(
         max_new_tokens=int(payload.get("max_new_tokens") or 900),
@@ -338,14 +376,18 @@ def _generate_with_transformers(payload: dict[str, Any], model_id: str, prompt: 
 
 
 def generate_breeze2_reason_generation(payload: dict[str, Any]) -> dict[str, Any]:
-    model_id = str(payload.get("model_id") or os.environ.get("BREEZE2_REASON_MODEL_ID") or DEFAULT_MODEL_ID)
+    model_id = resolve_model_id(payload)  # raises Breeze2ModelNotAllowed before any model load
     prompt = build_breeze2_reason_generation_prompt(payload)
     if payload.get("execute_model") is False:
         return build_fallback_breeze2_reason_generation(payload, model_id=model_id, error="execute_model_false")
     try:
         reasons = _generate_with_transformers(payload, model_id, prompt)
+    except Breeze2RevisionNotPinned:
+        return build_fallback_breeze2_reason_generation(payload, model_id=model_id, error="breeze2_model_revision_not_pinned")
     except Exception as exc:  # noqa: BLE001 - shadow provider must fail open to fallback.
-        return build_fallback_breeze2_reason_generation(payload, model_id=model_id, error=f"{type(exc).__name__}: {exc}")
+        # The report goes back over HTTP: keep the exception text in the server log, return its type only.
+        print(f"[Breeze2] model generation failed: {type(exc).__name__}: {exc}")
+        return build_fallback_breeze2_reason_generation(payload, model_id=model_id, error=type(exc).__name__)
     report = {
         "schema_version": REPORT_SCHEMA_VERSION,
         "generated_at": _utc_now(),

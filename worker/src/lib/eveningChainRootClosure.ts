@@ -8,6 +8,7 @@ import { nextTwTradingDate } from './schedulerPolicy'
 import { expirePremarketWaitingExecution } from './pipelineStageLease'
 import { premarketPublicationCutoff } from './premarketPublicationWindow'
 import type { ReportDeliveryEnv } from './reportDeliveryChannel'
+import { recordChainStage } from './opsChainStageState'
 
 const REQUIRED_STAGES = [
   'pipeline_execution',
@@ -120,6 +121,23 @@ export type EveningChainRootClosureInput = {
 }
 
 export async function closeEveningChainRootIfComplete(
+  db: D1Database,
+  input: EveningChainRootClosureInput,
+): Promise<EveningChainRootClosureOutcome> {
+  const closure = await closeEveningChainRootOnce(db, input)
+  // Chain stage state `evening-closure` (observability; never throws). An already-terminal root was
+  // recorded when it closed.
+  if ((closure.status === 'closed_success' || closure.status === 'closed_error') && !closure.already_terminal
+    && input.runScope !== 'historical_replay') {
+    await recordChainStage({ stageId: 'evening-closure', businessDate: closure.business_date,
+      status: closure.status === 'closed_success' ? 'success' : 'error', rootTicketId: closure.root_ticket_id,
+      ticketId: closure.root_ticket_id, runId: closure.canonical_run_id, summary: closure.summary,
+      error: closure.blockers.join(',') || null })
+  }
+  return closure
+}
+
+async function closeEveningChainRootOnce(
   db: D1Database,
   input: EveningChainRootClosureInput,
 ): Promise<EveningChainRootClosureOutcome> {

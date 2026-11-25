@@ -128,8 +128,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
             declared_rows.append(dict(declared[0]))
         rows.sort(
             key=lambda row: (
-                _safe_float(row.get("monthly_sharpe"), -999.0) or -999.0,
-                _safe_float(row.get("cagr"), -999.0) or -999.0,
+                _safe_float(row.get("monthly_sharpe"), -999.0),
+                _safe_float(row.get("cagr"), -999.0),
             ),
             reverse=True,
         )
@@ -139,15 +139,15 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
 
     best_by_factor.sort(
         key=lambda row: (
-            _safe_float(row.get("monthly_sharpe"), -999.0) or -999.0,
-            _safe_float(row.get("cagr"), -999.0) or -999.0,
+            _safe_float(row.get("monthly_sharpe"), -999.0),
+            _safe_float(row.get("cagr"), -999.0),
         ),
         reverse=True,
     )
     declared_rows.sort(
         key=lambda row: (
-            _safe_float(row.get("monthly_sharpe"), -999.0) or -999.0,
-            _safe_float(row.get("cagr"), -999.0) or -999.0,
+            _safe_float(row.get("monthly_sharpe"), -999.0),
+            _safe_float(row.get("cagr"), -999.0),
         ),
         reverse=True,
     )

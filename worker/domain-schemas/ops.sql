@@ -85,6 +85,11 @@ CREATE INDEX IF NOT EXISTS idx_screener_funnel_items_symbol ON screener_funnel_i
 
 CREATE INDEX IF NOT EXISTS idx_screener_funnel_items_date_id ON screener_funnel_items(date, id);
 
+CREATE INDEX IF NOT EXISTS idx_screener_funnel_items_audit_json_pending
+  ON screener_funnel_items(date, id)
+  WHERE LENGTH(COALESCE(evidence, '')) > 1024
+    AND COALESCE(evidence, '') NOT LIKE '%"archived_to_r2":true%';
+
 CREATE TABLE IF NOT EXISTS pit_residual_funnel_enrichment_runs_v1 (
   business_date TEXT NOT NULL,
   screener_run_id TEXT NOT NULL,

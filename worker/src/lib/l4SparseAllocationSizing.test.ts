@@ -49,3 +49,16 @@ function assert(condition: unknown, message: string): void {
   assert(resolved.budget === 210_000, 'risk-parity budget should remain when it is already larger than L4 target')
   assert(resolved.sizingMode === 'risk_parity', 'sizing mode should remain risk_parity when L4 weight is not binding')
 }
+
+{
+  const point = buildL4SparseAllocationWatchPoint({
+    allocation_weight: 0.0625,
+    allocation_rank: null,
+    allocation_capacity: null,
+    expected_return: 0.0104,
+    risk_estimate: null,
+  })
+  assert(point === 'l4_sparse_allocation:weight=0.0625;expected_return=0.0104', `missing fields must be omitted, not printed as 0: ${point}`)
+  const ranked = buildL4SparseAllocationWatchPoint({ allocation_weight: 0.0625, allocation_rank: 2 })
+  assert(ranked?.includes('rank=2'), 'a real rank must be printed')
+}

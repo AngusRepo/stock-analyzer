@@ -134,6 +134,13 @@ def sql_quote(value: Any) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
+# Same upsert as the live writer (worker/src/lib/twseApi.ts): adj_close is never touched.
+STOCK_PRICES_UPSERT = (
+    " ON CONFLICT(stock_id, date) DO UPDATE SET open=excluded.open, high=excluded.high, low=excluded.low, "
+    "close=excluded.close, volume=excluded.volume, avg_price=excluded.avg_price"
+)
+
+
 def write_sql_file(rows: list[dict[str, Any]], path: Path) -> dict[str, int]:
     path.parent.mkdir(parents=True, exist_ok=True)
     as_of = datetime.now(timezone.utc).date().isoformat()
@@ -147,13 +154,16 @@ def write_sql_file(rows: list[dict[str, Any]], path: Path) -> dict[str, int]:
         )
     for row in rows:
         avg_price = (row.get("value") / row.get("volume")) if row.get("value") and row.get("volume") else row.get("close")
+        # Raw quotes only: a raw close never stands in for the legacy adj_close (scheduled for drop),
+        # and a conflict keeps the row's canonical adj_close (REPLACE would NULL it).
         lines.append(
-            "INSERT OR REPLACE INTO stock_prices "
-            "(stock_id, date, open, high, low, close, adj_close, volume, avg_price) VALUES ("
+            "INSERT INTO stock_prices "
+            "(stock_id, date, open, high, low, close, volume, avg_price) VALUES ("
             f"(SELECT id FROM stocks WHERE symbol = {sql_quote(row['symbol'])} ORDER BY id DESC LIMIT 1), "
             f"{sql_quote(row['date'])}, {sql_quote(row.get('open'))}, {sql_quote(row.get('high'))}, "
-            f"{sql_quote(row.get('low'))}, {sql_quote(row.get('close'))}, {sql_quote(row.get('close'))}, "
-            f"{sql_quote(int(row['volume']) if row.get('volume') is not None else None)}, {sql_quote(avg_price)});"
+            f"{sql_quote(row.get('low'))}, {sql_quote(row.get('close'))}, "
+            f"{sql_quote(int(row['volume']) if row.get('volume') is not None else None)}, {sql_quote(avg_price)})"
+            f"{STOCK_PRICES_UPSERT};"
         )
         lines.append(
             "INSERT INTO canonical_market_daily "
@@ -182,7 +192,7 @@ def upsert_prices(rows: list[dict[str, Any]]) -> dict[str, int]:
         params: list[Any] = []
         for row in batch:
             stock_id = by_symbol[row["symbol"]]
-            values.append("(?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            values.append("(?, ?, ?, ?, ?, ?, ?, ?)")
             params.extend([
                 stock_id,
                 row["date"],
@@ -190,14 +200,13 @@ def upsert_prices(rows: list[dict[str, Any]]) -> dict[str, int]:
                 row.get("high"),
                 row.get("low"),
                 row.get("close"),
-                row.get("close"),
                 int(row["volume"]) if row.get("volume") is not None else None,
                 (row.get("value") / row.get("volume")) if row.get("value") and row.get("volume") else row.get("close"),
             ])
         d1_exec(
-            "INSERT OR REPLACE INTO stock_prices "
-            "(stock_id, date, open, high, low, close, adj_close, volume, avg_price) VALUES "
-            + ",".join(values),
+            "INSERT INTO stock_prices "
+            "(stock_id, date, open, high, low, close, volume, avg_price) VALUES "
+            + ",".join(values) + STOCK_PRICES_UPSERT,
             params,
         )
         inserted_stock_prices += len(batch)

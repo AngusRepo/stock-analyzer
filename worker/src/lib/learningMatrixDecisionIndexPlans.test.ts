@@ -7,10 +7,9 @@ import { buildStrategyFormalMatureCompatibilitySql } from './selectionReferenceE
 
 // M2 index slimming (learning 0066): strategy_label_matrix_v4 keeps 5 full indexes, plus
 // 0069's partial oof_hits index for the mature OOF returns seek (hit cells only).
-// strategy_decision_log stays at 8 full indexes, plus 0069's two audit-json pending partial
-// indexes, until runtimes that no longer re-create
-// _symbol/_status are live everywhere (an M2 follow-up migration, 0070 or later:
-// main took 0067 and 0069, d1/m3 reserves 0068). A full EXPLAIN QUERY PLAN sweep of every
+// strategy_decision_log keeps 4 full indexes (learning 0071, the M2 follow-up: _symbol, _status,
+// _evaluability and evaluability_status dropped once no live runtime re-created them), plus
+// 0069's two audit-json pending partial indexes. A full EXPLAIN QUERY PLAN sweep of every
 // statement on both tables (audits/matrix-split-plan-20261112) found the dropped
 // ones unused, or used only as a tie for a signal_date=? lookup that another
 // index serves with the same columns. These plans lock the kept access paths.
@@ -24,14 +23,10 @@ const MATRIX_INDEXES = [
   'sqlite_autoindex_strategy_label_matrix_v4_1',
 ]
 const DECISION_INDEXES = [
-  'idx_strategy_decision_evaluability_status',
   'idx_strategy_decision_log_audit_json_pending',
   'idx_strategy_decision_log_context',
   'idx_strategy_decision_log_date',
-  'idx_strategy_decision_log_evaluability',
   'idx_strategy_decision_log_ref_v2_pending',
-  'idx_strategy_decision_log_status',
-  'idx_strategy_decision_log_symbol',
   'sqlite_autoindex_strategy_decision_log_1',
   'sqlite_autoindex_strategy_decision_log_2',
 ]
@@ -39,6 +34,10 @@ const DROPPED = [
   'idx_strategy_label_matrix_v4_regime_veto',
   'idx_strategy_label_matrix_challenger_v1',
   'idx_strategy_matrix_evaluability_status',
+  'idx_strategy_decision_log_symbol',
+  'idx_strategy_decision_log_status',
+  'idx_strategy_decision_log_evaluability',
+  'idx_strategy_decision_evaluability_status',
 ]
 
 function replayed(): DatabaseSync {
@@ -57,16 +56,14 @@ const indexes = (db: DatabaseSync, table: string) => (db.prepare(
 const plan = (db: DatabaseSync, sql: string, ...binds: unknown[]) => (db.prepare(`EXPLAIN QUERY PLAN ${sql}`)
   .all(...binds as never[]) as Array<{ detail: string }>).map((row) => row.detail).join('\n')
 
-test('migrations and the domain schema leave matrix 5+1 and decision_log 8+2 indexes', () => {
+test('migrations and the domain schema leave matrix 5+1 and decision_log 4+2 indexes', () => {
   const db = replayed()
   assert.deepEqual(indexes(db, 'strategy_label_matrix_v4'), MATRIX_INDEXES)
   assert.deepEqual(indexes(db, 'strategy_decision_log'), DECISION_INDEXES)
   const snapshot = new DatabaseSync(':memory:')
   snapshot.exec(read('../../domain-schemas/learning.sql'))
   assert.deepEqual(indexes(snapshot, 'strategy_label_matrix_v4'), MATRIX_INDEXES)
-  // learning.sql never picked up 0008's evaluability_status index (pre-existing gap).
-  assert.deepEqual(indexes(snapshot, 'strategy_decision_log'),
-    DECISION_INDEXES.filter((name) => name !== 'idx_strategy_decision_evaluability_status'))
+  assert.deepEqual(indexes(snapshot, 'strategy_decision_log'), DECISION_INDEXES)
   // Runtime DDL must not re-create a dropped index on the next learning run.
   for (const name of DROPPED) {
     assert.ok(!read('./strategyLearning.ts').includes(name), name)
@@ -107,5 +104,12 @@ test('decision_log lookups keep their seeks', () => {
   const exact = plan(db, `SELECT decision_id FROM strategy_decision_log
     WHERE date=? AND symbol=? AND strategy_id=? AND strategy_version=?`, 'd', 's', 'i', 'v')
   assert.match(exact, /sqlite_autoindex_strategy_decision_log_2 \(date=\? AND symbol=\? AND strategy_id=\? AND strategy_version=\?\)/, exact)
-  for (const detail of [byDate, byContext, exact]) assert.doesNotMatch(detail, /SCAN strategy_decision_log\b/, detail)
+  // Former _evaluability / evaluability_status lookups (dropped by 0071) seek _date instead.
+  const evaluable = plan(db, `SELECT symbol FROM strategy_decision_log
+    WHERE date=? AND strategy_id=? AND evaluable=1 AND matched=1`, 'd', 'i')
+  assert.match(evaluable, /USING INDEX idx_strategy_decision_log_date \(date=\? AND strategy_id=\?/, evaluable)
+  const window = plan(db, `SELECT date, strategy_id, evaluability_status, COUNT(*) FROM strategy_decision_log
+    WHERE date>=? AND date<=? GROUP BY date, strategy_id, evaluability_status`, 'a', 'b')
+  assert.match(window, /SEARCH strategy_decision_log USING INDEX idx_strategy_decision_log_date \(date>\? AND date<\?\)/, window)
+  for (const detail of [byDate, byContext, exact, evaluable, window]) assert.doesNotMatch(detail, /SCAN strategy_decision_log\b/, detail)
 })

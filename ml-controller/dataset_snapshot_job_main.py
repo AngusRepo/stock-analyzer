@@ -21,10 +21,10 @@ from services.dataset_snapshot_exporter import (
     export_backtest_dataset_snapshot,
 )
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-)
+# One JSON object per line (Cloud Logging jsonPayload, with root_ticket_id when set).
+from services.json_logging import configure_json_logging  # noqa: E402
+
+configure_json_logging(logging.INFO)
 logger = logging.getLogger("dataset_snapshot_job")
 CANONICAL_COMPUTE_SNAPSHOT_LOOKBACK_DAYS = 1280
 

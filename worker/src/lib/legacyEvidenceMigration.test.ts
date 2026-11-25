@@ -20,7 +20,10 @@ assert.ok(
 )
 assert.doesNotMatch(scheduler, /"id": "legacy-evidence-migration"/)
 assert.match(scheduler, /"legacy-evidence-migration"/)
-assert.match(scheduler, /targets=obsolete_screener_items&limit=500&max_chunks=20/)
+// D9 step 4 retired the scheduled obsolete-screener audit root; the bounded manual path stays.
+assert.doesNotMatch(scheduler, /"id": "legacy-hot-data-retirement"/)
+assert.match(scheduler, /"legacy-hot-data-retirement"/)
+assert.doesNotMatch(scheduler, /targets=obsolete_screener_items/)
 assert.match(workerTasks, /obsoleteScreenerOnly \? 20 : 5/)
 assert.match(workerTasks, /targets\.length === 1 && targets\[0\] === 'obsolete_screener_items'/)
 

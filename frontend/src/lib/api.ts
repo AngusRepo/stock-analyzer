@@ -452,7 +452,14 @@ export type DeployGateReport = {
 }
 
 export const dataQualityApi = {
-  status: (date?: string) => get<DataQualityReport>(`/admin/data-quality/status${date ? `?date=${date}` : ''}`),
+  // reuseRecent: a /obs poll accepts a report another request read in the last 30s.
+  status: (date?: string, opts?: { reuseRecent?: boolean }) => {
+    const params = new URLSearchParams()
+    if (date) params.set('date', date)
+    if (opts?.reuseRecent) params.set('cache', 'ui')
+    const query = params.toString()
+    return get<DataQualityReport>(`/admin/data-quality/status${query ? `?${query}` : ''}`)
+  },
   v41RuntimeStatus: (date?: string) => get<V41DataRuntimeStatus>(`/dashboard/v4/data-runtime/status${date ? `?date=${date}` : ''}`),
 }
 
@@ -526,10 +533,12 @@ export const dashboardV4Api = {
 }
 
 export const deployGateApi = {
-  predeploy: (opts?: { date?: string; live?: boolean }) => {
+  // reuseRecent is for the /obs pill only; the CD gate calls the route without it and reads fresh.
+  predeploy: (opts?: { date?: string; live?: boolean; reuseRecent?: boolean }) => {
     const params = new URLSearchParams()
     if (opts?.date) params.set('date', opts.date)
     if (opts?.live) params.set('live', '1')
+    if (opts?.reuseRecent) params.set('cache', 'ui')
     const query = params.toString()
     return get<DeployGateReport>(`/admin/gate/predeploy${query ? `?${query}` : ''}`)
   },
@@ -581,12 +590,6 @@ export type ObservabilityEventReport = {
     responsibility: string
     source_of_truth: string
   }>
-  audit?: {
-    recent: Array<ObservabilityEvent & {
-      event_id?: string
-      created_at?: string
-    }>
-  }
 }
 
 export type ObservabilityIncident = {
@@ -700,10 +703,11 @@ export type ShadowEvidenceClockReport = {
 
 export const observabilityApi = {
   evidenceClocks: () => get<ShadowEvidenceClockReport>('/admin/observability/evidence-clocks'),
-  events: (opts?: { date?: string; live?: boolean }) => {
+  events: (opts?: { date?: string; live?: boolean; reuseRecent?: boolean }) => {
     const params = new URLSearchParams()
     if (opts?.date) params.set('date', opts.date)
     if (opts?.live) params.set('live', '1')
+    if (opts?.reuseRecent) params.set('cache', 'ui')
     const query = params.toString()
     return get<ObservabilityEventReport>(`/admin/observability/events${query ? `?${query}` : ''}`)
   },

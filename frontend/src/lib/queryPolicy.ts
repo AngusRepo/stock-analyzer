@@ -4,7 +4,6 @@ import {
   deployGateApi,
   marketApi,
   observabilityApi,
-  opsApi,
   paperApi,
   recommendationsApi,
   schedulerApi,
@@ -78,12 +77,10 @@ export function prefetchWorkstationRoute(
   if (href === '/obs' && opts.isAdmin) {
     prefetchMany(queryClient, [
       { queryKey: ['obs', 'scheduler'], queryFn: schedulerApi.status, staleTime: queryTtl.realtime },
-      { queryKey: ['obs', 'data-quality'], queryFn: () => dataQualityApi.status(), staleTime: queryTtl.realtime },
-      { queryKey: ['obs', 'deploy-gate'], queryFn: () => deployGateApi.predeploy(), staleTime: queryTtl.realtime },
-      { queryKey: ['obs', 'events'], queryFn: () => observabilityApi.events(), staleTime: queryTtl.realtime },
-      { queryKey: ['obs', 'drilldown'], queryFn: () => observabilityApi.drilldown(), staleTime: queryTtl.realtime },
+      { queryKey: ['obs', 'data-quality'], queryFn: () => dataQualityApi.status(undefined, { reuseRecent: true }), staleTime: queryTtl.realtime },
+      { queryKey: ['obs', 'deploy-gate'], queryFn: () => deployGateApi.predeploy({ reuseRecent: true }), staleTime: queryTtl.realtime },
+      { queryKey: ['obs', 'events'], queryFn: () => observabilityApi.events({ reuseRecent: true }), staleTime: queryTtl.realtime },
       { queryKey: ['obs', 'system'], queryFn: systemApi.status, staleTime: queryTtl.realtime },
-      { queryKey: ['obs', 'resource-audit'], queryFn: opsApi.resourceAudit, staleTime: 2 * queryTtl.intraday },
     ])
   }
 }

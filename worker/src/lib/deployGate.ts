@@ -35,18 +35,37 @@ export function schedulerFailedGateCheck(scheduler: { stats?: { failed24h?: numb
   }
 }
 
+type SchedulerGateInput = { stats?: { failed24h?: number; successRate7d?: number } }
+
 /** An unreadable scheduler status fails the gate as one failure; it never passes it. */
-export function schedulerStatusForGate(env: Bindings): Promise<{ stats?: { failed24h?: number; successRate7d?: number }; error?: string }> {
-  return getSchedulerStatus(env).catch((error) => ({
+export function schedulerStatusForGate(
+  env: Bindings,
+  status: Promise<SchedulerGateInput> = getSchedulerStatus(env),
+): Promise<{ stats?: { failed24h?: number; successRate7d?: number }; error?: string }> {
+  return status.catch((error) => ({
     stats: { failed24h: 1, successRate7d: 0 },
     error: error?.message || String(error),
   }))
 }
 
-export async function buildDeployGateReport(env: Bindings, options: { date?: string; includeLiveController?: boolean } = {}) {
+/**
+ * A caller that already reads scheduler status and data quality for the same date (the OBS
+ * events report) passes those pending reads in, so the gate does not read them a second time.
+ * Without inputs, both are read fresh: that is the path CD and release callers take.
+ */
+export interface DeployGateInputs {
+  dataQuality?: Promise<Awaited<ReturnType<typeof buildDataQualityReport>>>
+  scheduler?: Promise<SchedulerGateInput>
+}
+
+export async function buildDeployGateReport(
+  env: Bindings,
+  options: { date?: string; includeLiveController?: boolean } = {},
+  inputs: DeployGateInputs = {},
+) {
   const [dataQuality, scheduler] = await Promise.all([
-    buildDataQualityReport(env, { date: options.date }),
-    schedulerStatusForGate(env),
+    inputs.dataQuality ?? buildDataQualityReport(env, { date: options.date }),
+    schedulerStatusForGate(env, inputs.scheduler),
   ])
 
   const checks: GateCheck[] = [

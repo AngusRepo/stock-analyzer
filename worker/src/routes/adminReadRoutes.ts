@@ -42,8 +42,12 @@ adminReadRoutes.get('/api/scheduler/status', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError
 
-  const { getSchedulerStatus } = await import('../lib/schedulerStatus')
-  const status = await getSchedulerStatus(c.env)
+  const [{ getSchedulerStatus }, { obsRecentRead }] = await Promise.all([
+    import('../lib/schedulerStatus'),
+    import('../lib/obsRecentReads'),
+  ])
+  // Always read fresh; the result is kept so a /obs UI poll can reuse it for up to 30s.
+  const status = await obsRecentRead(`scheduler:${twToday()}`, () => getSchedulerStatus(c.env), { reuse: false })
   return c.json(status)
 })
 
@@ -51,8 +55,16 @@ adminReadRoutes.get('/api/admin/data-quality/status', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError
 
-  const { buildDataQualityReport } = await import('../lib/dataQualityMonitor')
-  return c.json(await buildDataQualityReport(c.env, { date: c.req.query('date') }))
+  const [{ buildDataQualityReport }, { obsRecentRead }] = await Promise.all([
+    import('../lib/dataQualityMonitor'),
+    import('../lib/obsRecentReads'),
+  ])
+  const date = c.req.query('date')
+  return c.json(await obsRecentRead(
+    `data_quality:${date ?? `expected:${twToday()}`}`,
+    () => buildDataQualityReport(c.env, { date }),
+    { reuse: c.req.query('cache') === 'ui' },
+  ))
 })
 
 adminReadRoutes.get('/api/admin/expected-return/serving-state', async (c) => {
@@ -162,9 +174,24 @@ adminReadRoutes.get('/api/admin/gate/predeploy', async (c) => {
   if (authError) return authError
 
   const { buildDeployGateReport } = await import('../lib/deployGate')
-  return c.json(await buildDeployGateReport(c.env, {
-    date: c.req.query('date'),
-    includeLiveController: c.req.query('live') === '1',
+  const date = c.req.query('date')
+  const includeLiveController = c.req.query('live') === '1'
+  // CD and release callers (p9_gate.ps1 sends live=1) never pass cache=ui, so their gate reads fresh.
+  if (c.req.query('cache') !== 'ui' || includeLiveController) {
+    return c.json(await buildDeployGateReport(c.env, { date, includeLiveController }))
+  }
+  const [{ obsRecentRead }, { getSchedulerStatus }, { buildDataQualityReport }] = await Promise.all([
+    import('../lib/obsRecentReads'),
+    import('../lib/schedulerStatus'),
+    import('../lib/dataQualityMonitor'),
+  ])
+  return c.json(await buildDeployGateReport(c.env, { date }, {
+    scheduler: obsRecentRead(`scheduler:${twToday()}`, () => getSchedulerStatus(c.env), { reuse: true }),
+    dataQuality: obsRecentRead(
+      `data_quality:${date ?? `expected:${twToday()}`}`,
+      () => buildDataQualityReport(c.env, { date }),
+      { reuse: true },
+    ),
   }))
 })
 
@@ -172,21 +199,12 @@ adminReadRoutes.get('/api/admin/observability/events', async (c) => {
   const authError = await requireAdminOrServiceToken(c)
   if (authError) return authError
 
-  const { buildLiveObservabilityEventReport, listObservabilityAuditEvents } = await import('../lib/observabilityEvents')
-  const date = c.req.query('date')
-  const report = await buildLiveObservabilityEventReport(c.env, {
-    date,
+  const { buildLiveObservabilityEventReport } = await import('../lib/observabilityEvents')
+  return c.json(await buildLiveObservabilityEventReport(c.env, {
+    date: c.req.query('date'),
     live: c.req.query('live') === '1',
-  })
-  const recent = await listObservabilityAuditEvents(c.env, {
-    date: date ?? report.date,
-    limit: 20,
-  }).catch(() => [])
-
-  return c.json({
-    ...report,
-    audit: { recent },
-  })
+    reuseRecent: c.req.query('cache') === 'ui',
+  }))
 })
 
 adminReadRoutes.get('/api/admin/observability/evidence-clocks', async (c) => {

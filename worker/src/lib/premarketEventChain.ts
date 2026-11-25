@@ -5,6 +5,7 @@ import { resolveTwTradingSession } from './schedulerPolicy'
 import { settlePremarketReadinessTickets } from './premarketReadinessTickets'
 import { premarketPublicationCutoff, premarketPublicationMinutes, premarketPublicationTarget } from './premarketPublicationWindow'
 import { paperAccountId } from './paperExecutionScope'
+import { recordChainStage } from './opsChainStageState'
 
 export type PremarketStage = 'context' | 'setup' | 'allocate' | 'market-health' | `debate:${number}` | `replan:${number}` | `publish:${number}`
 export interface PremarketPayload { [key: string]: unknown }
@@ -304,8 +305,13 @@ export async function processPremarketEvent(env: Bindings, msg: UpdateQueueMsg, 
     attempt_count=attempt_count+1,started_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP
     WHERE business_date=? AND stage=? AND canonical_run_id=?
       AND (status='queued' OR (status='waiting' AND lease_expires_at<=CURRENT_TIMESTAMP)) AND attempt_count<?
-    RETURNING cursor_key,last_error`).bind(owner,date,key,RUN(date),attemptLimit).first<{cursor_key:string;last_error:string|null}>()
+    RETURNING cursor_key,last_error,attempt_count`).bind(owner,date,key,RUN(date),attemptLimit).first<{cursor_key:string;last_error:string|null;attempt_count?:number}>()
   if (!row) return
+  // Chain stage state (observability; never throws): the claimed stage is running. Stamped with the
+  // trade date, so the writer maps it back to the evening chain it continues.
+  await recordChainStage({ stageId: stage === 'context' || stage === 'setup' ? 'morning-setup' : 'pre-market-warmup',
+    businessDate: date, dateKind: 'run_date', status: 'running', runId: RUN(date),
+    attempt: Number(row.attempt_count ?? 0) || undefined, summary: `premarket stage=${stage} claimed` })
   const input = JSON.parse(row.cursor_key ?? '{}') as PremarketPayload
   const guard = async () => {
     const active = await db.prepare(`SELECT 1 AS ok FROM pipeline_stage_runs WHERE business_date=? AND stage=?

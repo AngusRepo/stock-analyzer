@@ -1352,7 +1352,9 @@ def _gcs_credentials_preflight() -> dict[str, Any]:
 
 
 def _run_strategy_mining() -> int:
-    logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(message)s")
+    from services.json_logging import configure_json_logging
+
+    configure_json_logging(os.environ.get("LOG_LEVEL", "INFO"))
     started = time.time()
     run_date = _run_date()
     cadence = os.environ.get("STRATEGY_MINING_CADENCE", "monthly").strip() or "monthly"

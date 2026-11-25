@@ -31,15 +31,16 @@ def _factor(close, adjusted) -> float | None:
 def build_label_rows(prediction_rows, price_rows, canonical_rows, symbols, run_date):
     """MEM-M2 (3): the corporate-action filter uses canonical finlab.price adj_close/close.
 
-    The legacy stock_prices factor is only a fallback; any row that needed it is
-    marked legacy_only (canonical finlab.price adj_close starts 2026-04-27).
+    Both legs need a canonical factor. A prediction without one is excluded and counted;
+    the legacy stock_prices.adj_close mirror is not read (it holds raw-close substitutes
+    and is scheduled for drop; canonical finlab.price adj_close starts 2026-04-27).
     """
     canonical = {(str(r["symbol"]), str(r["date"])[:10]): r for r in canonical_rows}
     prices = {
         (int(row["stock_id"]), str(row["price_date"])[:10]): row
         for row in price_rows if row.get("stock_id") is not None
     }
-    rows, counts = [], {"canonical_close_basis_mismatch_legs": 0}
+    rows, counts = [], {"canonical_close_basis_mismatch_legs": 0, "canonical_factor_missing_predictions": 0}
     for prediction in prediction_rows:
         key = (int(prediction["stock_id"]), str(prediction.get("prediction_date") or "")[:10])
         price = prices.get(key)
@@ -48,6 +49,10 @@ def build_label_rows(prediction_rows, price_rows, canonical_rows, symbols, run_d
         entry = float(price.get("entry_open") or 0)
         exit_close = float(price.get("exit_close") or 0)
         exit_date = str(price.get("exit_date") or "")[:10]
+        if not exit_date or exit_date > run_date:
+            # Immature: the price window stops at run_date, so LEAD(...,5) is NULL until the
+            # exit day exists. Not a missing-factor case, so it is not counted below.
+            continue
         canonical_factors = []
         for leg in ("entry", "exit"):
             observed = canonical.get((symbols.get(key[0], ""), str(price.get(f"{leg}_date") or "")[:10]))
@@ -57,14 +62,13 @@ def build_label_rows(prediction_rows, price_rows, canonical_rows, symbols, run_d
                 factor = None
                 counts["canonical_close_basis_mismatch_legs"] += 1
             canonical_factors.append(factor)
-        # Both legs from one source: a canonical/legacy mix compares different adjustment bases.
-        source = "canonical" if None not in canonical_factors else "legacy_only"
-        factors = canonical_factors if source == "canonical" else [
-            _factor(price.get(f"{leg}_close"), price.get(f"{leg}_adj_close")) for leg in ("entry", "exit")]
-        entry_factor, exit_factor = (f or 0.0 for f in factors)
-        if not (entry > 0 and exit_close > 0 and entry_factor > 0 and exit_factor > 0):
+        if None in canonical_factors:
+            counts["canonical_factor_missing_predictions"] += 1
             continue
-        if abs(exit_factor / entry_factor - 1.0) > 0.02 or exit_date > run_date:
+        entry_factor, exit_factor = canonical_factors
+        if not (entry > 0 and exit_close > 0):
+            continue
+        if abs(exit_factor / entry_factor - 1.0) > 0.02:
             continue
         rows.append({
             **prediction,
@@ -74,7 +78,7 @@ def build_label_rows(prediction_rows, price_rows, canonical_rows, symbols, run_d
             "verification_label_entry_price": entry,
             "verification_label_end_date": exit_date,
             "verification_label_known_date": exit_date,
-            "label_factor_source": source,
+            "label_factor_source": "canonical",
         })
     return rows, counts
 
@@ -96,17 +100,15 @@ def main() -> None:
     )
     window = [args.run_date, f"-{max(1, args.lookback_days)} days", args.run_date]
     price_rows = MARKET_D1_CLIENT.query(
-        """SELECT stock_id, price_date, entry_open, entry_date, entry_close, entry_adj_close,
-                  exit_date, exit_close, exit_adj_close
+        """SELECT stock_id, price_date, entry_open, entry_date, entry_close,
+                  exit_date, exit_close
              FROM (
                SELECT stock_id, date(date) price_date,
                       LEAD(open, 1) OVER w entry_open,
                       LEAD(date(date), 1) OVER w entry_date,
                       LEAD(close, 1) OVER w entry_close,
-                      LEAD(adj_close, 1) OVER w entry_adj_close,
                       LEAD(date(date), 5) OVER w exit_date,
-                      LEAD(close, 5) OVER w exit_close,
-                      LEAD(adj_close, 5) OVER w exit_adj_close
+                      LEAD(close, 5) OVER w exit_close
                  FROM stock_prices
                 WHERE date(date) >= date(?, ?, '-10 days') AND date(date) <= date(?)
                WINDOW w AS (PARTITION BY stock_id ORDER BY date(date))
@@ -123,7 +125,6 @@ def main() -> None:
     )
     symbols = {int(r["id"]): str(r["symbol"]) for r in CORE_D1_CLIENT.query("SELECT id, symbol FROM stocks", [])}
     rows, counts = build_label_rows(prediction_rows, price_rows, canonical_rows, symbols, args.run_date)
-    canonical_only = [row for row in rows if row["label_factor_source"] == "canonical"]
 
     def ic(selected):
         return compute_weekly_ic_from_rows(
@@ -134,18 +135,14 @@ def main() -> None:
         )
 
     print(json.dumps({
-        "schema_version": "active8-production-ic-audit-v3",
+        "schema_version": "active8-production-ic-audit-v4",
         "label_source": "raw_stock_prices_next_open_to_fifth_close_factor_stable",
-        "factor_source": "canonical_market_daily:finlab.price, legacy stock_prices fallback marked legacy_only",
+        "factor_source": "canonical_market_daily:finlab.price only; predictions without both canonical legs excluded",
         "run_date": args.run_date,
         "lookback_days": args.lookback_days,
         "input_rows": len(rows),
-        "input_rows_by_factor_source": {"canonical": len(canonical_only), "legacy_only": len(rows) - len(canonical_only)},
-        "legacy_only_prediction_dates": sorted({str(row.get("prediction_date") or "")[:10]
-                                                for row in rows if row["label_factor_source"] == "legacy_only"}),
         "factor_source_counts": counts,
         "models": ic(rows),
-        "models_canonical_only": ic(canonical_only),
     }, ensure_ascii=False, indent=2, sort_keys=True))
 
 

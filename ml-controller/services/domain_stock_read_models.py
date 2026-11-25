@@ -37,7 +37,12 @@ def load_market_price_rows_with_identity(
     fields: Iterable[str] = ("date", "close"),
     require_sector: bool = False,
 ) -> list[dict[str, Any]]:
-    allowed = {"date", "open", "high", "low", "close", "volume", "adj_close"}
+    # Raw OHLCV only: legacy stock_prices.adj_close mixes canonical copies with raw-close
+    # substitutes and is scheduled for drop; adjusted prices come from canonical_market_daily.
+    allowed = {"date", "open", "high", "low", "close", "volume"}
+    fields = tuple(fields)
+    if "adj_close" in fields:
+        raise ValueError("market_price_adj_close_retired: read canonical_market_daily adj_close")
     selected = [field for field in fields if field in allowed]
     if not selected:
         raise ValueError("market_price_fields_missing")

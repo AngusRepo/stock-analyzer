@@ -410,7 +410,7 @@ def test_champion_tabm_oof_is_unchanged_through_the_modal_wrapper(monkeypatch):
         "tabular_dataset": {**{k: data[k] for k in ("X", "y", "target_returns", "dates", "symbols", "markets",
                                                     "label_known_dates", "sectors")}, "feature_names": list(FEATURES131)}}
     # The wrapper must not change the champion's OOF: compare against a direct call on the same host,
-    # since the pinned CHAMPION_TABM_OOF digest is only reproducible on the platform that recorded it.
+    # since the scores depend on the host CPU (the pinned champion in test_market_conditioner has a tolerance).
     tabm_training.train_tabm_universal(payload())
     direct = _oof_digest(bucket.values.pop("universal/oof/c/w1/tabm.npz"))
     result = _wrapper("train_tabm_universal")(payload())

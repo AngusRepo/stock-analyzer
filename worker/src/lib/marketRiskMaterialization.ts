@@ -6,11 +6,12 @@ import { buildMarketRegimeFactorPacket,upsertMarketRegimeFactorPacket,validFacto
 import { readMarketRegimeStateForDate,readMarketRegimeStateHistory } from './marketRegimeState'
 import { getRiskConfig,riskConfigUnavailable,riskScoringPolicy } from './riskConfig'
 import { marketRiskLevelPolicy,storedRiskV2Drift,storedRiskV2FromQuality } from './marketRiskStressV2'
-const MARKET_RISK_LATEST_CACHE_KEYS = [
+export const MARKET_RISK_LATEST_CACHE_KEYS = [
   'market:risk:latest',
   'market:risk:latest:v4-context',
   'market:risk:latest:v19-finlab-risk-detail',
   'market:risk:latest:v20-finlab-risk-detail-oi-delta',
+  'market:risk:latest:v21-runtime-level',
 ]
 
 async function clearMarketRiskLatestCaches(env: Bindings): Promise<void> {

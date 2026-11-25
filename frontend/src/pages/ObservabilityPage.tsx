@@ -1546,10 +1546,10 @@ export default function ObservabilityPage() {
     refetchIntervalInBackground: false,
     staleTime: 1_000,
   })
-  const dataQuality = useQuery({ queryKey: ['obs', 'data-quality'], queryFn: () => dataQualityApi.status(), refetchInterval: 60_000, staleTime: 30_000 })
-  const deployGate = useQuery({ queryKey: ['obs', 'deploy-gate'], queryFn: () => deployGateApi.predeploy(), refetchInterval: 60_000, staleTime: 30_000 })
+  const dataQuality = useQuery({ queryKey: ['obs', 'data-quality'], queryFn: () => dataQualityApi.status(undefined, { reuseRecent: true }), refetchInterval: 60_000, staleTime: 30_000 })
+  const deployGate = useQuery({ queryKey: ['obs', 'deploy-gate'], queryFn: () => deployGateApi.predeploy({ reuseRecent: true }), refetchInterval: 60_000, staleTime: 30_000 })
   const system = useQuery({ queryKey: ['obs', 'system'], queryFn: systemApi.status, refetchInterval: 60_000, staleTime: 30_000 })
-  const observability = useQuery({ queryKey: ['obs', 'events'], queryFn: () => observabilityApi.events(), refetchInterval: 60_000, staleTime: 30_000 })
+  const observability = useQuery({ queryKey: ['obs', 'events'], queryFn: () => observabilityApi.events({ reuseRecent: true }), refetchInterval: 60_000, staleTime: 30_000 })
   const evidenceClocks = useQuery({
     queryKey: ['obs', 'evidence-clocks'],
     queryFn: observabilityApi.evidenceClocks,

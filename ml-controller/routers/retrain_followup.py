@@ -156,7 +156,7 @@ def _check_token(request: Request) -> None:
         or request.headers.get("X-Controller-Token", "")
         or request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
     )
-    if not any(hmac.compare_digest(provided, token) for token in tokens):
+    if not any(hmac.compare_digest(provided.encode("utf-8"), token.encode("utf-8")) for token in tokens):
         raise HTTPException(status_code=401, detail="invalid service token")
 
 

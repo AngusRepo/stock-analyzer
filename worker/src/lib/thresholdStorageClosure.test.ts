@@ -54,7 +54,7 @@ test('split D1 audit uses domain baselines and reports true orphan reachability'
   assert(lifecycle.includes('canonical_execution_lineage_ready'))
 })
 
-test('Multi-D1 and daily lineage watchdogs remain automatic and non-serving', () => {
+test('daily lineage watchdog stays automatic; retired Multi-D1 backfill coordinator stays manual and non-serving', () => {
   const drain = source('dataDomainShadowBackfillDrain.ts')
   const lineage = source('dailyExecutionPaperLineage.ts')
   const scheduler = JSON.parse(fs.readFileSync(path.join(process.cwd(), '../infra/gcp-scheduler-jobs.json'), 'utf8'))
@@ -63,7 +63,9 @@ test('Multi-D1 and daily lineage watchdogs remain automatic and non-serving', ()
   assert(lineage.includes('daily_paper_snapshot_not_ready'))
   assert(lineage.includes("status: 'reused'"))
   assert(scheduler.jobs.some((job: any) => job.id === 'daily-execution-paper-lineage' && job.schedule === '35,50 6,10 * * 1-5'))
-  assert(scheduler.jobs.some((job: any) => job.id === 'data-domain-shadow-backfill-next' && job.schedule === '30 16 * * *'))
+  // D9 legacy-DB retirement step 4: the coordinator root is deleted; its handler remains a manual trigger.
+  assert(scheduler.deleteJobIds.includes('data-domain-shadow-backfill-next'))
+  assert(!scheduler.jobs.some((job: any) => job.id === 'data-domain-shadow-backfill-next' || job.task === 'data-domain-shadow-backfill-next'))
 })
 
 test('frontend explains joint readiness instead of showing isolated threshold green', () => {

@@ -3,6 +3,7 @@ import { databaseForDataDomain } from './dataDomainRegistry'
 import { twToday } from './dateUtils'
 import { buildDataQualityReport, type DataQualityCheck } from './dataQualityMonitor'
 import { buildDeployGateReport } from './deployGate'
+import { obsRecentRead } from './obsRecentReads'
 import { getSchedulerStatus } from './schedulerStatus'
 import { controllerJson } from './controllerClient'
 import { publishedAlphaModelOrderProjected } from './alphaModelRoster'
@@ -1343,13 +1344,18 @@ async function queryLatestMlThresholdPolicyEvidence(env: Bindings, date: string)
   }
 }
 
-export async function buildLiveObservabilityEventReport(env: Bindings, options: { date?: string; live?: boolean } = {}) {
+export async function buildLiveObservabilityEventReport(env: Bindings, options: { date?: string; live?: boolean; reuseRecent?: boolean } = {}) {
   const date = options.date ?? twToday()
   const generatedAt = new Date().toISOString()
+  // The report and its deploy gate share one scheduler read and one data-quality read.
+  // A UI poll (reuseRecent) may take either from another request in the last 30s; live diagnostics never do.
+  const reuse = options.reuseRecent === true && options.live !== true
+  const schedulerRead = obsRecentRead(`scheduler:${twToday()}`, () => getSchedulerStatus(env), { reuse })
+  const dataQualityRead = obsRecentRead(`data_quality:${date}`, () => buildDataQualityReport(env, { date }), { reuse })
 
   const [scheduler, dataQuality, deployGate, modelPoolResult, validationResult, adaptiveResult, gaOptimizerResult, linucbLedgerSummary, thresholdPolicyResult, publishedOrderResult] = await Promise.all([
-    getSchedulerStatus(env).catch((error: unknown) => ({ error: String(error), jobs: [] })),
-    buildDataQualityReport(env, { date }).catch((error: unknown) => ({
+    schedulerRead.catch((error: unknown) => ({ error: String(error), jobs: [] })),
+    dataQualityRead.catch((error: unknown) => ({
       overall: 'fail' as const,
       checks: [{
         id: 'data_quality_unavailable',
@@ -1358,7 +1364,7 @@ export async function buildLiveObservabilityEventReport(env: Bindings, options: 
         summary: String(error),
       }],
     })),
-    buildDeployGateReport(env, { date, includeLiveController: options.live === true }).catch((error: unknown) => ({
+    buildDeployGateReport(env, { date, includeLiveController: options.live === true }, { scheduler: schedulerRead, dataQuality: dataQualityRead }).catch((error: unknown) => ({
       decision: 'block',
       checks: [{
         id: 'deploy_gate_unavailable',

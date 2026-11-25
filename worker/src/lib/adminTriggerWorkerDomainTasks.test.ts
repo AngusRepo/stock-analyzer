@@ -175,8 +175,8 @@ assert.match(schedulerManifest, /"id": "artifact-reconcile"/)
 assert.doesNotMatch(schedulerManifest, /"id": "d1-evidence-scrub"/)
 assert.doesNotMatch(schedulerManifest, /"id": "legacy-evidence-migration"/)
 assert.doesNotMatch(schedulerManifest, /"id": "cleanup-dlq-replay"/)
-assert.match(schedulerManifest, /legacy-strategy-evidence-migration[^\n]+durable=1/)
-for (const retired of ['d1-evidence-scrub', 'legacy-evidence-migration', 'cleanup-dlq-replay']) {
+assert.doesNotMatch(schedulerManifest, /"id": "legacy-strategy-evidence-migration"/)
+for (const retired of ['d1-evidence-scrub', 'legacy-evidence-migration', 'cleanup-dlq-replay', 'legacy-strategy-evidence-migration']) {
   assert.match(schedulerManifest, new RegExp(`"${retired}"`))
 }
 assert.match(source, /D1_MAINTENANCE_REQUEST_BUDGET_MS = 45_000/)

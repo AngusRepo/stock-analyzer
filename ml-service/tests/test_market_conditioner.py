@@ -3,6 +3,7 @@ import hashlib
 import inspect
 import io
 import json
+import math
 import sys
 from datetime import date, timedelta
 from pathlib import Path
@@ -368,11 +369,38 @@ def test_tabm_challenger_smoke_writes_only_its_alias(monkeypatch, slot):
     assert result["market_conditioner"]["feature_count"] == len(mc.arm_feature_names(arm))
 
 
-CHAMPION_TABM_OOF = ("844ad5dc2d67a098ff59304ea6f580d13335eea677a95e04c412fb0645bdcb73",
-                     "a3326c1779cef735fbcb371561ff2a3ce8d229d918ba1da4b5989bcb536c37e1")
+# The champion TabM OOF of this fixture. Its scores depend on the host CPU's float kernels: on Modal the AMD
+# hosts (and the GitHub runner) give one set, the Intel AVX-512 hosts differ by at most 1.25e-5, so an exact
+# digest only holds on the host that recorded it. Pinned: the contract checksum (host-independent) and the
+# scores of the 1940aff52a3a run (AMD; c9d333ff and d68256f0 give the same), compared within
+# CHAMPION_TABM_ATOL. A real change moves them further: lr +1% by 1.4e-4, seed 43 by 1.7e-2, a second
+# epoch by 3.4e-2 (measured on both host types). lr +0.1% (2.4e-5) is within the host spread and not caught.
+CHAMPION_TABM_CONTRACT = "844ad5dc2d67a098ff59304ea6f580d13335eea677a95e04c412fb0645bdcb73"
+CHAMPION_TABM_SCORES = "".join([
+    "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",
+])  # base64(zlib(float32 raw_scores))
+CHAMPION_TABM_ATOL = 5e-5
 
 
-def test_champion_tabm_oof_is_unchanged_with_challengers_off(monkeypatch):
+def _champion_tabm_oof(monkeypatch, **overrides):
     from app import tabm_training
     bucket = Bucket()
     monkeypatch.setattr(tabm_training, "_get_bucket", lambda: bucket)
@@ -383,10 +411,32 @@ def test_champion_tabm_oof_is_unchanged_with_challengers_off(monkeypatch):
         "window_id": 1, "train_start": DAYS[0], "train_end": DAYS[39], "test_start": DAYS[45], "test_end": DAYS[59],
         "feature_semantic_version": FEATURE131_SEMANTIC, "generation_mode": "purged_oof", "cohort_id": "c",
         "fold_id": "w1", "output_model_version": "c-w1", "gcs_prefix": "universal", "epochs": 1,
-        "feature_release_mode": "approved_full131_v1",
+        "feature_release_mode": "approved_full131_v1", **overrides,
         "tabular_dataset": {**{k: data[k] for k in ("X", "y", "target_returns", "dates", "symbols", "markets",
                                                     "label_known_dates", "sectors")}, "feature_names": list(FEATURES131)}})
-    assert _oof_digest(bucket.values["universal/oof/c/w1/tabm.npz"]) == CHAMPION_TABM_OOF
+    npz = np.load(io.BytesIO(bucket.values["universal/oof/c/w1/tabm.npz"]), allow_pickle=True)
+    return json.loads(str(npz["metadata"]))["contract_checksum"], np.asarray(npz["raw_scores"], dtype=np.float64)
+
+
+def _champion_tabm_drift(contract: str, scores: np.ndarray) -> float:
+    """Largest score difference from the pinned champion, inf when the contract or the row count differs."""
+    import base64
+    import zlib
+    pinned = np.frombuffer(zlib.decompress(base64.b64decode(CHAMPION_TABM_SCORES)), dtype=np.float32).astype(np.float64)
+    if contract != CHAMPION_TABM_CONTRACT or scores.shape != pinned.shape:
+        return math.inf
+    return float(np.max(np.abs(scores - pinned)))
+
+
+def test_champion_tabm_oof_is_unchanged_with_challengers_off(monkeypatch):
+    assert _champion_tabm_drift(*_champion_tabm_oof(monkeypatch)) <= CHAMPION_TABM_ATOL
+
+
+def test_the_champion_tabm_pin_catches_a_one_percent_learning_rate_change(monkeypatch):
+    from app.tabm_training import DEFAULT_LR
+    contract, scores = _champion_tabm_oof(monkeypatch, lr=DEFAULT_LR * 1.01)
+    assert contract == CHAMPION_TABM_CONTRACT  # the scores alone have to catch it
+    assert _champion_tabm_drift(contract, scores) > CHAMPION_TABM_ATOL
 
 
 # Market columns may be NaN by contract (warm-up, thin foreign coverage); TabM keeps the champion's rows.

@@ -14,6 +14,20 @@ import polars as pl
 
 
 SCHEMA_VERSION = "finlab-canonical-materializer-v1"
+_SOURCE_CONTRACT = "finlab_source_contract.json"
+
+
+def regime_context_d1_category_scope() -> dict[str, tuple[str, ...]]:
+    """lanes.regime_context.d1_category_scope of data/finlab_source_contract.json: for each listed dataset,
+    D1 keeps only rows whose category contains one of the substrings (the categories its readers select).
+    The full FinLab capture stays in the run's GCS raw artifact (raw/regime_context/<dataset>.parquet)."""
+    here = Path(__file__).resolve()
+    # /app/services and /root/services (images) ship data/ beside services/; the repo has it one level up.
+    for path in (here.parents[1] / "data" / _SOURCE_CONTRACT, here.parents[2] / "data" / _SOURCE_CONTRACT):
+        if path.is_file():
+            scope = json.loads(path.read_text(encoding="utf-8"))["lanes"]["regime_context"]["d1_category_scope"]
+            return {dataset: tuple(parts) for dataset, parts in scope.items()}
+    raise RuntimeError("finlab_source_contract_missing")
 
 
 @dataclass(frozen=True)
@@ -1144,6 +1158,11 @@ def build_regime_context_rows(
             end_date=end_date,
         ))
 
+    scope = {dataset: [part.casefold() for part in parts] for dataset, parts in regime_context_d1_category_scope().items()}
+    rows = [
+        row for row in rows
+        if row["dataset"] not in scope or any(part in row["category"].casefold() for part in scope[row["dataset"]])
+    ]
     deduped: dict[tuple[str, str, str, str, str], dict[str, Any]] = {}
     for row in rows:
         deduped[(row["date"], row["dataset"], row["field"], row["category"], row["source"])] = row

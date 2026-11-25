@@ -1,4 +1,5 @@
 /** Display receipts only. This module never dispatches or settles business tasks. */
+import { recordChainStage } from './opsChainStageState'
 export const FINLAB_PHASES = ['acquire', 'validate', 'publish'] as const
 export type FinLabStageProgress = {
   run_id: string; run_date: string; dispatch_attempt: number; sequence: number; observed_at: string
@@ -31,7 +32,7 @@ export async function recordFinLabStageProgress(db: D1Database, p: FinLabStagePr
   const last = p.phases[p.phases.length - 1]
   const status = last.status === 'running' ? 'running' : p.phases.some(r => r.status === 'failed') ? 'error'
     : last.status === 'completed' && last.phase === 'publish' ? 'success' : 'waiting'
-  return Boolean(await db.prepare(`INSERT INTO pipeline_stage_runs
+  const accepted = Boolean(await db.prepare(`INSERT INTO pipeline_stage_runs
     (business_date,stage,canonical_run_id,status,cursor_key,started_at,updated_at)
     VALUES (?,'finlab_progress',?,?,?,?,?)
     ON CONFLICT(business_date,stage) DO UPDATE SET canonical_run_id=excluded.canonical_run_id,
@@ -42,6 +43,13 @@ export async function recordFinLabStageProgress(db: D1Database, p: FinLabStagePr
        OR (json_extract(excluded.cursor_key,'$.dispatch_attempt')=json_extract(pipeline_stage_runs.cursor_key,'$.dispatch_attempt')
            AND json_extract(excluded.cursor_key,'$.sequence')>json_extract(pipeline_stage_runs.cursor_key,'$.sequence'))
     RETURNING canonical_run_id`).bind(p.run_date,p.run_id,status,raw,p.phases[0].started_at,new Date(p.observed_at).toISOString()).first())
+  // Chain stage state: a running phase is a liveness signal (running / heartbeat). The terminal
+  // state belongs to the finlab-v4-backfill run log. Never throws.
+  if (accepted && status === 'running') {
+    await recordChainStage({ stageId: 'finlab-v4-backfill', businessDate: p.run_date, status: 'running',
+      attempt: p.dispatch_attempt, runId: p.run_id, summary: `finlab phase=${last.phase} running` })
+  }
+  return accepted
 }
 export function finlabProgressForDisplay(parent: Parent | undefined, row?: { cursor_key: string | null }) {
   try {

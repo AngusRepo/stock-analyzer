@@ -1,0 +1,149 @@
+{
+  "uid": "sv-gcp-runtime",
+  "title": "StockVision · GCP 執行狀態（Cloud Run／Scheduler）",
+  "tags": ["stockvision", "gcp"],
+  "timezone": "Asia/Taipei",
+  "refresh": "5m",
+  "time": { "from": "now-24h", "to": "now" },
+  "timepicker": { "refresh_intervals": ["5m", "15m", "1h"] },
+  "schemaVersion": 39,
+  "editable": true,
+  "panels": [
+    {
+      "id": 1, "type": "stat", "title": "Cloud Run Job 失敗次數（所選時間）",
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 5 },
+      "datasource": { "type": "stackdriver", "uid": "bg59sppgm7v9cb" },
+      "options": { "reduceOptions": { "calcs": ["sum"], "fields": "", "values": false }, "colorMode": "background", "graphMode": "none", "textMode": "value" },
+      "fieldConfig": { "defaults": { "noValue": "0", "unit": "none", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 1 } ] } }, "overrides": [] },
+      "targets": [ {
+        "refId": "A", "queryType": "timeSeriesList",
+        "timeSeriesList": { "projectName": "gen-lang-client-0602998820",
+          "filters": ["resource.type", "=", "cloud_run_job", "AND", "metric.type", "=", "run.googleapis.com/job/completed_execution_count", "AND", "metric.label.result", "=", "failed"],
+          "crossSeriesReducer": "REDUCE_SUM", "perSeriesAligner": "ALIGN_SUM", "alignmentPeriod": "+3600s", "groupBys": [] }
+      } ]
+    },
+    {
+      "id": 2, "type": "stat", "title": "Cloud Run Job 成功次數（所選時間）",
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 5 },
+      "datasource": { "type": "stackdriver", "uid": "bg59sppgm7v9cb" },
+      "options": { "reduceOptions": { "calcs": ["sum"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "none", "textMode": "value" },
+      "fieldConfig": { "defaults": { "noValue": "0", "unit": "none" }, "overrides": [] },
+      "targets": [ {
+        "refId": "A", "queryType": "timeSeriesList",
+        "timeSeriesList": { "projectName": "gen-lang-client-0602998820",
+          "filters": ["resource.type", "=", "cloud_run_job", "AND", "metric.type", "=", "run.googleapis.com/job/completed_execution_count", "AND", "metric.label.result", "=", "succeeded"],
+          "crossSeriesReducer": "REDUCE_SUM", "perSeriesAligner": "ALIGN_SUM", "alignmentPeriod": "+3600s", "groupBys": [] }
+      } ]
+    },
+    {
+      "id": 3, "type": "stat", "title": "Scheduler 錯誤日誌（所選時間）",
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 5 },
+      "datasource": { "type": "stackdriver", "uid": "bg59sppgm7v9cb" },
+      "options": { "reduceOptions": { "calcs": ["sum"], "fields": "", "values": false }, "colorMode": "background", "graphMode": "none", "textMode": "value" },
+      "fieldConfig": { "defaults": { "noValue": "0", "unit": "none", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 1 } ] } }, "overrides": [] },
+      "targets": [ {
+        "refId": "A", "queryType": "timeSeriesList",
+        "timeSeriesList": { "projectName": "gen-lang-client-0602998820",
+          "filters": ["resource.type", "=", "cloud_scheduler_job", "AND", "metric.type", "=", "logging.googleapis.com/log_entry_count", "AND", "metric.label.severity", "=", "ERROR"],
+          "crossSeriesReducer": "REDUCE_SUM", "perSeriesAligner": "ALIGN_SUM", "alignmentPeriod": "+3600s", "groupBys": [] }
+      } ]
+    },
+    {
+      "id": 4, "type": "stat", "title": "目前執行中的 Job",
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 5 },
+      "datasource": { "type": "stackdriver", "uid": "bg59sppgm7v9cb" },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false }, "colorMode": "value", "graphMode": "area", "textMode": "value" },
+      "fieldConfig": { "defaults": { "noValue": "0", "unit": "none" }, "overrides": [] },
+      "targets": [ {
+        "refId": "A", "queryType": "timeSeriesList",
+        "timeSeriesList": { "projectName": "gen-lang-client-0602998820",
+          "filters": ["resource.type", "=", "cloud_run_job", "AND", "metric.type", "=", "run.googleapis.com/job/running_executions"],
+          "crossSeriesReducer": "REDUCE_SUM", "perSeriesAligner": "ALIGN_MAX", "alignmentPeriod": "+300s", "groupBys": [] }
+      } ]
+    },
+    {
+      "id": 5, "type": "bargauge", "title": "各 Job 失敗次數（所選時間）",
+      "gridPos": { "x": 0, "y": 5, "w": 12, "h": 9 },
+      "datasource": { "type": "stackdriver", "uid": "bg59sppgm7v9cb" },
+      "options": { "reduceOptions": { "calcs": ["sum"], "fields": "", "values": false }, "orientation": "horizontal", "displayMode": "basic", "showUnfilled": true },
+      "fieldConfig": { "defaults": { "unit": "none", "color": { "mode": "fixed", "fixedColor": "red" } }, "overrides": [] },
+      "targets": [ {
+        "refId": "A", "queryType": "timeSeriesList",
+        "timeSeriesList": { "projectName": "gen-lang-client-0602998820",
+          "filters": ["resource.type", "=", "cloud_run_job", "AND", "metric.type", "=", "run.googleapis.com/job/completed_execution_count", "AND", "metric.label.result", "=", "failed"],
+          "crossSeriesReducer": "REDUCE_SUM", "perSeriesAligner": "ALIGN_SUM", "alignmentPeriod": "+3600s", "groupBys": ["resource.label.job_name"] },
+        "aliasBy": "{{resource.label.job_name}}"
+      } ]
+    },
+    {
+      "id": 6, "type": "bargauge", "title": "各 Job 成功次數（所選時間）",
+      "gridPos": { "x": 12, "y": 5, "w": 12, "h": 9 },
+      "datasource": { "type": "stackdriver", "uid": "bg59sppgm7v9cb" },
+      "options": { "reduceOptions": { "calcs": ["sum"], "fields": "", "values": false }, "orientation": "horizontal", "displayMode": "basic", "showUnfilled": true },
+      "fieldConfig": { "defaults": { "unit": "none", "color": { "mode": "fixed", "fixedColor": "green" } }, "overrides": [] },
+      "targets": [ {
+        "refId": "A", "queryType": "timeSeriesList",
+        "timeSeriesList": { "projectName": "gen-lang-client-0602998820",
+          "filters": ["resource.type", "=", "cloud_run_job", "AND", "metric.type", "=", "run.googleapis.com/job/completed_execution_count", "AND", "metric.label.result", "=", "succeeded"],
+          "crossSeriesReducer": "REDUCE_SUM", "perSeriesAligner": "ALIGN_SUM", "alignmentPeriod": "+3600s", "groupBys": ["resource.label.job_name"] },
+        "aliasBy": "{{resource.label.job_name}}"
+      } ]
+    },
+    {
+      "id": 7, "type": "timeseries", "title": "執行中的 Job（依 job）",
+      "gridPos": { "x": 0, "y": 14, "w": 24, "h": 8 },
+      "datasource": { "type": "stackdriver", "uid": "bg59sppgm7v9cb" },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["max"] }, "tooltip": { "mode": "multi" } },
+      "fieldConfig": { "defaults": { "unit": "none", "custom": { "drawStyle": "line", "lineInterpolation": "stepAfter", "fillOpacity": 20, "stacking": { "mode": "normal" } } }, "overrides": [] },
+      "targets": [ {
+        "refId": "A", "queryType": "timeSeriesList",
+        "timeSeriesList": { "projectName": "gen-lang-client-0602998820",
+          "filters": ["resource.type", "=", "cloud_run_job", "AND", "metric.type", "=", "run.googleapis.com/job/running_executions"],
+          "crossSeriesReducer": "REDUCE_SUM", "perSeriesAligner": "ALIGN_MAX", "alignmentPeriod": "+300s", "groupBys": ["resource.label.job_name"] },
+        "aliasBy": "{{resource.label.job_name}}"
+      } ]
+    },
+    {
+      "id": 8, "type": "timeseries", "title": "Cloud Run 服務請求（依回應類別）",
+      "gridPos": { "x": 0, "y": 22, "w": 12, "h": 8 },
+      "datasource": { "type": "stackdriver", "uid": "bg59sppgm7v9cb" },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "fieldConfig": { "defaults": { "unit": "none", "custom": { "drawStyle": "bars", "fillOpacity": 60, "stacking": { "mode": "normal" } } }, "overrides": [] },
+      "targets": [ {
+        "refId": "A", "queryType": "timeSeriesList",
+        "timeSeriesList": { "projectName": "gen-lang-client-0602998820",
+          "filters": ["resource.type", "=", "cloud_run_revision", "AND", "metric.type", "=", "run.googleapis.com/request_count"],
+          "crossSeriesReducer": "REDUCE_SUM", "perSeriesAligner": "ALIGN_SUM", "alignmentPeriod": "+3600s", "groupBys": ["resource.label.service_name", "metric.label.response_code_class"] },
+        "aliasBy": "{{resource.label.service_name}} {{metric.label.response_code_class}}"
+      } ]
+    },
+    {
+      "id": 9, "type": "timeseries", "title": "Cloud Run 服務延遲 p95",
+      "gridPos": { "x": 12, "y": 22, "w": 12, "h": 8 },
+      "datasource": { "type": "stackdriver", "uid": "bg59sppgm7v9cb" },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] },
+      "targets": [ {
+        "refId": "A", "queryType": "timeSeriesList",
+        "timeSeriesList": { "projectName": "gen-lang-client-0602998820",
+          "filters": ["resource.type", "=", "cloud_run_revision", "AND", "metric.type", "=", "run.googleapis.com/request_latencies"],
+          "crossSeriesReducer": "REDUCE_PERCENTILE_95", "perSeriesAligner": "ALIGN_DELTA", "alignmentPeriod": "+3600s", "groupBys": ["resource.label.service_name"] },
+        "aliasBy": "{{resource.label.service_name}}"
+      } ]
+    },
+    {
+      "id": 10, "type": "bargauge", "title": "各 Scheduler job 錯誤日誌（所選時間）",
+      "gridPos": { "x": 0, "y": 30, "w": 24, "h": 8 },
+      "datasource": { "type": "stackdriver", "uid": "bg59sppgm7v9cb" },
+      "options": { "reduceOptions": { "calcs": ["sum"], "fields": "", "values": false }, "orientation": "horizontal", "displayMode": "basic", "showUnfilled": true },
+      "fieldConfig": { "defaults": { "unit": "none", "color": { "mode": "fixed", "fixedColor": "orange" } }, "overrides": [] },
+      "targets": [ {
+        "refId": "A", "queryType": "timeSeriesList",
+        "timeSeriesList": { "projectName": "gen-lang-client-0602998820",
+          "filters": ["resource.type", "=", "cloud_scheduler_job", "AND", "metric.type", "=", "logging.googleapis.com/log_entry_count", "AND", "metric.label.severity", "=", "ERROR"],
+          "crossSeriesReducer": "REDUCE_SUM", "perSeriesAligner": "ALIGN_SUM", "alignmentPeriod": "+3600s", "groupBys": ["resource.label.job_id"] },
+        "aliasBy": "{{resource.label.job_id}}"
+      } ]
+    }
+  ]
+}

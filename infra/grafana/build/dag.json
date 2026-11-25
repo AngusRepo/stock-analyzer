@@ -1,0 +1,794 @@
+{
+ "chain_id": "daily_readiness",
+ "phases": [
+  {
+   "id": "sources",
+   "title": "行情與特徵",
+   "caption": "收盤資料 → 指標／風險品質 → HMM → 成熟策略證據 → 初篩",
+   "main": [
+    "market-close-refresh",
+    "finlab-acquire",
+    "finlab-validate",
+    "finlab-publish",
+    "update",
+    "indicator-queue",
+    "regime-compute",
+    "strategy-learning-mature-evidence",
+    "screener"
+   ],
+   "side": [
+    "finlab-backfill-watchdog",
+    "allocator-ev-readiness"
+   ]
+  },
+  {
+   "id": "models",
+   "title": "夜間 L3 預測",
+   "caption": "Pipeline 準備 → L3 封存；L4 留待次交易日盤前接續",
+   "main": [
+    "pipeline-inputs",
+    "pipeline-snapshot",
+    "pipeline-feature-batches",
+    "pipeline-features",
+    "pipeline-l2",
+    "pipeline-l3"
+   ],
+   "side": [
+    "dataset-snapshot-export",
+    "allocator-ev-feature-snapshot-backfill"
+   ]
+  },
+  {
+   "id": "premarket",
+   "title": "盤前資料與定案",
+   "caption": "資料就緒後事件接續：US / News → Setup（最早 07:15）→ Pipeline 內 L4 推薦 → Pending buys",
+   "main": [
+    "us-leading",
+    "news-analyst",
+    "morning-setup",
+    "recommendation",
+    "pre-market-warmup"
+   ],
+   "side": [
+    "premarket-evidence-watchdog"
+   ]
+  },
+  {
+   "id": "evidence",
+   "title": "驗證與收尾",
+   "caption": "L4 callback → 驗證 → 回饋與 closure；收據仍歸屬原業務日",
+   "main": [
+    "post-pipeline-chain",
+    "verify-v2",
+    "post-verify-chain",
+    "strategy-learning",
+    "evening-closure"
+   ],
+   "side": [
+    "active8-oof-daily",
+    "allocator-ev-lifecycle-watchdog",
+    "model-ic-rolling",
+    "linucb-reward-ledger",
+    "adapt",
+    "daily-report",
+    "paper-active-postmarket",
+    "obsidian-sync",
+    "meta-learning-shadow"
+   ]
+  }
+ ],
+ "catalog": [
+  {
+   "id": "market-close-refresh",
+   "label": "Close refresh"
+  },
+  {
+   "id": "finlab-v4-backfill",
+   "label": "FinLab canonical"
+  },
+  {
+   "id": "finlab-backfill-watchdog",
+   "label": "FinLab watchdog"
+  },
+  {
+   "id": "update",
+   "label": "Market update"
+  },
+  {
+   "id": "indicator-queue",
+   "label": "Indicator queue"
+  },
+  {
+   "id": "regime-compute",
+   "label": "HMM regime"
+  },
+  {
+   "id": "strategy-learning-mature-evidence",
+   "label": "成熟策略證據"
+  },
+  {
+   "id": "screener",
+   "label": "Screener"
+  },
+  {
+   "id": "allocator-ev-readiness",
+   "label": "Allocator EV"
+  },
+  {
+   "id": "pipeline",
+   "label": "Pipeline · 整體進度"
+  },
+  {
+   "id": "ml-predict",
+   "label": "ML Predict · L3 預測"
+  },
+  {
+   "id": "post-pipeline-chain",
+   "label": "Pipeline callback"
+  },
+  {
+   "id": "allocator-ev-feature-snapshot-backfill",
+   "label": "EV feature snapshot"
+  },
+  {
+   "id": "verify-v2",
+   "label": "Verify"
+  },
+  {
+   "id": "post-verify-chain",
+   "label": "Verify callback"
+  },
+  {
+   "id": "model-ic-rolling",
+   "label": "Model IC rolling"
+  },
+  {
+   "id": "linucb-reward-ledger",
+   "label": "Reward ledger"
+  },
+  {
+   "id": "adapt",
+   "label": "Adapt params"
+  },
+  {
+   "id": "daily-report",
+   "label": "Daily report"
+  },
+  {
+   "id": "paper-active-postmarket",
+   "label": "Paper active"
+  },
+  {
+   "id": "obsidian-sync",
+   "label": "Obsidian sync"
+  },
+  {
+   "id": "meta-learning-shadow",
+   "label": "Meta shadow"
+  },
+  {
+   "id": "strategy-learning",
+   "label": "Strategy learning"
+  },
+  {
+   "id": "evening-closure",
+   "label": "全鏈完成收據"
+  },
+  {
+   "id": "us-leading",
+   "label": "US leading"
+  },
+  {
+   "id": "news-analyst",
+   "label": "News analyst"
+  },
+  {
+   "id": "morning-setup",
+   "label": "Morning setup"
+  },
+  {
+   "id": "recommendation",
+   "label": "Recommendation · L4 推薦"
+  },
+  {
+   "id": "pre-market-warmup",
+   "label": "Pre-market"
+  },
+  {
+   "id": "premarket-evidence-watchdog",
+   "label": "盤前鏈監看"
+  },
+  {
+   "id": "dataset-snapshot-export",
+   "label": "Research snapshot"
+  },
+  {
+   "id": "active8-oof-daily",
+   "label": "Active-8 daily evidence"
+  },
+  {
+   "id": "allocator-ev-lifecycle-watchdog",
+   "label": "EV lifecycle"
+  }
+ ],
+ "stages": {
+  "market-close-refresh": {
+   "label": "Close refresh",
+   "parent": null,
+   "optional": false,
+   "depends_on": null
+  },
+  "finlab-acquire": {
+   "label": "FinLab 資料取得",
+   "parent": "finlab-v4-backfill",
+   "optional": false,
+   "depends_on": null
+  },
+  "finlab-validate": {
+   "label": "FinLab 整理與驗證",
+   "parent": "finlab-v4-backfill",
+   "optional": false,
+   "depends_on": null
+  },
+  "finlab-publish": {
+   "label": "FinLab 發布與交接",
+   "parent": "finlab-v4-backfill",
+   "optional": false,
+   "depends_on": null
+  },
+  "finlab-backfill-watchdog": {
+   "label": "FinLab watchdog",
+   "parent": null,
+   "optional": true,
+   "depends_on": null
+  },
+  "update": {
+   "label": "Market update",
+   "parent": null,
+   "optional": false,
+   "depends_on": null
+  },
+  "indicator-queue": {
+   "label": "Indicator queue",
+   "parent": null,
+   "optional": false,
+   "depends_on": null
+  },
+  "regime-compute": {
+   "label": "HMM regime",
+   "parent": null,
+   "optional": false,
+   "depends_on": null
+  },
+  "strategy-learning-mature-evidence": {
+   "label": "成熟策略證據",
+   "parent": null,
+   "optional": false,
+   "depends_on": null
+  },
+  "screener": {
+   "label": "Screener",
+   "parent": null,
+   "optional": false,
+   "depends_on": null
+  },
+  "allocator-ev-readiness": {
+   "label": "Allocator EV",
+   "parent": null,
+   "optional": false,
+   "depends_on": null
+  },
+  "pipeline-inputs": {
+   "label": "輸入凍結",
+   "parent": "pipeline",
+   "optional": false,
+   "depends_on": null
+  },
+  "pipeline-snapshot": {
+   "label": "輸入快照匯出",
+   "parent": "pipeline",
+   "optional": false,
+   "depends_on": null
+  },
+  "pipeline-feature-batches": {
+   "label": "特徵批次",
+   "parent": "pipeline",
+   "optional": false,
+   "depends_on": null
+  },
+  "pipeline-features": {
+   "label": "特徵與推論輸入組裝",
+   "parent": "pipeline",
+   "optional": false,
+   "depends_on": null
+  },
+  "pipeline-l2": {
+   "label": "L2 特徵增強",
+   "parent": "pipeline",
+   "optional": false,
+   "depends_on": null
+  },
+  "pipeline-l3": {
+   "label": "L3 預測與封存",
+   "parent": "pipeline",
+   "optional": false,
+   "depends_on": null
+  },
+  "post-pipeline-chain": {
+   "label": "Pipeline callback",
+   "parent": null,
+   "optional": false,
+   "depends_on": null
+  },
+  "allocator-ev-feature-snapshot-backfill": {
+   "label": "EV feature snapshot",
+   "parent": null,
+   "optional": false,
+   "depends_on": null
+  },
+  "verify-v2": {
+   "label": "Verify",
+   "parent": null,
+   "optional": false,
+   "depends_on": null
+  },
+  "post-verify-chain": {
+   "label": "Verify callback",
+   "parent": null,
+   "optional": false,
+   "depends_on": null
+  },
+  "model-ic-rolling": {
+   "label": "Model IC rolling",
+   "parent": null,
+   "optional": false,
+   "depends_on": null
+  },
+  "linucb-reward-ledger": {
+   "label": "Reward ledger",
+   "parent": null,
+   "optional": false,
+   "depends_on": null
+  },
+  "adapt": {
+   "label": "Adapt params",
+   "parent": null,
+   "optional": false,
+   "depends_on": null
+  },
+  "daily-report": {
+   "label": "Daily report",
+   "parent": null,
+   "optional": false,
+   "depends_on": null
+  },
+  "paper-active-postmarket": {
+   "label": "Paper active",
+   "parent": null,
+   "optional": true,
+   "depends_on": null
+  },
+  "obsidian-sync": {
+   "label": "Obsidian sync",
+   "parent": null,
+   "optional": true,
+   "depends_on": null
+  },
+  "meta-learning-shadow": {
+   "label": "Meta shadow",
+   "parent": null,
+   "optional": true,
+   "depends_on": null
+  },
+  "strategy-learning": {
+   "label": "Strategy learning",
+   "parent": null,
+   "optional": true,
+   "depends_on": null
+  },
+  "evening-closure": {
+   "label": "全鏈完成收據",
+   "parent": null,
+   "optional": false,
+   "depends_on": "strategy-learning"
+  },
+  "us-leading": {
+   "label": "US leading",
+   "parent": null,
+   "optional": false,
+   "depends_on": null
+  },
+  "news-analyst": {
+   "label": "News analyst",
+   "parent": null,
+   "optional": false,
+   "depends_on": null
+  },
+  "morning-setup": {
+   "label": "Morning setup",
+   "parent": null,
+   "optional": false,
+   "depends_on": null
+  },
+  "recommendation": {
+   "label": "Recommendation · L4 推薦",
+   "parent": null,
+   "optional": false,
+   "depends_on": null
+  },
+  "pre-market-warmup": {
+   "label": "Pre-market",
+   "parent": null,
+   "optional": false,
+   "depends_on": null
+  },
+  "premarket-evidence-watchdog": {
+   "label": "盤前鏈監看",
+   "parent": null,
+   "optional": true,
+   "depends_on": null
+  },
+  "dataset-snapshot-export": {
+   "label": "Research snapshot",
+   "parent": null,
+   "optional": false,
+   "depends_on": null
+  },
+  "active8-oof-daily": {
+   "label": "Active-8 daily evidence",
+   "parent": null,
+   "optional": false,
+   "depends_on": null
+  },
+  "allocator-ev-lifecycle-watchdog": {
+   "label": "EV lifecycle",
+   "parent": null,
+   "optional": true,
+   "depends_on": null
+  }
+ },
+ "other_chains": {
+  "intraday_guard": {
+   "phases": [
+    {
+     "id": "session",
+     "title": "盤中守門與收盤帳務",
+     "caption": "09:00–13:30 每分鐘 intraday-check → 收盤出場 → 收盤價 → 帳務快照；重新評分 10:00／11:00／12:00／12:30 為獨立排程",
+     "main": [
+      "intraday-check",
+      "eod-exit",
+      "post-close-price-refresh",
+      "daily-snapshot"
+     ],
+     "side": [
+      "rescore-10",
+      "rescore-11",
+      "rescore-12",
+      "rescore-1230"
+     ]
+    }
+   ],
+   "catalog": [
+    {
+     "id": "intraday-check",
+     "label": "Intraday check"
+    },
+    {
+     "id": "eod-exit",
+     "label": "EOD exit"
+    },
+    {
+     "id": "post-close-price-refresh",
+     "label": "Close price"
+    },
+    {
+     "id": "daily-snapshot",
+     "label": "Daily snapshot"
+    },
+    {
+     "id": "rescore-10",
+     "label": "10:00 re-score"
+    },
+    {
+     "id": "rescore-11",
+     "label": "11:00 re-score"
+    },
+    {
+     "id": "rescore-12",
+     "label": "12:00 re-score"
+    },
+    {
+     "id": "rescore-1230",
+     "label": "12:30 re-score"
+    }
+   ],
+   "stages": {
+    "intraday-check": {
+     "label": "Intraday check",
+     "parent": null,
+     "optional": false,
+     "depends_on": null
+    },
+    "eod-exit": {
+     "label": "EOD exit",
+     "parent": null,
+     "optional": false,
+     "depends_on": null
+    },
+    "post-close-price-refresh": {
+     "label": "Close price",
+     "parent": null,
+     "optional": false,
+     "depends_on": null
+    },
+    "daily-snapshot": {
+     "label": "Daily snapshot",
+     "parent": null,
+     "optional": false,
+     "depends_on": null
+    },
+    "rescore-10": {
+     "label": "10:00 re-score",
+     "parent": null,
+     "optional": false,
+     "depends_on": null
+    },
+    "rescore-11": {
+     "label": "11:00 re-score",
+     "parent": null,
+     "optional": false,
+     "depends_on": null
+    },
+    "rescore-12": {
+     "label": "12:00 re-score",
+     "parent": null,
+     "optional": false,
+     "depends_on": null
+    },
+    "rescore-1230": {
+     "label": "12:30 re-score",
+     "parent": null,
+     "optional": false,
+     "depends_on": null
+    }
+   }
+  },
+  "weekly_research": {
+   "phases": [
+    {
+     "id": "audit",
+     "title": "週五稽核",
+     "caption": "週五 18:30 起：weekly audit、Model IC、週日 04:00 storage integrity（同欄並行）",
+     "main": [
+      "weekly-audit",
+      "storage-integrity-audit",
+      "model-ic-full-check"
+     ],
+     "side": []
+    },
+    {
+     "id": "validation",
+     "title": "驗證與研究",
+     "caption": "週日清晨：Validation／MC、alpha quality、Active-8 weekly；drift research 與 sector leaders 為選配",
+     "main": [
+      "weekly-backtest",
+      "alpha-quality",
+      "active8-oof-weekly"
+     ],
+     "side": [
+      "weekly-optuna",
+      "sector-leaders"
+     ]
+    },
+    {
+     "id": "closure",
+     "title": "回放與收尾",
+     "caption": "replay／calibration 為選配；weekly cleanup → 週日 12:00 weekly root 收尾",
+     "main": [
+      "weekly-cleanup",
+      "weekly-readiness"
+     ],
+     "side": [
+      "adaptive-meta-policy-replay",
+      "s12-smcvwap-calibration",
+      "linucb-multiplier-replay"
+     ]
+    }
+   ],
+   "catalog": [
+    {
+     "id": "weekly-audit",
+     "label": "Weekly audit"
+    },
+    {
+     "id": "storage-integrity-audit",
+     "label": "Storage integrity"
+    },
+    {
+     "id": "model-ic-full-check",
+     "label": "Model IC full"
+    },
+    {
+     "id": "weekly-backtest",
+     "label": "Validation / MC"
+    },
+    {
+     "id": "alpha-quality",
+     "label": "Alpha quality"
+    },
+    {
+     "id": "active8-oof-weekly",
+     "label": "Active-8 weekly cohort / validation-release"
+    },
+    {
+     "id": "weekly-optuna",
+     "label": "Drift research"
+    },
+    {
+     "id": "sector-leaders",
+     "label": "Sector leaders"
+    },
+    {
+     "id": "adaptive-meta-policy-replay",
+     "label": "Meta replay"
+    },
+    {
+     "id": "s12-smcvwap-calibration",
+     "label": "S12 calibration"
+    },
+    {
+     "id": "linucb-multiplier-replay",
+     "label": "LinUCB replay"
+    },
+    {
+     "id": "weekly-cleanup",
+     "label": "Weekly cleanup"
+    },
+    {
+     "id": "weekly-readiness",
+     "label": "Weekly root"
+    }
+   ],
+   "stages": {
+    "weekly-audit": {
+     "label": "Weekly audit",
+     "parent": null,
+     "optional": false,
+     "depends_on": null
+    },
+    "storage-integrity-audit": {
+     "label": "Storage integrity",
+     "parent": null,
+     "optional": false,
+     "depends_on": null
+    },
+    "model-ic-full-check": {
+     "label": "Model IC full",
+     "parent": null,
+     "optional": false,
+     "depends_on": null
+    },
+    "weekly-backtest": {
+     "label": "Validation / MC",
+     "parent": null,
+     "optional": false,
+     "depends_on": null
+    },
+    "alpha-quality": {
+     "label": "Alpha quality",
+     "parent": null,
+     "optional": false,
+     "depends_on": null
+    },
+    "active8-oof-weekly": {
+     "label": "Active-8 weekly cohort / validation-release",
+     "parent": null,
+     "optional": false,
+     "depends_on": null
+    },
+    "weekly-optuna": {
+     "label": "Drift research",
+     "parent": null,
+     "optional": true,
+     "depends_on": null
+    },
+    "sector-leaders": {
+     "label": "Sector leaders",
+     "parent": null,
+     "optional": true,
+     "depends_on": null
+    },
+    "adaptive-meta-policy-replay": {
+     "label": "Meta replay",
+     "parent": null,
+     "optional": true,
+     "depends_on": null
+    },
+    "s12-smcvwap-calibration": {
+     "label": "S12 calibration",
+     "parent": null,
+     "optional": true,
+     "depends_on": null
+    },
+    "linucb-multiplier-replay": {
+     "label": "LinUCB replay",
+     "parent": null,
+     "optional": true,
+     "depends_on": null
+    },
+    "weekly-cleanup": {
+     "label": "Weekly cleanup",
+     "parent": null,
+     "optional": false,
+     "depends_on": null
+    },
+    "weekly-readiness": {
+     "label": "Weekly root",
+     "parent": null,
+     "optional": false,
+     "depends_on": null
+    }
+   }
+  },
+  "monthly_artifact": {
+   "phases": [
+    {
+     "id": "monthly",
+     "title": "每月 artifact",
+     "caption": "每月第一個週六 strategy mining → monthly search；第一個週日 Active-8 monthly → monthly root 收尾",
+     "main": [
+      "monthly-strategy-mining",
+      "monthly-optuna",
+      "active8-oof-monthly",
+      "monthly-readiness"
+     ],
+     "side": []
+    }
+   ],
+   "catalog": [
+    {
+     "id": "monthly-strategy-mining",
+     "label": "Strategy mining"
+    },
+    {
+     "id": "monthly-optuna",
+     "label": "Monthly search"
+    },
+    {
+     "id": "active8-oof-monthly",
+     "label": "Active-8 monthly release / validation"
+    },
+    {
+     "id": "monthly-readiness",
+     "label": "Monthly root"
+    }
+   ],
+   "stages": {
+    "monthly-strategy-mining": {
+     "label": "Strategy mining",
+     "parent": null,
+     "optional": false,
+     "depends_on": null
+    },
+    "monthly-optuna": {
+     "label": "Monthly search",
+     "parent": null,
+     "optional": false,
+     "depends_on": null
+    },
+    "active8-oof-monthly": {
+     "label": "Active-8 monthly release / validation",
+     "parent": null,
+     "optional": false,
+     "depends_on": null
+    },
+    "monthly-readiness": {
+     "label": "Monthly root",
+     "parent": null,
+     "optional": false,
+     "depends_on": null
+    }
+   }
+  }
+ }
+}

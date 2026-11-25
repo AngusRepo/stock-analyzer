@@ -2,6 +2,7 @@ import {
   buildExpandedMetaLearningContext,
   hashExpandedMetaLearningContext,
 } from './metaLearningContext'
+import { archivedPredictionsCouldChangeLatest, mergeArchivedLatestPredictions, predictionRankScore, sqliteOrder, type ArchivedPredictionsEnv } from './retentionPredictionsReader'
 
 export interface LinUcbRewardSourceRow {
   date?: string | null
@@ -50,6 +51,8 @@ export interface LinUcbRewardRefreshOptions {
   limit?: number
   nowIso?: string
   requireOutcome?: boolean
+  /** R2 archive of rows past the 120-day hot window; production callers always pass it. */
+  coldEnv?: ArchivedPredictionsEnv
 }
 
 export interface LinUcbRewardRefreshReport {
@@ -351,7 +354,6 @@ export async function listLinUcbRewardSourceRows(
   }
   const whereClause = clauses.length > 0 ? clauses.join(' AND ') : '1 = 1'
   binds.push(limit)
-
   const { results } = await db.prepare(`
     SELECT dr.date,
            dr.stock_id,
@@ -433,6 +435,13 @@ export async function listLinUcbRewardSourceRows(
      ORDER BY dr.date DESC, dr.rank ASC
      LIMIT ?
   `).bind(...binds).all<LinUcbRewardSourceRow>()
+  // The single-database join has no archived equivalent; never return a silently shorter window.
+  if (options.coldEnv && await archivedPredictionsCouldChangeLatest(options.coldEnv, {
+    hotDates: (results ?? []).map((row) => String(row.date ?? '').slice(0, 10)), limit,
+    start: options.startDate, end: options.endDate,
+    query: { filter: (row) => options.requireOutcome === false || row.trade_pnl_pct != null || row.actual_return_pct != null },
+  }))
+    throw new Error('linucb_source_archived_predictions_require_split_domains')
   return results ?? []
 }
 
@@ -507,7 +516,19 @@ export async function listLinUcbRewardSourceRowsAcrossDomains(
      ORDER BY p.prediction_date DESC, p.stock_id DESC, p.model_name DESC
      LIMIT ?
   `).bind(...binds).all<LinUcbRewardSourceRow & { market_risk_score?: number | string | null }>()
-  const predictions = predictionResult.results ?? []
+  const hotPredictions = predictionResult.results ?? []
+  const predictions = options.coldEnv ? await mergeArchivedLatestPredictions(options.coldEnv, {
+    hotRows: hotPredictions, limit,
+    start: options.startDate ? normalizeLinUcbSourceDate(options.startDate, 'startDate') : null,
+    end: options.endDate ? normalizeLinUcbSourceDate(options.endDate, 'endDate') : null,
+    dateOf: (row) => String(row.date ?? '').slice(0, 10),
+    order: sqliteOrder<typeof hotPredictions[number]>([(row) => row.date, 'desc'], [(row) => row.stock_id, 'desc'], [(row) => row.model_name, 'desc']),
+    query: { filter: (row) => options.requireOutcome === false || row.trade_pnl_pct != null || row.actual_return_pct != null },
+    project: (row) => ({ date: row.prediction_date as string, stock_id: row.stock_id as any, model_name: row.model_name as string,
+      direction_correct: row.direction_correct as any, rank_score: predictionRankScore(row) as any,
+      market_risk_score: row.market_risk_score as any, trade_pnl_pct: row.trade_pnl_pct as any,
+      actual_return_pct: row.actual_return_pct as any }),
+  }) : hotPredictions
   if (!predictions.length) return []
 
   const contextPairs = [...new Map(predictions.map((row) => ({

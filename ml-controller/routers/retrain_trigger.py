@@ -885,6 +885,10 @@ def _load_timesfm_l175_history(
         run_dt = datetime.now(timezone.utc)
     start_date = (run_dt - timedelta(days=max(1, int(lookback_days)))).strftime("%Y-%m-%d")
     end_date = run_dt.strftime("%Y-%m-%d")
+    # 420 days reach past the 120-day predictions hot window, and the R2 archive is not merged here
+    # (TimesFM L1.75 is retired). Stop with a reason instead of training on a silently cut window.
+    from services.retention_prediction_reads import require_hot_predictions
+    require_hot_predictions(start_date, end_date, "timesfm_l175_history")
 
     history: dict[int, dict[str, dict[str, float]]] = {}
     rows_scanned = 0

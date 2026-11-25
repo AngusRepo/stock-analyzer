@@ -28,3 +28,17 @@ test('reader-blocked backlog remains visible without claiming an enabled delete 
  const result=learningRetentionBlockers({...base,datasets:[...base.datasets,{dataset_id:'strategy_decision_log',candidate_rows:421}],readerBlockedDatasets:['strategy_decision_log']})
  assert.deepEqual(result,['cold_reader_not_verified:strategy_decision_log','retention_backlog:strategy_decision_log'])
 })
+
+test('readiness counts backlog against the same cutoff the drain deletes to', async () => {
+ const { inspectLearningTenYearRetentionReadiness } = await import('./learningTenYearRetentionReadiness')
+ const { retentionHotDrainCutoff } = await import('./retentionHotWindowDrain')
+ const cutoffs = new Map<string, string>()
+ const db = { prepare(sql: string) { const st = { args: [] as unknown[], bind(...a: unknown[]) { st.args = a; return st },
+   async first() { const table = /FROM (\w+)\s+WHERE/.exec(sql)?.[1]; if (table && /candidate_rows/.test(sql)) cutoffs.set(table, String(st.args[0])); return null },
+   async all() { return { results: [] } } }; return st } } as unknown as D1Database
+ const asOf = '2026-12-02'
+ const report = await inspectLearningTenYearRetentionReadiness(db, db, asOf)
+ assert.equal(cutoffs.get('predictions'), retentionHotDrainCutoff(asOf, 120, 'predictions'))
+ assert.equal(report.datasets.find((d: any) => d.dataset_id === 'predictions')?.cutoff_date, cutoffs.get('predictions'))
+ assert.equal(cutoffs.get('strategy_decision_log'), retentionHotDrainCutoff(asOf, 120, 'strategy_decision_log'))
+})

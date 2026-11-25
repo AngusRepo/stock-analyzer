@@ -28,6 +28,7 @@ from ._predictions_schema import (
     TradeSimulationResult,
 )
 from ._trade_simulator import simulate_trade
+from .retention_prediction_reads import combine_prediction_partials, hot_prediction_partials, load_prediction_cold_stats
 
 logger = logging.getLogger(__name__)
 
@@ -642,6 +643,17 @@ def summarize_verification_updates(pending_count: int, updates: list[dict]) -> d
     }
 
 
+def _with_cold_groups(groups: list[dict], cold: dict[tuple[int, str], dict], count_column: str) -> list[dict]:
+    """Hot groups plus groups whose rows are all archived, so their 'all' rows stay complete."""
+    seen = {(int(g["stock_id"]), str(g["model_name"])) for g in groups}
+    return [*groups, *({"stock_id": key[0], "model_name": key[1]} for key, row in cold.items()
+                       if key not in seen and int(row.get(count_column) or 0) > 0)]
+
+
+def _ratio(numerator: Any, denominator: Any) -> float | None:
+    return numerator / denominator if (denominator or 0) > 0 else None
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # model_accuracy update (port of worker updateModelAccuracy + upsertAccuracy)
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -662,8 +674,15 @@ def update_model_accuracy() -> int:
     since_90 = (now - timedelta(days=90)).isoformat()
 
     count = 0
-    for g in groups:
-        _upsert_accuracy(g["stock_id"], g["model_name"], "all", None)
+    # period='all' also covers rows the retention drain archived: their totals live in
+    # prediction_cold_stats_v1. 30d/90d stay inside the 120-day hot window.
+    cold = load_prediction_cold_stats(LEARNING_D1_CLIENT.query)
+    for g in _with_cold_groups(groups, cold, "d_total"):
+        archived = cold.get((int(g["stock_id"]), str(g["model_name"])))
+        if archived:
+            _upsert_accuracy_with_archive(g["stock_id"], g["model_name"], archived)
+        else:
+            _upsert_accuracy(g["stock_id"], g["model_name"], "all", None)
         _upsert_accuracy(g["stock_id"], g["model_name"], "30d", since_30)
         _upsert_accuracy(g["stock_id"], g["model_name"], "90d", since_90)
         count += 1
@@ -671,8 +690,27 @@ def update_model_accuracy() -> int:
     return count
 
 
+def _upsert_accuracy_with_archive(stock_id: int, model_name: str, archived: dict) -> None:
+    """period='all' over hot rows plus archived totals; same metrics as _upsert_accuracy."""
+    t = combine_prediction_partials(hot_prediction_partials(LEARNING_D1_CLIENT.query, stock_id, model_name), archived)
+    total, correct = t["d_total"], t["d_correct"]
+    accuracy = correct / total if total else 0
+    avg_win, avg_loss = _ratio(t["d_win_sum"], t["d_win_n"]), _ratio(t["d_loss_sum"], t["d_loss_n"])
+    expectancy = (accuracy * avg_win + (1 - accuracy) * avg_loss
+                  if (avg_win is not None and avg_loss is not None) else None)
+    _write_model_accuracy([
+        stock_id, model_name, "all",
+        total, correct, accuracy, _ratio(t["d_err_sum"], t["d_err_n"]),
+        _ratio(t["d_low_correct"], t["d_low_total"]), _ratio(t["d_high_correct"], t["d_high_total"]),
+        t["d_low_total"], t["d_high_total"],
+        avg_win, avg_loss, _ratio(t["d_gross_profit"], t["d_gross_loss"]),
+        _ratio(t["d_pnl_sum"], t["d_pnl_n"]), _ratio(t["d_r_sum"], t["d_r_n"]),
+        _ratio(t["d_hit_target"], t["d_pnl_n"]), _ratio(t["d_hit_stop"], t["d_pnl_n"]), expectancy,
+    ])
+
+
 def _upsert_accuracy(
-    stock_id: int, model_name: str, period: str, since: str | None
+    stock_id: int, model_name: str, period: str, since: str | None,
 ) -> None:
     """Mirrors worker upsertAccuracy (predictionVerifier.ts:315-418)."""
     if since:
@@ -754,6 +792,17 @@ def _upsert_accuracy(
     hit_target_rate = tr.get("hit_target") / tc if tc > 0 else None
     hit_stop_rate = tr.get("hit_stop") / tc if tc > 0 else None
 
+    _write_model_accuracy([
+        stock_id, model_name, period,
+        total, correct, accuracy, r.get("avg_err"),
+        acc_low, acc_high, lr.get("total") or 0, hr.get("total") or 0,
+        avg_win, avg_loss, profit_factor,
+        tr.get("avg_pnl"), tr.get("avg_r"),
+        hit_target_rate, hit_stop_rate, expectancy,
+    ])
+
+
+def _write_model_accuracy(params: list[Any]) -> None:
     LEARNING_D1_CLIENT.execute(
         """
         INSERT INTO model_accuracy (
@@ -783,14 +832,7 @@ def _upsert_accuracy(
           expectancy           = excluded.expectancy,
           last_updated         = datetime('now')
         """,
-        params=[
-            stock_id, model_name, period,
-            total, correct, accuracy, r.get("avg_err"),
-            acc_low, acc_high, lr.get("total") or 0, hr.get("total") or 0,
-            avg_win, avg_loss, profit_factor,
-            tr.get("avg_pnl"), tr.get("avg_r"),
-            hit_target_rate, hit_stop_rate, expectancy,
-        ],
+        params=params,
     )
 
 
@@ -809,8 +851,13 @@ def update_trade_performance() -> int:
     since_90 = (now - timedelta(days=90)).isoformat()
 
     count = 0
-    for g in groups:
-        _upsert_trade_perf(g["stock_id"], g["model_name"], "all", None)
+    cold = load_prediction_cold_stats(LEARNING_D1_CLIENT.query)
+    for g in _with_cold_groups(groups, cold, "t_total"):
+        archived = cold.get((int(g["stock_id"]), str(g["model_name"])))
+        if archived:
+            _upsert_trade_perf_with_archive(g["stock_id"], g["model_name"], archived)
+        else:
+            _upsert_trade_perf(g["stock_id"], g["model_name"], "all", None)
         _upsert_trade_perf(g["stock_id"], g["model_name"], "30d", since_30)
         _upsert_trade_perf(g["stock_id"], g["model_name"], "90d", since_90)
         count += 1
@@ -818,8 +865,29 @@ def update_trade_performance() -> int:
     return count
 
 
+def _upsert_trade_perf_with_archive(stock_id: int, model_name: str, archived: dict) -> None:
+    """period='all' over hot rows plus archived totals; same metrics as _upsert_trade_perf."""
+    t = combine_prediction_partials(hot_prediction_partials(LEARNING_D1_CLIENT.query, stock_id, model_name), archived)
+    total = t["t_total"]
+    if total < 1:
+        return
+    wins = t["t_wins"]
+    win_rate = wins / total
+    avg_win, avg_loss = _ratio(t["t_win_sum"], wins), _ratio(t["t_loss_sum"], t["t_losses"])
+    expectancy = (win_rate * avg_win + (1 - win_rate) * avg_loss
+                  if (avg_win is not None and avg_loss is not None) else None)
+    _write_trade_performance([
+        stock_id, model_name, "all",
+        total, wins, t["t_losses"], t["t_pnl_sum"],
+        avg_win, avg_loss, t["t_max"], t["t_min"],
+        _ratio(t["t_gross_profit"], t["t_gross_loss"]), expectancy, _ratio(t["t_r_sum"], t["t_r_n"]),
+        t["t_hit_t1"], t["t_hit_t2"], t["t_hit_stop"], t["t_expired"],
+        _ratio(t["t_mfe_sum"], t["t_mfe_n"]), _ratio(t["t_mae_sum"], t["t_mae_n"]),
+    ])
+
+
 def _upsert_trade_perf(
-    stock_id: int, model_name: str, period: str, since: str | None
+    stock_id: int, model_name: str, period: str, since: str | None,
 ) -> None:
     """Mirrors worker upsertTradePerf (predictionVerifier.ts:438-513)."""
     if since:
@@ -873,6 +941,18 @@ def _upsert_trade_perf(
         if (avg_win is not None and avg_loss is not None) else None
     )
 
+    _write_trade_performance([
+        stock_id, model_name, period,
+        total, wins, r.get("losses") or 0, r.get("total_pnl"),
+        avg_win, avg_loss, r.get("max_win"), r.get("max_loss"),
+        profit_factor, expectancy, r.get("avg_r"),
+        r.get("hit_t1") or 0, r.get("hit_t2") or 0,
+        r.get("hit_stop") or 0, r.get("expired") or 0,
+        r.get("avg_mfe"), r.get("avg_mae"),
+    ])
+
+
+def _write_trade_performance(params: list[Any]) -> None:
     LEARNING_D1_CLIENT.execute(
         """
         INSERT INTO trade_performance (
@@ -903,15 +983,7 @@ def _upsert_trade_perf(
           avg_mae           = excluded.avg_mae,
           last_updated      = datetime('now')
         """,
-        params=[
-            stock_id, model_name, period,
-            total, wins, r.get("losses") or 0, r.get("total_pnl"),
-            avg_win, avg_loss, r.get("max_win"), r.get("max_loss"),
-            profit_factor, expectancy, r.get("avg_r"),
-            r.get("hit_t1") or 0, r.get("hit_t2") or 0,
-            r.get("hit_stop") or 0, r.get("expired") or 0,
-            r.get("avg_mfe"), r.get("avg_mae"),
-        ],
+        params=params,
     )
 
 

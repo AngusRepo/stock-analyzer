@@ -1,4 +1,5 @@
 import { inspectL4DistributionClosure } from './l4DistributionClosure'
+import { readArchivedEnsembleStockDates } from './retentionPredictionsReader'
 import { inspectPostPipelineActionAuthority } from './postPipelineActionAuthority'
 import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
@@ -222,23 +223,27 @@ export async function runMetaLearningShadowClosure(env: Bindings, ctx: ChainCont
   const hydration = await hydrateMatureMetaShadowDecisionRewards(databaseForDataDomain(env, 'learning'), {
     endDate: runDate,
     limit: 50000,
+    coldEnv: env,
   })
   const predictionDb = databaseForDataDomain(env, 'learning')
   const recommendationDb = databaseForDataDomain(env, 'core')
   const sourceRows = await listLinUcbRewardSourceRowsAcrossDomains(predictionDb, recommendationDb, {
     endDate: runDate,
     limit: 5000,
+    coldEnv: env,
   })
   const decisionRows = await listLinUcbRewardSourceRowsAcrossDomains(predictionDb, recommendationDb, {
     startDate: runDate,
     endDate: runDate,
     limit: 5000,
     requireOutcome: false,
+    coldEnv: env,
   })
   if (decisionRows.length === 0) {
     return [
       `reward_hydrated=${hydration.hydrated_decisions}`,
       `reward_unseekable_pending=${hydration.unseekable_pending_decisions}`,
+      `reward_cold_unavailable=${hydration.cold_unavailable_decisions}`,
       'decision_contexts=0',
       `registry_created=${registry.created.length}`,
       `registry_total=${registry.total}`,
@@ -277,6 +282,7 @@ export async function runMetaLearningShadowClosure(env: Bindings, ctx: ChainCont
   return [
     `reward_hydrated=${hydration.hydrated_decisions}`,
     `reward_unseekable_pending=${hydration.unseekable_pending_decisions}`,
+    `reward_cold_unavailable=${hydration.cold_unavailable_decisions}`,
     `decision_contexts=${decisionRows.length}`,
     `registry_created=${registry.created.length}`,
     `registry_total=${registry.total}`,
@@ -906,6 +912,7 @@ export async function runPostVerifyCallbackChain(
     const stageMs: Record<string, number> = {}
     let stageStartedAt = Date.now()
     const canonical = await materializePriceHorizonLabels(env, {
+      archivedEnsemble: (start, end) => readArchivedEnsembleStockDates(env, start, end),
       endDate: ctx.runDate,
       outcomeAsOfDate,
       maxSignalDates: 60,
@@ -914,6 +921,7 @@ export async function runPostVerifyCallbackChain(
     stageMs.canonical_labels = Date.now() - stageStartedAt
     stageStartedAt = Date.now()
     const multiHorizon = await materializeStrategyMultiHorizonPriceLabels(env, {
+      archivedEnsemble: (start, end) => readArchivedEnsembleStockDates(env, start, end),
       endDate: ctx.runDate,
       outcomeAsOfDate,
       maxSignalDates: 60,

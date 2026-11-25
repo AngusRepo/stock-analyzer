@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { readDailyRecommendationPredictions, readStockLatestPredictions } from '../lib/retentionPredictionsReader'
 import { mergeArchivedMarketHistory } from '../lib/retentionMarketReader'
 import { databaseForDataDomain } from '../lib/dataDomainRegistry'
 import { loadPrimaryFinLabIndustries } from '../lib/finlabTaxonomy'
@@ -391,10 +392,7 @@ stocks.get('/:id/news', async (c) => {
 stocks.get('/:id/predictions', async (c) => {
   const id = parseId(c.req.param('id'))
   if (!id) return c.json({ error: '無效 ID' }, 400)
-  const { results } = await databaseForDataDomain(c.env, 'learning').prepare(
-    'SELECT * FROM predictions WHERE stock_id=? ORDER BY generated_at DESC LIMIT 10'
-  ).bind(id).all()
-  return c.json(results)
+  return c.json(await readStockLatestPredictions(c.env, id, 10))
 })
 
 // ─── GET /api/stocks/:id/factors ─────────────────────────────────────────────
@@ -587,26 +585,20 @@ stocks.get('/:id/ai-summary', async (c) => {
 
   let recommendation = recRow
   if (recRow) {
-    const [ensembleRow, perModelRows] = await Promise.all([
-      databaseForDataDomain(c.env, 'learning').prepare(`
-        SELECT forecast_data
-         FROM predictions
-         WHERE stock_id = ?
-           AND model_name = 'ensemble'
-           AND prediction_date = ?
-         ORDER BY generated_at DESC, id DESC
-         LIMIT 1
-      `).bind(id, recRow.date).first<any>().catch(() => null),
-      databaseForDataDomain(c.env, 'learning').prepare(`
-        SELECT stock_id, model_name, signal_raw, direction_accuracy, forecast_data
-          FROM predictions
-         WHERE stock_id = ?
-           AND model_name != 'ensemble'
-           AND model_name NOT LIKE '%::challenger'
-           AND prediction_date = ?
-         ORDER BY model_name
-      `).bind(id, recRow.date).all<any>().then((r) => r.results ?? []).catch(() => []),
-    ])
+    // Same hot queries as before; a recommendation date older than the predictions hot window
+    // reads its R2 archive (no archive read for a hot date). A failed archive read is reported as
+    // predictions_status='unavailable' instead of an empty, normal-looking vote summary.
+    let predictionsStatus: 'ok' | 'unavailable' = 'ok'
+    let predictionsError: string | null = null
+    const { ensembleRows, perModelRows: perModel } = await readDailyRecommendationPredictions(
+      c.env, databaseForDataDomain(c.env, 'learning'), recRow.date, [id],
+    ).catch((error: unknown) => {
+      predictionsStatus = 'unavailable'
+      predictionsError = error instanceof Error ? error.message : String(error)
+      return { ensembleRows: { results: [] as any[] }, perModelRows: { results: [] as any[] } }
+    })
+    const ensembleRow = ensembleRows.results[0] ?? null
+    const perModelRows = perModel.results
     const forecastData = parsePredictionForecastData(ensembleRow?.forecast_data) ?? {}
     const mlVoteSummary = resolveMlVoteSummary(recRow.ml_vote_summary, buildMlVoteSummary(forecastData, perModelRows))
     const watchPoints = (() => {
@@ -629,6 +621,8 @@ stocks.get('/:id/ai-summary', async (c) => {
       alpha_allocation: forecastData.alpha_allocation ?? null,
       ml_vote_summary: mlVoteSummary,
       watch_points: enrichedWatchPoints,
+      predictions_status: predictionsStatus,
+      ...(predictionsError ? { predictions_error: predictionsError } : {}),
     }
   }
 

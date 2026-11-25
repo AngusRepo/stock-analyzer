@@ -32,6 +32,7 @@ export async function runNeuralMetaShadow(env: Bindings, options: NeuralShadowRu
       startDate: options.startDate,
       endDate: options.endDate,
       limit: options.limit ?? 5000,
+      coldEnv: env,
     },
   )
   const payload = buildNeuralMetaBanditTrainingPayload(options.policyId, rows, {

@@ -1,4 +1,5 @@
 import type { SchedulerCallbackContext, TaskHandler, TriggerDeps } from './adminTriggerTaskMap'
+import { readArchivedEnsembleStockDates } from './retentionPredictionsReader'
 import { R33_MONTHLY_PROMOTION_DESIGN_DISABLED } from './designDisabledSteps'
 import { DATA_DOMAINS, databaseForDataDomain, databaseForTable, shadowDatabaseForDataDomain } from './dataDomainRegistry'
 import type { DataDomain } from './dataDomainRegistry'
@@ -1255,6 +1256,7 @@ export function buildAdminWorkerDomainTaskMap(
       const maxProcessDates = parseBoundedPositiveInt(c.req.query('max_process_dates'), 8, 40)
       const force = c.req.query('force') === '1'
       const canonical = await materializePriceHorizonLabels(c.env, {
+        archivedEnsemble: (start, end) => readArchivedEnsembleStockDates(c.env, start, end),
         startDate,
         endDate,
         outcomeAsOfDate,
@@ -1263,6 +1265,7 @@ export function buildAdminWorkerDomainTaskMap(
         force,
       })
       const multiHorizon = await materializeStrategyMultiHorizonPriceLabels(c.env, {
+        archivedEnsemble: (start, end) => readArchivedEnsembleStockDates(c.env, start, end),
         startDate,
         endDate,
         outcomeAsOfDate,
@@ -1655,6 +1658,8 @@ export function buildAdminWorkerDomainTaskMap(
       const allowed = new Set<string>(RETENTION_HOT_WINDOW_DRAIN_POLICY_IDS)
       const unknown = requestedPolicies.filter((policy: string) => !allowed.has(policy))
       if (unknown.length) throw new Error(`retention_hot_drain_unknown_policy:${unknown.join(',')}`)
+      const pilot = c.req.query('pilot')
+      if (pilot != null && pilot !== 'one_day') throw new Error('retention_hot_drain_pilot_invalid')
       const settings = retentionHotDrainSettings(c.env)
       const result = await runRetentionHotWindowDrain(c.env, {
         businessDate: requestedRunDate() || twToday(),
@@ -1664,6 +1669,7 @@ export function buildAdminWorkerDomainTaskMap(
         confirmPhrase: c.req.query('confirm_drain'),
         maxRounds: parseBoundedPositiveInt(c.req.query('max_rounds'), settings.maxRounds.default, settings.maxRounds.max),
         budgetMs: parseBoundedPositiveInt(c.req.query('budget_ms'), settings.budgetMs.default, settings.budgetMs.max),
+        pilotOneDay: pilot === 'one_day',
       })
       if (result.status === 'error') throw new Error(`retention hot window drain failed ${JSON.stringify(result)}`)
       return summarizeRetentionHotWindowDrain(result)

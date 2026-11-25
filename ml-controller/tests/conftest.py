@@ -9,6 +9,21 @@ def isolated_slate_artifacts(tmp_path):
         yield
 
 
+@pytest.fixture(autouse=True)
+def no_archived_predictions(monkeypatch):
+    """Ops D1 holds no archived predictions chunk unless a test injects one (L-2 cold reads)."""
+    from services import retention_history
+
+    class _NoArchives:
+        @staticmethod
+        def query(sql, params=None, **_):
+            if 'FROM run_artifacts' in sql:
+                return []
+            raise AssertionError('unexpected ops query in tests: ' + sql[:80])
+
+    monkeypatch.setattr(retention_history, 'OPS', _NoArchives())
+
+
 @pytest.fixture
 def kv_position_risk(monkeypatch):
     """K16a: the trading:risk_config position contract replay entries read from KV."""

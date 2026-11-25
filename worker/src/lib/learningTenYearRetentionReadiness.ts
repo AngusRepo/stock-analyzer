@@ -1,6 +1,7 @@
 import { inspectDataDomainCutoverReadiness } from './dataDomainCutoverReadiness'
 import { tablesForDataDomainShadowBackfill } from './dataDomainRegistry'
 import { retentionR2PolicyConfig } from './retentionArchiveOnly'
+import { retentionHotDrainCutoff } from './retentionHotWindowDrain'
 
 export const LEARNING_HOT_RETENTION_DAYS = 120 as const
 export const LEARNING_COLD_RETENTION_DAYS = 3650 as const
@@ -102,11 +103,14 @@ export async function inspectLearningTenYearRetentionReadiness(
   asOfDate: string,
 ) {
   const hotCutoffDate = isoDateDaysBefore(asOfDate, LEARNING_HOT_RETENTION_DAYS)
+  // Backlog is counted against the drain's own cutoff (policy days, raised by a dataset's reader
+  // floor such as the 127-day predictions window), so readiness never reports rows the drain keeps.
+  const datasetCutoff = (dataset: DatasetSpec) => retentionHotDrainCutoff(asOfDate, LEARNING_HOT_RETENTION_DAYS, dataset.table)
   const [datasets, policy, runTotals, navCold, executorReceipts] = await Promise.all([
     (async () => {
       // One indexed count at a time avoids a maintenance burst against Learning.
       const rows = []
-      for (const dataset of LEARNING_DATASETS) rows.push(await inspectDataset(learningDb, dataset, hotCutoffDate))
+      for (const dataset of LEARNING_DATASETS) rows.push(await inspectDataset(learningDb, dataset, datasetCutoff(dataset)))
       return rows
     })(),
     opsDb.prepare(

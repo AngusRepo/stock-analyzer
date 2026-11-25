@@ -52,15 +52,16 @@ assert(['paired-native-execution-day', 'paired-native-execution-morning', 'morni
   .every(id => manifest.deleteJobIds.includes(id)), 'retired jobs must be explicit deletion targets')
 const recoveryJobs = manifest.jobs.filter(job => job.task === 'premarket-evidence-watchdog')
 assert(recoveryJobs.length === 1 && recoveryJobs[0].timeZone === 'Asia/Taipei', 'one Taipei-time recovery scheduler replaces the briefing schedule')
-// 58 roots: 56 prior + daily-snapshot-settle (B#2) + postclose-research-dispatch (B#1) + the Taipei recovery job
-// - the two retired strategy NAV collectors (R33 Phase 1) + kv-config-drift (E-7 nightly, 2026-11-19).
-assert(schedulerManifestJobs().length - recoveryJobs.length === 57, 'physical roots exclude retired strategy NAV collectors and other retired jobs')
+// 59 roots: 56 prior + daily-snapshot-settle (B#2) + postclose-research-dispatch (B#1) + the Taipei recovery job
+// - the two retired strategy NAV collectors (R33 Phase 1) + kv-config-drift (E-7 nightly, 2026-11-19)
+// + retention-hot-window-drain-predictions (L-2, confirmed predictions drain).
+assert(schedulerManifestJobs().length - recoveryJobs.length === 58, 'physical roots exclude retired strategy NAV collectors and other retired jobs')
 assert(manifestTasks.filter(task => task !== 'premarket-evidence-watchdog').length === 53, 'logical inventory excludes retired strategy NAV and other retired jobs')
-assert(summary.physicalRoots === 58, 'summary physical root count mismatch')
+assert(summary.physicalRoots === 59, 'summary physical root count mismatch')
 assert(summary.uniqueLogicalTasks === 54 && summary.accountedLogicalTasks === 54, 'logical task accounting must be 54/54')
 assert(summary.reviewedDependencies === 36, 'reviewed dependencies include the post-close dispatcher and kv-config-drift and exclude retired jobs')
 assert(summary.unmappedDependencies === 18 && summary.unmappedTasks.length === 18, 'unreviewed non-daily dependency debt must remain fail-visible')
-assert(summary.pausedPhysicalRoots === 5, 'paper shadow backfill, the weekly/monthly Active-8 OOF cohorts and the weekly/monthly Optuna sweeps stay paused')
+assert(summary.pausedPhysicalRoots === 6, 'paper shadow backfill, the weekly/monthly Active-8 OOF cohorts, the weekly/monthly Optuna sweeps and the predictions drain (until its pilot) stay paused')
 assert(summary.internalLogicalSteps === 23, 'internal logical step accounting must preserve caller total')
 
 const paused = manifest.jobs.filter((job) => 'desiredState' in job && job.desiredState === 'PAUSED')
@@ -70,6 +71,7 @@ assert(
     'active8-oof-weekly',
     'data-domain-shadow-backfill-paper',
     'monthly-optuna',
+    'retention-hot-window-drain-predictions',
     'weekly-optuna',
   ]),
   'production PAUSED truth must be represented in manifest',

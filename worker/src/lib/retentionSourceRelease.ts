@@ -1,6 +1,7 @@
 import { assertReplayReleaseProjection, assertSavedReplayRelease, replayReleaseStatements } from './retentionS12ReplayRelease'
 import type { ReplayReleaseProjection } from './retentionS12ReplayProjection'
 import { buildExactRetentionDelete } from './retentionExactRows'
+import { predictionColdStatsStatement } from './retentionPredictionColdStats'
 import type { RetentionArchiveSource } from './retentionArchiveOnly'
 
 export function sourceReleaseTable(domain: string): string {
@@ -23,7 +24,8 @@ export async function releaseArchivedRows(db: D1Database, source: RetentionArchi
     return saved.row_count // Lost HTTP/OPS acknowledgement; the source transaction already committed.
   }
   const exact = buildExactRetentionDelete(source, rows)
-  const derived = compact ? await replayReleaseStatements(db, rows, compact) : []
+  const derived = compact ? await replayReleaseStatements(db, rows, compact)
+    : source.sourceDomain === 'learning' && source.datasetId === 'predictions' ? [predictionColdStatsStatement(db, rows)] : []
   // D1 batch is one transaction. changes() is the preceding top-level DELETE
   // count, excluding trigger writes. CHECK failure rolls back the entire batch.
   // A zero/partial match must never publish an archival release receipt.

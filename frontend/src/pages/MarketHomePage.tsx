@@ -28,6 +28,7 @@ import {
   type ConfidenceSortMode,
 } from '@/lib/recommendationConfidence'
 import { queryTtl, recommendationDailyKey } from '@/lib/queryPolicy'
+import { hedgeSentimentView } from '@/lib/hedgeSentimentView'
 
 const loadRecommendationCardClean = () =>
   import('@/components/RecommendationCardClean').then((module) => ({ default: module.RecommendationCardClean }))
@@ -301,59 +302,6 @@ function factorDisplay(factor: RiskFactor | null, fallback = '待接資料') {
   if (factor.value != null && factor.value !== '') return String(factor.value)
   const raw = asNumber(factor.raw_value)
   return raw == null ? fallback : formatNumber(raw, 2)
-}
-
-function riskLevelLabel(score: number | null, level: unknown) {
-  const raw = String(level ?? '').toLowerCase()
-  if (raw.includes('red')) return '偏高'
-  if (raw.includes('orange')) return '升溫'
-  if (raw.includes('yellow')) return '中性偏高'
-  if (raw.includes('green')) return '低檔'
-  if (score == null) return '待接資料'
-  if (score >= 70) return '高風險'
-  if (score >= 46) return '中高風險'
-  if (score >= 28) return '表現中性'
-  return '低風險'
-}
-
-function clampScore(value: number) {
-  return Math.max(0, Math.min(100, Math.round(value)))
-}
-
-function volatilityStressScore(usVix: number | null, twVol20: number | null) {
-  const scores: number[] = []
-
-  if (usVix != null) {
-    scores.push(usVix >= 35 ? 85 : usVix >= 25 ? 65 : usVix >= 20 ? 52 : usVix <= 16 ? 25 : 40)
-  }
-
-  if (twVol20 != null) {
-    scores.push(twVol20 >= 40 ? 80 : twVol20 >= 25 ? 60 : twVol20 >= 18 ? 45 : 30)
-  }
-
-  if (!scores.length) return null
-  return scores.reduce((sum, value) => sum + value, 0) / scores.length
-}
-
-function deriveHedgeSentimentScore(risk: any) {
-  const hedgeSource = risk?.hedgeSentiment?.source ?? '專屬避險分數'
-  if (risk?.hedgeSentiment) {
-    const explicitHedgeScore = asNumber(risk.hedgeSentiment.score)
-    if (explicitHedgeScore != null) return { score: clampScore(explicitHedgeScore), source: hedgeSource }
-  }
-  const hedgeFactors = asArray<RiskFactor>(risk?.hedgeSentimentFactors)
-  const hedgeRaw = (id: string) => asNumber(hedgeFactors.find((factor) => String(factor.id ?? '') === id)?.raw_value)
-  const explicit = asNumber(risk?.hedgeScore ?? risk?.hedgeRiskValue)
-  const riskScore = asNumber(risk?.riskScore ?? risk?.risk_score)
-  const usVix = asNumber(risk?.vix ?? risk?.usVix ?? hedgeRaw('us_vix'))
-  const twVol20 = asNumber(risk?.twiiVol20 ?? risk?.realizedVol20 ?? hedgeRaw('twii_vol20'))
-  const volScore = volatilityStressScore(usVix, twVol20)
-
-  if (explicit != null) return { score: clampScore(explicit), source: hedgeSource }
-  if (riskScore != null && volScore != null) return { score: clampScore(riskScore * 0.75 + volScore * 0.25), source: '市場風險 + 波動 overlay' }
-  if (riskScore != null) return { score: clampScore(riskScore), source: '市場風險 fallback' }
-  if (volScore != null) return { score: clampScore(volScore), source: 'VIX / 台股波動 fallback' }
-  return { score: null, source: '待接資料' }
 }
 
 function Sparkline({ values, tone }: { values: number[]; tone: Tone }) {
@@ -713,7 +661,7 @@ function HedgeFactor({ label, value, note, tone = 'slate' }: { label: string; va
 }
 
 function HedgeSentimentCard({ risk }: { risk: any }) {
-  const sentiment = deriveHedgeSentimentScore(risk)
+  const sentiment = hedgeSentimentView(risk)
   const normalized = sentiment.score
   const hedgeFactors = asArray<RiskFactor>(risk?.hedgeSentimentFactors)
   const byHedgeId = (id: string) => hedgeFactors.find((factor) => String(factor.id ?? '') === id) ?? null
@@ -727,7 +675,7 @@ function HedgeSentimentCard({ risk }: { risk: any }) {
   const fxChange = asNumber(risk?.usdTwdChangePct ?? risk?.fxChangePct)
   const usVix = asNumber(usVixFactor?.raw_value ?? risk?.vix ?? risk?.usVix)
   const twVol20 = asNumber(twVolFactor?.raw_value ?? risk?.twiiVol20 ?? risk?.realizedVol20)
-  const hedgeLabel = risk?.hedgeSentiment?.label ?? riskLevelLabel(normalized, null)
+  const hedgeLabel = sentiment.label
   const hedgeMarker = normalized == null ? 0 : Math.max(0, Math.min(100, normalized))
 
   return (

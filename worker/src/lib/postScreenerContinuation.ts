@@ -1,4 +1,5 @@
 import type { Bindings } from '../types'
+import { opsCorrelationHeaders } from './opsRuntimeScope'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import {
   enqueuePipelineStage,
@@ -285,7 +286,7 @@ export async function reconcilePipelineCloudFailure(
   const params = new URLSearchParams({ date: businessDate, run_id: row.canonical_run_id })
   if (row.cursor_key) params.set('execution_name', row.cursor_key)
   const response = await fetch(`${env.ML_CONTROLLER_URL}/pipeline/v2/reconcile?${params}`, {
-    method: 'POST', headers: { 'X-Controller-Token': env.ML_CONTROLLER_SECRET },
+    method: 'POST', headers: { ...opsCorrelationHeaders(), 'X-Controller-Token': env.ML_CONTROLLER_SECRET },
     signal: AbortSignal.timeout(90_000),
   })
   if (!response.ok) throw new Error(`pipeline_cloud_reconcile_http:${response.status}`)

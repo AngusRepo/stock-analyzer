@@ -1,3 +1,5 @@
+import { recordChainStage } from './opsChainStageState'
+
 /** Observability only: no dispatch lease, continuation, or terminal mutation. */
 export type PipelinePhaseReceipt = { phase: string; elapsed_ms: number; status: 'completed' | 'failed' | 'blocked' | 'waiting'; started_at?: string | null; completed_at?: string }
 export type PipelineProgress = {
@@ -32,7 +34,7 @@ export async function recordPipelineProgress(db: D1Database, runDate: string, ru
     node_l2_timesfm_enrich:30,node_prepare_sequence_inputs:30,seal_l2_inputs:30,prepare_prediction_request:30,
     dispatch_prediction:40,modal_prediction:40,modal_inference:41,node_l3_formal_predict:42,seal_l3_results:43} as Record<string,number>)[progress.phase] ?? 50
   const payload = { ...progress, phase_rank:rank, executions: { [progress.execution_id]: progress.completed } }
-  return Boolean(await db.prepare(`INSERT INTO pipeline_stage_runs
+  const accepted = Boolean(await db.prepare(`INSERT INTO pipeline_stage_runs
     (business_date,stage,canonical_run_id,status,cursor_key,started_at,updated_at)
     SELECT business_date,'pipeline_progress',canonical_run_id,'running',?,?,?
       FROM pipeline_stage_runs WHERE business_date=? AND stage='pipeline_execution'
@@ -53,6 +55,13 @@ export async function recordPipelineProgress(db: D1Database, runDate: string, ru
     WHERE pipeline_stage_runs.canonical_run_id<>excluded.canonical_run_id
        OR pipeline_stage_runs.updated_at<excluded.updated_at
     RETURNING canonical_run_id`).bind(JSON.stringify(payload), progress.started_at, observed, runDate, runId).first())
+  // Chain stage state: the pipeline runs on Cloud Run, so record its execution name (liveness is
+  // judged from Cloud Run, never a D1 heartbeat). Never throws.
+  if (accepted) {
+    await recordChainStage({ stageId: 'pipeline', businessDate: runDate, status: 'running', runId,
+      executionName: progress.execution_id || null, summary: `pipeline phase=${progress.phase} ${progress.status}` })
+  }
+  return accepted
 }
 
 export function pipelineProgressForDisplay(parent: { canonical_run_id: string; status: string } | undefined,

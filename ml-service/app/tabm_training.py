@@ -21,7 +21,7 @@ from .prep_lineage import (
     validate_prep_lineage_for_registration,
 )
 from .model_validation import build_model_cpcv_evidence
-from .research_benchmarks.common import direction_accuracy, load_tabular_dataset, rank_ic
+from .research_benchmarks.common import direction_accuracy, load_tabular_dataset, load_tabular_dataset_reused, rank_ic
 
 from .target_rank_scope import GLOBAL_CROSS_SECTIONAL_RANK_VERSION, recompute_global_cross_sectional_rank
 from .training_policy import (
@@ -91,6 +91,27 @@ def _subsample_indices(indices: np.ndarray, *, max_rows: int) -> np.ndarray:
     return indices[keep]
 
 
+class _RowBatches:
+    """torch TensorDataset whose batches are one gather per tensor: the DataLoader's sampler (and so its RNG draws)
+    is unchanged, and t[indices] holds the rows default collation stacks one by one, so the batches are equal."""
+
+    def __init__(self, *tensors):
+        self.tensors = tensors
+
+    def __len__(self) -> int:
+        return len(self.tensors[0])
+
+    def __getitem__(self, index):
+        return tuple(tensor[index] for tensor in self.tensors)
+
+    def __getitems__(self, indices):
+        return tuple(tensor[indices] for tensor in self.tensors)
+
+
+def _as_batch(batch):
+    return batch
+
+
 def _robust_standardize(
     x_train: np.ndarray,
     x_all: np.ndarray,
@@ -103,10 +124,14 @@ def _robust_standardize(
     scales = (q75 - q25).astype(np.float32)
     scales = np.where(np.isfinite(scales) & (np.abs(scales) > 1e-9), scales, 1.0).astype(np.float32)
     medians = np.nan_to_num(medians, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
-    x_scaled = np.nan_to_num((x_all - medians.reshape(1, -1)) / scales.reshape(1, -1), nan=0.0, posinf=0.0, neginf=0.0)
+    # One full-size buffer, updated in place: the same element-wise operations as out-of-place, so the same
+    # values, without the second full-size temporary the chained expression held at its peak.
+    x_scaled = x_all - medians.reshape(1, -1)
+    np.divide(x_scaled, scales.reshape(1, -1), out=x_scaled)
+    np.nan_to_num(x_scaled, copy=False, nan=0.0, posinf=0.0, neginf=0.0)
     if clip_value is not None and float(clip_value) > 0:
-        x_scaled = np.clip(x_scaled, -float(clip_value), float(clip_value))
-    return x_scaled.astype(np.float32), medians, scales
+        np.clip(x_scaled, -float(clip_value), float(clip_value), out=x_scaled)
+    return x_scaled.astype(np.float32, copy=False), medians, scales
 
 
 def _build_tabm_ranker(n_features: int):
@@ -252,7 +277,9 @@ def train_tabm_universal(payload: dict | None = None, *, research_device=None, e
     generation_mode = str(payload.get("generation_mode") or "native").strip().lower()
     payload.setdefault("batch_count", int(payload.get("batch_count") or DEFAULT_BATCH_COUNT))
 
-    dataset = load_tabular_dataset(payload)
+    # A market challenger container runs one fold after another on one sealed prep: build its dataset once.
+    dataset = (load_tabular_dataset(payload) if market_conditioner is None
+               else load_tabular_dataset_reused(payload))
     feature_semantic = payload_semantic(payload)
     if feature_semantic == FEATURE131_SEMANTIC and list(dataset.feature_names) != list(FEATURES131):
         raise ValueError("formal131_training_inventory_mismatch")
@@ -281,6 +308,9 @@ def train_tabm_universal(payload: dict | None = None, *, research_device=None, e
     symbols = np.asarray(dataset.symbols[finite_mask]).astype(str)
     markets = np.asarray(dataset.markets[finite_mask]).astype(str)
     label_known_dates = np.asarray(dataset.label_known_dates[finite_mask]).astype(str)
+    if market_conditioner is not None:
+        # Copied above. The reused prep stays resident for the next fold, so free this fold's arm matrix now.
+        dataset.X = dataset.y = None
     if len(y) < 1000:
         raise ValueError(f"TabM training requires at least 1000 finite rows, got {len(y)}")
     gcs_prefix = str(payload.get("gcs_prefix") or payload.get("data_slice", {}).get("gcs_prefix") or "universal").strip().rstrip("/")
@@ -360,9 +390,10 @@ def train_tabm_universal(payload: dict | None = None, *, research_device=None, e
         x_train = torch.tensor(fit_x[fit_indices], dtype=torch.float32)
         y_train = torch.tensor(y[fit_indices], dtype=torch.float32)
         loader = torch.utils.data.DataLoader(
-            torch.utils.data.TensorDataset(x_train, y_train),
+            _RowBatches(x_train, y_train),
             batch_size=batch_size,
             shuffle=True,
+            collate_fn=_as_batch,
         )
         train_losses: list[float] = []
         model.train()

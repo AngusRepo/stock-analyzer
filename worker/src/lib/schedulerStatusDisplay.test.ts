@@ -168,7 +168,10 @@ const logs: SchedulerDisplayLogCandidate[] = [
   const statusSource = fs.readFileSync('src/lib/schedulerStatus.ts', 'utf8')
   const loggerSource = fs.readFileSync('src/lib/schedulerRunLogger.ts', 'utf8')
   const policySource = fs.readFileSync('src/lib/schedulerPolicy.ts', 'utf8')
-  assert(statusSource.includes('directFallback: false') && statusSource.includes('dates.slice(0, SCHEDULER_STATUS_DIRECT_READ_DAYS)') && statusSource.includes('const SCHEDULER_STATUS_DIRECT_READ_LIMIT = 30'), 'scheduler status must not per-task scan KV logs; only a bounded gap fill reads today and yesterday')
+  assert(statusSource.includes('directFallback: false')
+    && /if \(dayIndex >= SCHEDULER_STATUS_DIRECT_READ_DAYS\) \{\s*return log && SCHEDULER_STATUS_NON_TERMINAL\.has\(log\.status\) \? \[\{ def, date, rank: 3 \}\] : \[\]/.test(statusSource)
+    && statusSource.includes('.slice(0, SCHEDULER_STATUS_DIRECT_READ_LIMIT)') && statusSource.includes('const SCHEDULER_STATUS_DIRECT_READ_LIMIT = 30'),
+    'scheduler status must not per-task scan KV logs; a bounded gap fill reads today and yesterday, and older days only for non-terminal rows')
   assert(statusSource.includes('scheduler:run:market-close-refresh:${date}'), 'today close refresh must be read directly so aggregate lost updates cannot hide the current trading date')
   assert(statusSource.includes('const cadenceDirectReads = JOB_DEFS.flatMap') && statusSource.includes('isCurrentCadenceCycle(date, today, def.group)'), 'weekly/monthly current-cycle status must directly recover task logs lost from concurrent daily aggregate writes')
   assert(statusSource.includes('skipKvPolicy: true'), 'scheduler status nextRun must not probe KV policy per card')

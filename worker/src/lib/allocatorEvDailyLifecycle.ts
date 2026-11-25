@@ -380,11 +380,6 @@ export async function inspectAllocatorEvMaturityCoverage(
   }
 }
 
-function maturitySummary(coverage: AllocatorEvMaturityCoverage): string {
-  return `l4_pit_state=${coverage.state} l4_pit_rows=${coverage.strictL4PitRows} `
-    + `l4_pit_dates=${coverage.strictL4PitDates} legacy_l4_rows=${coverage.incompatibleOrLegacyL4Rows}`
-}
-
 export async function readAllocatorEvLifecycle(
   db: D1Database,
   businessDate: string,
@@ -707,73 +702,217 @@ function staleVerifyTrigger(row: AllocatorEvLifecycleRow | null): boolean {
   return !Number.isFinite(updatedAt) || Date.now() - updatedAt >= 15 * 60_000
 }
 
-async function resolveLifecycleBusinessDate(
-  env: Bindings,
-  db: D1Database,
-  requestedDate?: string,
-): Promise<string> {
-  if (requestedDate) {
-    if (!validDate(requestedDate)) throw new Error(`invalid allocator EV lifecycle date: ${requestedDate}`)
-    return requestedDate
-  }
-  const twToday = twTodayDate()
-  const staleVerifyTriggerRow = await db.prepare(`
-    SELECT business_date
-      FROM allocator_ev_daily_lifecycle
-     WHERE state = 'verify_triggered'
-       AND business_date <= ?
-       AND datetime(updated_at) <= datetime('now', '-15 minutes')
-     ORDER BY business_date DESC
-     LIMIT 1
-  `).bind(twToday).first<{ business_date?: string | null }>()
-  const staleVerifyDate = String(staleVerifyTriggerRow?.business_date ?? '').trim().slice(0, 10)
-  if (validDate(staleVerifyDate)) return staleVerifyDate
-
-  const recoverableSourceError = await db.prepare(`
-    SELECT business_date
-      FROM allocator_ev_daily_lifecycle
-     WHERE state = 'error'
-       AND last_error LIKE 'terminal market-data source error:%'
-       AND datetime(updated_at) <= datetime('now', '-12 hours')
-     ORDER BY business_date ASC
-     LIMIT 1
-  `).first<{ business_date?: string | null }>()
-  const recoverableDate = String(recoverableSourceError?.business_date ?? '').trim().slice(0, 10)
-  if (validDate(recoverableDate)) return recoverableDate
-  const pending = await db.prepare(`
-    SELECT business_date
-      FROM allocator_ev_daily_lifecycle
-     WHERE state = 'replay_pending_maturity'
-     ORDER BY business_date ASC
-     LIMIT 1
-  `).first<{ business_date?: string | null }>()
-  const pendingDate = String(pending?.business_date ?? '').trim().slice(0, 10)
-  if (validDate(pendingDate)) {
-    const { loadSplitFusionSnapshotReplayCoverage } = await import('./s12ReplaySplitReadModels')
-    const coverage = await loadSplitFusionSnapshotReplayCoverage(env, pendingDate, twTodayDate())
-    if (coverage.matureMissingRows > 0) return pendingDate
-  }
-  const latest = await db.prepare(`
-    SELECT MAX(prediction_date) AS business_date
-      FROM predictions
-     WHERE model_name = 'ensemble'
-       AND prediction_date <= ?
-  `).bind(twToday).first<{ business_date?: string | null }>()
-  const businessDate = String(latest?.business_date ?? '').trim().slice(0, 10)
-  if (!validDate(businessDate)) throw new Error(`allocator EV lifecycle has no ensemble prediction date through ${twToday}`)
-  return businessDate
+function twTodayDate(nowMs = Date.now()): string {
+  return new Date(nowMs + 8 * 3600_000).toISOString().slice(0, 10)
 }
 
-function twTodayDate(): string {
-  return new Date(Date.now() + 8 * 3600_000).toISOString().slice(0, 10)
+// States a date can still leave on its own; replay_complete is the only terminal state.
+const NON_TERMINAL_LIFECYCLE_STATES: readonly AllocatorEvLifecycleState[] = [
+  'lineage_ready', 'snapshot_ready', 'verify_triggered', 'replay_pending_maturity', 'replay_enqueued', 'error',
+]
+// A non-terminal date older than the recovery window has no automatic owner. Each one used to be
+// re-selected every tick and blocked every newer date (09-23 from 11/23 23:50); it is now reported
+// once per (date, run, state) and skipped.
+const OUTSIDE_WINDOW_REPORT_TTL_SECONDS = 365 * 86_400
+// Same per-run cap as post-verify: a date whose post-pipeline chain keeps failing must not be
+// redispatched every tick, now that every date in the window is inspected each tick.
+const POST_PIPELINE_WATCHDOG_MAX_REDISPATCHES = 6
+// Quota-blocked legacy replay waits for the next post-market window instead of polling the exhausted one.
+const SOURCE_ERROR_PREFIX = 'terminal market-data source error:'
+const SOURCE_ERROR_RETRY_HOURS = 12
+const POST_PIPELINE_INCOMPLETE_STATUSES = ['queued', 'running', 'waiting', 'error'] as const
+
+type LifecycleTickContext = {
+  // Same owner selection as runPostPipelineCallbackChain: the new L4 distribution owns closure.
+  newL4Distribution: boolean
+  // The tick redispatches at most one date; later dates wait for the next tick.
+  dispatchedDate: string | null
+  nowMs: number
 }
+
+async function lifecycleTickContext(env: Bindings, nowMs: number): Promise<LifecycleTickContext> {
+  const config = await env.KV.get('trading:config', 'json') as { l4Distribution?: unknown } | null
+  return { newL4Distribution: config?.l4Distribution != null, dispatchedDate: null, nowMs }
+}
+
+/** Reports a fact once per key; a KV failure reports it again next tick instead of losing the tick. */
+async function reportOnce(kv: KVNamespace, keys: string[], nowMs: number): Promise<{ fresh: boolean[]; fenceFailed: boolean }> {
+  try {
+    const seen = await Promise.all(keys.map(async key => Boolean(await kv.get(key))))
+    const fresh = seen.map(value => !value)
+    await Promise.all(keys.filter((_, index) => fresh[index]).map(key =>
+      kv.put(key, new Date(nowMs).toISOString(), { expirationTtl: OUTSIDE_WINDOW_REPORT_TTL_SECONDS })))
+    return { fresh, fenceFailed: false }
+  } catch (error) {
+    console.warn('[allocatorEvDailyLifecycle] report fence unavailable:', error)
+    return { fresh: keys.map(() => true), fenceFailed: true }
+  }
+}
+
+// A deferred date is not a failure: the next tick dispatches it.
+function dispatchDeferred(ctx: LifecycleTickContext, businessDate: string): string | null {
+  return ctx.dispatchedDate && ctx.dispatchedDate !== businessDate
+    ? `recovery_dispatch=deferred_one_date_per_tick dispatched_date=${ctx.dispatchedDate}`
+    : null
+}
+
+function d1Utc(value: string | null | undefined): number {
+  const text = String(value ?? '').trim()
+  if (!text) return Number.NaN
+  return Date.parse(!/[zZ]|[+-]\d{2}:?\d{2}$/.test(text) ? `${text.replace(' ', 'T')}Z` : text)
+}
+
+// Embedded text must not carry markers classifySchedulerRunSummary reads (status=, not_sent:, not delivered:).
+const summaryDetail = (value: string | null | undefined, max = 300) =>
+  String(value ?? 'missing').replace(/status=/gi, 'status:').replace(/not[_\s]+(sent|delivered):/gi, 'not_$1=')
+    .replace(/\s+/g, '_').slice(0, max)
 
 export async function runAllocatorEvLifecycleWatchdog(
   env: Bindings,
   requestedDate?: string,
+  options: { nowMs?: number } = {},
+): Promise<string> {
+  const ctx = await lifecycleTickContext(env, options.nowMs ?? Date.now())
+  if (requestedDate) {
+    if (!validDate(requestedDate)) throw new Error(`invalid allocator EV lifecycle date: ${requestedDate}`)
+    return runAllocatorEvLifecycleDate(env, requestedDate, ctx)
+  }
+  return runAllocatorEvLifecycleWindow(env, ctx)
+}
+
+/**
+ * Inspects every date of the recovery window each tick (newest first, today always included) instead
+ * of one selected date, so one stuck date can no longer hide the others (11-23 post-pipeline failed 9
+ * attempts and 11-12 never created its post-pipeline while the tick re-reported 09-23).
+ */
+async function runAllocatorEvLifecycleWindow(
+  env: Bindings,
+  ctx: LifecycleTickContext,
+): Promise<string> {
+  const nowMs = ctx.nowMs
+  const learningDb = databaseForDataDomain(env, 'learning')
+  const opsDb = databaseForDataDomain(env, 'ops')
+  const today = twTodayDate(nowMs)
+  const { strategyLearningRecoveryWindowStart } = await import('./strategyLearningRecoveryWatchdog')
+  const windowStart = await strategyLearningRecoveryWindowStart(env, today)
+  const nonTerminal = NON_TERMINAL_LIFECYCLE_STATES.map(() => '?').join(',')
+  const incompleteStages = POST_PIPELINE_INCOMPLETE_STATUSES.map(() => '?').join(',')
+  const [pipelineRows, waitingPostPipelineRows, windowLifecycleRows, outsideRows, outsideStageRows] = await Promise.all([
+    opsDb.prepare(`
+      SELECT business_date
+        FROM pipeline_stage_runs
+       WHERE stage = 'pipeline_execution' AND status = 'success'
+         AND business_date >= ? AND business_date <= ?
+    `).bind(windowStart, today).all<{ business_date: string }>(),
+    opsDb.prepare(`
+      SELECT business_date
+        FROM pipeline_stage_runs
+       WHERE stage = 'post_pipeline_chain' AND status = 'waiting'
+         AND business_date >= ? AND business_date <= ?
+    `).bind(windowStart, today).all<{ business_date: string }>(),
+    learningDb.prepare(`
+      SELECT business_date, state
+        FROM allocator_ev_daily_lifecycle
+       WHERE business_date >= ? AND business_date <= ?
+    `).bind(windowStart, today).all<{ business_date: string; state: AllocatorEvLifecycleState }>(),
+    learningDb.prepare(`
+      SELECT business_date, state, upstream_run_id, last_error, updated_at
+        FROM allocator_ev_daily_lifecycle
+       WHERE state IN (${nonTerminal})
+         AND business_date < ?
+    `).bind(...NON_TERMINAL_LIFECYCLE_STATES, windowStart)
+      .all<OutsideLifecycleRow>(),
+    // A date that left the window with its post-pipeline unfinished and no lifecycle row (11-23 shape).
+    opsDb.prepare(`
+      SELECT business_date, status, canonical_run_id
+        FROM pipeline_stage_runs
+       WHERE stage = 'post_pipeline_chain' AND status IN (${incompleteStages})
+         AND business_date < ?
+    `).bind(...POST_PIPELINE_INCOMPLETE_STATUSES, windowStart)
+      .all<{ business_date: string; status: string; canonical_run_id: string | null }>(),
+  ])
+  const outside = (outsideRows.results ?? [])
+    .filter(row => validDate(String(row.business_date).slice(0, 10)))
+    .sort((a, b) => b.business_date.localeCompare(a.business_date))
+  // The legacy S12 replay matures after five sessions, past the four-session window: its oldest
+  // cohort (and the oldest quota-blocked replay past its back-off) stays owned here, one per tick.
+  const legacyOwned = ctx.newL4Distribution ? [] : [
+    outside.filter(row => row.state === 'replay_pending_maturity').at(-1),
+    outside.filter(row => row.state === 'error' && String(row.last_error ?? '').startsWith(SOURCE_ERROR_PREFIX)
+      && nowMs - d1Utc(row.updated_at) >= SOURCE_ERROR_RETRY_HOURS * 3_600_000).at(-1),
+  ].filter((row): row is OutsideLifecycleRow => Boolean(row)).map(row => row.business_date)
+  const pipelineDates = new Set((pipelineRows.results ?? []).map(row => String(row.business_date).slice(0, 10)))
+  const waitingPostPipeline = new Set((waitingPostPipelineRows.results ?? []).map(row => String(row.business_date).slice(0, 10)))
+  const lifecycleStates = new Map((windowLifecycleRows.results ?? [])
+    .map(row => [String(row.business_date).slice(0, 10), row.state] as const))
+  const dates = [...new Set([today, ...pipelineDates, ...lifecycleStates.keys()])]
+    .filter(validDate)
+    .sort()
+    .reverse()
+  dates.push(...[...new Set(legacyOwned)].sort().reverse())
+
+  // Failed dates lead the summary so a truncated notification still names them.
+  const failedLines: string[] = []
+  const lines: string[] = []
+  for (const businessDate of dates) {
+    const state = lifecycleStates.get(businessDate)
+    if (state === 'replay_complete' && !waitingPostPipeline.has(businessDate)) {
+      lines.push(`${businessDate}=complete`)
+      continue
+    }
+    if (!state && !pipelineDates.has(businessDate)) {
+      // Today before its pipeline execution succeeds (it settles at the next premarket).
+      lines.push(`${businessDate}=pending_pipeline_execution`)
+      continue
+    }
+    let summary: string
+    try {
+      summary = await runAllocatorEvLifecycleDate(env, businessDate, ctx)
+    } catch (error) {
+      summary = `status=failed ${error instanceof Error ? error.message : String(error)}`
+    }
+    if (/\bstatus=(?:failed|error)\b/i.test(summary)) failedLines.push(`${businessDate}=failed:${summaryDetail(summary, 600)}`)
+    else lines.push(`${businessDate}=ok:${summaryDetail(summary, 600)}`)
+  }
+  const incomplete = failedLines.length
+
+  const legacy = new Set(legacyOwned)
+  const unowned = [
+    ...outside.filter(row => !legacy.has(row.business_date))
+      .map(row => ({ date: row.business_date, run: row.upstream_run_id, state: String(row.state) })),
+    ...(outsideStageRows.results ?? []).filter(row => validDate(String(row.business_date).slice(0, 10)))
+      .map(row => ({ date: row.business_date, run: row.canonical_run_id, state: `post_pipeline_${row.status}` })),
+  ].sort((a, b) => b.date.localeCompare(a.date) || a.state.localeCompare(b.state))
+  // Fence only after the report text exists: a tick that dies before returning reports it again.
+  const { fresh, fenceFailed } = await reportOnce(env.KV, unowned.map(row =>
+    `allocator-ev-lifecycle:outside-window-reported:${row.date}:${row.run || 'none'}:${row.state}`), nowMs)
+  const newlyOutside = unowned.filter((_, index) => fresh[index])
+  const failed = incomplete > 0 || newlyOutside.length > 0
+  const listed = newlyOutside.slice(0, 40).map(row => `${row.date}:${row.state}`).join(',')
+  const outsideText = newlyOutside.length
+    ? ` outside_window_unowned=${listed}${newlyOutside.length > 40 ? `,+${newlyOutside.length - 40}` : ''} `
+      + 'recovery_dispatch=not_queued manual_review_required'
+    : ''
+  return `status=${failed ? 'failed' : 'success'} allocator EV lifecycle window=${windowStart}..${today} `
+    + `dates=${dates.length} incomplete=${incomplete} dispatched=${ctx.dispatchedDate ?? 'none'} `
+    + `outside_window_new=${newlyOutside.length} outside_window_known=${unowned.length - newlyOutside.length}`
+    + `${fenceFailed ? ' outside_window_fence=unavailable' : ''}${outsideText}; ${[...failedLines, ...lines].join('; ')}`
+}
+
+type OutsideLifecycleRow = {
+  business_date: string
+  state: AllocatorEvLifecycleState
+  upstream_run_id: string | null
+  last_error: string | null
+  updated_at: string | null
+}
+
+async function runAllocatorEvLifecycleDate(
+  env: Bindings,
+  businessDate: string,
+  ctx: LifecycleTickContext,
 ): Promise<string> {
   const learningDb = databaseForDataDomain(env, 'learning')
-  const businessDate = await resolveLifecycleBusinessDate(env, learningDb, requestedDate)
   const coreDb = databaseForDataDomain(env, 'core')
   const opsDb = databaseForDataDomain(env, 'ops')
   const lifecycle = await readAllocatorEvLifecycle(learningDb, businessDate)
@@ -875,6 +1014,11 @@ export async function runAllocatorEvLifecycleWatchdog(
           + `recovery_dispatch=not_queued lifecycle=${closed ? 'replay_complete' : 'unchanged'}`
       }
     }
+    const deferred = dispatchDeferred(ctx, businessDate)
+    if (deferred) {
+      return `status=waiting allocator EV lifecycle post-verify recovery deferred date=${businessDate} `
+        + `run_id=${lifecycleRunId} previous_status=${previousStage?.status ?? 'missing'} ${deferred}`
+    }
     const redispatchKey = `allocator-ev-lifecycle:post-verify-redispatches:${businessDate}:${lifecycleRunId}`
     const redispatches = Number.parseInt((await env.KV.get(redispatchKey)) ?? '0', 10) || 0
     if (previousIncomplete) {
@@ -900,6 +1044,7 @@ export async function runAllocatorEvLifecycleWatchdog(
       },
       attempt: Math.max(1, Number(lifecycle?.attempt_count ?? 0) + 1),
     })
+    if (continuation.queued) ctx.dispatchedDate = businessDate
     if (previousIncomplete) {
       return `status=failed allocator EV lifecycle post-verify dispatch incomplete date=${businessDate} run_id=${lifecycleRunId} `
         + `previous_status=${previousStage?.status} previous_attempts=${Number(previousStage?.attempt_count ?? 0)} `
@@ -911,7 +1056,107 @@ export async function runAllocatorEvLifecycleWatchdog(
       : `status=success allocator EV lifecycle recovery_observation=post_verify_current date=${businessDate} downstream_status=${continuation.status}`
   }
 
-  const [snapshot, maturity, actionAuthority] = await Promise.all([
+  // S12 fusion replay is retired under the new L4: a date waiting for (or left enqueued by) the replay
+  // has no replay owner left, so it closes the way a successful post-verify does instead of enqueueing
+  // the retired chunk.
+  if ((lifecycle?.state === 'replay_pending_maturity' || lifecycle?.state === 'replay_enqueued') && ctx.newL4Distribution) {
+    const lifecycleRunId = String(lifecycle.upstream_run_id ?? '').trim() || null
+    const closed = await recordAllocatorEvLifecycle(learningDb, {
+      businessDate,
+      state: 'replay_complete',
+      replayMaturityAsOfDate: lifecycle.replay_maturity_as_of_date ?? businessDate,
+      upstreamRunId: lifecycleRunId,
+      expectedLifecycleRunId: lifecycleRunId,
+    })
+    return `status=success allocator EV lifecycle replay_not_applicable=${S12_REPLAY_RETIRED_REASON} `
+      + `date=${businessDate} run_id=${lifecycleRunId ?? 'missing'} lifecycle=${closed ? 'replay_complete' : 'unchanged'}`
+  }
+
+  if (lifecycle?.state === 'error' && String(lifecycle.last_error ?? '').startsWith(SOURCE_ERROR_PREFIX)
+    && !(ctx.nowMs - d1Utc(lifecycle.updated_at) >= SOURCE_ERROR_RETRY_HOURS * 3_600_000)) {
+    return `status=waiting allocator EV lifecycle replay source error back-off date=${businessDate} `
+      + `retry_after_hours=${SOURCE_ERROR_RETRY_HOURS} last_error=${summaryDetail(lifecycle.last_error)} recovery_dispatch=not_queued`
+  }
+
+  const postPipelineStage: PostPipelineStageRow | null = await opsDb.prepare(`
+    SELECT status, canonical_run_id, updated_at, lease_expires_at, attempt_count, last_error
+      FROM pipeline_stage_runs
+     WHERE business_date=? AND stage='post_pipeline_chain'
+  `).bind(businessDate).first<PostPipelineStageRow>()
+  const stageAgeMs = Date.now() - d1Utc(postPipelineStage?.updated_at)
+  const stageLeaseLive = d1Utc(postPipelineStage?.lease_expires_at) >= Date.now()
+  const callbackInFlight = ['queued', 'running', 'waiting'].includes(String(postPipelineStage?.status ?? ''))
+    && (postPipelineStage?.status !== 'running' || stageLeaseLive)
+    && Number.isFinite(stageAgeMs)
+    && stageAgeMs >= 0
+    && stageAgeMs < 15 * 60_000
+  const postVerifyReached = lifecycle && ['replay_pending_maturity', 'replay_enqueued', 'replay_complete'].includes(lifecycle.state)
+  const postPipelineReached = lifecycle
+    && [
+      'verify_triggered', 'replay_pending_maturity', 'replay_enqueued', 'replay_complete',
+    ].includes(lifecycle.state)
+  const reconcileWaitingPostPipeline = async () => {
+    if (!lifecycle?.upstream_run_id
+      || postPipelineStage?.canonical_run_id !== lifecycle.upstream_run_id
+      || postPipelineStage?.status !== 'waiting') return
+    const { markPipelineStageFenced } = await import('./pipelineStageLease')
+    await markPipelineStageFenced(opsDb, {
+      businessDate,
+      stage: 'post_pipeline_chain',
+      canonicalRunId: lifecycle.upstream_run_id,
+      status: 'success',
+      error: null,
+    })
+  }
+
+  if (ctx.newL4Distribution) {
+    // runPostPipelineCallbackChain refuses to run past an incomplete original-plan closure
+    // (l4_distribution_original_plan_closure_incomplete), so the watchdog reads the same owner.
+    // The legacy allocator snapshot has no meaning here and must not write lifecycle error.
+    if (postPipelineReached) {
+      // The chain proved the closure before it advanced the lifecycle. It is not re-read: it only
+      // holds while that day's plan is the head, and the next session's plan supersedes it.
+      await reconcileWaitingPostPipeline()
+      return `status=success allocator EV lifecycle observed date=${businessDate} state=${lifecycle?.state} `
+        + `lifecycle_complete=${lifecycle?.state === 'replay_complete' ? 1 : 0} closure_owner=l4_distribution`
+    }
+    const { readL4PortfolioPlan } = await import('./l4PortfolioPlan')
+    const head = await readL4PortfolioPlan(env)
+    if (head && head.signal_date > businessDate) {
+      // The closure only holds while the day's plan is the head. Once a later session's plan replaced
+      // it neither the chain nor this watchdog can close the day, so it is reported once with the
+      // post-pipeline's own cause rather than as a closure gap.
+      const runId = postPipelineStage?.canonical_run_id ?? 'none'
+      const { fresh } = await reportOnce(env.KV,
+        [`allocator-ev-lifecycle:head-advanced-reported:${businessDate}:${runId}:${head.plan_id}`], ctx.nowMs)
+      const text = `allocator EV lifecycle post-pipeline unrecoverable head_advanced date=${businessDate} `
+        + `head_signal_date=${head.signal_date} post_pipeline_status=${postPipelineStage?.status ?? 'missing'} `
+        + `post_pipeline_attempts=${Number(postPipelineStage?.attempt_count ?? 0)} `
+        + `post_pipeline_error=${summaryDetail(postPipelineStage?.last_error)} recovery_dispatch=not_queued`
+      return fresh[0] ? `status=failed ${text} manual_review_required` : `status=success ${text} already_reported`
+    }
+    const { inspectL4DistributionClosure } = await import('./l4DistributionClosure')
+    const closure = await inspectL4DistributionClosure(env, businessDate)
+    if (closure.recommendationRows <= 0) {
+      return `skipped: allocator EV lifecycle has no recommendations for ${businessDate} closure_owner=l4_distribution`
+    }
+    const callbackGraceActive = !closure.ready && callbackInFlight
+    if (callbackGraceActive) {
+      return `status=success allocator EV lifecycle callback_observation=pending date=${businessDate} `
+        + `stage=${postPipelineStage?.status} age_seconds=${Math.floor(stageAgeMs / 1000)} `
+        + `run_id=${postPipelineStage?.canonical_run_id ?? 'unknown'} closure_owner=l4_distribution`
+    }
+    if (!closure.ready) {
+      return `status=failed allocator EV lifecycle l4_distribution_original_plan_closure_incomplete date=${businessDate} `
+        + `recommendations=${closure.recommendationRows} expected=${closure.expectedRows} matched=${closure.nativeLineageRows} `
+        + `unmatched=${closure.rejectedLineageRows} post_pipeline_status=${postPipelineStage?.status ?? 'missing'} `
+        + `post_pipeline_attempts=${Number(postPipelineStage?.attempt_count ?? 0)} `
+        + `post_pipeline_error=${summaryDetail(postPipelineStage?.last_error)} recovery_dispatch=not_queued`
+    }
+    return queuePostPipelineRecovery(env, ctx, businessDate, lifecycle, postPipelineStage, stageLeaseLive)
+  }
+
+  const [snapshot, actionAuthority] = await Promise.all([
     inspectAllocatorSnapshotClosure(learningDb, businessDate, {
       allowPointInTimeReconstruction: true,
       learningDb,
@@ -920,12 +1165,11 @@ export async function runAllocatorEvLifecycleWatchdog(
       marketDb: databaseForDataDomain(env, 'market'),
       kv: env.KV,
     }),
-    inspectAllocatorEvMaturityCoverage(learningDb, businessDate),
     inspectActive8ActionAuthorityState(learningDb, coreDb, businessDate),
   ])
   if (snapshot.nativeLineageRows <= 0) {
     if (snapshot.recommendationRows <= 0) {
-      return `skipped: allocator EV lifecycle has no Score V2 recommendations for ${businessDate}; ${maturitySummary(maturity)}`
+      return `skipped: allocator EV lifecycle has no Score V2 recommendations for ${businessDate}`
     }
     if (actionAuthority.pointerRows !== actionAuthority.validServingRows) {
       throw new Error(
@@ -937,7 +1181,7 @@ export async function runAllocatorEvLifecycleWatchdog(
         + `date=${businessDate} recommendations=${snapshot.recommendationRows} actionable=0 production_effect=0`
     }
     const reason = `missing point-in-time ensemble lineage before next executable session open `
-      + `recommendations=${snapshot.recommendationRows}; ${maturitySummary(maturity)}`
+      + `recommendations=${snapshot.recommendationRows}`
     await recordAllocatorEvLifecycle(databaseForDataDomain(env, 'learning'), {
       businessDate,
       state: 'error',
@@ -947,68 +1191,27 @@ export async function runAllocatorEvLifecycleWatchdog(
     })
     throw new Error(`allocator_ev_missing_point_in_time_lineage:${businessDate}:${reason}`)
   }
-  const postPipelineStage = await opsDb.prepare(`
-    SELECT status, canonical_run_id, updated_at, lease_expires_at, attempt_count
-      FROM pipeline_stage_runs
-     WHERE business_date=? AND stage='post_pipeline_chain'
-  `).bind(businessDate).first<{
-    status?: string | null
-    canonical_run_id?: string | null
-    updated_at?: string | null
-    lease_expires_at?: string | null
-    attempt_count?: number | string | null
-  }>()
-  const stageTimestamp = String(postPipelineStage?.updated_at ?? '').trim()
-  const stageTimestampUtc = stageTimestamp && !/[zZ]|[+-]\d{2}:?\d{2}$/.test(stageTimestamp)
-    ? `${stageTimestamp.replace(' ', 'T')}Z`
-    : stageTimestamp
-  const stageAgeMs = Date.now() - Date.parse(stageTimestampUtc)
-  const stageLeaseExpiresAt = String(postPipelineStage?.lease_expires_at ?? '').trim()
-  const stageLeaseExpiresAtUtc = stageLeaseExpiresAt && !/[zZ]|[+-]\d{2}:?\d{2}$/.test(stageLeaseExpiresAt)
-    ? `${stageLeaseExpiresAt.replace(' ', 'T')}Z`
-    : stageLeaseExpiresAt
-  const stageLeaseLive = Date.parse(stageLeaseExpiresAtUtc) >= Date.now()
-  const callbackGraceActive = !snapshot.ready
-    && ['queued', 'running', 'waiting'].includes(String(postPipelineStage?.status ?? ''))
-    && (postPipelineStage?.status !== 'running' || stageLeaseLive)
-    && Number.isFinite(stageAgeMs)
-    && stageAgeMs >= 0
-    && stageAgeMs < 15 * 60_000
+  const callbackGraceActive = !snapshot.ready && callbackInFlight
   if (callbackGraceActive) {
     return `status=success allocator EV lifecycle callback_observation=pending date=${businessDate} `
       + `stage=${postPipelineStage?.status} age_seconds=${Math.floor(stageAgeMs / 1000)} `
       + `run_id=${postPipelineStage?.canonical_run_id ?? 'unknown'} `
       + `lineage=${snapshot.nativeLineageRows} expected=${snapshot.expectedRows} actual=${snapshot.actualRows}`
   }
-  const postVerifyReached = lifecycle && ['replay_pending_maturity', 'replay_enqueued', 'replay_complete'].includes(lifecycle.state)
-  const postPipelineReached = lifecycle
-    && [
-      'verify_triggered', 'replay_pending_maturity', 'replay_enqueued', 'replay_complete',
-    ].includes(lifecycle.state)
-  if (
-    snapshot.ready
-    && postPipelineReached
-    && lifecycle?.upstream_run_id
-    && postPipelineStage?.canonical_run_id === lifecycle.upstream_run_id
-    && postPipelineStage?.status === 'waiting'
-  ) {
-    const { markPipelineStageFenced } = await import('./pipelineStageLease')
-    await markPipelineStageFenced(opsDb, {
-      businessDate,
-      stage: 'post_pipeline_chain',
-      canonicalRunId: lifecycle.upstream_run_id,
-      status: 'success',
-      error: null,
-    })
-  }
+  if (snapshot.ready && postPipelineReached) await reconcileWaitingPostPipeline()
   let matureReplayMissingRows = 0
   if (lifecycle?.state === 'replay_pending_maturity') {
     const { loadSplitFusionSnapshotReplayCoverage } = await import('./s12ReplaySplitReadModels')
-    const coverage = await loadSplitFusionSnapshotReplayCoverage(env, businessDate, twTodayDate())
+    const coverage = await loadSplitFusionSnapshotReplayCoverage(env, businessDate, twTodayDate(ctx.nowMs))
     matureReplayMissingRows = coverage.matureMissingRows
   }
   if (snapshot.ready && lifecycle?.state === 'replay_pending_maturity' && matureReplayMissingRows > 0) {
-    const maturityAsOfDate = twTodayDate()
+    const deferred = dispatchDeferred(ctx, businessDate)
+    if (deferred) {
+      return `status=waiting allocator EV lifecycle replay deferred date=${businessDate} `
+        + `mature_missing=${matureReplayMissingRows} ${deferred}`
+    }
+    const maturityAsOfDate = twTodayDate(ctx.nowMs)
     const runId = `allocator-ev-lifecycle-mature-replay-${businessDate}-${Date.now()}`
     const replayRecorded = await recordAllocatorEvLifecycle(databaseForDataDomain(env, 'learning'), {
       businessDate,
@@ -1031,14 +1234,15 @@ export async function runAllocatorEvLifecycleWatchdog(
       statusRunDate: businessDate,
       lifecycleRunId: lifecycle.upstream_run_id,
     } as any)
-    return `status=success allocator EV lifecycle replay_dispatch=enqueued date=${businessDate} mature_missing=${matureReplayMissingRows} as_of=${maturityAsOfDate}; ${maturitySummary(maturity)}`
+    ctx.dispatchedDate = businessDate
+    return `status=success allocator EV lifecycle replay_dispatch=enqueued date=${businessDate} mature_missing=${matureReplayMissingRows} as_of=${maturityAsOfDate}`
   }
   if (snapshot.ready && (
     (postVerifyReached && matureReplayMissingRows === 0)
     || (lifecycle?.state === 'verify_triggered' && !staleVerifyTrigger(lifecycle))
   )) {
     const lifecycleComplete = lifecycle?.state === 'replay_complete'
-    return `status=success allocator EV lifecycle observed date=${businessDate} state=${lifecycle?.state} lifecycle_complete=${lifecycleComplete ? 1 : 0} snapshot_rows=${snapshot.actualRows}; ${maturitySummary(maturity)}`
+    return `status=success allocator EV lifecycle observed date=${businessDate} state=${lifecycle?.state} lifecycle_complete=${lifecycleComplete ? 1 : 0} snapshot_rows=${snapshot.actualRows}`
   }
   const repairBoundary = !snapshot.ready
     ? await historicalLearningLineageDecision(databaseForDataDomain(env, 'market'), env.KV, 'evening-chain', businessDate)
@@ -1050,10 +1254,28 @@ export async function runAllocatorEvLifecycleWatchdog(
       + `recommendations=${snapshot.recommendationRows} lineage=${snapshot.nativeLineageRows} `
       + `run_native=${snapshot.runNativeLineageRows} reconstructed=${snapshot.reconstructedLineageRows} `
       + `rejected=${snapshot.rejectedLineageRows} expected=${snapshot.expectedRows} published=${snapshot.publishedRows} actual=${snapshot.actualRows} `
-      + `recommendation_max=${snapshot.recommendationMaxCreatedAt ?? 'missing'} snapshot_max=${snapshot.snapshotMaxGeneratedAt ?? 'missing'}; `
-      + `${maturitySummary(maturity)}`
+      + `recommendation_max=${snapshot.recommendationMaxCreatedAt ?? 'missing'} snapshot_max=${snapshot.snapshotMaxGeneratedAt ?? 'missing'}`
   }
+  return queuePostPipelineRecovery(env, ctx, businessDate, lifecycle, postPipelineStage, stageLeaseLive)
+}
 
+type PostPipelineStageRow = {
+  status?: string | null
+  canonical_run_id?: string | null
+  updated_at?: string | null
+  lease_expires_at?: string | null
+  attempt_count?: number | string | null
+  last_error?: string | null
+}
+
+async function queuePostPipelineRecovery(
+  env: Bindings,
+  ctx: LifecycleTickContext,
+  businessDate: string,
+  lifecycle: AllocatorEvLifecycleRow | null,
+  postPipelineStage: PostPipelineStageRow | null,
+  stageLeaseLive: boolean,
+): Promise<string> {
   const upstreamGate = await inspectAllocatorEvRecoveryUpstreamGate(env.KV, businessDate)
   if (!upstreamGate.ready) {
     return `skipped: allocator EV lifecycle upstream closure not proven date=${businessDate} `
@@ -1065,19 +1287,54 @@ export async function runAllocatorEvLifecycleWatchdog(
       + `blockers=${upstreamGate.blockers.join(',')}`
   }
 
-  const { queuePostPipelineStage } = await import('./pipelineStageLease')
   const recoveryRunId = upstreamGate.pipelineRunId
   if (!recoveryRunId) throw new Error('allocator_ev_recovery_gate_invariant:pipeline_run_id_missing')
+  const deferred = dispatchDeferred(ctx, businessDate)
+  if (deferred) {
+    return `status=waiting allocator EV lifecycle post-pipeline recovery deferred date=${businessDate} `
+      + `run_id=${recoveryRunId} post_pipeline_status=${postPipelineStage?.status ?? 'missing'} ${deferred}`
+  }
+  const previousIncomplete = postPipelineStage?.canonical_run_id === recoveryRunId
+    && (postPipelineStage.status === 'error' || (postPipelineStage.status === 'running' && !stageLeaseLive))
+  const redispatchKey = `allocator-ev-lifecycle:post-pipeline-redispatches:${businessDate}:${recoveryRunId}`
+  const redispatches = Number.parseInt((await env.KV.get(redispatchKey)) ?? '0', 10) || 0
+  if (redispatches >= POST_PIPELINE_WATCHDOG_MAX_REDISPATCHES) {
+    return `status=failed allocator EV lifecycle post-pipeline redispatch exhausted date=${businessDate} run_id=${recoveryRunId} `
+      + `post_pipeline_status=${postPipelineStage?.status ?? 'missing'} redispatches=${redispatches} `
+      + `previous_error=${summaryDetail(postPipelineStage?.last_error)} recovery_dispatch=not_queued manual_redispatch_required `
+      + `reset_kv_key=${redispatchKey}`
+  }
+  const { queuePostPipelineStage } = await import('./pipelineStageLease')
   // Stage claims also count routing/callback failures that never reached the
   // allocator snapshot. Only the lifecycle counter scopes this retry budget.
   const recoveryAttempt = Math.max(0, Number(lifecycle?.attempt_count ?? 0))
-  const continuation = await queuePostPipelineStage(env, {
-    businessDate,
-    runId: recoveryRunId,
-    resumeWaiting: true,
-    expectedCanonicalRunId: recoveryRunId,
-    attempt: recoveryAttempt,
-  })
+  // A post-pipeline stage the 14:20 dispatch never created (11-12) is created under the pipeline
+  // execution's own success authority, as runPostcloseResearch does; an existing one is only resumed.
+  const continuation = postPipelineStage
+    ? await queuePostPipelineStage(env, {
+      businessDate,
+      runId: recoveryRunId,
+      resumeWaiting: true,
+      expectedCanonicalRunId: recoveryRunId,
+      attempt: recoveryAttempt,
+    })
+    : await queuePostPipelineStage(env, {
+      businessDate,
+      runId: recoveryRunId,
+      authority: { stage: 'pipeline_execution', canonicalRunId: recoveryRunId, status: 'success' },
+      attempt: recoveryAttempt,
+    })
+  if (continuation.queued) {
+    ctx.dispatchedDate = businessDate
+    await env.KV.put(redispatchKey, String(redispatches + 1), { expirationTtl: POST_VERIFY_REDISPATCH_TTL_SECONDS })
+  }
+  if (previousIncomplete) {
+    // The previous dispatch did not complete; the tick fails even though it redispatches.
+    return `status=failed allocator EV lifecycle post-pipeline dispatch incomplete date=${businessDate} run_id=${recoveryRunId} `
+      + `previous_status=${postPipelineStage?.status} previous_attempts=${Number(postPipelineStage?.attempt_count ?? 0)} `
+      + `previous_error=${summaryDetail(postPipelineStage?.last_error)} `
+      + `recovery_dispatch=${continuation.queued ? 'post_pipeline_queued' : `not_queued downstream_status=${continuation.status}`}`
+  }
   return continuation.queued
     ? `status=success allocator EV lifecycle recovery_dispatch=post_pipeline_queued date=${businessDate} attempt=${recoveryAttempt} run_id=${continuation.canonicalRunId}`
     : `status=success allocator EV lifecycle recovery_observation=post_pipeline_current date=${businessDate} downstream_status=${continuation.status} run_id=${continuation.canonicalRunId}`

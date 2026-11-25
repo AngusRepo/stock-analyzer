@@ -43,5 +43,7 @@ export function formatPendingBuyBriefing(
     return `- **${item.symbol} ${item.name ?? ''}** | ${price} | debate ${verdict} | exec ${execution}${partialText}${watchText}`
   })
 
-  return [header, ...rows].join('\n')
+  // Listed items of a failed flow are not executable; the reason must stay visible.
+  const reason = state.state === 'error' ? [`狀態異常：${state.error_message ?? 'unknown error'}（以下候選不會執行）`] : []
+  return [header, ...reason, ...rows].join('\n')
 }

@@ -1,0 +1,1901 @@
+{
+ "uid": "sv-health",
+ "title": "StockVision 健康",
+ "tags": [
+  "stockvision"
+ ],
+ "timezone": "Asia/Taipei",
+ "editable": true,
+ "schemaVersion": 39,
+ "refresh": "5m",
+ "time": {
+  "from": "now-14d",
+  "to": "now"
+ },
+ "links": [
+  {
+   "title": "StockVision",
+   "type": "dashboards",
+   "tags": [
+    "stockvision"
+   ],
+   "asDropdown": false,
+   "includeVars": false,
+   "keepTime": false
+  }
+ ],
+ "templating": {
+  "list": []
+ },
+ "panels": [
+  {
+   "type": "status-history",
+   "title": "每個階段近 14 天的最終結果（一格＝一個業務日）",
+   "description": "",
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 24,
+    "h": 13
+   },
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "sv-monitoring"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "type": "json",
+     "parser": "backend",
+     "format": "table",
+     "root_selector": "([$sort(rows, function($a, $b) {(\n  $pa := $lookup({\"market-close-refresh\":0,\"finlab-v4-backfill\":1,\"finlab-backfill-watchdog\":2,\"update\":3,\"indicator-queue\":4,\"regime-compute\":5,\"strategy-learning-mature-evidence\":6,\"screener\":7,\"allocator-ev-readiness\":8,\"pipeline\":9,\"ml-predict\":10,\"post-pipeline-chain\":11,\"allocator-ev-feature-snapshot-backfill\":12,\"verify-v2\":13,\"post-verify-chain\":14,\"model-ic-rolling\":15,\"linucb-reward-ledger\":16,\"adapt\":17,\"daily-report\":18,\"paper-active-postmarket\":19,\"obsidian-sync\":20,\"meta-learning-shadow\":21,\"strategy-learning\":22,\"evening-closure\":23,\"us-leading\":24,\"news-analyst\":25,\"morning-setup\":26,\"recommendation\":27,\"pre-market-warmup\":28,\"premarket-evidence-watchdog\":29,\"dataset-snapshot-export\":30,\"active8-oof-daily\":31,\"allocator-ev-lifecycle-watchdog\":32}, $a.stage_id); $pb := $lookup({\"market-close-refresh\":0,\"finlab-v4-backfill\":1,\"finlab-backfill-watchdog\":2,\"update\":3,\"indicator-queue\":4,\"regime-compute\":5,\"strategy-learning-mature-evidence\":6,\"screener\":7,\"allocator-ev-readiness\":8,\"pipeline\":9,\"ml-predict\":10,\"post-pipeline-chain\":11,\"allocator-ev-feature-snapshot-backfill\":12,\"verify-v2\":13,\"post-verify-chain\":14,\"model-ic-rolling\":15,\"linucb-reward-ledger\":16,\"adapt\":17,\"daily-report\":18,\"paper-active-postmarket\":19,\"obsidian-sync\":20,\"meta-learning-shadow\":21,\"strategy-learning\":22,\"evening-closure\":23,\"us-leading\":24,\"news-analyst\":25,\"morning-setup\":26,\"recommendation\":27,\"pre-market-warmup\":28,\"premarket-evidence-watchdog\":29,\"dataset-snapshot-export\":30,\"active8-oof-daily\":31,\"allocator-ev-lifecycle-watchdog\":32}, $b.stage_id);\n  $pa > $pb or ($pa = $pb and $a.time > $b.time)\n)}).{ 'time': time, 'stage': label, 'result': result }])",
+     "columns": [
+      {
+       "selector": "time",
+       "text": "time",
+       "type": "timestamp"
+      },
+      {
+       "selector": "stage",
+       "text": "stage",
+       "type": "string"
+      },
+      {
+       "selector": "result",
+       "text": "result",
+       "type": "string"
+      }
+     ],
+     "filters": [],
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-monitoring"
+     },
+     "source": "url",
+     "url": "/v1/chain/history?days=14",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
+    }
+   ],
+   "hideTimeOverride": true,
+   "transformations": [
+    {
+     "id": "partitionByValues",
+     "options": {
+      "fields": [
+       "stage"
+      ],
+      "keepFields": false,
+      "naming": {
+       "asLabels": true
+      }
+     }
+    }
+   ],
+   "options": {
+    "legend": {
+     "showLegend": false
+    },
+    "tooltip": {
+     "mode": "single"
+    },
+    "showValue": "never",
+    "rowHeight": 0.85,
+    "colWidth": 0.92
+   },
+   "fieldConfig": {
+    "defaults": {
+     "displayName": "${__field.labels.stage}",
+     "mappings": [
+      {
+       "type": "value",
+       "options": {
+        "completed": {
+         "text": "完成",
+         "color": "#56A64B",
+         "index": 0
+        },
+        "success": {
+         "text": "完成",
+         "color": "#56A64B",
+         "index": 1
+        },
+        "noop": {
+         "text": "無事可做",
+         "color": "#56A64B",
+         "index": 2
+        },
+        "retry_success": {
+         "text": "重試後完成",
+         "color": "#EAB839",
+         "index": 3
+        },
+        "running": {
+         "text": "執行中",
+         "color": "#5794F2",
+         "index": 4
+        },
+        "waiting": {
+         "text": "等待中",
+         "color": "#5794F2",
+         "index": 5
+        },
+        "not_started": {
+         "text": "未開始",
+         "color": "rgba(110,112,121,0.12)",
+         "index": 6
+        },
+        "pending": {
+         "text": "未開始",
+         "color": "rgba(110,112,121,0.12)",
+         "index": 7
+        },
+        "out_of_window": {
+         "text": "未到時段",
+         "color": "rgba(110,112,121,0.12)",
+         "index": 8
+        },
+        "skipped": {
+         "text": "略過",
+         "color": "#4B4F58",
+         "index": 9
+        },
+        "stale": {
+         "text": "待確認",
+         "color": "rgba(110,112,121,0.12)",
+         "index": 10
+        },
+        "at_risk": {
+         "text": "趕不上截止",
+         "color": "#EAB839",
+         "index": 11
+        },
+        "attention": {
+         "text": "應跑未跑",
+         "color": "#FF9830",
+         "index": 12
+        },
+        "overdue": {
+         "text": "逾時",
+         "color": "#FF9830",
+         "index": 13
+        },
+        "stuck": {
+         "text": "卡住",
+         "color": "#B877D9",
+         "index": 14
+        },
+        "missed": {
+         "text": "漏跑",
+         "color": "#E02F44",
+         "index": 15
+        },
+        "failed": {
+         "text": "失敗",
+         "color": "#E02F44",
+         "index": 16
+        },
+        "error": {
+         "text": "失敗",
+         "color": "#E02F44",
+         "index": 17
+        },
+        "blocked": {
+         "text": "中止",
+         "color": "#E02F44",
+         "index": 18
+        },
+        "ready": {
+         "text": "就緒",
+         "color": "#56A64B",
+         "index": 19
+        },
+        "ok": {
+         "text": "正常",
+         "color": "#56A64B",
+         "index": 20
+        },
+        "warn": {
+         "text": "注意",
+         "color": "#FF9830",
+         "index": 21
+        },
+        "fail": {
+         "text": "未過",
+         "color": "#E02F44",
+         "index": 22
+        },
+        "critical": {
+         "text": "重大",
+         "color": "#E02F44",
+         "index": 23
+        },
+        "warning": {
+         "text": "注意",
+         "color": "#FF9830",
+         "index": 24
+        },
+        "healthy": {
+         "text": "正常",
+         "color": "#56A64B",
+         "index": 25
+        },
+        "pending_maturity": {
+         "text": "等待成熟",
+         "color": "rgba(110,112,121,0.12)",
+         "index": 26
+        },
+        "pass": {
+         "text": "通過",
+         "color": "#56A64B",
+         "index": 27
+        },
+        "collecting": {
+         "text": "收集中",
+         "color": "#5794F2",
+         "index": 28
+        },
+        "not_applicable_no_real_intents": {
+         "text": "不適用（沒有真實下單）",
+         "color": "rgba(110,112,121,0.12)",
+         "index": 29
+        },
+        "owner_read_unavailable": {
+         "text": "讀不到來源",
+         "color": "#FF9830",
+         "index": 30
+        }
+       }
+      }
+     ],
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#2B2D33",
+        "value": null
+       }
+      ]
+     },
+     "custom": {
+      "fillOpacity": 80,
+      "lineWidth": 0
+     }
+    },
+    "overrides": []
+   },
+   "id": 1
+  },
+  {
+   "type": "table",
+   "title": "14 天內失敗過的階段（2 次以上＝重複失敗）",
+   "description": "",
+   "gridPos": {
+    "x": 0,
+    "y": 13,
+    "w": 12,
+    "h": 7
+   },
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "sv-monitoring"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "type": "json",
+     "parser": "backend",
+     "format": "table",
+     "root_selector": "([repeat_failures.{ 'stage': label, 'failures': failures, 'dates': dates, 'error': last_error }])",
+     "columns": [
+      {
+       "selector": "stage",
+       "text": "階段",
+       "type": "string"
+      },
+      {
+       "selector": "failures",
+       "text": "失敗次數",
+       "type": "number"
+      },
+      {
+       "selector": "dates",
+       "text": "失敗的業務日",
+       "type": "string"
+      },
+      {
+       "selector": "error",
+       "text": "最後一次的錯誤",
+       "type": "string"
+      }
+     ],
+     "filters": [],
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-monitoring"
+     },
+     "source": "url",
+     "url": "/v1/chain/history?days=14",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
+    }
+   ],
+   "transformations": [
+    {
+     "id": "organize",
+     "options": {
+      "excludeByName": {},
+      "renameByName": {},
+      "indexByName": {
+       "階段": 0,
+       "失敗次數": 1,
+       "失敗的業務日": 2,
+       "最後一次的錯誤": 3
+      }
+     }
+    }
+   ],
+   "options": {
+    "showHeader": true,
+    "cellHeight": "sm",
+    "footer": {
+     "show": false
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "align": "left",
+      "inspect": false
+     },
+     "noValue": "—"
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "失敗次數"
+      },
+      "properties": [
+       {
+        "id": "custom.cellOptions",
+        "value": {
+         "type": "color-text"
+        }
+       },
+       {
+        "id": "thresholds",
+        "value": {
+         "mode": "absolute",
+         "steps": [
+          {
+           "color": "#D0D2D8",
+           "value": null
+          },
+          {
+           "color": "#E02F44",
+           "value": 2
+          }
+         ]
+        }
+       },
+       {
+        "id": "color",
+        "value": {
+         "mode": "thresholds"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "失敗次數"
+      },
+      "properties": [
+       {
+        "id": "custom.width",
+        "value": 76
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "失敗的業務日"
+      },
+      "properties": [
+       {
+        "id": "custom.width",
+        "value": 180
+       }
+      ]
+     }
+    ]
+   },
+   "id": 2
+  },
+  {
+   "type": "table",
+   "title": "資料庫容量與成長（D1 單庫上限 10 GB）",
+   "description": "",
+   "gridPos": {
+    "x": 12,
+    "y": 13,
+    "w": 12,
+    "h": 7
+   },
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "sv-monitoring"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "type": "json",
+     "parser": "backend",
+     "format": "table",
+     "root_selector": "([rows.{ 'db': binding_name, 'pct': utilization_pct, 'gb': used_bytes / 1000000000, 'growth': daily_growth_bytes / 1000000,\n        'd65': projected_days_to_warning_65pct, 'd90': projected_days_to_critical_90pct }])",
+     "columns": [
+      {
+       "selector": "db",
+       "text": "資料庫",
+       "type": "string"
+      },
+      {
+       "selector": "pct",
+       "text": "使用率",
+       "type": "number"
+      },
+      {
+       "selector": "gb",
+       "text": "已用",
+       "type": "number"
+      },
+      {
+       "selector": "growth",
+       "text": "每日成長",
+       "type": "number"
+      },
+      {
+       "selector": "d65",
+       "text": "到 65% 天數",
+       "type": "number"
+      },
+      {
+       "selector": "d90",
+       "text": "到 90% 天數",
+       "type": "number"
+      }
+     ],
+     "filters": [],
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-monitoring"
+     },
+     "source": "url",
+     "url": "/v1/capacity",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
+    }
+   ],
+   "transformations": [
+    {
+     "id": "organize",
+     "options": {
+      "excludeByName": {},
+      "renameByName": {},
+      "indexByName": {
+       "資料庫": 0,
+       "使用率": 1,
+       "已用": 2,
+       "每日成長": 3,
+       "到 65% 天數": 4,
+       "到 90% 天數": 5
+      }
+     }
+    },
+    {
+     "id": "sortBy",
+     "options": {
+      "fields": {},
+      "sort": [
+       {
+        "field": "使用率",
+        "desc": true
+       }
+      ]
+     }
+    }
+   ],
+   "options": {
+    "showHeader": true,
+    "cellHeight": "sm",
+    "footer": {
+     "show": false
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "align": "left",
+      "inspect": false
+     },
+     "noValue": "—"
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "使用率"
+      },
+      "properties": [
+       {
+        "id": "custom.cellOptions",
+        "value": {
+         "type": "gauge",
+         "mode": "basic",
+         "valueDisplayMode": "text"
+        }
+       },
+       {
+        "id": "min",
+        "value": 0
+       },
+       {
+        "id": "max",
+        "value": 100
+       },
+       {
+        "id": "unit",
+        "value": "percent"
+       },
+       {
+        "id": "thresholds",
+        "value": {
+         "mode": "absolute",
+         "steps": [
+          {
+           "color": "#56A64B",
+           "value": null
+          },
+          {
+           "color": "#EAB839",
+           "value": 65
+          },
+          {
+           "color": "#E02F44",
+           "value": 90
+          }
+         ]
+        }
+       },
+       {
+        "id": "color",
+        "value": {
+         "mode": "thresholds"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "到 90% 天數"
+      },
+      "properties": [
+       {
+        "id": "custom.cellOptions",
+        "value": {
+         "type": "color-text"
+        }
+       },
+       {
+        "id": "thresholds",
+        "value": {
+         "mode": "absolute",
+         "steps": [
+          {
+           "color": "#E02F44",
+           "value": null
+          },
+          {
+           "color": "#EAB839",
+           "value": 30
+          },
+          {
+           "color": "#D0D2D8",
+           "value": 90
+          }
+         ]
+        }
+       },
+       {
+        "id": "color",
+        "value": {
+         "mode": "thresholds"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "已用"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "decgbytes"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "每日成長"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "decmbytes"
+       }
+      ]
+     }
+    ]
+   },
+   "id": 3
+  },
+  {
+   "type": "stat",
+   "title": "監控自己的讀取成本：每個端點這次回應讀了幾列 D1（端點有快取，儀表板重新整理不會多讀）",
+   "gridPos": {
+    "x": 0,
+    "y": 20,
+    "w": 24,
+    "h": 3
+   },
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "sv-monitoring"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "type": "json",
+     "parser": "backend",
+     "format": "table",
+     "root_selector": "([{ 'k': 1, 'n': rows_read }])",
+     "columns": [
+      {
+       "selector": "k",
+       "text": "k",
+       "type": "number"
+      },
+      {
+       "selector": "n",
+       "text": "流程鏈狀態",
+       "type": "number"
+      }
+     ],
+     "filters": [],
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-monitoring"
+     },
+     "source": "url",
+     "url": "/v1/chain/state",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
+    },
+    {
+     "refId": "B",
+     "type": "json",
+     "parser": "backend",
+     "format": "table",
+     "root_selector": "([{ 'k': 1, 'n': rows_read }])",
+     "columns": [
+      {
+       "selector": "k",
+       "text": "k",
+       "type": "number"
+      },
+      {
+       "selector": "n",
+       "text": "要處理",
+       "type": "number"
+      }
+     ],
+     "filters": [],
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-monitoring"
+     },
+     "source": "url",
+     "url": "/v1/chain/alerts",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
+    },
+    {
+     "refId": "C",
+     "type": "json",
+     "parser": "backend",
+     "format": "table",
+     "root_selector": "([{ 'k': 1, 'n': rows_read }])",
+     "columns": [
+      {
+       "selector": "k",
+       "text": "k",
+       "type": "number"
+      },
+      {
+       "selector": "n",
+       "text": "起訖",
+       "type": "number"
+      }
+     ],
+     "filters": [],
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-monitoring"
+     },
+     "source": "url",
+     "url": "/v1/chain/timeline?days=2",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
+    },
+    {
+     "refId": "D",
+     "type": "json",
+     "parser": "backend",
+     "format": "table",
+     "root_selector": "([{ 'k': 1, 'n': rows_read }])",
+     "columns": [
+      {
+       "selector": "k",
+       "text": "k",
+       "type": "number"
+      },
+      {
+       "selector": "n",
+       "text": "14 天結果",
+       "type": "number"
+      }
+     ],
+     "filters": [],
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-monitoring"
+     },
+     "source": "url",
+     "url": "/v1/chain/history?days=14",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
+    },
+    {
+     "refId": "E",
+     "type": "json",
+     "parser": "backend",
+     "format": "table",
+     "root_selector": "([{ 'k': 1, 'n': rows_read }])",
+     "columns": [
+      {
+       "selector": "k",
+       "text": "k",
+       "type": "number"
+      },
+      {
+       "selector": "n",
+       "text": "資料就緒",
+       "type": "number"
+      }
+     ],
+     "filters": [],
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-monitoring"
+     },
+     "source": "url",
+     "url": "/v1/data-readiness",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
+    },
+    {
+     "refId": "F",
+     "type": "json",
+     "parser": "backend",
+     "format": "table",
+     "root_selector": "([{ 'k': 1, 'n': rows_read }])",
+     "columns": [
+      {
+       "selector": "k",
+       "text": "k",
+       "type": "number"
+      },
+      {
+       "selector": "n",
+       "text": "容量",
+       "type": "number"
+      }
+     ],
+     "filters": [],
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-monitoring"
+     },
+     "source": "url",
+     "url": "/v1/capacity",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
+    },
+    {
+     "refId": "G",
+     "type": "json",
+     "parser": "backend",
+     "format": "table",
+     "root_selector": "([{ 'k': 1, 'n': rows_read }])",
+     "columns": [
+      {
+       "selector": "k",
+       "text": "k",
+       "type": "number"
+      },
+      {
+       "selector": "n",
+       "text": "evidence clocks",
+       "type": "number"
+      }
+     ],
+     "filters": [],
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-monitoring"
+     },
+     "source": "url",
+     "url": "/v1/evidence-clocks",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
+    }
+   ],
+   "transformations": [
+    {
+     "id": "joinByField",
+     "options": {
+      "byField": "k",
+      "mode": "outer"
+     }
+    },
+    {
+     "id": "organize",
+     "options": {
+      "excludeByName": {
+       "k": true
+      },
+      "indexByName": {
+       "流程鏈狀態 A": 0,
+       "要處理 B": 1,
+       "起訖 C": 2,
+       "14 天結果 D": 3,
+       "資料就緒 E": 4,
+       "容量 F": 5,
+       "evidence clocks G": 6
+      },
+      "renameByName": {
+       "流程鏈狀態 A": "流程鏈狀態",
+       "要處理 B": "要處理",
+       "起訖 C": "起訖",
+       "14 天結果 D": "14 天結果",
+       "資料就緒 E": "資料就緒",
+       "容量 F": "容量",
+       "evidence clocks G": "evidence clocks"
+      }
+     }
+    }
+   ],
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "/.*/",
+     "values": false
+    },
+    "orientation": "auto",
+    "textMode": "value_and_name",
+    "wideLayout": false,
+    "colorMode": "value",
+    "graphMode": "none",
+    "justifyMode": "auto",
+    "showPercentChange": false,
+    "text": {
+     "titleSize": 12,
+     "valueSize": 20
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#D0D2D8",
+        "value": null
+       }
+      ]
+     },
+     "noValue": "—"
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "流程鏈狀態"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "none"
+       },
+       {
+        "id": "decimals",
+        "value": 0
+       },
+       {
+        "id": "thresholds",
+        "value": {
+         "mode": "absolute",
+         "steps": [
+          {
+           "color": "#D0D2D8",
+           "value": null
+          },
+          {
+           "color": "#EAB839",
+           "value": 1000
+          },
+          {
+           "color": "#E02F44",
+           "value": 20000
+          }
+         ]
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "要處理"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "none"
+       },
+       {
+        "id": "decimals",
+        "value": 0
+       },
+       {
+        "id": "thresholds",
+        "value": {
+         "mode": "absolute",
+         "steps": [
+          {
+           "color": "#D0D2D8",
+           "value": null
+          },
+          {
+           "color": "#EAB839",
+           "value": 1000
+          },
+          {
+           "color": "#E02F44",
+           "value": 20000
+          }
+         ]
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "起訖"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "none"
+       },
+       {
+        "id": "decimals",
+        "value": 0
+       },
+       {
+        "id": "thresholds",
+        "value": {
+         "mode": "absolute",
+         "steps": [
+          {
+           "color": "#D0D2D8",
+           "value": null
+          },
+          {
+           "color": "#EAB839",
+           "value": 1000
+          },
+          {
+           "color": "#E02F44",
+           "value": 20000
+          }
+         ]
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "14 天結果"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "none"
+       },
+       {
+        "id": "decimals",
+        "value": 0
+       },
+       {
+        "id": "thresholds",
+        "value": {
+         "mode": "absolute",
+         "steps": [
+          {
+           "color": "#D0D2D8",
+           "value": null
+          },
+          {
+           "color": "#EAB839",
+           "value": 1000
+          },
+          {
+           "color": "#E02F44",
+           "value": 20000
+          }
+         ]
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "資料就緒"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "none"
+       },
+       {
+        "id": "decimals",
+        "value": 0
+       },
+       {
+        "id": "thresholds",
+        "value": {
+         "mode": "absolute",
+         "steps": [
+          {
+           "color": "#D0D2D8",
+           "value": null
+          },
+          {
+           "color": "#EAB839",
+           "value": 1000
+          },
+          {
+           "color": "#E02F44",
+           "value": 20000
+          }
+         ]
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "容量"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "none"
+       },
+       {
+        "id": "decimals",
+        "value": 0
+       },
+       {
+        "id": "thresholds",
+        "value": {
+         "mode": "absolute",
+         "steps": [
+          {
+           "color": "#D0D2D8",
+           "value": null
+          },
+          {
+           "color": "#EAB839",
+           "value": 1000
+          },
+          {
+           "color": "#E02F44",
+           "value": 20000
+          }
+         ]
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "evidence clocks"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "none"
+       },
+       {
+        "id": "decimals",
+        "value": 0
+       },
+       {
+        "id": "thresholds",
+        "value": {
+         "mode": "absolute",
+         "steps": [
+          {
+           "color": "#D0D2D8",
+           "value": null
+          },
+          {
+           "color": "#EAB839",
+           "value": 1000
+          },
+          {
+           "color": "#E02F44",
+           "value": 20000
+          }
+         ]
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "id": 4
+  },
+  {
+   "type": "stat",
+   "title": "Cloud Run Job 失敗次數（所選時間）",
+   "gridPos": {
+    "x": 0,
+    "y": 23,
+    "w": 6,
+    "h": 3
+   },
+   "datasource": {
+    "type": "stackdriver",
+    "uid": "bg59sppgm7v9cb"
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "sum"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "value",
+    "graphMode": "none",
+    "textMode": "value",
+    "text": {
+     "titleSize": 12,
+     "valueSize": 20
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "noValue": "0",
+     "unit": "none",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "red",
+        "value": 1
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "queryType": "timeSeriesList",
+     "timeSeriesList": {
+      "projectName": "gen-lang-client-0602998820",
+      "filters": [
+       "resource.type",
+       "=",
+       "cloud_run_job",
+       "AND",
+       "metric.type",
+       "=",
+       "run.googleapis.com/job/completed_execution_count",
+       "AND",
+       "metric.label.result",
+       "=",
+       "failed"
+      ],
+      "crossSeriesReducer": "REDUCE_SUM",
+      "perSeriesAligner": "ALIGN_SUM",
+      "alignmentPeriod": "+3600s",
+      "groupBys": []
+     }
+    }
+   ],
+   "id": 5
+  },
+  {
+   "type": "stat",
+   "title": "Cloud Run Job 成功次數（所選時間）",
+   "gridPos": {
+    "x": 6,
+    "y": 23,
+    "w": 6,
+    "h": 3
+   },
+   "datasource": {
+    "type": "stackdriver",
+    "uid": "bg59sppgm7v9cb"
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "sum"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "value",
+    "graphMode": "none",
+    "textMode": "value",
+    "text": {
+     "titleSize": 12,
+     "valueSize": 20
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "noValue": "0",
+     "unit": "none"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "queryType": "timeSeriesList",
+     "timeSeriesList": {
+      "projectName": "gen-lang-client-0602998820",
+      "filters": [
+       "resource.type",
+       "=",
+       "cloud_run_job",
+       "AND",
+       "metric.type",
+       "=",
+       "run.googleapis.com/job/completed_execution_count",
+       "AND",
+       "metric.label.result",
+       "=",
+       "succeeded"
+      ],
+      "crossSeriesReducer": "REDUCE_SUM",
+      "perSeriesAligner": "ALIGN_SUM",
+      "alignmentPeriod": "+3600s",
+      "groupBys": []
+     }
+    }
+   ],
+   "id": 6
+  },
+  {
+   "type": "stat",
+   "title": "Scheduler 錯誤日誌（所選時間）",
+   "gridPos": {
+    "x": 12,
+    "y": 23,
+    "w": 6,
+    "h": 3
+   },
+   "datasource": {
+    "type": "stackdriver",
+    "uid": "bg59sppgm7v9cb"
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "sum"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "value",
+    "graphMode": "none",
+    "textMode": "value",
+    "text": {
+     "titleSize": 12,
+     "valueSize": 20
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "noValue": "0",
+     "unit": "none",
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "green",
+        "value": null
+       },
+       {
+        "color": "orange",
+        "value": 1
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "queryType": "timeSeriesList",
+     "timeSeriesList": {
+      "projectName": "gen-lang-client-0602998820",
+      "filters": [
+       "resource.type",
+       "=",
+       "cloud_scheduler_job",
+       "AND",
+       "metric.type",
+       "=",
+       "logging.googleapis.com/log_entry_count",
+       "AND",
+       "metric.label.severity",
+       "=",
+       "ERROR"
+      ],
+      "crossSeriesReducer": "REDUCE_SUM",
+      "perSeriesAligner": "ALIGN_SUM",
+      "alignmentPeriod": "+3600s",
+      "groupBys": []
+     }
+    }
+   ],
+   "id": 7
+  },
+  {
+   "type": "stat",
+   "title": "目前執行中的 Job",
+   "gridPos": {
+    "x": 18,
+    "y": 23,
+    "w": 6,
+    "h": 3
+   },
+   "datasource": {
+    "type": "stackdriver",
+    "uid": "bg59sppgm7v9cb"
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "colorMode": "value",
+    "graphMode": "none",
+    "textMode": "value",
+    "text": {
+     "titleSize": 12,
+     "valueSize": 20
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "noValue": "0",
+     "unit": "none"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "queryType": "timeSeriesList",
+     "timeSeriesList": {
+      "projectName": "gen-lang-client-0602998820",
+      "filters": [
+       "resource.type",
+       "=",
+       "cloud_run_job",
+       "AND",
+       "metric.type",
+       "=",
+       "run.googleapis.com/job/running_executions"
+      ],
+      "crossSeriesReducer": "REDUCE_SUM",
+      "perSeriesAligner": "ALIGN_MAX",
+      "alignmentPeriod": "+300s",
+      "groupBys": []
+     }
+    }
+   ],
+   "id": 8
+  },
+  {
+   "type": "bargauge",
+   "title": "各 Job 失敗次數（所選時間）",
+   "gridPos": {
+    "x": 0,
+    "y": 26,
+    "w": 12,
+    "h": 9
+   },
+   "datasource": {
+    "type": "stackdriver",
+    "uid": "bg59sppgm7v9cb"
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "sum"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "orientation": "horizontal",
+    "displayMode": "basic",
+    "showUnfilled": true,
+    "text": {
+     "titleSize": 12,
+     "valueSize": 13
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "red"
+     }
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "queryType": "timeSeriesList",
+     "timeSeriesList": {
+      "projectName": "gen-lang-client-0602998820",
+      "filters": [
+       "resource.type",
+       "=",
+       "cloud_run_job",
+       "AND",
+       "metric.type",
+       "=",
+       "run.googleapis.com/job/completed_execution_count",
+       "AND",
+       "metric.label.result",
+       "=",
+       "failed"
+      ],
+      "crossSeriesReducer": "REDUCE_SUM",
+      "perSeriesAligner": "ALIGN_SUM",
+      "alignmentPeriod": "+3600s",
+      "groupBys": [
+       "resource.label.job_name"
+      ]
+     },
+     "aliasBy": "{{resource.label.job_name}}"
+    }
+   ],
+   "id": 9
+  },
+  {
+   "type": "bargauge",
+   "title": "各 Job 成功次數（所選時間）",
+   "gridPos": {
+    "x": 12,
+    "y": 26,
+    "w": 12,
+    "h": 9
+   },
+   "datasource": {
+    "type": "stackdriver",
+    "uid": "bg59sppgm7v9cb"
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "sum"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "orientation": "horizontal",
+    "displayMode": "basic",
+    "showUnfilled": true,
+    "text": {
+     "titleSize": 12,
+     "valueSize": 13
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "green"
+     }
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "queryType": "timeSeriesList",
+     "timeSeriesList": {
+      "projectName": "gen-lang-client-0602998820",
+      "filters": [
+       "resource.type",
+       "=",
+       "cloud_run_job",
+       "AND",
+       "metric.type",
+       "=",
+       "run.googleapis.com/job/completed_execution_count",
+       "AND",
+       "metric.label.result",
+       "=",
+       "succeeded"
+      ],
+      "crossSeriesReducer": "REDUCE_SUM",
+      "perSeriesAligner": "ALIGN_SUM",
+      "alignmentPeriod": "+3600s",
+      "groupBys": [
+       "resource.label.job_name"
+      ]
+     },
+     "aliasBy": "{{resource.label.job_name}}"
+    }
+   ],
+   "id": 10
+  },
+  {
+   "type": "timeseries",
+   "title": "執行中的 Job（依 job）",
+   "gridPos": {
+    "x": 0,
+    "y": 35,
+    "w": 24,
+    "h": 8
+   },
+   "datasource": {
+    "type": "stackdriver",
+    "uid": "bg59sppgm7v9cb"
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "right",
+     "calcs": [
+      "max"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "custom": {
+      "drawStyle": "line",
+      "lineInterpolation": "stepAfter",
+      "fillOpacity": 20,
+      "stacking": {
+       "mode": "normal"
+      }
+     }
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "queryType": "timeSeriesList",
+     "timeSeriesList": {
+      "projectName": "gen-lang-client-0602998820",
+      "filters": [
+       "resource.type",
+       "=",
+       "cloud_run_job",
+       "AND",
+       "metric.type",
+       "=",
+       "run.googleapis.com/job/running_executions"
+      ],
+      "crossSeriesReducer": "REDUCE_SUM",
+      "perSeriesAligner": "ALIGN_MAX",
+      "alignmentPeriod": "+300s",
+      "groupBys": [
+       "resource.label.job_name"
+      ]
+     },
+     "aliasBy": "{{resource.label.job_name}}"
+    }
+   ],
+   "id": 11
+  },
+  {
+   "type": "timeseries",
+   "title": "Cloud Run 服務請求（依回應類別）",
+   "gridPos": {
+    "x": 0,
+    "y": 43,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "stackdriver",
+    "uid": "bg59sppgm7v9cb"
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "custom": {
+      "drawStyle": "bars",
+      "fillOpacity": 60,
+      "stacking": {
+       "mode": "normal"
+      }
+     }
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "queryType": "timeSeriesList",
+     "timeSeriesList": {
+      "projectName": "gen-lang-client-0602998820",
+      "filters": [
+       "resource.type",
+       "=",
+       "cloud_run_revision",
+       "AND",
+       "metric.type",
+       "=",
+       "run.googleapis.com/request_count"
+      ],
+      "crossSeriesReducer": "REDUCE_SUM",
+      "perSeriesAligner": "ALIGN_SUM",
+      "alignmentPeriod": "+3600s",
+      "groupBys": [
+       "resource.label.service_name",
+       "metric.label.response_code_class"
+      ]
+     },
+     "aliasBy": "{{resource.label.service_name}} {{metric.label.response_code_class}}"
+    }
+   ],
+   "id": 12
+  },
+  {
+   "type": "timeseries",
+   "title": "Cloud Run 服務延遲 p95",
+   "gridPos": {
+    "x": 12,
+    "y": 43,
+    "w": 12,
+    "h": 8
+   },
+   "datasource": {
+    "type": "stackdriver",
+    "uid": "bg59sppgm7v9cb"
+   },
+   "options": {
+    "legend": {
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "ms"
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "queryType": "timeSeriesList",
+     "timeSeriesList": {
+      "projectName": "gen-lang-client-0602998820",
+      "filters": [
+       "resource.type",
+       "=",
+       "cloud_run_revision",
+       "AND",
+       "metric.type",
+       "=",
+       "run.googleapis.com/request_latencies"
+      ],
+      "crossSeriesReducer": "REDUCE_PERCENTILE_95",
+      "perSeriesAligner": "ALIGN_DELTA",
+      "alignmentPeriod": "+3600s",
+      "groupBys": [
+       "resource.label.service_name"
+      ]
+     },
+     "aliasBy": "{{resource.label.service_name}}"
+    }
+   ],
+   "id": 13
+  },
+  {
+   "type": "bargauge",
+   "title": "各 Scheduler job 錯誤日誌（所選時間）",
+   "gridPos": {
+    "x": 0,
+    "y": 51,
+    "w": 24,
+    "h": 8
+   },
+   "datasource": {
+    "type": "stackdriver",
+    "uid": "bg59sppgm7v9cb"
+   },
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "sum"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "orientation": "horizontal",
+    "displayMode": "basic",
+    "showUnfilled": true,
+    "text": {
+     "titleSize": 12,
+     "valueSize": 13
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "orange"
+     }
+    },
+    "overrides": []
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "queryType": "timeSeriesList",
+     "timeSeriesList": {
+      "projectName": "gen-lang-client-0602998820",
+      "filters": [
+       "resource.type",
+       "=",
+       "cloud_scheduler_job",
+       "AND",
+       "metric.type",
+       "=",
+       "logging.googleapis.com/log_entry_count",
+       "AND",
+       "metric.label.severity",
+       "=",
+       "ERROR"
+      ],
+      "crossSeriesReducer": "REDUCE_SUM",
+      "perSeriesAligner": "ALIGN_SUM",
+      "alignmentPeriod": "+3600s",
+      "groupBys": [
+       "resource.label.job_id"
+      ]
+     },
+     "aliasBy": "{{resource.label.job_id}}"
+    }
+   ],
+   "id": 14
+  }
+ ]
+}

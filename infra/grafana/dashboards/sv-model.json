@@ -1,0 +1,612 @@
+{
+ "uid": "sv-model",
+ "title": "StockVision 模型",
+ "tags": [
+  "stockvision"
+ ],
+ "timezone": "Asia/Taipei",
+ "editable": true,
+ "schemaVersion": 39,
+ "refresh": "",
+ "time": {
+  "from": "now-30d",
+  "to": "now"
+ },
+ "links": [
+  {
+   "title": "StockVision",
+   "type": "dashboards",
+   "tags": [
+    "stockvision"
+   ],
+   "asDropdown": false,
+   "includeVars": false,
+   "keepTime": false
+  }
+ ],
+ "templating": {
+  "list": []
+ },
+ "panels": [
+  {
+   "type": "table",
+   "title": "Evidence clocks：各機制累積到哪、卡在哪（只供比較，不影響下單）",
+   "description": "",
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 24,
+    "h": 6
+   },
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "sv-monitoring"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "type": "json",
+     "parser": "backend",
+     "format": "table",
+     "root_selector": "([rows.{ 'label': label, 'status': status, 'latest': latest_evidence_date, 'samples': sample_count, 'dates': distinct_dates,\n        'coverage': coverage, 'delta': incumbent_delta, 'blockers': blockers }])",
+     "columns": [
+      {
+       "selector": "label",
+       "text": "機制",
+       "type": "string"
+      },
+      {
+       "selector": "status",
+       "text": "狀態",
+       "type": "string"
+      },
+      {
+       "selector": "latest",
+       "text": "最新證據日",
+       "type": "string"
+      },
+      {
+       "selector": "samples",
+       "text": "樣本數",
+       "type": "number"
+      },
+      {
+       "selector": "dates",
+       "text": "天數",
+       "type": "number"
+      },
+      {
+       "selector": "coverage",
+       "text": "覆蓋率",
+       "type": "number"
+      },
+      {
+       "selector": "delta",
+       "text": "對現行差異",
+       "type": "number"
+      },
+      {
+       "selector": "blockers",
+       "text": "卡在哪",
+       "type": "string"
+      }
+     ],
+     "filters": [],
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-monitoring"
+     },
+     "source": "url",
+     "url": "/v1/evidence-clocks",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
+    }
+   ],
+   "transformations": [
+    {
+     "id": "organize",
+     "options": {
+      "excludeByName": {},
+      "renameByName": {},
+      "indexByName": {
+       "機制": 0,
+       "狀態": 1,
+       "最新證據日": 2,
+       "樣本數": 3,
+       "天數": 4,
+       "覆蓋率": 5,
+       "對現行差異": 6,
+       "卡在哪": 7
+      }
+     }
+    }
+   ],
+   "options": {
+    "showHeader": true,
+    "cellHeight": "sm",
+    "footer": {
+     "show": false
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "align": "left",
+      "inspect": false
+     },
+     "noValue": "—"
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "狀態"
+      },
+      "properties": [
+       {
+        "id": "custom.cellOptions",
+        "value": {
+         "type": "color-text"
+        }
+       },
+       {
+        "id": "mappings",
+        "value": [
+         {
+          "type": "value",
+          "options": {
+           "completed": {
+            "text": "完成",
+            "color": "#56A64B",
+            "index": 0
+           },
+           "success": {
+            "text": "完成",
+            "color": "#56A64B",
+            "index": 1
+           },
+           "noop": {
+            "text": "無事可做",
+            "color": "#56A64B",
+            "index": 2
+           },
+           "retry_success": {
+            "text": "重試後完成",
+            "color": "#EAB839",
+            "index": 3
+           },
+           "running": {
+            "text": "執行中",
+            "color": "#5794F2",
+            "index": 4
+           },
+           "waiting": {
+            "text": "等待中",
+            "color": "#5794F2",
+            "index": 5
+           },
+           "not_started": {
+            "text": "未開始",
+            "color": "#6E7079",
+            "index": 6
+           },
+           "pending": {
+            "text": "未開始",
+            "color": "#6E7079",
+            "index": 7
+           },
+           "out_of_window": {
+            "text": "未到時段",
+            "color": "#6E7079",
+            "index": 8
+           },
+           "skipped": {
+            "text": "略過",
+            "color": "#4B4F58",
+            "index": 9
+           },
+           "stale": {
+            "text": "待確認",
+            "color": "#6E7079",
+            "index": 10
+           },
+           "at_risk": {
+            "text": "趕不上截止",
+            "color": "#EAB839",
+            "index": 11
+           },
+           "attention": {
+            "text": "應跑未跑",
+            "color": "#FF9830",
+            "index": 12
+           },
+           "overdue": {
+            "text": "逾時",
+            "color": "#FF9830",
+            "index": 13
+           },
+           "stuck": {
+            "text": "卡住",
+            "color": "#B877D9",
+            "index": 14
+           },
+           "missed": {
+            "text": "漏跑",
+            "color": "#E02F44",
+            "index": 15
+           },
+           "failed": {
+            "text": "失敗",
+            "color": "#E02F44",
+            "index": 16
+           },
+           "error": {
+            "text": "失敗",
+            "color": "#E02F44",
+            "index": 17
+           },
+           "blocked": {
+            "text": "中止",
+            "color": "#E02F44",
+            "index": 18
+           },
+           "ready": {
+            "text": "就緒",
+            "color": "#56A64B",
+            "index": 19
+           },
+           "ok": {
+            "text": "正常",
+            "color": "#56A64B",
+            "index": 20
+           },
+           "warn": {
+            "text": "注意",
+            "color": "#FF9830",
+            "index": 21
+           },
+           "fail": {
+            "text": "未過",
+            "color": "#E02F44",
+            "index": 22
+           },
+           "critical": {
+            "text": "重大",
+            "color": "#E02F44",
+            "index": 23
+           },
+           "warning": {
+            "text": "注意",
+            "color": "#FF9830",
+            "index": 24
+           },
+           "healthy": {
+            "text": "正常",
+            "color": "#56A64B",
+            "index": 25
+           },
+           "pending_maturity": {
+            "text": "等待成熟",
+            "color": "#6E7079",
+            "index": 26
+           },
+           "pass": {
+            "text": "通過",
+            "color": "#56A64B",
+            "index": 27
+           },
+           "collecting": {
+            "text": "收集中",
+            "color": "#5794F2",
+            "index": 28
+           },
+           "not_applicable_no_real_intents": {
+            "text": "不適用（沒有真實下單）",
+            "color": "#6E7079",
+            "index": 29
+           },
+           "owner_read_unavailable": {
+            "text": "讀不到來源",
+            "color": "#FF9830",
+            "index": 30
+           }
+          }
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "覆蓋率"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "percentunit"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "狀態"
+      },
+      "properties": [
+       {
+        "id": "custom.width",
+        "value": 170
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "最新證據日"
+      },
+      "properties": [
+       {
+        "id": "custom.width",
+        "value": 110
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "樣本數"
+      },
+      "properties": [
+       {
+        "id": "custom.width",
+        "value": 84
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "天數"
+      },
+      "properties": [
+       {
+        "id": "custom.width",
+        "value": 70
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "覆蓋率"
+      },
+      "properties": [
+       {
+        "id": "custom.width",
+        "value": 84
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "對現行差異"
+      },
+      "properties": [
+       {
+        "id": "custom.width",
+        "value": 110
+       }
+      ]
+     }
+    ]
+   },
+   "id": 1
+  },
+  {
+   "type": "stat",
+   "title": "Execution parity：真實與 paper 下單意圖對得上幾筆",
+   "gridPos": {
+    "x": 0,
+    "y": 6,
+    "w": 12,
+    "h": 3
+   },
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "sv-monitoring"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "type": "json",
+     "parser": "backend",
+     "format": "table",
+     "root_selector": "([details.execution_parity])",
+     "columns": [
+      {
+       "selector": "real_intents",
+       "text": "真實意圖",
+       "type": "number"
+      },
+      {
+       "selector": "paper_intents",
+       "text": "paper 意圖",
+       "type": "number"
+      },
+      {
+       "selector": "matched_intents",
+       "text": "對得上",
+       "type": "number"
+      }
+     ],
+     "filters": [],
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-monitoring"
+     },
+     "source": "url",
+     "url": "/v1/evidence-clocks",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
+    }
+   ],
+   "transformations": [
+    {
+     "id": "organize",
+     "options": {
+      "excludeByName": {},
+      "renameByName": {},
+      "indexByName": {
+       "真實意圖": 0,
+       "paper 意圖": 1,
+       "對得上": 2
+      }
+     }
+    }
+   ],
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "/.*/",
+     "values": false
+    },
+    "orientation": "auto",
+    "textMode": "value_and_name",
+    "wideLayout": false,
+    "colorMode": "value",
+    "graphMode": "none",
+    "justifyMode": "auto",
+    "showPercentChange": false,
+    "text": {
+     "titleSize": 12,
+     "valueSize": 20
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#D0D2D8",
+        "value": null
+       }
+      ]
+     },
+     "noValue": "—"
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "真實意圖"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "none"
+       },
+       {
+        "id": "decimals",
+        "value": 0
+       },
+       {
+        "id": "thresholds",
+        "value": {
+         "mode": "absolute",
+         "steps": [
+          {
+           "color": "#D0D2D8",
+           "value": null
+          }
+         ]
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "paper 意圖"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "none"
+       },
+       {
+        "id": "decimals",
+        "value": 0
+       },
+       {
+        "id": "thresholds",
+        "value": {
+         "mode": "absolute",
+         "steps": [
+          {
+           "color": "#D0D2D8",
+           "value": null
+          }
+         ]
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "對得上"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "none"
+       },
+       {
+        "id": "decimals",
+        "value": 0
+       },
+       {
+        "id": "thresholds",
+        "value": {
+         "mode": "absolute",
+         "steps": [
+          {
+           "color": "#D0D2D8",
+           "value": null
+          }
+         ]
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "id": 2
+  },
+  {
+   "type": "text",
+   "title": "",
+   "transparent": true,
+   "gridPos": {
+    "x": 12,
+    "y": 6,
+    "w": 12,
+    "h": 5
+   },
+   "options": {
+    "mode": "markdown",
+    "content": "**還沒有資料來源、所以沒放的面板**\n\n- Paper NAV 對加權指數、回撤\n- 各模型 rolling 20d IC、模型名冊\n- 每日訊號檔數（強度分段）、T+5 實現報酬\n- OPB 各 arm 被選比例\n- 每日訓練耗時\n\n來源調查結果與先後順序見 `infra/grafana/README.md`。"
+   },
+   "id": 3
+  }
+ ]
+}

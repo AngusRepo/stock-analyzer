@@ -6,10 +6,12 @@ main = "src/monitoring/index.ts"
 compatibility_date = "2024-07-01"
 compatibility_flags = ["nodejs_compat"]
 
-# Cache API works only on a custom domain (not workers.dev), and Access protects the hostname Grafana calls.
-# The owner adds the custom domain once created, e.g.
-#   routes = [{ pattern = "<monitoring hostname>", custom_domain = true }]
-workers_dev = false
+# Served on workers.dev until there is a custom domain (the account has no zone): Access is enabled on the
+# workers.dev URL (Worker settings -> Domains & Routes), and the Worker still verifies the Access JWT and the Bearer.
+# The Cache API stores nothing on workers.dev, so the route cache and memo use MONITORING_CACHE (src/monitoring/kvCache.ts).
+# With a custom domain later: routes = [{ pattern = "<monitoring hostname>", custom_domain = true }], workers_dev = false,
+# and remove MONITORING_CACHE to go back to the Cache API.
+workers_dev = true
 preview_urls = false
 
 [observability]
@@ -63,6 +65,11 @@ database_id = "bd0a99b2-077b-4d57-8971-07ff8c7f19e1"
 binding = "RESEARCH_DB"
 database_name = "stockvision-research-db"
 database_id = "9332506a-ef37-43d4-9ea3-5aa70b1561d2"
+
+# Route cache and memo (kvCache.ts); this Worker's own namespace, never exposed to routes.
+[[kv_namespaces]]
+binding = "MONITORING_CACHE"
+id = "bc973e5be8ca49f58efabee549acb305"
 
 # Main Worker KV: holiday:* and the TWSE closure caches (get only; readOnlyEnv exposes no put/delete).
 [[kv_namespaces]]

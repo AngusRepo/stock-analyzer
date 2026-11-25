@@ -8,6 +8,7 @@ import { MATERIALIZATION_SOURCES } from './dataReadiness'
 import { FINLAB_STAGE_CARDS } from './judgment/finlabStageCards'
 import { PIPELINE_STAGE_CARDS } from './judgment/pipelineStageCards'
 import { createMonitoringHandler, ROUTES, SLOW_TTL_S, TIMELINE_TTL_S } from './index'
+import { kvCache } from './kvCache'
 import { day, finishedProgress, insertRows, midRunProgress, seedStageProgress, startFixture, tableScans, tempSorts, weekdays, type Fixture } from './monitoringFixture.testSupport'
 import type { ExecutedQuery } from './readOnlyD1'
 import { accessHeaders, accessKeys, fakeCache, TEST_AUD, TEST_TEAM, TEST_TOKEN } from './monitoringAuth.testSupport'
@@ -602,6 +603,31 @@ test('memo: a poll past the route TTL re-reads only what changed (counts, timeli
   } finally {
     await fx.raw.MARKET_DB.prepare('DELETE FROM stock_prices WHERE stock_id = 999999').run()
   }
+})
+
+test('workers.dev cache (memory + KV): HIT within the TTL in another isolate, memo reused past it', async () => {
+  let clock = NOW
+  const store = new Map<string, string>()
+  const kv = {
+    get: async (key: string) => (store.has(key) ? JSON.parse(store.get(key)!) : null),
+    put: async (key: string, value: string) => { store.set(key, value) },
+  } as unknown as KVNamespace
+  const keys = await accessKeys()
+  const env = { ...fx.env, ACCESS_TEAM_DOMAIN: TEST_TEAM, ACCESS_AUD: TEST_AUD, MONITORING_READ_TOKEN: TEST_TOKEN }
+  const isolate = () => createMonitoringHandler({ now: () => clock, fetch: keys.fetcher, cache: kvCache(kv, () => clock, new Map()) })
+  const get = async (handler: ReturnType<typeof isolate>, path: string) => {
+    const response = await handler(new Request(`https://stockvision-monitoring.test.workers.dev${path}`, { headers: await accessHeaders(keys, clock) }), env)
+    return { cache: response.headers.get('x-monitoring-cache'), body: await response.json() as any }
+  }
+  const readiness = `/v1/data-readiness?date=${X}`
+  const cold = await get(isolate(), readiness)
+  assert.equal(cold.cache, 'MISS')
+  const hit = await get(isolate(), readiness)
+  assert.deepEqual([hit.cache, hit.body.generated_at], ['HIT', cold.body.generated_at])
+  clock += (SLOW_TTL_S + 1) * 1000
+  const warm = await get(isolate(), readiness)
+  assert.equal(warm.cache, 'MISS')
+  assert.ok(warm.body.rows_read < cold.body.rows_read - 12_000, `cold=${cold.body.rows_read} warm=${warm.body.rows_read}`)
 })
 
 test('every query the endpoints ran is read-only and EXPLAINs without a table SCAN', async () => {

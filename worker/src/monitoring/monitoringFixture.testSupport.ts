@@ -191,6 +191,8 @@ export type StageProgressSeed = {
 }
 
 const iso = (ms: number) => new Date(ms).toISOString()
+/** Phase receipts as the Python writers store them: microseconds and `+00:00`. */
+const pyIso = (ms: number) => new Date(ms).toISOString().replace('Z', '000+00:00')
 
 /** Replaces the date's progress rows (finlab_progress, pipeline_execution, pipeline_progress, pipeline_batches:*). */
 export async function seedStageProgress(db: D1Database, date: string, seed: StageProgressSeed): Promise<void> {
@@ -202,8 +204,8 @@ export async function seedStageProgress(db: D1Database, date: string, seed: Stag
     const step = finlab.phaseMs ?? 10 * 60_000
     const start = Date.parse(finlab.startedAt)
     const phases = finlab.phases.map((status, i) => ({
-      phase: (['acquire', 'validate', 'publish'] as const)[i], status, started_at: iso(start + i * step),
-      ...(status === 'running' ? {} : { completed_at: iso(start + (i + 1) * step), elapsed_ms: step }),
+      phase: (['acquire', 'validate', 'publish'] as const)[i], status, started_at: pyIso(start + i * step),
+      ...(status === 'running' ? {} : { completed_at: pyIso(start + (i + 1) * step), elapsed_ms: step }),
     }))
     const last = finlab.phases.at(-1)
     const observed = finlab.observedAt ?? iso(start + finlab.phases.length * step - (last === 'running' ? step / 2 : 0))
@@ -223,7 +225,7 @@ export async function seedStageProgress(db: D1Database, date: string, seed: Stag
       const start = Date.parse(progress.startedAt)
       const receipts = progress.done.map((item, i) => ({
         phase: typeof item === 'string' ? item : item.phase, status: typeof item === 'string' ? 'completed' : item.status,
-        elapsed_ms: step, started_at: iso(start + i * step), completed_at: iso(start + (i + 1) * step),
+        elapsed_ms: step, started_at: pyIso(start + i * step), completed_at: pyIso(start + (i + 1) * step),
       }))
       const phaseStart = start + receipts.length * step
       const observed = progress.observedAt ?? iso(phaseStart + step / 2)

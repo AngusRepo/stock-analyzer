@@ -26,4 +26,4 @@ assert(exit.includes('owner=canonical_market_risk_runtime_v1'), 'portfolio de-ri
 assert(!route.includes('await buildMarketRegimeFactorPacket(databaseForDataDomain(c.env'), 'GET /market/risk must not recompute or write a packet')
 assert(route.includes('const packetByDate = new Map'), 'risk history must merge the same materialized packet as current risk across domain DBs')
 const materialization = readFileSync('src/lib/marketRiskMaterialization.ts', 'utf8')
-assert(materialization.includes("'market:risk:latest:v20-finlab-risk-detail-oi-delta'") && materialization.includes('await clearMarketRiskLatestCaches(env)') && pipeline.includes('await recomputeDailyMarketRisk(env,twDate)'), 'evening materialization must clear the current served cache key')
+assert(materialization.includes("'market:risk:latest:v21-runtime-level'") && materialization.includes('await clearMarketRiskLatestCaches(env)') && pipeline.includes('await recomputeDailyMarketRisk(env,twDate)'), 'evening materialization must clear the current served cache key')

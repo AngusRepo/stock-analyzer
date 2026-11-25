@@ -13,6 +13,7 @@ Architecture:
 
 Auth: X-Controller-Token header (set ML_CONTROLLER_SECRET env var)
 """
+import hmac
 import os
 import asyncio
 from fastapi import FastAPI, HTTPException, Depends, Request
@@ -76,7 +77,7 @@ async def verify_token(request: Request) -> None:
             raise HTTPException(status_code=500, detail="ML_CONTROLLER_SECRET not configured")
         return  # dev mode: skip auth
     token = request.headers.get("X-Controller-Token", "")
-    if token != _CONTROLLER_TOKEN:
+    if not hmac.compare_digest(token.encode("utf-8"), _CONTROLLER_TOKEN.encode("utf-8")):
         raise HTTPException(status_code=401, detail="Invalid controller token")
 
 

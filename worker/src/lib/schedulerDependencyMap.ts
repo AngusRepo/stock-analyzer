@@ -77,11 +77,11 @@ export const SCHEDULER_DEPENDENCY_MAP: Record<string, SchedulerDependencySpec> =
     recommendation: 'Keep read-only until a separately approved archive-before-delete contract exists.',
   },
   'data-domain-shadow-backfill-next': {
-    task: 'data-domain-shadow-backfill-next', owner: 'gcp_scheduler', consolidationClass: 'disable_candidate',
+    task: 'data-domain-shadow-backfill-next', owner: 'manual_only', consolidationClass: 'disable_candidate',
     replacementOwner: 'Codex daily backfill retirement qualification monitor',
-    currentFunction: 'Checks post-cutover readiness first; returns all_domains_caught_up without waiting for evening closure when complete. Incomplete domains still require closure before queueing.',
-    upstream: ['evening-chain', 'data-domain-shadow-backfill'], downstream: ['storage-health-check', 'storage-capacity-report'], requiredBeforeDisable: ['all domain cursors and parity receipts must remain caught up'], operatorRisk: 'medium',
-    recommendation: 'Pause after caught-up readback; retire only after an observation window and explicit approval.',
+    currentFunction: 'Retired by D9 legacy-DB retirement step 4: the physical root is deleted so the legacy -> ops control-plane copy runs with no writers. The coordinator handler stays for manual triggers and still checks post-cutover readiness first.',
+    upstream: ['evening-chain', 'data-domain-shadow-backfill'], downstream: ['storage-health-check', 'storage-capacity-report'], requiredBeforeDisable: ['all domain cursors and parity receipts must remain caught up', 'physical root deleted after approved retirement'], operatorRisk: 'medium',
+    recommendation: 'Keep the retired root absent; run the coordinator only as explicit manual maintenance.',
   },
   'legacy-strategy-evidence-migration': {
     task: 'legacy-strategy-evidence-migration', owner: 'gcp_scheduler', consolidationClass: 'manual_maintenance_candidate',
@@ -91,8 +91,8 @@ export const SCHEDULER_DEPENDENCY_MAP: Record<string, SchedulerDependencySpec> =
     recommendation: 'Disable only after backlog and artifact readback both remain complete.',
   },
   'legacy-hot-data-retirement': {
-    task: 'legacy-hot-data-retirement', owner: 'gcp_scheduler', consolidationClass: 'manual_maintenance_candidate',
-    currentFunction: 'Runs the legacy hot-data retirement audit in dry-run mode unless an explicit confirmation phrase is supplied.',
+    task: 'legacy-hot-data-retirement', owner: 'manual_only', consolidationClass: 'manual_maintenance_candidate',
+    currentFunction: 'Retired as a scheduled root by D9 legacy-DB retirement step 4; the task runs the legacy hot-data retirement audit in dry-run mode unless an explicit confirmation phrase is supplied.',
     replacementOwner: 'manual archive-before-delete retirement runbook',
     upstream: ['legacy-db', 'data-domain-shadow-backfill-next'], downstream: ['storage-capacity-report'], requiredBeforeDisable: ['archive, rollback, and dry-run eligibility receipts must all pass'], operatorRisk: 'high',
     recommendation: 'Keep scheduled execution read-only; any mutation remains explicit manual maintenance.',
@@ -182,9 +182,9 @@ export const SCHEDULER_DEPENDENCY_MAP: Record<string, SchedulerDependencySpec> =
   },
   'data-domain-shadow-backfill': {
     task: 'data-domain-shadow-backfill',
-    owner: 'gcp_scheduler',
+    owner: 'manual_only',
     consolidationClass: 'downstream_evidence',
-    currentFunction: 'Runs bounded domain-specific parity workers beneath the sequential Multi-D1 coordinator.',
+    currentFunction: 'Runs bounded domain-specific parity workers beneath the sequential Multi-D1 coordinator; its last physical root (paper) was retired by D9 legacy-DB retirement step 4.',
     replacementOwner: 'data-domain-shadow-backfill-next coordinator',
     upstream: ['data-domain-shadow-backfill-next'],
     downstream: ['data-domain-cutover-readiness'],

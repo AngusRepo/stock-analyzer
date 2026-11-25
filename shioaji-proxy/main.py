@@ -16,7 +16,9 @@ Endpoints：
   Cloud Run, min-instances=0, 盤中自動啟動
   成本：~$5/月（在 $300 免費額度內）
 """
+import hmac
 import os
+import re
 import time
 import threading
 import math
@@ -1326,7 +1328,7 @@ def verify_token(authorization: str | None):
         return  # 未設定 token → 不驗證（開發模式）
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(401, "Unauthorized")
-    if authorization[7:] != SERVICE_TOKEN:
+    if not hmac.compare_digest(authorization[7:].encode("utf-8"), SERVICE_TOKEN.encode("utf-8")):
         raise HTTPException(401, "Invalid token")
 
 
@@ -2023,12 +2025,29 @@ def orderbook_watchlist(req: BatchRequest, authorization: str | None = Header(de
     }
 
 
+_CHIPS_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")  # ASCII only: \d also matches fullwidth digits
+
+
 class ChipsRequest(BaseModel):
     date: str  # YYYY-MM-DD
 
+
+def _validated_chips_date(value: str) -> str:
+    """The date goes into upstream URLs: accept only a real YYYY-MM-DD calendar date."""
+    if not isinstance(value, str) or not _CHIPS_DATE_RE.fullmatch(value):
+        raise HTTPException(422, "date must be YYYY-MM-DD")
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(422, "date must be a valid calendar date")
+    return value
+
+
 @app.post("/twse-chips")
-async def twse_chips(req: ChipsRequest):
+async def twse_chips(req: ChipsRequest, authorization: str | None = Header(default=None)):
     """Proxy TWSE institutional trading data (T86) for CF Workers"""
+    verify_token(authorization)
+    _validated_chips_date(req.date)
     import httpx, re
     d = req.date.replace("-", "")
     chips = []
@@ -2082,8 +2101,10 @@ async def twse_chips(req: ChipsRequest):
 
 
 @app.post("/tpex-chips")
-async def tpex_chips(req: ChipsRequest):
+async def tpex_chips(req: ChipsRequest, authorization: str | None = Header(default=None)):
     """Proxy TPEX institutional trading data for CF Workers (TPEX blocks CF IPs)"""
+    verify_token(authorization)
+    _validated_chips_date(req.date)
     import httpx
     parts = req.date.split("-")
     roc_year = int(parts[0]) - 1911

@@ -32,6 +32,8 @@ def test_no_runtime_workload_uses_default_compute_identity() -> None:
         "stockvision-github-token",
         "stockvision-ml-service-secret",
     } <= pipeline_secrets
+    # deploy_ml_controller.sh binds ML_SERVICE_SECRET from this secret on the controller service.
+    assert "stockvision-ml-service-token" in contract["secret_access"]["controller"]
 
 
 def test_controller_override_role_covers_every_invoked_job() -> None:

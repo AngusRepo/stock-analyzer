@@ -2190,7 +2190,9 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
     const or15QuoteAboveStructure = paperSwingOwner ? swingAssessment?.action === 'pass' : or15Assessment?.action === 'pass' &&
       or15Assessment.orHigh != null && or15Assessment.vwap != null &&
       price > or15Assessment.orHigh && price > or15Assessment.vwap
-    const or15MarketRiskAllowed = !['high', 'red', 'black', 'extreme']
+    // Under an L4 plan, market risk is owned by the plan exposure cap and the black halt, so no
+    // level gate is repeated here. Pendings without a plan keep the legacy level guard.
+    const or15MarketRiskAllowed = Boolean(l4PlanId) || !['high', 'red', 'black', 'extreme']
       .includes(String(marketRisk.risk_level ?? '').toLowerCase())
     const or15TechnicalDecision = paperOr15Owner ? {
       action: or15QuoteAboveStructure && or15MarketRiskAllowed ? 'pass' as const : 'defer' as const,
@@ -2282,6 +2284,7 @@ async function runIntradayCheckUnlocked(env: Bindings, leaseRunId: string): Prom
       quoteAgeMs: currentOhlc ? bookConfirmationAgeMs(currentOhlc) : null,
       quoteSource: currentOhlc?.source === 'shioaji' ? 'shioaji' : currentOhlc?.source === 'yahoo' ? 'yahoo' : 'none',
       marketRiskLevel: marketRisk.risk_level,
+      marketRiskOwner: l4PlanId ? 'l4_plan' : null,
       momentum: paperOr15Owner ? null : {
         ...effectivePreTradeMomentum,
         minVolumeRatio: effectiveMomentumMinVolumeRatio,

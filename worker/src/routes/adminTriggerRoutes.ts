@@ -11,8 +11,10 @@ import { setOpsRuntimeTicket } from '../lib/opsRuntimeScope'
 import {
   admitSchedulerExecutionTicket,
   failAcceptedSchedulerTicket,
+  failStartedSchedulerTicket,
   schedulerDeliveryIdentity,
-  schedulerTicketStatusForRunLog,
+  schedulerHttpResultTicketStatus,
+  SYNC_EXECUTION_STARTED_SUMMARY,
   settleSchedulerHttpTicket,
   updateSchedulerExecutionTicket,
   type SchedulerExecutionTicketAuthority,
@@ -143,9 +145,13 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
         // Same NEW-94 redaction as the inner execution catch: the ticket row is stored in ops D1.
         const { redactSchedulerRunText } = await import('../lib/schedulerRunLogger')
         const message = redactSchedulerRunText(error instanceof Error ? error.message : String(error), c.env)
-        await failAcceptedSchedulerTicket(admitted.db, { ticketId: admitted.ticketId, runId: admitted.runId, error: message })
+        const input = { ticketId: admitted.ticketId, runId: admitted.runId, error: message }
+        // A throw after the sync start (its own settle write failed) would otherwise leave it running.
+        await failAcceptedSchedulerTicket(admitted.db, input)
+          .then((settled) => settled || failStartedSchedulerTicket(admitted.db!, input))
           .catch((settleError) => console.warn('[admin-trigger] admitted ticket settlement failed:', settleError))
       }
+      console.error('[admin-trigger] request failed:', error)
       throw error
     }
   })
@@ -482,7 +488,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
           const status = classifySchedulerSummary(summary)
           // Maintenance's queue owns its ticket from admission through terminal receipt.
           const maintenanceOwned = task === 'audit-json-retention' && /\bmaintenance_owner=durable_queue\b/.test(summary)
-          const ownerKept = !maintenanceOwned && await settleTicket(schedulerTicketStatusForRunLog(status), summary)
+          const ownerKept = !maintenanceOwned && await settleTicket(schedulerHttpResultTicketStatus(task, status), summary)
           if (!maintenanceOwned && !ownerKept && !await finLabOwnsRunLog(c.env, task, requestedRunDate, summary)) await logSchedulerResult(c.env.KV, task, {
             status,
             summary: logSummary,
@@ -533,14 +539,14 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
 
     const t0 = Date.now()
     const syncRunId = executionRunId
-    await updateTicket('running', 'scheduler_http', 'sync execution started')
+    await updateTicket('running', 'scheduler_http', SYNC_EXECUTION_STARTED_SUMMARY)
     try {
       const result = await fn()
       const summary = typeof result === 'string' ? result : JSON.stringify(result)?.slice(0, 200) ?? ''
       const logSummary = schedulerRunLogSummary(result, c.env)
       const status = classifySchedulerSummary(summary)
       const maintenanceOwned = task === 'audit-json-retention' && /\bmaintenance_owner=durable_queue\b/.test(summary)
-      const ownerKept = !maintenanceOwned && await settleTicket(schedulerTicketStatusForRunLog(status), summary)
+      const ownerKept = !maintenanceOwned && await settleTicket(schedulerHttpResultTicketStatus(task, status), summary)
       if (!maintenanceOwned && !ownerKept && !await finLabOwnsRunLog(c.env, task, requestedRunDate, summary)) await logSchedulerResult(c.env.KV, task, {
         status,
         summary: logSummary,
@@ -558,8 +564,12 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
         ticket_id: schedulerTicketId,
       }, maintenanceOwned ? 202 : 200)
     } catch (e: any) {
+      console.error(`[admin-trigger] ${task} sync execution failed:`, e)
+      // A failed settle write must not replace the execution error; the next delivery's
+      // abandoned-running sweep closes a ticket left running here.
       await updateTicket('error', 'scheduler_http',
         redactSchedulerRunText(e?.message ?? 'Unknown error', c.env), redactSchedulerRunText(String(e), c.env))
+        .catch((settleError) => console.error(`[admin-trigger] ${task} error settle failed:`, settleError))
       await logSchedulerResult(
         c.env.KV,
         task,
@@ -572,7 +582,7 @@ export function createAdminTriggerRoutes(deps: TriggerRouteDeps) {
           run_date: requestedRunDate,
         },
         c.env as any,
-      )
+      ).catch((logError) => console.error(`[admin-trigger] ${task} run log write failed:`, logError))
       return c.json({ success: false, message: `${task} 執行失敗`, error: e.message, run_id: syncRunId, ticket_id: schedulerTicketId }, 500)
     }
   }

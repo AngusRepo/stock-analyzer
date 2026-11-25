@@ -176,7 +176,6 @@ export interface DbStockPrice {
   high: number | null
   low: number | null
   close: number | null
-  adj_close: number | null
   volume: number | null
 }
 

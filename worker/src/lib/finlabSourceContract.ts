@@ -7,6 +7,7 @@ type FinLabLaneContract = {
   sentinel_field?: string
   fields?: Record<string, { required?: boolean }>
   late_publication?: { fields?: string[]; retry_cutoff_tw?: string }
+  d1_category_scope?: Record<string, string[]>
 }
 
 type FinLabSourceContract = {
@@ -24,6 +25,23 @@ export function finLabContractFlagDefault(name: string): boolean {
 
 export function finLabCanonicalDatasetsForLane(lane: string): string[] {
   return FINLAB_SOURCE_CONTRACT.lanes?.[lane]?.canonical_datasets ?? []
+}
+
+/** Category substrings D1 keeps per regime-context dataset; the materializer writes only these, the GCS raw keeps all. */
+export function finLabRegimeContextD1CategoryScope(): Record<string, string[]> {
+  return FINLAB_SOURCE_CONTRACT.lanes?.regime_context?.d1_category_scope ?? {}
+}
+
+/** WHERE predicate (with binds) for the canonical_regime_context_daily rows that d1_category_scope keeps. */
+export function finLabRegimeContextScopePredicate(): { sql: string; binds: string[] } {
+  const scope = Object.entries(finLabRegimeContextD1CategoryScope())
+  if (!scope.length) return { sql: '1 = 1', binds: [] }
+  const binds = scope.map(([dataset]) => dataset)
+  const scoped = scope.map(([dataset, parts]) => {
+    binds.push(dataset, ...parts.map((part) => `%${part}%`))
+    return `(dataset = ? AND (${parts.map(() => 'category LIKE ?').join(' OR ')}))`
+  })
+  return { sql: `(dataset NOT IN (${scope.map(() => '?').join(', ')}) OR ${scoped.join(' OR ')})`, binds }
 }
 
 export function finLabRequiredFieldsForLane(lane: string): string[] {

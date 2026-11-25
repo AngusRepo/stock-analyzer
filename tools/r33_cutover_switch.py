@@ -10,6 +10,12 @@ every write is read back. Each --execute needs Wei's go for that step. The promo
 the original atomic publisher (per roster model one champion pointer and one registry row,
 plus 1 ensemble pointer: 4+4+1 for the four-model roster).
 Never dispatches a job, never touches Live, never writes a plan.
+
+Recalibration (L3-EV-STEP): the same cohort with a new serving estimator is the same five steps
+under a new R33 object. prepare refuses it unless --recalibration-approval names the cohort, the
+live serving table, the new estimator and the exact new table (r33_switch.recalibration); the new
+table is rebuilt from the sealed inputs byte for byte like any cutover and is stored write-once
+at its own estimator's path, so the live table is never overwritten.
 """
 from __future__ import annotations
 
@@ -76,6 +82,18 @@ def _snapshot_config(before, after, source):
 def _learning():
     from services.d1_domain_client import client_for_domain
     return client_for_domain('learning')
+
+
+MIGRATION_0072 = '0072_active8_ensemble_same_cohort_recalibration.sql'
+
+
+def _require_same_cohort_rows():
+    """A recalibration's r33-row step inserts a second object of the live cohort: refuse before any
+    write unless learning 0072 is fully in place (the migration tool's own probe for that file)."""
+    probe = json.loads((REPO / 'tools/d1/overrides.json').read_text())['probes']['learning'][MIGRATION_0072]
+    rows = _learning().query(probe, [])
+    if len(rows) != 1 or rows[0].get('ok') != 1:
+        raise RuntimeError('recalibration_needs_learning_migration_0072')
 
 
 def _bucket():
@@ -158,7 +176,7 @@ def prepare(args):
     from services import r33_switch
     from services.active8_paper_admission import KEY, verify_active_approval
     from services.d1_domain_client import client_for_domain
-    from services.r33_crossfit_serving import TABLE_NAME, rebuild_and_check, table_bytes
+    from services.r33_crossfit_serving import estimator_of, rebuild_and_check, table_bytes, table_name
     from services.r33_ensemble import round_trip_cost
     from services.d1_domain_client import D1DataDomain, client_proxy_for_domain
     from services.r33_monthly_lifecycle import BUNDLE_PREFIX, full_fit_label_known_max
@@ -195,14 +213,25 @@ def prepare(args):
     # B-7: the table must be the one the archived OOF and pool receipt rebuild, byte for byte
     # (not only a file whose labels match); B-1: its sanity at the serving round trip.
     rebuilt, sanity = rebuild_and_check(bundle, bucket=bucket, ops_query=client_proxy_for_domain(D1DataDomain.OPS).query,
-                                        round_trip_cost=round_trip_cost(merged['fees']))
+                                        round_trip_cost=round_trip_cost(merged['fees']),
+                                        estimator=estimator_of(serving_table))
     if table_bytes(rebuilt) != table_bytes(serving_table):
         raise RuntimeError('serving_table_not_rebuilt_from_archived_oof')
     if not sanity['passed']:
         raise RuntimeError('serving_curve_sanity_failed:' + json.dumps(sanity, default=str))
-    stored = bucket.blob(f"{BUNDLE_PREFIX}/{bundle['cohort_id']}/{TABLE_NAME}")
+    stored = bucket.blob(f"{BUNDLE_PREFIX}/{bundle['cohort_id']}/{table_name(estimator_of(serving_table))}")
     if stored.exists() and stored.download_as_bytes() != table_bytes(serving_table):
         raise RuntimeError('stored_serving_table_differs')
+    # The object the live pointer names (a same-cohort cutover is checked against it).
+    live_rows = _learning().query('SELECT payload_json, payload_checksum FROM active8_ensemble_artifacts_v1 '
+                                  'WHERE artifact_id=?', [pointers[0]['artifact_id']])
+    live_ensemble = json.loads(live_rows[0]['payload_json']) if len(live_rows) == 1 else None
+    if live_ensemble is not None and live_ensemble.get('payload_checksum') != live_rows[0]['payload_checksum']:
+        raise RuntimeError('live_ensemble_row_checksum_mismatch')
+    if pointers[0]['cohort_id'] == bundle['cohort_id']:
+        _require_same_cohort_rows()
+    recalibration_approval = (json.loads(args.recalibration_approval.read_text())
+                              if getattr(args, 'recalibration_approval', None) else None)
     packet = r33_switch.prepare(
         raw_config=raw, merged_config=merged, prior=prior, old_admission=old_admission, pointer=pointers[0],
         current_plan_id=heads[0]['plan_id'], bundle=bundle, bundle_path=args.bundle_path,
@@ -213,7 +242,7 @@ def prepare(args):
         wei_approval=json.loads(args.wei_approval.read_text()), source_reference=args.source_reference,
         approved_at=_now(), runtime_key=runtime_key, runtime_before=_kv_read(runtime_key),
         archive_uri=f'gs://{bucket.name}/{args.bundle_path}', serving_sanity=sanity, oof_checks_report=oof_checks_report,
-        now=datetime.now(timezone.utc))
+        now=datetime.now(timezone.utc), live_ensemble=live_ensemble, recalibration_approval=recalibration_approval)
     if _kv_read('trading:config') != raw or _kv_read(KEY) != old_admission:
         raise RuntimeError('configuration_changed_during_prepare')
     packet['controller_source_sha'] = release['source_sha']
@@ -224,6 +253,7 @@ def prepare(args):
                       'ensemble_artifact_id': packet['ensemble']['artifact_id'],
                       'economics_change_scope': packet['approval']['approved_r33_cutover']['economics_change_scope'],
                       'roster': packet['roster'], 'serving_sanity': {k: sanity[k] for k in ('passed', 'reasons', 'top_block_mean_excess')},
+                      'recalibration': packet['recalibration'] and {k: packet['recalibration'][k] for k in ('from', 'to')},
                       'steps': list(r33_switch.STEPS)}))
 
 
@@ -326,6 +356,8 @@ def activate(args, *, undo):
         r33_switch.check_prior(packet['approval']['prior_runtime_approval'], live_prior=verify_active_approval(old),
                                merged_config=load_active_trading_config(), admission=old,
                                pointer=observed['pointer'])
+        if packet.get('recalibration') is not None:
+            _require_same_cohort_rows()
     if not undo and step != 'kv-config':
         # A step whose post-write check failed still reads as done; its effect is re-checked here.
         from services.worker_config_client import load_active_trading_config
@@ -398,6 +430,8 @@ def main():
     parser.add_argument('--serving-table', type=Path, help='local output of r33_crossfit_serving --out')
     parser.add_argument('--source-evidence', type=Path, help='engineering evidence JSON (evidence_files checksums)')
     parser.add_argument('--wei-approval', type=Path, help='{approved, scope, approved_at, source_reference}')
+    parser.add_argument('--recalibration-approval', type=Path,
+                        help='prepare, same cohort only: Wei approval of the estimator swap (r33-recalibration-approval-v1)')
     parser.add_argument('--source-reference')
     parser.add_argument('--business-date')
     parser.add_argument('--effective-signal-date')

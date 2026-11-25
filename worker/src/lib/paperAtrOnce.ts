@@ -13,9 +13,10 @@ export function assessAtrOnce(input:SwingEntryInput, priorLastTR?:number):AtrOnc
   for(let ms=open+20*MIN;ms<=end;ms+=5*MIN) {
     const signal=assessSwingEntry({...input,nowMs:ms,quote:{price:input.previousClose,observedAtMs:ms}})
     const c=signal.conditions??{}
-    if(c.plan===false || c.position===false || c.ma60===false || c.opening_limit===false)
+    // ma60 is evidence only (R2b); it neither waits nor marks the first signal unknown.
+    if(c.plan===false || c.position===false || c.opening_limit===false)
       return {...base,status:'waiting',reason:signal.reason}
-    if(['bars','ma60','or_touch','vwap','relative_strength','opening_limit'].some(k=>typeof c[k]!=='boolean'))
+    if(['bars','or_touch','vwap','relative_strength','opening_limit'].some(k=>typeof c[k]!=='boolean'))
       return {...base,status:'unknown',reason:'swing_atr_first_signal_evidence_missing'}
     if(!c.or_touch || !c.vwap || !c.relative_strength) continue
     const first={...base,firstSignalMs:ms}

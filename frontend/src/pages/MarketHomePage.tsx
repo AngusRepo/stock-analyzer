@@ -21,6 +21,12 @@ import { GroupFactorTrajectoryPanel } from '@/components/PitFactorTrajectoryPane
 import { MarketRiskDetailBreakdown } from '@/components/MarketRiskDetailBreakdown'
 import { marketApi, recommendationsApi } from '@/lib/api'
 import { splitRecommendationLanes } from '@/lib/recommendationLanes'
+import {
+  CONFIDENCE_SORT_OPTIONS,
+  DEFAULT_CONFIDENCE_SORT,
+  sortByConfidence,
+  type ConfidenceSortMode,
+} from '@/lib/recommendationConfidence'
 import { queryTtl, recommendationDailyKey } from '@/lib/queryPolicy'
 
 const loadRecommendationCardClean = () =>
@@ -1293,21 +1299,7 @@ function isPotentialBuyRecommendation(rec: any): boolean {
   return expectedReturn != null && expectedReturn >= POTENTIAL_BUY_MIN_EXPECTED_RETURN
 }
 
-function recommendationScoreValue(rec: any): number {
-  const scoreComponents = parseRecord(rec?.score_components)
-  const direct = asNumber(
-    rec?.score_v2_final
-      ?? rec?.final_score
-      ?? rec?.finalScore
-      ?? scoreComponents?.finalScore
-      ?? scoreComponents?.final_score
-      ?? rec?.score
-      ?? rec?.total_score,
-  )
-  return direct ?? Number.NEGATIVE_INFINITY
-}
-
-function selectHomeRecommendationRows(rows: any[], limit = HOME_RECOMMENDATION_LIMIT) {
+function selectHomeRecommendationRows(rows: any[], sortMode: ConfidenceSortMode, limit = HOME_RECOMMENDATION_LIMIT) {
   const seen = new Set<string>()
   const takeUnique = (row: any, index: number) => {
     const key = String(row?.stock_id ?? row?.symbol ?? index)
@@ -1325,14 +1317,12 @@ function selectHomeRecommendationRows(rows: any[], limit = HOME_RECOMMENDATION_L
       home_canonical_signal: recommendationSignalText(row) || null,
       home_display_lane: 'potential_buy',
     }))
-  return [...buyRows, ...potentialRows]
-    .filter(takeUnique)
-    .sort((a, b) => recommendationScoreValue(b) - recommendationScoreValue(a))
-    .slice(0, limit)
+  return sortByConfidence([...buyRows, ...potentialRows].filter(takeUnique), sortMode).slice(0, limit)
 }
 
 function RecommendationPanel() {
   const [visibleCount, setVisibleCount] = useState(HOME_INITIAL_RECOMMENDATION_LIMIT)
+  const [sortMode, setSortMode] = useState<ConfidenceSortMode>(DEFAULT_CONFIDENCE_SORT)
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: recommendationDailyKey(),
     queryFn: () => recommendationsApi.daily(undefined, { view: 'card' }),
@@ -1341,7 +1331,7 @@ function RecommendationPanel() {
   })
   const { tradable, researchOnly } = splitRecommendationLanes<any>(data)
   const allRows = useMemo(() => recommendationRowsFromPayload(data), [data])
-  const eligibleRows = useMemo(() => selectHomeRecommendationRows(allRows), [allRows])
+  const eligibleRows = useMemo(() => selectHomeRecommendationRows(allRows, sortMode), [allRows, sortMode])
   const displayRows = eligibleRows.slice(0, visibleCount)
   const buyCount = allRows.filter(isBuySignalRecommendation).length
   const potentialBuyCount = allRows.filter((row) => !isBuySignalRecommendation(row) && isPotentialBuyRecommendation(row)).length
@@ -1381,7 +1371,24 @@ function RecommendationPanel() {
                 平均熱度 {avgHeat == null ? '待接資料' : avgHeat.toFixed(1)}
               </span>
             </div>
-            <p className="mt-2 text-xs leading-5 text-slate-500">依最新交易日條件排序，點開牌卡快速查看個股籌碼、技術分數與交易計劃摘要。</p>
+            <p className="mt-2 text-xs leading-5 text-slate-500">預設依 L4 EV 排序（同 EV 再依 R33 分數）；信心度＝R33 排名百分位與校準勝率，僅供顯示、不影響下單。</p>
+            <div className="mt-2 flex flex-wrap items-center gap-1.5" role="group" aria-label="推薦排序">
+              <span className="text-[11px] text-slate-500">排序</span>
+              {CONFIDENCE_SORT_OPTIONS.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  title={option.title}
+                  aria-pressed={sortMode === option.value}
+                  onClick={() => setSortMode(option.value)}
+                  className={sortMode === option.value
+                    ? 'rounded-full border border-amber-300/40 bg-amber-400/15 px-2.5 py-1 text-[11px] font-semibold text-amber-100'
+                    : 'rounded-full border border-white/[0.08] bg-white/[0.04] px-2.5 py-1 text-[11px] font-medium text-slate-400 hover:bg-white/[0.07]'}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
           </div>
           <button
             type="button"

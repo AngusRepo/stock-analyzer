@@ -87,6 +87,7 @@ def _load_confirm_candidates(path: Path, candidate_ids: list[str]) -> list[dict[
                     "factor_ids": [str(x) for x in _parse_literal_list(row.get("factor_ids", ""))],
                     "weights": [float(x) for x in _parse_literal_list(row.get("weights", ""))],
                     "combine": row.get("combine") or "weighted_sum",
+                    "factor_directions": row.get("factor_directions"),
                     "finlab_confirm": {
                         "cagr": _safe_float(row.get("cagr")),
                         "max_drawdown": _safe_float(row.get("max_drawdown")),
@@ -98,6 +99,21 @@ def _load_confirm_candidates(path: Path, candidate_ids: list[str]) -> list[dict[
             )
     order = {candidate_id: index for index, candidate_id in enumerate(candidate_ids)}
     return sorted(out, key=lambda row: order.get(str(row["id"]), 999))
+
+
+def _resolve_directions(alpha: Any, row: dict[str, Any], meta: dict[str, Any], args: argparse.Namespace, recorded_meta: dict[str, Any] | None):
+    """Recorded factor_directions of a confirm row; fail closed for pre-v3 rows unless legacy is explicit."""
+    return alpha._resolve_candidate_directions(
+        {"id": row["id"], "factor_ids": row["factor_ids"], "factor_directions": row.get("factor_directions")},
+        meta,
+        legacy_direction_mode=args.legacy_direction_mode,
+        recorded_factor_meta=recorded_meta,
+    )
+
+
+def _recorded_meta(alpha: Any, args: argparse.Namespace) -> dict[str, Any] | None:
+    path = str(getattr(args, "legacy_mined_report", "") or "")
+    return alpha._load_recorded_factor_meta(Path(path)) if path else None
 
 
 def _safe_float(value: Any) -> float | None:
@@ -329,16 +345,19 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     )
     close, tradable, values, meta, universe_info = alpha._build_unified_registry_factor_universe(universe_args)
     latest = _latest_index(close.index, args.run_date)
+    recorded_meta = _recorded_meta(alpha, args)
 
     mined_selection: dict[str, list[str]] = {}
     mined_detail: dict[str, Any] = {}
     for row in candidates:
+        directions, direction_source = _resolve_directions(alpha, row, meta, args, recorded_meta)
         cand = alpha.Candidate(
             candidate_id=str(row["id"]).replace("alpha_miner_", ""),
             algorithm=str(row["algorithm"]),
             factor_ids=list(row["factor_ids"]),
             weights=list(row["weights"]),
             combine=str(row["combine"] or "weighted_sum"),
+            directions=directions,
         )
         score = alpha._candidate_score(cand, values, meta)
         if score is None:
@@ -358,6 +377,8 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
         mined_detail[str(row["id"])] = {
             "factor_ids": row["factor_ids"],
             "weights": row["weights"],
+            "factor_directions": directions,
+            "direction_source": direction_source,
             "combine": row["combine"],
             "latest_date": latest_for_candidate.isoformat(),
             "match_count": len(symbols),
@@ -376,7 +397,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     active_nonempty = {key: symbols for key, symbols in active_selection.items() if symbols}
     report = {
         "schema_version": "stockvision-pymoo-mined-strategy-replay-v1",
-        "generated_at": pd.Timestamp.utcnow().isoformat(),
+        "generated_at": pd.Timestamp.now("UTC").isoformat(),
         "allowed_use": "research_only",
         "decision_effect": "none",
         "run_date_requested": args.run_date,
@@ -425,6 +446,18 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--feature-registry", default=str(ROOT / "data" / "feature_registry" / "unified_feature_registry_v1.json"))
     parser.add_argument("--output-dir", default=str(ROOT / "output" / "pymoo_mined_strategy_replay"))
+    parser.add_argument(
+        "--legacy-direction-mode",
+        choices=["fail_closed", "as_mined"],
+        default="fail_closed",
+        help="confirm rows without recorded factor_directions: fail (default) or replay with the pre-v3 as-mined directions",
+    )
+    parser.add_argument(
+        "--legacy-mined-report",
+        default="",
+        help="mining report JSON whose factor_universe.factor_meta recorded the as-mined directions "
+        "(required for canonical114 rows; without it the current registry meta stands in)",
+    )
     return parser.parse_args()
 
 

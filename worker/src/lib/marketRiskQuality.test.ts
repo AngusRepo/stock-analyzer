@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { buildMarketRiskQuality, fetchBullAlignmentCount } from './marketRisk'
 import { buildCanonicalMarketRiskContext, HMM_INPUT_CONTRACT } from './marketRiskRuntime'
 import { DEFAULT_RISK_CONFIG } from './riskConfig'
-import { fixtureQuality, fixtureProvenance } from './riskProtocol.testSupport'
+import { fixtureQuality, fixtureProvenance, fixtureStoredRiskV2 } from './riskProtocol.testSupport'
 const data:any={date:'2026-10-06',vix:12,twiiClose:30000,twiiMa20:29900,twiiBias:1,twiiVol20:10,
  foreignConsecutiveSell:0,foreignNet5d:1,marginRatio:20,adlTrend:'up',bullAlignmentPct:60}
 assert.equal(buildMarketRiskQuality(data).status,'complete')
@@ -16,10 +16,10 @@ const base:any={marketRiskRows:[{date,twii_close:30000,risk_score:0,risk_level:'
  regimeState:{source:'hmm',family:'volatile',run_date:date,regime_evidence:{hmm_provenance:fixtureProvenance(date,fixtureQuality(date,0).checksum),evidence:{
  price_trend:{status:'available',stance:'bullish',metrics:{twii_bias_20d:.01,twii_return_5d:.04}},
  global_risk:{status:'available',stance:'bullish'},atr_vturn:{metrics:{realized_vol_10d:.005}}}}},
- quality:fixtureQuality(date,0),policy:DEFAULT_RISK_CONFIG.portfolio,expectedSession:date}
+ quality:fixtureQuality(date,0),storedRiskV2:fixtureStoredRiskV2(date,0,'green'),policy:DEFAULT_RISK_CONFIG.portfolio,expectedSession:date}
 const healthy=buildCanonicalMarketRiskContext(base)
 assert.equal(healthy.status,'ready');assert.equal(healthy.targetExposureCap,DEFAULT_RISK_CONFIG.portfolio.greenTargetExposure)
-for(const patch of [{quality:null},{breadth:{...base.breadth,bull_alignment_pct:null}},{regimeState:{...base.regimeState,regime_evidence:{}}},
+for(const patch of [{quality:null},{storedRiskV2:null},{storedRiskV2:fixtureStoredRiskV2('2026-10-05',0,'green')},{breadth:{...base.breadth,bull_alignment_pct:null}},{regimeState:{...base.regimeState,regime_evidence:{}}},
  {quality:{...base.quality,status:'blocked'}},{quality:{...base.quality,upper_score:99}}]){
  const result=buildCanonicalMarketRiskContext({...base,...patch})
  assert.equal(result.status,'blocked');assert.equal(result.haltNewBuys,true);assert.equal(result.deRiskExistingPositions,false)
@@ -30,6 +30,21 @@ const bounded=buildCanonicalMarketRiskContext({...base,quality:{...base.quality,
 assert.equal(bounded.level,'green','proven identical risk-score bounds do not impose an arbitrary cap')
 const uncertain=buildCanonicalMarketRiskContext({...base,marketRiskRows:[{...base.marketRiskRows[0],risk_score:10},base.marketRiskRows[1]],quality:{...base.quality,status:'bounded',upper_score:10}})
 assert.equal(uncertain.level,'orange')
+// Black buy halt and slot floor caps are KV policy (defaults = previous behaviour); invalid values block.
+const blackBreadth={...base,breadth:{...base.breadth,advance_ratio:.05}}
+const blackDefault=buildCanonicalMarketRiskContext(blackBreadth)
+assert.equal(blackDefault.status,'ready');assert.equal(blackDefault.level,'black');assert.equal(blackDefault.haltNewBuys,true)
+const blackOpen=buildCanonicalMarketRiskContext({...blackBreadth,policy:{...base.policy,blackHaltsNewBuys:false}})
+assert.equal(blackOpen.status,'ready');assert.equal(blackOpen.level,'black');assert.equal(blackOpen.haltNewBuys,false)
+for(const policy of [{...base.policy,blackHaltsNewBuys:'false'},{...base.policy,slotFloorCapByLevel:{...base.policy.slotFloorCapByLevel,red:2}},
+ {...base.policy,slotFloorCapByLevel:{...base.policy.slotFloorCapByLevel,black:.5}},{...base.policy,slotFloorCapByLevel:null}]){
+ const result=buildCanonicalMarketRiskContext({...base,policy})
+ assert.equal(result.status,'blocked',JSON.stringify(policy));assert.equal(result.haltNewBuys,true)
+}
+// KV trading:risk_config missing / unreadable: the fail-closed portfolio blocks with an explicit reason.
+const unavailable=buildCanonicalMarketRiskContext({...base,policy:{...base.policy,configUnavailable:true}})
+assert.equal(unavailable.status,'blocked');assert.equal(unavailable.haltNewBuys,true)
+assert.ok(unavailable.blockers.includes('risk_config_unavailable'),JSON.stringify(unavailable.blockers))
 console.log('Market quality: known vs upper scores, missing critical inputs, model contract and bull relief PASS')
 
 const boundedMargin={status:'bounded',ratio_lower:0,ratio_upper:3.681}

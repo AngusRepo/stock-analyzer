@@ -1,0 +1,103 @@
+{
+ "base_rate": 0.441148498493,
+ "built_from_source_sha": "c9d333ff6517efdb92224848caa85c6e7f4cdfa6",
+ "decision_effect": "none",
+ "horizon_sessions": 5,
+ "identity": {
+  "base_artifact_set_checksum": "ee03983fcc778653e0772ad83b381c66a8724a6f695d5419825f177ab3b3e1f1",
+  "cohort_id": "active8-oof-v9-feature-semantic-source-attested-v7-r33-exo131-core4-2025-12-17-2026-10-29-tr60-te21",
+  "ensemble_artifact_id": "r33-roster:active8-oof-v9-feature-semantic-source-attested-v7-r33-exo131-core4-2025-12-17-2026-10-29-tr60-te21:254eb39431cb8450",
+  "ensemble_payload_checksum": "254eb39431cb8450ba004f54cf2009a970bd4d8103dc8c784af0ef74a6b893a6",
+  "oof_manifest_checksum": "1de57c7ef70f7917995a809551126cf5bf3c4fec66ec461314ad693fac819b99",
+  "pool_membership_sha256": "be3c9d836e6439266bed1faa9fd085daced7072ec94abc8340dcda38a1718adb",
+  "serving_calibration_checksum": "eb48c5cf614b12b17604e9df232e0880813601ff4f735c884793789579c1a399",
+  "source_calibration_checksum": "f5d66466b2242b6930f8d1bcc4a0ed4ba9f9b0a67c6d6961dd9a3e416d0adf99"
+ },
+ "method": "serving-hinge-knot-two-segments-each-day-equal-v1",
+ "model_order": [
+  "LightGBM",
+  "ExtraTrees",
+  "TabM",
+  "GNN"
+ ],
+ "oof": {
+  "days": 106,
+  "end": "2026-10-29",
+  "rows": 35112,
+  "start": "2026-05-21"
+ },
+ "purpose": "display_only",
+ "schema_version": "r33-display-win-rate-v1",
+ "score_variant": "mean_z",
+ "segments": [
+  {
+   "days_weight": 90.598351673246,
+   "n": 29845,
+   "score_hi": 1.0349284484557018,
+   "score_lo": -1.7242669288679577,
+   "win_rate": 0.427427447796
+  },
+  {
+   "days_weight": 15.401648326755,
+   "n": 5267,
+   "score_hi": 1.7282375586688192,
+   "score_lo": 1.0349746760008196,
+   "win_rate": 0.521860935892
+  }
+ ],
+ "table_sha256": "61f6167f6893d49d37c3eac9b95fcab7dd4ba87717db94a2dfd3e9f244c89920",
+ "target": "P(daily_pool_centered_excess_return > 0)",
+ "validation": {
+  "holdout": {
+   "brier": 0.245812818426,
+   "brier_base_rate": 0.246337931332,
+   "brier_skill": 0.002131677018,
+   "purge_sessions": 5,
+   "reliability": [
+    {
+     "days_weight": 19.562903310226,
+     "n": 12551,
+     "predicted": 0.424990528396,
+     "realized": 0.423319476193,
+     "segment": 0
+    },
+    {
+     "days_weight": 8.437096689774,
+     "n": 5410,
+     "predicted": 0.493522612501,
+     "realized": 0.47601355755,
+     "segment": 1
+    }
+   ],
+   "test": {
+    "days": 28,
+    "end": "2026-10-29",
+    "rows": 17961,
+    "start": "2026-09-15"
+   },
+   "train": {
+    "days": 74,
+    "end": "2026-09-08",
+    "start": "2026-05-21"
+   },
+   "train_base_rate": 0.445102904162
+  },
+  "in_sample_full_oof": {
+   "brier": 0.245429041325,
+   "brier_base_rate": 0.24653650077,
+   "brier_skill": 0.004492070919
+  },
+  "purged_kfold": {
+   "brier": 0.247107440664,
+   "brier_base_rate": 0.247052507741,
+   "brier_skill": -0.000222353229,
+   "folds": 10
+  },
+  "purged_leave_one_day_out": {
+   "brier": 0.246740939806,
+   "brier_base_rate": 0.246942741403,
+   "brier_skill": 0.000817199955
+  }
+ },
+ "weighting": "each_day_equal"
+}

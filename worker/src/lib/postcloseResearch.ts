@@ -1,5 +1,6 @@
 import type { Bindings } from '../types'
 import { controllerJson } from './controllerClient'
+import { opsCorrelationHeaders } from './opsRuntimeScope'
 import { queuePostPipelineStage } from './pipelineStageLease'
 import { paperExecutionNow } from './paperExecutionScope'
 import { databaseForDataDomain } from './dataDomainRegistry'
@@ -28,7 +29,7 @@ export async function runPostcloseResearch(env: Bindings, tradeDate: string) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(tradeDate) || paperExecutionNow()<Date.parse(tradeDate+'T13:30:00+08:00'))
     throw new Error('postclose_research_before_close')
   const result=await controllerJson<{trade_date: string; status: string; results: Dispatch[]}>(env,'/pipeline/v2/premarket-postclose',
-    {method:'POST',jsonBody:{trade_date:tradeDate}})
+    {method:'POST',headers:opsCorrelationHeaders(),jsonBody:{trade_date:tradeDate}})
   if (result.trade_date!==tradeDate || !Array.isArray(result.results)) throw new Error('postclose_dispatch_receipt_invalid')
   const errors: string[]=[]
   for (const item of result.results) {

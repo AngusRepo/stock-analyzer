@@ -16,6 +16,20 @@ def test_snapshot_preserves_available_technical_fields(monkeypatch):
     assert [row[k] for k in ['plusDi14','minusDi14','adx14','parabolicSar','volumeMomentumDivergence132710']]==[12,4,20,9,.3]
 
 
+def test_snapshot_drops_price_rows_without_observed_close(monkeypatch):
+    monkeypatch.setattr(dataset_snapshots,'latest_dataset_snapshot',lambda **k:{'snapshot_id':'local-test'})
+    monkeypatch.setattr(rt,'_snapshot_component_uris',lambda s:{k:k for k in ['prices','indicators','chips']})
+    sources={'prices':[{'stock_id':1,'date':'2026-03-30','open':10,'close':11},
+                       {'stock_id':1,'date':'2026-03-31','open':None,'close':None},
+                       {'stock_id':1,'date':'2026-04-01','open':12,'close':13},
+                       {'stock_id':2,'date':'2026-03-31','close':None}],
+             'indicators':[],'chips':[]}
+    monkeypatch.setattr(rt,'_read_gcs_parquet_rows',lambda key:iter(sources[key]))
+    prices=rt._load_training_maps_from_snapshot(stock_ids=[1,2],symbols=['TEST','EMPTY'],prices_lookback=2)[0]
+    assert [(r['date'],r['open'],r['close']) for r in prices[1]]==[('2026-03-30',10,11),('2026-04-01',12,13)]
+    assert prices[2]==[]
+
+
 def test_compact_shareholding_date_is_normalized():
     got=rt._snapshot_per_stock_ts_map(monthly_revenue_rows=[],canonical_fundamental_rows=[],margin_rows=[],shareholding_rows=[{'stock_id':1,'date':'20260731','retail_pct':20,'created_at':'2026-08-02 10:40:24'}],stock_ids=[1])
     assert got[1]=={'2026-08-02':{'retail_pct':20}}

@@ -10,7 +10,9 @@ import time
 import uuid
 from pathlib import Path
 
-logging.basicConfig(level=logging.INFO)
+from services.json_logging import configure_json_logging  # noqa: E402
+
+configure_json_logging(logging.INFO)
 logger = logging.getLogger("s12_structure_job")
 
 

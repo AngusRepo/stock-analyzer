@@ -1025,8 +1025,20 @@ def _load_training_maps_from_snapshot(
         read_component("shareholding") if component_uris.get("shareholding") else []
     )
 
+    # A session without an observed close is absent, not a bar (same rule as
+    # payload_builder._bulk_load_prices); keeping it crashes float(close) downstream.
+    dropped_null_close = 0
+
+    def observed_prices_rows():
+        nonlocal dropped_null_close
+        for r in prices_rows:
+            if r.get("close") is None:
+                dropped_null_close += 1
+                continue
+            yield r
+
     prices_map = _group_rows_by_key(
-        prices_rows,
+        observed_prices_rows(),
         key="stock_id",
         allowed=stock_id_set,
         limit=prices_lookback,
@@ -1041,6 +1053,8 @@ def _load_training_maps_from_snapshot(
             "avg_price": r.get("avg_price"),
         },
     )
+    if dropped_null_close:
+        logger.warning("[retrain/universal] dropped %d snapshot price rows with NULL close", dropped_null_close)
     indicators_map = _group_rows_by_key(
         indicators_rows,
         key="stock_id",

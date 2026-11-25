@@ -23,8 +23,9 @@ export async function checkP3MarketRisk(
       maxPositionPct: 0,
       buyConfThreshold: 1,
       sellConfThreshold: 1,
-      targetExposurePct: null,
-      deRiskExistingPositions: false,
+      // Blocked halts new risk; a config-unavailable runtime still carries its conservative de-risk target.
+      targetExposurePct: marketRisk.targetExposureCap,
+      deRiskExistingPositions: marketRisk.deRiskExistingPositions,
       marketRiskLevel: marketRisk.level,
       marketRiskScore: marketRisk.score,
       marketRiskDate: marketRisk.date,
@@ -44,7 +45,9 @@ export async function checkP3MarketRisk(
     marketRiskReasons: marketRisk.reasons,
     marketRiskBlockers: marketRisk.blockers,
   } as const
-  if (marketRisk.level === 'black') {
+  // Black halts new buys unless KV trading:risk_config.portfolio.blackHaltsNewBuys is false; the runtime owns that
+  // decision (haltNewBuys). A non-halting black then sizes like red.
+  if (marketRisk.level === 'black' && marketRisk.haltNewBuys !== false) {
     return {
       ...defaults,
       ...shared,
@@ -54,14 +57,14 @@ export async function checkP3MarketRisk(
       reason: `canonical market risk black: ${marketRisk.reasons.join(' | ')}`,
     }
   }
-  if (marketRisk.level === 'red') {
+  if (marketRisk.level === 'red' || marketRisk.level === 'black') {
     return {
       ...defaults,
       ...shared,
       maxPositionPct: Math.min(defaults.maxPositionPct, scales
         ? defaults.maxPositionPct * scales.highVol * scales.severeHighVol
         : cc.highVolReducedPosPct * 0.5),
-      reason: `canonical market risk red: ${marketRisk.reasons.join(' | ')}`,
+      reason: `canonical market risk ${marketRisk.level}: ${marketRisk.reasons.join(' | ')}`,
     }
   }
   if (marketRisk.level === 'orange') {

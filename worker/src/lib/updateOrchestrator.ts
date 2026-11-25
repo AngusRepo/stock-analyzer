@@ -2042,6 +2042,8 @@ async function runFinalizeContinuation(
 
   const runAsyncScreener = deps.runMarketScreenerAsync
   if (runAsyncScreener) {
+    // L1: queue-driven dispatch has no admitted ticket; carry the evening chain's root id instead.
+    await (await import('./opsRuntimeScope')).bindOpsRuntimeRootTicket(env, triggerTime)
     try {
       const { triggerCanonicalScreenerStage } = await import('./screenerRecoveryWatchdog')
       const screenerResult = await triggerCanonicalScreenerStage(env, {
@@ -2475,6 +2477,8 @@ async function continuePostScreenerPipeline(
 
   try {
     await guard('post_screener:pipeline_dispatch')
+    // L1: carry the evening chain's root id to ml-controller and the pipeline Cloud Run Job.
+    await (await import('./opsRuntimeScope')).bindOpsRuntimeRootTicket(env, triggerTime)
     const summary = await deps.runMLAndRiskV2(env, triggerTime, { prevalidatedEventChain: true })
     if (summary.trim().toUpperCase().startsWith('LOCKED')) {
       const lockedSummary = `pipeline already running for ${triggerTime}; existing run lock preserved`
@@ -2828,6 +2832,12 @@ export async function runMarketCloseRefresh(env: Bindings, force = false, runDat
 
   const started = Date.now()
   const parts: string[] = []
+  // Observability: pre-create today's daily_readiness chain rows (trading days only) and trim
+  // retention. Never throws; the receipt is only a summary field.
+  {
+    const { precreateDailyReadinessChainForDate } = await import('./opsChainStageState')
+    parts.push(await precreateDailyReadinessChainForDate(env, twDate))
+  }
   let sourceWaiting = false
   const supplementalMode = officialSupplementalFetchMode(env)
   const shouldFetchOfficialPrices = supplementalMode !== 'disabled'
@@ -4210,7 +4220,7 @@ export async function processUpdateBatch(
         const { propagateStrategyLearningFailureAfterWaiting } = await import('./strategyLearningRunState')
         const learningError = await propagateStrategyLearningFailureAfterWaiting(databaseForDataDomain(env, 'ops'), {
           businessDate: triggerTime, canonicalRunId: runId,
-        }, env.KV)
+        }, env.KV, { postVerifyEntryWrittenByCaller: true })
         if (learningError) {
           await logSchedulerResult(env.KV, 'post-verify-chain', {
             status: 'error',
@@ -5085,7 +5095,7 @@ export async function processUpdateBatch(
       if (terminalPolicyClosureFailure || !materializationValidated) {
         await propagateStrategyLearningTerminalFailure(runStateDb, {
           businessDate: triggerTime, canonicalRunId,
-        }, env.KV)
+        }, env.KV, { postVerifyEntryWrittenByCaller: true })
       }
       await Promise.allSettled([
         logSchedulerResult(env.KV, 'strategy-learning', {

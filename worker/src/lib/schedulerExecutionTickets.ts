@@ -70,6 +70,17 @@ const SCHEDULER_CLOCK_SKEW_MS = 5 * 60_000
 // A retry that arrives sooner still gets duplicate_inflight, as before.
 const ABANDONED_ACCEPTED_AFTER = '-300 seconds'
 const ABANDONED_SUMMARY = 'admitted delivery ended before execution started'
+// The sync route writes this summary when execution starts and replaces it on every settle, so a
+// ticket that still carries it has no request behind it once the delivery deadline has passed.
+export const SYNC_EXECUTION_STARTED_SUMMARY = 'sync execution started'
+// Longest manifest attemptDeadline is 600 s; a Scheduler delivery is cancelled by then.
+const ABANDONED_RUNNING_AFTER = '-1200 seconds'
+const ABANDONED_RUNNING_LOOKBACK_DAYS = 7
+const ABANDONED_RUNNING_SUMMARY = 'sync delivery ended after execution started without settling its ticket'
+const ABANDONED_RUNNING_ERROR = 'abandoned_while_running'
+// Same-delivery retries arrive after Scheduler's backoff (minutes); a duplicate delivery within this
+// window is treated as in flight.
+const STARTED_RETRY_AFTER = '-60 seconds'
 
 /** Settle an admitted ticket whose pre-execution gates failed; never touches a started ticket. */
 export async function failAcceptedSchedulerTicket(
@@ -84,6 +95,36 @@ export async function failAcceptedSchedulerTicket(
   `).bind(`pre-execution gate failed: ${input.error}`.slice(0, 500), input.error.slice(0, 2_000),
     input.ticketId, input.runId).run()
   return Number(result.meta?.changes ?? 0) === 1
+}
+
+/** Settle a sync ticket whose request threw after execution started and before it settled. */
+export async function failStartedSchedulerTicket(
+  db: D1Database,
+  input: { ticketId: string; runId: string; error: string },
+): Promise<boolean> {
+  const result = await db.prepare(`
+    UPDATE scheduler_execution_tickets_v1
+       SET status='error', last_summary=?, last_error=?,
+           completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+     WHERE ticket_id=? AND run_id=? AND status='running' AND status_authority='scheduler_http'
+       AND last_summary=?
+  `).bind(`escaped_after_start: ${input.error}`.slice(0, 500), input.error.slice(0, 2_000),
+    input.ticketId, input.runId, SYNC_EXECUTION_STARTED_SUMMARY).run()
+  return Number(result.meta?.changes ?? 0) === 1
+}
+
+// Only Scheduler deliveries (deadline-bound) that never settled after the sync start; manual sync
+// runs and tickets another owner closes later (evening-chain root) never carry this state.
+async function settleAbandonedRunningTickets(db: D1Database, task: string, businessDate: string): Promise<void> {
+  await db.prepare(`
+    UPDATE scheduler_execution_tickets_v1
+       SET status='error', last_summary=?, last_error=?, completed_at=CURRENT_TIMESTAMP
+     WHERE status='running' AND business_date BETWEEN date(?, ?) AND ?
+       AND task=? AND ticket_kind='physical_root' AND status_authority='scheduler_http'
+       AND last_summary=? AND started_at <= datetime('now', ?)
+  `).bind(ABANDONED_RUNNING_SUMMARY, ABANDONED_RUNNING_ERROR, businessDate,
+    `-${ABANDONED_RUNNING_LOOKBACK_DAYS} days`, businessDate, task, SYNC_EXECUTION_STARTED_SUMMARY,
+    ABANDONED_RUNNING_AFTER).run()
 }
 
 // updated_at is left as is: "latest ticket" readers order by it, and the new delivery must stay latest.
@@ -241,6 +282,8 @@ export async function admitSchedulerExecutionTicket(
     // Housekeeping only: a failed sweep must not block this delivery.
     await settleAbandonedAcceptedTickets(db, input.task, ticketId)
       .catch((error) => console.warn('[schedulerExecutionTickets] abandoned accepted sweep failed:', error))
+    await settleAbandonedRunningTickets(db, input.task, businessDate)
+      .catch((error) => console.warn('[schedulerExecutionTickets] abandoned running sweep failed:', error))
     return { ticket: await readTicket(db, ticketId), shouldExecute: true, reason: 'admitted' }
   }
 
@@ -278,6 +321,34 @@ export async function admitSchedulerExecutionTicket(
          AND attempt_count>=? AND accepted_at <= datetime('now', ?)
     `).bind(ABANDONED_SUMMARY, 'abandoned_before_execution', ticketId, existing.run_id,
       MAX_ATTEMPTS, ABANDONED_ACCEPTED_AFTER).run()
+  }
+  if (existing.status === 'running' && existing.ticket_kind === 'physical_root'
+    && existing.status_authority === 'scheduler_http' && existing.last_summary === SYNC_EXECUTION_STARTED_SUMMARY) {
+    // Scheduler retries a delivery only after its previous attempt answered or hit the deadline, so a
+    // started ticket still carrying the start marker lost its settle write. Answering 202
+    // duplicate_inflight would end Scheduler's retries with the work never re-run. The age guard
+    // keeps a near-simultaneous duplicate delivery from running alongside a live attempt.
+    const nextAttempt = existing.attempt_count + 1
+    const retry = await db.prepare(`
+      UPDATE scheduler_execution_tickets_v1
+         SET status='accepted', attempt_count=?, attempt_id=?, last_summary=NULL, last_error=NULL,
+             accepted_at=CURRENT_TIMESTAMP, started_at=NULL, completed_at=NULL, updated_at=CURRENT_TIMESTAMP
+       WHERE ticket_id=? AND run_id=? AND payload_checksum=? AND status='running'
+         AND status_authority='scheduler_http' AND last_summary=? AND attempt_count=? AND attempt_count<?
+         AND started_at <= datetime('now', ?)
+    `).bind(nextAttempt, ticketAttemptId(ticketId, nextAttempt), ticketId, existing.run_id, payloadChecksum,
+      SYNC_EXECUTION_STARTED_SUMMARY, existing.attempt_count, MAX_ATTEMPTS, STARTED_RETRY_AFTER).run()
+    if (Number(retry.meta?.changes ?? 0) === 1) {
+      return { ticket: await readTicket(db, ticketId), shouldExecute: true, reason: 'retry_admitted' }
+    }
+    await db.prepare(`
+      UPDATE scheduler_execution_tickets_v1
+         SET status='error', last_summary=?, last_error=?,
+             completed_at=CURRENT_TIMESTAMP, updated_at=CURRENT_TIMESTAMP
+       WHERE ticket_id=? AND run_id=? AND status='running' AND status_authority='scheduler_http'
+         AND last_summary=? AND attempt_count>=? AND started_at <= datetime('now', ?)
+    `).bind(ABANDONED_RUNNING_SUMMARY, ABANDONED_RUNNING_ERROR, ticketId, existing.run_id,
+      SYNC_EXECUTION_STARTED_SUMMARY, MAX_ATTEMPTS, STARTED_RETRY_AFTER).run()
   }
   if ((existing.status === 'error' || existing.status === 'blocked') && existing.attempt_count < MAX_ATTEMPTS) {
     const nextAttempt = existing.attempt_count + 1
@@ -364,13 +435,14 @@ export async function updateSchedulerExecutionTicket(
              ELSE started_at
            END,
            completed_at=CASE
-             WHEN ?=1 AND ?=1 THEN CURRENT_TIMESTAMP
+             WHEN ?=1 AND (?=1 OR last_error='${ABANDONED_RUNNING_ERROR}') THEN CURRENT_TIMESTAMP
              WHEN ?=1 THEN COALESCE(completed_at, CURRENT_TIMESTAMP)
              ELSE NULL
            END,
            updated_at=CURRENT_TIMESTAMP
-     WHERE ticket_id=? AND run_id=? AND status IN (${placeholders})
-       AND (?=0 OR status<>?)${canonicalGuard}
+     WHERE ticket_id=? AND run_id=?
+       AND (status IN (${placeholders}) OR (?=1 AND status='error' AND last_error=?))
+       AND (?=0 OR status<>? OR last_error=?)${canonicalGuard}
   `).bind(
     input.status,
     input.authority,
@@ -383,8 +455,12 @@ export async function updateSchedulerExecutionTicket(
     input.ticketId,
     input.runId,
     ...allowed,
+    // An abandoned-while-running sweep is a presumption; the owner's real terminal result replaces it.
+    terminal ? 1 : 0,
+    ABANDONED_RUNNING_ERROR,
     terminal ? 1 : 0,
     input.status,
+    ABANDONED_RUNNING_ERROR,
     ...(input.expectedPipelineCanonicalRunId ? [input.expectedPipelineCanonicalRunId] : []),
   ).run()
   const row = await readTicket(db, input.ticketId)
@@ -618,6 +694,18 @@ export function schedulerTicketStatusForRunLog(
   status: import('./schedulerRunLogger').SchedulerRunStatus,
 ): SchedulerExecutionTicketStatus {
   return status === 'waiting' ? 'queued' : status
+}
+
+// Observer ticks whose `running` result reports work another owner holds (screener stage lease).
+// Nothing settles their ticket once the request (sync or background) returns, so it closes as
+// skipped. Tasks whose running ticket a later owner closes (evening-chain root) must never be listed.
+const OBSERVER_TASKS = new Set(['screener-v2-watchdog'])
+
+export function schedulerHttpResultTicketStatus(
+  task: string,
+  status: import('./schedulerRunLogger').SchedulerRunStatus,
+): SchedulerExecutionTicketStatus {
+  return status === 'running' && OBSERVER_TASKS.has(task) ? 'skipped' : schedulerTicketStatusForRunLog(status)
 }
 
 export const SCHEDULER_TICKET_CONTRACT_ROOTS = MANIFEST_JOBS.length

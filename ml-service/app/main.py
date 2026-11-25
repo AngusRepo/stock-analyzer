@@ -166,7 +166,9 @@ async def breeze2_reason_generation_endpoint(request: Request):
             "real_trading_allowed": False,
         })
     except Breeze2ModelNotAllowed as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        # The message echoes the caller's model_id; keep it in the server log, return a fixed code.
+        print(f"[Breeze2] rejected: {exc}")
+        raise HTTPException(status_code=400, detail="breeze2_model_id_not_allowed")
 
 
 class FactorAuditRequest(BaseModel):

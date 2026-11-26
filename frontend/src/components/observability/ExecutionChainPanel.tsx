@@ -46,6 +46,7 @@ import { dailyPhaseForStage, PREMARKET_READINESS_IDS } from './dailyReadinessPha
 import { FINLAB_STAGE_CARDS, expandFinlabStages, finlabStageCards } from '@/lib/finlabStageCards'
 import { PIPELINE_STAGE_CARDS, expandPipelineStages, pipelineStageCards, pipelineRunSummary } from '@/lib/pipelineStageCards'
 import './ExecutionChainPanel.css'
+import { clipErrorText } from '@/lib/errorPreview'
 
 type VisualStatus = 'completed' | 'noop' | 'running' | 'waiting' | 'blocked' | 'out_of_window' | 'not_started' | 'skipped' | 'stale' | 'attention'
 
@@ -499,11 +500,11 @@ function JobStatusSummary({ job, fallback }: { job?: SchedulerJob; fallback?: st
   if (isAllocatorSafeAbstention(job)) return <p className="obs-chain__summary">{summary}</p>
 
   return (
-    <details className="obs-chain__error-disclosure">
-      <summary><strong>Error log</strong><span aria-hidden="true" /></summary>
-      <p className="obs-chain__error-preview">{summary}</p>
-      <p className="obs-chain__error-full">{summary}</p>
-    </details>
+    // 長錯誤：600 字內全文換行顯示（手機可讀）；超過才截斷並註明全文字數，全文在 title。不收合、不開內捲軸。
+    <div className="obs-chain__error-log" role="group" aria-label="Error log">
+      <strong>Error log</strong>
+      <p className="obs-chain__error-preview" title={summary}>{clipErrorText(summary).text}</p>
+    </div>
   )
 }
 
@@ -798,10 +799,10 @@ export default function ExecutionChainPanel({
         </section>
 
       {scope.id !== 'daily_readiness' && scope.branches && scope.branches.length > 0 && (
-        <details className="obs-chain__branch-disclosure" open>
-        <summary>獨立排程 · {(scope.branches ?? []).flatMap(branch=>branch.columns.flat()).length} 項
+        <section className="obs-chain__branch-group" aria-labelledby={`${scope.id}-branch-group-title`}>
+        <h3 className="obs-chain__branch-group-title" id={`${scope.id}-branch-group-title`}>獨立排程 · {(scope.branches ?? []).flatMap(branch=>branch.columns.flat()).length} 項
           <span>{(scope.branches ?? []).flatMap(branch=>branch.columns.flat()).filter(id=>visualStatus(scopedJobMap.get(id))==='blocked').length} 項異常</span>
-        </summary>
+        </h3>
         <div className="obs-chain__branches" aria-label="Execution branches">
           {scope.branches.map((branch) => (
             <section className="obs-chain__branch" key={branch.id} aria-labelledby={`${branch.id}-title`}>
@@ -859,7 +860,7 @@ export default function ExecutionChainPanel({
             </section>
           ))}
         </div>
-        </details>
+        </section>
       )}
       </div>
 

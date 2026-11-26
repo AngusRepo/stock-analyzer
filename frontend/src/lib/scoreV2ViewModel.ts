@@ -22,7 +22,7 @@ export type ScoreBreakdownViewModel = {
 }
 
 const SCORE_V2_COMPONENTS = [
-  ['mlEdge', 'ML Edge', 25, 'bg-emerald-500'],
+  ['mlEdge', 'ML Edge', 25, 'bg-indigo-500'],
   ['chipFlow', '籌碼流', 25, 'bg-blue-500'],
   ['technicalStructure', '技術結構', 25, 'bg-violet-500'],
   ['fundamentalQuality', '基本面', 25, 'bg-amber-500'],
@@ -37,7 +37,7 @@ const SCORE_V2_WEIGHTS = {
 } as const
 
 const SCORE_V2_COMPONENT_ROWS = [
-  ['mlEdge', 'ML Edge', 25, 'bg-emerald-500'],
+  ['mlEdge', 'ML Edge', 25, 'bg-indigo-500'],
   ['chipFlow', '籌碼流', 25, 'bg-blue-500'],
   ['technicalStructure', '技術結構', 25, 'bg-violet-500'],
   ['fundamentalQuality', '基本面品質', 25, 'bg-amber-500'],
@@ -48,7 +48,7 @@ const SCORE_V2_TECHNICAL_ROWS = [
   ['volatilityStructure', '波動結構', 5, 'bg-sky-500', '衡量波動是否收斂或擴張到適合進場的區間。'],
   ['reversalExtreme', '反轉極值', 5, 'bg-fuchsia-500', '衡量是否接近過熱、過冷或容易反轉的位置。'],
   ['volumeConfirmation', '量能確認', 6, 'bg-cyan-500', '衡量成交量與價格推進是否互相確認。'],
-  ['executionRisk', '執行風險', 2, 'bg-rose-500', '衡量追價、流動性與盤中執行的不利風險。'],
+  ['executionRisk', '執行風險', 2, 'bg-slate-400', '衡量追價、流動性與盤中執行的不利風險。'],
 ] as const
 
 const SCORE_V2_TECHNICAL = [
@@ -56,7 +56,7 @@ const SCORE_V2_TECHNICAL = [
   ['volatilityStructure', '波動結構', 5, 'bg-sky-500', '波動結構分數反映波動穩定度與突破後回測風險。'],
   ['reversalExtreme', '轉折極端', 5, 'bg-fuchsia-500', '轉折極端分數反映過熱/過冷後的轉折風險與位置品質。'],
   ['volumeConfirmation', '量能確認', 6, 'bg-cyan-500', '量能確認分數反映成交量是否支持突破或回測。'],
-  ['executionRisk', '執行風險', 2, 'bg-rose-500', '執行風險分數反映流動性、滑價與實際成交難度。'],
+  ['executionRisk', '執行風險', 2, 'bg-slate-400', '執行風險分數反映流動性、滑價與實際成交難度。'],
 ] as const
 
 function parseObject(raw: unknown): Record<string, any> | null {

@@ -31,7 +31,7 @@ export default function StockPriceChart({ stockId }: { stockId: number }) {
     const dateKey = p.date?.split('T')[0]
     const ind = indMap.get(dateKey)
     return {
-      date: format(new Date(p.date), 'MM/dd'),
+      date: format(new Date(p.date), 'MM-dd'),
       close: p.close ? Math.round(p.close * 100) / 100 : null,
       ma20: ind?.ma20 ? Math.round(ind.ma20 * 100) / 100 : null,
       ma60: ind?.ma60 ? Math.round(ind.ma60 * 100) / 100 : null,
@@ -55,15 +55,15 @@ export default function StockPriceChart({ stockId }: { stockId: number }) {
         <AreaChart data={chartData}>
           <defs>
             <linearGradient id="colorClose" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%" stopColor="#22c55e" stopOpacity={0.3} />
-              <stop offset="95%" stopColor="#22c55e" stopOpacity={0} />
+              <stop offset="5%" stopColor="#38bdf8" stopOpacity={0.3} />
+              <stop offset="95%" stopColor="#38bdf8" stopOpacity={0} />
             </linearGradient>
           </defs>
           <CartesianGrid strokeDasharray="3 3" stroke="#333" opacity={0.3} />
           <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#888' }} tickLine={false} interval={Math.floor(chartData.length / 6)} />
           <YAxis domain={[minVal, maxVal]} tick={{ fontSize: 10, fill: '#888' }} tickLine={false} tickFormatter={v => v.toFixed(0)} />
           <Tooltip contentStyle={{ background: '#1a1a2e', border: '1px solid #333', borderRadius: '8px', fontSize: 12, color: '#eee' }} />
-          <Area type="monotone" dataKey="close" stroke="#22c55e" strokeWidth={2} fill="url(#colorClose)" dot={false} name="收盤價" />
+          <Area type="monotone" dataKey="close" stroke="#38bdf8" strokeWidth={2} fill="url(#colorClose)" dot={false} name="收盤價" />
           <Area type="monotone" dataKey="ma20" stroke="#3b82f6" strokeWidth={1.5} fill="none" dot={false} name="MA20" />
           <Area type="monotone" dataKey="ma60" stroke="#f59e0b" strokeWidth={1.5} fill="none" dot={false} name="MA60" />
         </AreaChart>

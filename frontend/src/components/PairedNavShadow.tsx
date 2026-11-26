@@ -51,7 +51,7 @@ export default function PairedNavShadow({ data }: { data?: PairedNavShadowReadMo
         <p className="text-sm text-slate-200">有效 NAV 報酬 {pair.sessions} 日 · 最新 {pair.latest_session ?? '尚無'}</p>
         <p className="mt-1 text-sm text-slate-400">帳務已記錄 {pair.accounted_sessions} 日 · 最新 {pair.latest_accounting_session}</p>
         {pair.lifecycle ? <p className="mt-2 text-sm leading-6 text-sky-200">比較已於 {pair.lifecycle.transition_signal_date} 結束：{pair.lifecycle.changed_fields.includes('baseline_checksum') ? '比較基準' : '配置'}已更新。歷史 {pair.accounted_sessions} 日完整保留，不混入新基準的成熟日，也不代表績效不合格。</p> : null}
-        {(pair.zero_nav_sessions ?? 0) > 0 ? <p className="mt-1 text-sm text-red-300">配對中有帳戶淨值歸零；損失照實保留，不以資料錯誤隱藏。</p> : null}
+        {(pair.zero_nav_sessions ?? 0) > 0 ? <p className="mt-1 text-sm text-down">配對中有帳戶淨值歸零；損失照實保留，不以資料錯誤隱藏。</p> : null}
         {(pair.undefined_return_sessions ?? 0) > 0 ? <p className="mt-1 text-sm text-amber-200">{pair.undefined_return_sessions} 日期初淨值為零，報酬無法定義（0/0）；不填成 0%，不計晉級。</p> : null}
         {pair.unverified_sessions > (pair.undefined_return_sessions ?? 0) ? <p className="mt-1 text-sm text-amber-200">{pair.unverified_sessions - (pair.undefined_return_sessions ?? 0)} 日未取得完整績效證據，不計晉級。</p> : null}
         <details className="mt-2 text-xs leading-5 text-slate-400"><summary className="cursor-pointer">比較版本</summary>

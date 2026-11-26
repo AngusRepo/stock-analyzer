@@ -1,0 +1,111 @@
+/* 模擬交易室推薦候選（依 audits/simroom-mock-20261125/src/mock.css，Wei 11/25 核准）。
+   只在 /bot 路由載入，不進主 CSS。顏色一律走 index.css 的 --up/--down/--ok/--warn/--fail/--na。 */
+.simroom { --sr-card: #15161c; --sr-muted: #1c1e27; --sr-border: #292c37; --sr-fg: #e8ecf3; --sr-sub: #8992a3; --sr-dim: #8992a3;
+  font-size: 12px; line-height: 1.4; color: var(--sr-fg); font-variant-numeric: tabular-nums; }
+.simroom * { box-sizing: border-box; }
+.simroom .sr-panel { background: var(--sr-card); border: 1px solid var(--sr-border); border-radius: 8px; min-width: 0; }
+
+/* 時段軸 */
+.simroom .sr-axis { position: relative; display: grid; height: 26px; border: 1px solid var(--sr-border); border-radius: 6px; overflow: hidden; background: var(--sr-card); }
+.simroom .sr-axis button { display: flex; align-items: center; justify-content: center; gap: 4px; font-size: 11px; color: var(--sr-sub); border: 0; border-right: 1px solid var(--sr-border); background: transparent; white-space: nowrap; overflow: hidden; padding: 0 4px; border-radius: 0; }
+.simroom .sr-axis button:last-of-type { border-right: 0; }
+.simroom .sr-axis button.now { color: var(--sr-fg); background: #1d2433; }
+.simroom .sr-axis button.view { box-shadow: inset 0 -2px 0 var(--ok); color: var(--sr-fg); }
+.simroom .sr-axis .mark { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--ok); pointer-events: none; }
+
+/* KPI 條 */
+.simroom .sr-kpis { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.simroom .sr-kpi { display: flex; align-items: center; gap: 6px; background: var(--sr-card); border: 1px solid var(--sr-border); border-radius: 6px; padding: 4px 10px; font-size: 11px; color: var(--sr-sub); white-space: nowrap; }
+.simroom .sr-kpi b { font-size: 14px; color: var(--sr-fg); font-weight: 600; }
+.simroom .sr-kpi.trend { margin-left: auto; }
+
+/* 主區 */
+.simroom .sr-main { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 10px; align-items: start; }
+.simroom .sr-scroll { overflow-x: auto; }
+.simroom table.sr-rows { border-collapse: collapse; width: 100%; display: table; white-space: nowrap; }
+.simroom table.sr-rows th { font-weight: 400; color: var(--sr-dim); font-size: 10px; text-align: right; padding: 4px 6px; vertical-align: bottom; white-space: nowrap; }
+.simroom table.sr-rows th.l, .simroom table.sr-rows td.l { text-align: left; }
+.simroom table.sr-rows td { padding: 0 6px; height: 40px; text-align: right; border-top: 1px solid var(--sr-border); white-space: nowrap; }
+.simroom tr.sr-row { cursor: pointer; }
+.simroom tr.sr-row:hover td { background: #191b23; }
+.simroom tr.sr-row:focus-visible td { background: #191b23; outline: none; }
+.simroom tr.sel td { background: #1b2130; }
+.simroom tr.sel td:first-child { box-shadow: inset 2px 0 0 var(--ok); }
+.simroom tr.term td { color: var(--sr-sub); }
+.simroom tr.term td b { font-weight: 500; }
+/* 淡化只用在圖形（價格梯）；文字改用次要色，不降透明度，小字仍 ≥4.5:1。 */
+.simroom tr.stale td.px { color: var(--sr-sub); }
+.simroom tr.stale td.ladder svg { opacity: .45; }
+.simroom tr.grp td { height: 18px; color: var(--sr-dim); font-size: 10px; text-align: left; background: #111217; padding-top: 2px; }
+.simroom .sym b { font-weight: 600; }
+.simroom .sym span { color: var(--sr-sub); margin-left: 4px; }
+.simroom .st { display: inline-flex; align-items: center; gap: 5px; }
+.simroom .flag { display: inline-block; margin-left: 4px; width: 14px; height: 14px; line-height: 14px; text-align: center; border-radius: 3px; background: var(--warn); color: #111; font-size: 10px; font-weight: 700; vertical-align: 1px; }
+
+/* 關卡點陣 */
+.simroom .dots { display: inline-flex; gap: 2px; vertical-align: middle; }
+.simroom .dots i { display: block; width: 11px; height: 11px; border-radius: 2px; background: var(--na); }
+.simroom .dots i.g, .simroom .dhead span.g { margin-left: 6px; }
+.simroom .dots i.ok { background: var(--ok); }
+.simroom .dots i.warn { background: var(--warn); }
+.simroom .dots i.fail { background: var(--fail); }
+.simroom .dots i.rec { background: repeating-linear-gradient(135deg, #3a4150 0 2px, #22262f 2px 4px); }
+.simroom .dots i.first { outline: 2px solid #fff; outline-offset: 1px; }
+.simroom .dhead { display: inline-flex; gap: 2px; align-items: flex-end; }
+.simroom .dhead span { width: 11px; writing-mode: vertical-rl; font-size: 10px; line-height: 11px; color: var(--sr-dim); height: 64px; text-align: end; }
+.simroom .ghead { display: flex; font-size: 10px; color: var(--sr-sub); margin-bottom: 2px; }
+.simroom .ghead span { border-bottom: 1px solid var(--sr-border); text-align: center; flex: none; }
+.simroom .chip { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 11px; }
+.simroom .chip.lock { background: color-mix(in srgb, var(--fail) 16%, transparent); color: var(--fail); }
+.simroom .chip.stale { background: var(--sr-muted); color: var(--sr-sub); }
+.simroom .alloc { display: inline-flex; align-items: center; gap: 5px; }
+.simroom .alloc em { display: block; height: 4px; background: var(--ok); border-radius: 2px; opacity: .7; }
+
+/* 右側面板（點列換內容，不折疊） */
+.simroom .sr-side { padding: 10px 12px; }
+.simroom .sr-side h2 { margin: 0; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.simroom .sr-side .px { font-size: 18px; font-weight: 600; margin: 2px 0 6px; }
+.simroom .sr-side .px small { font-size: 12px; margin-left: 6px; }
+.simroom .vals { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; margin-top: 4px; }
+.simroom .v { background: var(--sr-muted); border-radius: 4px; padding: 4px 6px 4px 8px; position: relative; min-width: 0; }
+.simroom .v .k { font-size: 10px; color: var(--sr-dim); }
+.simroom .v .n { font-size: 11px; overflow-wrap: anywhere; }
+.simroom .v::before { content: ""; position: absolute; left: 0; top: 4px; bottom: 4px; width: 2px; border-radius: 1px; background: var(--na); }
+.simroom .v.ok::before { background: var(--ok); } .simroom .v.warn::before { background: var(--warn); }
+.simroom .v.fail::before { background: var(--fail); } .simroom .v.rec::before { background: #3a4150; }
+.simroom .v.first { outline: 1px solid #fff; }
+.simroom .vals.cond { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.simroom .vgroup { font-size: 10px; color: var(--sr-sub); margin: 8px 0 0; }
+.simroom .legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 10px; color: var(--sr-dim); padding: 6px 10px; border-top: 1px solid var(--sr-border); }
+.simroom .legend span { display: inline-flex; align-items: center; gap: 4px; }
+.simroom .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
+.simroom .allocbar { display: flex; height: 20px; border-radius: 5px; overflow: hidden; margin: 0 0 8px; font-size: 11px; }
+.simroom .allocbar div { display: flex; align-items: center; justify-content: center; white-space: nowrap; overflow: hidden; color: #fff; border-right: 1px solid #090a0d; }
+.simroom .sr-up { color: var(--up); } .simroom .sr-down { color: var(--down); }
+
+@media (max-width: 1100px) { .simroom .sr-main { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 760px) {
+  .simroom .hide-m { display: none; }
+  .simroom .sr-axis button span.t { display: none; }
+  .simroom .sr-kpi.trend { margin-left: 0; }
+  .simroom .vals { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* 手機：每檔兩到三行，價格梯與關卡點陣照樣直接顯示；面板排在清單下方 */
+  .simroom .sr-scroll { overflow: visible; }
+  .simroom table.sr-rows thead { display: none; }
+  .simroom table.sr-rows, .simroom table.sr-rows tbody { display: block; white-space: normal; }
+  .simroom table.sr-rows tr.grp, .simroom table.sr-rows tr.grp td { display: block; }
+  .simroom table.sr-rows tr.sr-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; column-gap: 10px; row-gap: 4px; padding: 7px 10px; border-top: 1px solid var(--sr-border); }
+  .simroom table.sr-rows tr.sr-row td { height: auto; border: 0; padding: 0; background: none; text-align: left; }
+  .simroom table.sr-rows tr.sel { background: #1b2130; box-shadow: inset 2px 0 0 var(--ok); }
+  .simroom table.sr-rows tr.sel td:first-child { box-shadow: none; }
+  .simroom table.sr-rows td.wide { grid-column: 1 / -1; }
+  .simroom table.sr-rows td.dotcell { display: block; grid-column: 1 / -1; }
+  .simroom .stl { display: none; }
+}
+
+/* 抵消 index.css 對 .sv-stockintelli-page 表格的全站卡片化（列漸層、圓角、間距） */
+.sv-stockintelli-page .simroom table.sr-rows { border-collapse: collapse; border-spacing: 0; }
+.sv-stockintelli-page .simroom table.sr-rows thead { font-size: 10px; }
+.sv-stockintelli-page .simroom table.sr-rows tbody tr { background: transparent !important; box-shadow: none; }
+.sv-stockintelli-page .simroom table.sr-rows tbody td { border-radius: 0; border-color: var(--sr-border) !important; }
+.sv-stockintelli-page .simroom .sr-axis button { border-radius: 0; }

@@ -1,8 +1,9 @@
 .obs-chain {
-  --chain-green: var(--chart-3);
-  --chain-cyan: var(--primary);
-  --chain-amber: var(--chart-2);
-  --chain-red: var(--destructive);
+  --chain-green: var(--ok);
+  /* running：同 ok 藍（仍在狀態色體系內），用旋轉圖示＋流動虛線與「完成」（ok 實心＋勾）區分，不另開新色 */
+  --chain-running: var(--ok);
+  --chain-amber: var(--warn);
+  --chain-red: var(--fail);
   --chain-slate: var(--muted-foreground);
   overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--foreground) 9%, transparent);
@@ -63,10 +64,10 @@
   flex: none;
   border-radius: 50%;
   background: var(--chain-green);
-  box-shadow: 0 0 13px color-mix(in srgb, var(--chart-3) 65%, transparent);
+  box-shadow: 0 0 13px color-mix(in srgb, var(--ok) 65%, transparent);
 }
 
-.obs-chain__live-dot.is-fetching { background: var(--chain-cyan); animation: obs-live-pulse 1s ease-in-out infinite; }
+.obs-chain__live-dot.is-fetching { background: var(--chain-running); animation: obs-live-pulse 1s ease-in-out infinite; }
 .obs-chain__live strong { display: block; color: var(--foreground); font-size: .8125rem; font-weight: 650; }
 .obs-chain__live span { display: block; margin-top: 3px; color: var(--muted-foreground); font-size: .8125rem; }
 
@@ -117,11 +118,11 @@
 .obs-chain__runtime small { color: currentColor; font-size: .8125rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
 .obs-chain__runtime strong { overflow: hidden; color: var(--foreground); font-size: .8125rem; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
 .obs-chain__runtime em { color: currentColor; font-size: .8125rem; font-style: normal; font-weight: 700; white-space: nowrap; }
-.obs-chain__runtime.is-running { border-color: color-mix(in srgb, var(--primary) 58%, transparent); color: var(--chain-cyan); background: color-mix(in srgb, var(--border) 88%, transparent); box-shadow: 0 0 22px color-mix(in srgb, var(--primary) 20%, transparent); }
+.obs-chain__runtime.is-running { border-color: color-mix(in srgb, var(--chain-running) 58%, transparent); color: var(--chain-running); background: color-mix(in srgb, var(--border) 88%, transparent); box-shadow: 0 0 22px color-mix(in srgb, var(--chain-running) 20%, transparent); }
 .obs-chain__runtime.is-running .obs-chain__runtime-icon { animation: obs-current-runtime 1.4s ease-in-out infinite; }
 .obs-chain__runtime.is-running .obs-chain__runtime-icon svg { animation: obs-status-spin .9s linear infinite; }
-.obs-chain__runtime.is-blocked { border-color: color-mix(in srgb, var(--destructive) 54%, transparent); color: var(--chain-red); background: color-mix(in srgb, var(--border) 38%, transparent); box-shadow: 0 0 20px color-mix(in srgb, var(--destructive) 16%, transparent); }
-.obs-chain__runtime.is-waiting { border-color: color-mix(in srgb, var(--chart-2) 38%, transparent); color: var(--chain-amber); }
+.obs-chain__runtime.is-blocked { border-color: color-mix(in srgb, var(--fail) 54%, transparent); color: var(--chain-red); background: color-mix(in srgb, var(--border) 38%, transparent); box-shadow: 0 0 20px color-mix(in srgb, var(--fail) 16%, transparent); }
+.obs-chain__runtime.is-waiting { border-color: color-mix(in srgb, var(--warn) 38%, transparent); color: var(--chain-amber); }
 .obs-chain__runtime:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .obs-chain__orchestrator {
   position: relative;
@@ -147,10 +148,10 @@
 .obs-chain__orchestrator:hover { border-color: color-mix(in srgb, var(--primary) 42%, transparent); background: color-mix(in srgb, var(--sv-bg-1) 88%, transparent); }
 .obs-chain__orchestrator:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 .obs-chain__orchestrator.is-selected { box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 9%, transparent); }
-.obs-chain__orchestrator.is-completed, .obs-chain__orchestrator.is-noop { border-color: color-mix(in srgb, var(--chart-3) 32%, transparent); color: var(--chain-green); }
-.obs-chain__orchestrator.is-running { border-color: color-mix(in srgb, var(--primary) 44%, transparent); color: var(--chain-cyan); background: color-mix(in srgb, var(--sv-bg-1) 74%, transparent); box-shadow: 0 0 18px color-mix(in srgb, var(--primary) 12%, transparent); }
-.obs-chain__orchestrator.is-waiting { border-color: color-mix(in srgb, var(--chart-2) 34%, transparent); color: var(--chain-amber); }
-.obs-chain__orchestrator.is-blocked { border-color: color-mix(in srgb, var(--destructive) 46%, transparent); color: var(--chain-red); background: color-mix(in srgb, var(--border) 34%, transparent); }
+.obs-chain__orchestrator.is-completed, .obs-chain__orchestrator.is-noop { border-color: color-mix(in srgb, var(--ok) 32%, transparent); color: var(--chain-green); }
+.obs-chain__orchestrator.is-running { border-color: color-mix(in srgb, var(--chain-running) 44%, transparent); color: var(--chain-running); background: color-mix(in srgb, var(--sv-bg-1) 74%, transparent); box-shadow: 0 0 18px color-mix(in srgb, var(--chain-running) 12%, transparent); }
+.obs-chain__orchestrator.is-waiting { border-color: color-mix(in srgb, var(--warn) 34%, transparent); color: var(--chain-amber); }
+.obs-chain__orchestrator.is-blocked { border-color: color-mix(in srgb, var(--fail) 46%, transparent); color: var(--chain-red); background: color-mix(in srgb, var(--border) 34%, transparent); }
 .obs-chain__orchestrator .obs-chain__state-mark { position: relative; right: auto; bottom: auto; }
 
 .obs-chain__phase { display: flex; flex: none; align-items: center; gap: 10px; color: var(--muted-foreground); font-size: .8125rem; }
@@ -206,16 +207,16 @@
 .obs-chain__connector { position: relative; width: 34px; height: 3px; flex: none; overflow: visible; background: var(--border); }
 .obs-chain__connector::before { content: ''; position: absolute; top: -3px; right: -1px; width: 0; height: 0; border-top: 4px solid transparent; border-bottom: 4px solid transparent; border-left: 6px solid var(--muted-foreground); }
 .obs-chain__connector span { position: absolute; inset: 0; transform-origin: left center; }
-.obs-chain__connector.is-completed { background: linear-gradient(90deg, var(--chart-3), var(--chart-3)); box-shadow: 0 0 10px color-mix(in srgb, var(--chart-3) 30%, transparent); }
+.obs-chain__connector.is-completed { background: linear-gradient(90deg, var(--ok), var(--ok)); box-shadow: 0 0 10px color-mix(in srgb, var(--ok) 30%, transparent); }
 .obs-chain__connector.is-completed::before { border-left-color: var(--chain-green); }
-.obs-chain__connector.is-running { background: repeating-linear-gradient(90deg, var(--primary) 0 8px, var(--primary) 8px 14px); background-size: 28px 100%; animation: obs-flow-line .8s linear infinite; box-shadow: 0 0 12px color-mix(in srgb, var(--primary) 45%, transparent); }
-.obs-chain__connector.is-running::before { border-left-color: var(--chain-cyan); }
-.obs-chain__connector.is-waiting { background: repeating-linear-gradient(90deg, var(--chart-2) 0 6px, transparent 6px 11px); }
+.obs-chain__connector.is-running { background: repeating-linear-gradient(90deg, var(--chain-running) 0 8px, var(--chain-running) 8px 14px); background-size: 28px 100%; animation: obs-flow-line .8s linear infinite; box-shadow: 0 0 12px color-mix(in srgb, var(--chain-running) 45%, transparent); }
+.obs-chain__connector.is-running::before { border-left-color: var(--chain-running); }
+.obs-chain__connector.is-waiting { background: repeating-linear-gradient(90deg, var(--warn) 0 6px, transparent 6px 11px); }
 .obs-chain__connector.is-waiting::before { border-left-color: var(--chain-amber); }
-.obs-chain__connector.is-blocked { background: var(--destructive); }
+.obs-chain__connector.is-blocked { background: var(--fail); }
 .obs-chain__connector.is-blocked::before { border-left-color: var(--chain-red); }
 .obs-chain__connector.is-not_started { background: repeating-linear-gradient(90deg, var(--border) 0 4px, transparent 4px 9px); }
-.obs-chain__connector.is-attention { background: var(--chart-2); }
+.obs-chain__connector.is-attention { background: var(--warn); }
 .obs-chain__connector.is-attention::before { border-left-color: var(--chain-amber); }
 .obs-chain__connector.is-skipped { background: repeating-linear-gradient(90deg, var(--chain-slate) 0 3px, transparent 3px 8px); }
 .obs-chain__connector.is-skipped::before { border-left-color: var(--chain-slate); }
@@ -295,24 +296,24 @@
 .obs-chain__stage.is-completed .obs-chain__state-mark,
 .obs-chain__stage.is-noop .obs-chain__state-mark,
 .obs-chain__orchestrator.is-completed .obs-chain__state-mark,
-.obs-chain__orchestrator.is-noop .obs-chain__state-mark { color: var(--sv-bg-1); background: var(--chain-green); box-shadow: 0 0 10px color-mix(in srgb, var(--chart-3) 58%, transparent); }
+.obs-chain__orchestrator.is-noop .obs-chain__state-mark { color: var(--sv-bg-1); background: var(--chain-green); box-shadow: 0 0 10px color-mix(in srgb, var(--ok) 58%, transparent); }
 .obs-chain__stage.is-running .obs-chain__state-mark,
-.obs-chain__orchestrator.is-running .obs-chain__state-mark { color: var(--sv-bg-1); background: var(--chain-cyan); box-shadow: 0 0 10px color-mix(in srgb, var(--primary) 62%, transparent); }
+.obs-chain__orchestrator.is-running .obs-chain__state-mark { color: var(--sv-bg-1); background: var(--chain-running); box-shadow: 0 0 10px color-mix(in srgb, var(--chain-running) 62%, transparent); }
 .obs-chain__stage.is-running .obs-chain__state-mark > svg,
 .obs-chain__orchestrator.is-running .obs-chain__state-mark > svg { animation: obs-status-spin .9s linear infinite; }
 .obs-chain__stage.is-waiting .obs-chain__state-mark,
 .obs-chain__stage.is-attention .obs-chain__state-mark,
-.obs-chain__orchestrator.is-waiting .obs-chain__state-mark { color: var(--sv-bg-1); background: var(--chain-amber); box-shadow: 0 0 9px color-mix(in srgb, var(--chart-2) 48%, transparent); }
+.obs-chain__orchestrator.is-waiting .obs-chain__state-mark { color: var(--sv-bg-1); background: var(--chain-amber); box-shadow: 0 0 9px color-mix(in srgb, var(--warn) 48%, transparent); }
 .obs-chain__stage.is-blocked .obs-chain__state-mark,
-.obs-chain__orchestrator.is-blocked .obs-chain__state-mark { color: var(--sv-bg-1); background: var(--chain-red); box-shadow: 0 0 10px color-mix(in srgb, var(--destructive) 54%, transparent); }
+.obs-chain__orchestrator.is-blocked .obs-chain__state-mark { color: var(--sv-bg-1); background: var(--chain-red); box-shadow: 0 0 10px color-mix(in srgb, var(--fail) 54%, transparent); }
 .obs-chain__stage.is-out_of_window .obs-chain__state-mark,
 .obs-chain__stage.is-not_started .obs-chain__state-mark,
 .obs-chain__stage.is-skipped .obs-chain__state-mark { color: var(--foreground); background: var(--sv-bg-1); box-shadow: 0 0 0 1px var(--muted-foreground); }
 .obs-chain__stage:hover .obs-chain__orb, .obs-chain__stage:focus-visible .obs-chain__orb { transform: translateY(-2px); box-shadow: 0 0 0 4px color-mix(in srgb, var(--primary) 9%, transparent), inset 0 0 20px color-mix(in srgb, var(--sv-bg-1) 44%, transparent), 0 12px 28px color-mix(in srgb, var(--sv-bg-1) 32%, transparent); }
 .obs-chain__stage.is-selected .obs-chain__orb { box-shadow: 0 0 0 5px color-mix(in srgb, var(--primary) 10%, transparent), 0 0 24px color-mix(in srgb, currentColor 30%, transparent), inset 0 0 20px color-mix(in srgb, var(--sv-bg-1) 44%, transparent); }
 .obs-chain__stage.is-completed { color: var(--chain-green); }
-.obs-chain__stage.is-noop { color: var(--chart-3); }
-.obs-chain__stage.is-running { color: var(--chain-cyan); }
+.obs-chain__stage.is-noop { color: var(--ok); }
+.obs-chain__stage.is-running { color: var(--chain-running); }
 .obs-chain__stage.is-waiting { color: var(--chain-amber); }
 .obs-chain__stage.is-attention { color: var(--chain-amber); }
 .obs-chain__stage.is-blocked { color: var(--chain-red); }
@@ -449,7 +450,7 @@
   .obs-chain__topology.is-intraday .obs-chain__branch .obs-chain__connector { width: 3px; height: 17px; }
   .obs-chain__topology.is-intraday .obs-chain__branch .obs-chain__connector::before { top: auto; right: -2px; bottom: -1px; border-top: 6px solid var(--muted-foreground); border-right: 4px solid transparent; border-bottom: 0; border-left: 4px solid transparent; }
   .obs-chain__topology.is-intraday .obs-chain__branch .obs-chain__connector.is-completed::before { border-top-color: var(--chain-green); }
-  .obs-chain__topology.is-intraday .obs-chain__branch .obs-chain__connector.is-running::before { border-top-color: var(--chain-cyan); }
+  .obs-chain__topology.is-intraday .obs-chain__branch .obs-chain__connector.is-running::before { border-top-color: var(--chain-running); }
   .obs-chain__topology.is-intraday .obs-chain__branch .obs-chain__connector.is-waiting::before { border-top-color: var(--chain-amber); }
   .obs-chain__topology.is-intraday .obs-chain__branch .obs-chain__connector.is-blocked::before { border-top-color: var(--chain-red); }
   .obs-chain__topology.is-intraday .obs-chain__branch .obs-chain__connector.is-not_started::before { border-top-color: var(--chain-slate); }
@@ -487,12 +488,12 @@
   inset: 0;
   transform-origin: left center;
   border-radius: inherit;
-  background: linear-gradient(90deg, var(--chart-3) 0%, var(--chart-3) 55%, var(--primary) 100%);
+  background: linear-gradient(90deg, var(--ok) 0%, var(--ok) 55%, var(--primary) 100%);
   box-shadow: 0 0 14px color-mix(in srgb, var(--primary) 28%, transparent);
   transition: transform 700ms cubic-bezier(.22,.8,.28,1);
 }
 .obs-chain__progress-fill.is-running {
-  background-image: linear-gradient(90deg, var(--chart-3) 0%, var(--chart-3) 38%, var(--primary) 68%, var(--primary) 82%, var(--primary) 100%);
+  background-image: linear-gradient(90deg, var(--ok) 0%, var(--ok) 38%, var(--primary) 68%, var(--primary) 82%, var(--primary) 100%);
   background-size: 210% 100%;
   animation: obs-progress-flow 1.8s linear infinite;
 }
@@ -516,26 +517,19 @@
 .obs-chain__detail-title { display: flex; min-width: 0; align-items: center; gap: 10px; }
 .obs-chain__detail-title > svg { width: 20px; height: 20px; flex: none; color: var(--chain-amber); }
 .obs-chain__detail-dot { width: 11px; height: 11px; flex: none; border-radius: 50%; background: var(--chain-slate); }
-.obs-chain__detail-dot.is-completed { background: var(--chain-green); box-shadow: 0 0 11px color-mix(in srgb, var(--chart-3) 45%, transparent); }
-.obs-chain__detail-dot.is-noop { background: var(--chart-3); box-shadow: 0 0 10px color-mix(in srgb, var(--chart-3) 36%, transparent); }
-.obs-chain__detail-dot.is-running { background: var(--chain-cyan); box-shadow: 0 0 12px color-mix(in srgb, var(--primary) 58%, transparent); animation: obs-live-pulse 1.2s ease-in-out infinite; }
+.obs-chain__detail-dot.is-completed { background: var(--chain-green); box-shadow: 0 0 11px color-mix(in srgb, var(--ok) 45%, transparent); }
+.obs-chain__detail-dot.is-noop { background: var(--ok); box-shadow: 0 0 10px color-mix(in srgb, var(--ok) 36%, transparent); }
+.obs-chain__detail-dot.is-running { background: var(--chain-running); box-shadow: 0 0 12px color-mix(in srgb, var(--chain-running) 58%, transparent); animation: obs-live-pulse 1.2s ease-in-out infinite; }
 .obs-chain__detail-dot.is-waiting { background: var(--chain-amber); }
 .obs-chain__detail-dot.is-blocked { background: var(--chain-red); }
 .obs-chain__detail-title p { margin: 0; color: var(--muted-foreground); font-size: .8125rem; }
 .obs-chain__detail-title h4 { margin: 3px 0 0; color: var(--foreground); font-size: 14px; font-weight: 680; }
 .obs-chain__summary { min-width: 0; min-height: 56px; margin: 11px 0 0; overflow-wrap: anywhere; color: var(--muted-foreground); font-size: .8125rem; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
-.obs-chain__detail.has-error { border-color: color-mix(in srgb, var(--destructive) 42%, transparent); }
-.obs-chain__error-disclosure { min-width: 0; margin-top: 11px; border: 1px solid color-mix(in srgb, var(--destructive) 20%, transparent); border-radius: 10px; padding: 9px 10px; color: var(--destructive); background: color-mix(in srgb, var(--border) 12%, transparent); }
-.obs-chain__error-disclosure summary { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; cursor: pointer; list-style: none; }
-.obs-chain__error-disclosure summary::-webkit-details-marker { display: none; }
-.obs-chain__error-disclosure summary strong { color: var(--foreground); font-size: .8125rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
-.obs-chain__error-disclosure summary span::before { content: 'View full'; color: var(--destructive); font-size: .8125rem; font-weight: 650; }
-.obs-chain__error-disclosure[open] summary span::before { content: 'Collapse'; }
-.obs-chain__error-preview, .obs-chain__error-full { min-width: 0; margin: 7px 0 0; overflow-wrap: anywhere; color: var(--destructive); font-size: .8125rem; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
-.obs-chain__error-preview { display: -webkit-box; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 3; }
-.obs-chain__error-full { display: none; }
-.obs-chain__error-disclosure[open] .obs-chain__error-preview { display: none; }
-.obs-chain__error-disclosure[open] .obs-chain__error-full { display: block; }
+.obs-chain__detail.has-error { border-color: color-mix(in srgb, var(--fail) 42%, transparent); }
+.obs-chain__error-log { min-width: 0; margin-top: 11px; border-left: 2px solid color-mix(in srgb, var(--fail) 45%, transparent); padding: 2px 0 2px 10px; }
+.obs-chain__error-log strong { display: block; color: var(--foreground); font-size: .75rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+/* 600 字內全文換行顯示（字數上限在 lib/errorPreview.ts）；不裁行、不開捲軸。 */
+.obs-chain__error-preview { min-width: 0; margin: 5px 0 0; overflow-wrap: anywhere; color: var(--fail); font-size: .75rem; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
 .obs-chain__metrics { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); margin: 13px 0 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
 
 .obs-chain__metrics > div { min-width: 0; padding: 10px; border-right: 1px solid var(--border); }
@@ -554,7 +548,7 @@
 }
 
 .obs-chain__stage.is-current.is-blocked .obs-chain__orb {
-  background: radial-gradient(circle at 50% 45%, color-mix(in srgb, var(--destructive) 32%, transparent), color-mix(in srgb, var(--sv-bg-1) 98%, transparent) 68%);
+  background: radial-gradient(circle at 50% 45%, color-mix(in srgb, var(--fail) 32%, transparent), color-mix(in srgb, var(--sv-bg-1) 98%, transparent) 68%);
   animation: obs-death-beacon 1.1s ease-in-out infinite;
 }
 
@@ -581,8 +575,8 @@
   pointer-events: none;
 }
 
-.obs-chain__progress-track.is-blocked::after { background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--destructive) 62%, transparent), transparent); }
-.obs-chain__progress-fill.is-blocked { background: linear-gradient(90deg, var(--chart-3) 0%, var(--chart-2) 62%, var(--destructive) 100%); box-shadow: 0 0 15px color-mix(in srgb, var(--destructive) 35%, transparent); }
+.obs-chain__progress-track.is-blocked::after { background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--fail) 62%, transparent), transparent); }
+.obs-chain__progress-fill.is-blocked { background: linear-gradient(90deg, var(--ok) 0%, var(--warn) 62%, var(--fail) 100%); box-shadow: 0 0 15px color-mix(in srgb, var(--fail) 35%, transparent); }
 
 @keyframes obs-live-pulse { 0%,100% { transform: scale(.86); opacity: .62; } 50% { transform: scale(1.18); opacity: 1; } }
 @keyframes obs-flow-line { to { background-position: 28px 0; } }
@@ -596,14 +590,14 @@
   to { transform: rotate(360deg) translateX(38px) rotate(-360deg); }
 }
 @keyframes obs-completed-burst {
-  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--chart-3) 72%, transparent), 0 0 16px color-mix(in srgb, var(--chart-3) 42%, transparent), inset 0 0 20px color-mix(in srgb, var(--sv-bg-1) 44%, transparent); }
-  48% { box-shadow: 0 0 0 13px color-mix(in srgb, var(--chart-3) 8%, transparent), 0 0 38px color-mix(in srgb, var(--chart-3) 68%, transparent), inset 0 0 24px color-mix(in srgb, var(--chart-3) 24%, transparent); }
-  100% { box-shadow: 0 0 0 19px transparent, 0 0 14px color-mix(in srgb, var(--chart-3) 20%, transparent), inset 0 0 20px color-mix(in srgb, var(--sv-bg-1) 44%, transparent); }
+  0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--ok) 72%, transparent), 0 0 16px color-mix(in srgb, var(--ok) 42%, transparent), inset 0 0 20px color-mix(in srgb, var(--sv-bg-1) 44%, transparent); }
+  48% { box-shadow: 0 0 0 13px color-mix(in srgb, var(--ok) 8%, transparent), 0 0 38px color-mix(in srgb, var(--ok) 68%, transparent), inset 0 0 24px color-mix(in srgb, var(--ok) 24%, transparent); }
+  100% { box-shadow: 0 0 0 19px transparent, 0 0 14px color-mix(in srgb, var(--ok) 20%, transparent), inset 0 0 20px color-mix(in srgb, var(--sv-bg-1) 44%, transparent); }
 }
 @keyframes obs-progress-flow { to { background-position: -210% 0; } }
 @keyframes obs-progress-head { 0%,100% { transform: scale(.72); opacity: .7; } 50% { transform: scale(1); opacity: 1; } }
 @keyframes obs-current-ring { 0%,100% { transform: scale(.92); opacity: .28; } 50% { transform: scale(1.12); opacity: .72; } }
-@keyframes obs-death-beacon { 0%,100% { transform: scale(1); box-shadow: 0 0 0 4px color-mix(in srgb, var(--destructive) 8%, transparent), 0 0 18px color-mix(in srgb, var(--destructive) 34%, transparent), inset 0 0 18px color-mix(in srgb, var(--sv-bg-1) 46%, transparent); } 50% { transform: scale(1.055); box-shadow: 0 0 0 9px color-mix(in srgb, var(--destructive) 3.5%, transparent), 0 0 30px color-mix(in srgb, var(--destructive) 65%, transparent), inset 0 0 22px color-mix(in srgb, var(--destructive) 28%, transparent); } }
+@keyframes obs-death-beacon { 0%,100% { transform: scale(1); box-shadow: 0 0 0 4px color-mix(in srgb, var(--fail) 8%, transparent), 0 0 18px color-mix(in srgb, var(--fail) 34%, transparent), inset 0 0 18px color-mix(in srgb, var(--sv-bg-1) 46%, transparent); } 50% { transform: scale(1.055); box-shadow: 0 0 0 9px color-mix(in srgb, var(--fail) 3.5%, transparent), 0 0 30px color-mix(in srgb, var(--fail) 65%, transparent), inset 0 0 22px color-mix(in srgb, var(--fail) 28%, transparent); } }
 @keyframes obs-death-wave { 0% { transform: scale(.86); opacity: .72; } 100% { transform: scale(1.38); opacity: 0; } }
 @keyframes obs-progress-track-flow { to { transform: translateX(460%); } }
 @keyframes obs-current-runtime { 0%,100% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 8%, transparent), 0 0 12px color-mix(in srgb, var(--primary) 18%, transparent); } 50% { box-shadow: 0 0 0 7px color-mix(in srgb, var(--primary) 3.5%, transparent), 0 0 24px color-mix(in srgb, var(--primary) 50%, transparent); } }
@@ -642,7 +636,7 @@
   .obs-chain__connector { width: 3px; height: 24px; }
   .obs-chain__connector::before { top: auto; right: -2px; bottom: -1px; border-top: 6px solid var(--muted-foreground); border-right: 4px solid transparent; border-left: 4px solid transparent; border-bottom: 0; }
   .obs-chain__connector.is-completed::before { border-top-color: var(--chain-green); border-left-color: transparent; }
-  .obs-chain__connector.is-running::before { border-top-color: var(--chain-cyan); border-left-color: transparent; }
+  .obs-chain__connector.is-running::before { border-top-color: var(--chain-running); border-left-color: transparent; }
   .obs-chain__connector.is-waiting::before { border-top-color: var(--chain-amber); border-left-color: transparent; }
   .obs-chain__connector.is-blocked::before { border-top-color: var(--chain-red); border-left-color: transparent; }
   .obs-chain__connector.is-not_started::before { border-top-color: var(--chain-slate); border-left-color: transparent; }
@@ -697,10 +691,10 @@
   .obs-chain__orchestrator { width: 100%; }
 }
 
-.obs-chain__branch-disclosure { width:100%; min-width:0; }
-.obs-chain__branch-disclosure > summary { cursor:pointer; padding:14px 20px; color: var(--muted-foreground); border-top:1px solid var(--border); font-size: .8125rem; }
-.obs-chain__branch-disclosure > summary span { margin-left:16px; color: var(--foreground); }
-.obs-chain.is-intraday .obs-chain__branch-disclosure { min-width:0; }
+.obs-chain__branch-group { width:100%; min-width:0; }
+.obs-chain__branch-group-title { margin:0; padding:14px 20px; color: var(--muted-foreground); border-top:1px solid var(--border); font-size: .8125rem; font-weight: 500; }
+.obs-chain__branch-group-title span { margin-left:16px; color: var(--foreground); }
+.obs-chain.is-intraday .obs-chain__branch-group { min-width:0; }
 
 .obs-chain__toolbar { flex-wrap:wrap; }
 .obs-chain__toolbar-meta { flex-wrap:wrap; flex:1 1 620px; }

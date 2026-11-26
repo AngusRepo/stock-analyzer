@@ -1,4 +1,3 @@
-import { PendingEntryChecklist } from '@/components/PendingEntryChecklist'
 import { completedPendingBuys, currentDisplayPrice } from '@/lib/pendingBuyDisplay'
 import { visiblePendingBuys, debateObservationLabel, positionL4View } from '@/lib/paperDecisionUi'
 /**
@@ -7,43 +6,44 @@ import { visiblePendingBuys, debateObservationLabel, positionL4View } from '@/li
  * Design: Dark Mode + Mobile-first, inspired by FreqUI + 3Commas
  * Sections: Portfolio Summary → Signals → Positions → Trade History → Bot Status
  */
-import { Fragment, lazy, Suspense, useState } from 'react'
+import { Fragment, lazy, Suspense, useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { paperApi, marketApi, systemApi, backtestApi, cronApi, adaptiveApi } from '@/lib/api'
+import { paperApi, marketApi, backtestApi, adaptiveApi } from '@/lib/api'
 import { useAuth } from '@/_core/hooks/useAuth'
 import { Badge } from '@/components/ui/badge'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
-import {
-  Activity, TrendingUp, Wallet, Bot, Shield, ShieldCheck, ShieldAlert,
-  Clock, ArrowUpRight, ArrowDownRight, Scale, Cpu,
-} from 'lucide-react'
+import { Bot, Shield, ShieldCheck, ShieldAlert, ArrowUpRight, ArrowDownRight, Scale, Cpu } from 'lucide-react'
 import { StockFactorTrajectoryPanel } from '@/components/PitFactorTrajectoryPanel'
 import AppShell from '@/components/AppShell'
 import { DeferredRender } from '@/components/DeferredRender'
 import { stocksApi } from '@/lib/api'
 import { explainExecutionEvent, formatExecutionEvent } from '@/lib/executionEvent'
-import { formatCanonicalTradeLifecycleBadge, formatPartialFillRemaining, formatPendingBuyExecutionBadge, formatPositionRiskPlan, formatS12HoldingDefenseBadge, formatS12IntradayStructureBadge, formatS12IntradayStructureState } from '@/lib/pendingBuyExecutionUi'
+import { formatCanonicalTradeLifecycleBadge, formatPositionRiskPlan, formatS12HoldingDefenseBadge } from '@/lib/pendingBuyExecutionUi'
 import { formatTwDateTimeShort } from '@/lib/twTime'
 import { marketRiskShield, tradingMarketRisk } from '@/lib/marketRiskLevel'
-import { paperOrdersFromPayload, paperPendingBuysFromPayload, paperPnlSnapshotsFromPayload, paperPositionsFromPayload } from '@/lib/paperPayload'
+import { paperOrdersFromPayload, paperPendingBuysFromPayload, paperPositionsFromPayload } from '@/lib/paperPayload'
+import { benchmarkReturnSince, sortedSnapshots } from '@/lib/paperPerformanceSeries'
+import { formatDrawdownPct, thresholdTone, type ThresholdTone } from '@/lib/backtestCardView'
 import {
   WorkstationCatCard,
-  WorkstationPageTitle,
   WorkstationPanel,
-  WorkstationPill,
 } from '@/components/workstation/WorkstationChrome'
-import { buildPendingBuyTradeView, describeOr15Reason } from '@/lib/pendingBuyTradePreview'
+import { SimRoom } from '@/components/simroom/SimRoom'
+import { buildCompletedRow, buildSimRow, defaultView, isClosedDay, marketTrend, selectSimQuote, sessionPhase, twClock, type SimroomView, type TwClock } from '@/lib/simroomModel'
+import { DataState } from '@/components/ui/data-state'
+import { StatusBadge, StatusIcon } from '@/components/ui/status'
+import { priceToneClass, STATUS_CHIP } from '@/lib/colorTokens'
+import { gateCalibrationView } from '@/lib/gateCalibrationView'
+import { formatDate, formatDateShort, formatNumber, formatPrice, formatSignedPct, formatSignedTwd, formatTime } from '@/lib/format'
+import { humanEntryReason, humanExitReason, humanOrderReason } from '@/lib/orderReason'
+import { listRefreshState } from '@/lib/listRefreshState'
 
-const RecommendationCard = lazy(() => import('@/components/RecommendationCardClean').then((module) => ({
-  default: module.RecommendationCardClean,
-})))
 const CandlestickChart = lazy(() => import('@/components/CandlestickChart'))
 const PaperTradePerformanceChart = lazy(() => import('@/components/charts/PaperTradePerformanceChart'))
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
-const POTENTIAL_BUY_MIN_EXPECTED_RETURN = 0.005
 const OBSERVATIONAL_POTENTIAL_BUY_POLICY = 'non_executable_formal_ml_observation_missing_expected_return_v1'
 
 function isTWMarketOpen(): boolean {
@@ -59,72 +59,39 @@ function fmt(n: number | null | undefined, decimals = 0): string {
   return n.toLocaleString('zh-TW', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
 }
 
+/** 損益／報酬：台股紅漲綠跌（token），零與缺值中性。 */
 function pctClass(pct: number | null): string {
-  if (pct == null) return 'text-muted-foreground'
-  if (pct > 0) return 'text-red-400'
-  if (pct < 0) return 'text-emerald-400'
-  return 'text-muted-foreground'
+  return priceToneClass(pct)
 }
 
 function RotationAudit() {
-  const {data,error}=useQuery({queryKey:['paper','rotation-audit'],queryFn:paperApi.rotationAudit,refetchInterval:60000})
-  if(error)return <p className="text-xs text-muted-foreground">換倉追蹤暫時無法讀取</p>
+  const {data,error,refetch}=useQuery({queryKey:['paper','rotation-audit'],queryFn:paperApi.rotationAudit,refetchInterval:60000})
+  // 背景刷新失敗時保留上一份資料，只標「更新失敗」；第一次就失敗才整塊顯示讀取失敗。
+  if(error && !data)return <DataState kind="error" title="換倉追蹤讀取失敗" onRetry={() => { void refetch() }} className="mt-3 border-t border-border" />
   if(!data?.policy_active)return null
-  return <details className="rounded-lg border border-muted/40 p-3 mt-3">
-    <summary className="cursor-pointer text-sm">L4 換倉追蹤 · {data.items?.length ?? 0} 筆</summary>
-    <p className="text-xs text-muted-foreground my-2">原股後續 20 個交易日走勢，與同日計畫實際換入部位的淨損益分開記錄。未成熟與缺資料不算成零；同批資金共用，不推定一對一因果。</p>
-    {!data.items?.length && <p className="text-sm">尚無 L4 換倉紀錄</p>}
-    <div className="grid gap-3 md:grid-cols-2">{data.items?.map((r:any)=><details key={r.order_id} className="rounded border border-muted/30 p-3">
-      <summary className="cursor-pointer text-sm">委託 #{r.order_id} · 浮盈 {(r.floating_pnl_pct*100).toFixed(2)}% · {r.status==='mature'?'已滿 20 日':r.status==='missing_data'?'缺資料':'觀察中'}</summary>
-      <p className="text-xs break-words mt-2">{r.exit_reason}</p>
-      <p className="text-xs my-2">原股：{r.original_next_20_sessions?.map((p:any)=>`${p.date.slice(5)} $${p.close}`).join(' → ') || '尚無後續收盤'}</p>
-      {r.replacement_status==='not_replaced'?<p className="text-xs">未換入，資金保留現金</p>:r.replacements?.map((p:any)=><p className="text-xs" key={p.order_id}>{p.symbol} · {p.status==='mature'?'20 日':'觀察中'} · 淨損益 {p.net_pnl==null?'待完整資料':`$${p.net_pnl.toFixed(0)}`} · 截至 {p.as_of_date}</p>)}
-    </details>)}</div>
-  </details>
-}
-
-function signalBadge(signal: string) {
-  const s = signal?.toUpperCase() ?? ''
-  // 台股慣例：紅=買/漲, 綠=賣/跌
-  if (s.includes('POTENTIAL_BUY')) return <Badge className="border border-yellow-200/70 bg-yellow-300/28 px-2 py-0.5 text-[11px] text-yellow-50">POTENTIAL BUY</Badge>
-  if (s.includes('STRONG_BUY')) return <Badge className="border border-red-300/55 bg-red-500/85 px-2 py-0.5 text-[11px] text-white">STRONG BUY</Badge>
-  if (s.includes('BUY'))        return <Badge className="border border-red-300/45 bg-red-500/80 px-2 py-0.5 text-[11px] text-white">BUY</Badge>
-  if (s.includes('STRONG_SELL'))return <Badge className="border border-emerald-300/45 bg-emerald-500/20 px-2 py-0.5 text-[11px] text-emerald-100">STRONG SELL</Badge>
-  if (s.includes('SELL'))       return <Badge className="border border-emerald-300/35 bg-emerald-500/18 px-2 py-0.5 text-[11px] text-emerald-100">SELL</Badge>
-  if (s.includes('NO_SIGNAL'))  return <Badge className="border border-sky-200/45 bg-sky-500/28 px-2 py-0.5 text-[11px] text-sky-50">—</Badge>
-  return <Badge className="border border-sky-200/45 bg-sky-500/28 px-2 py-0.5 text-[11px] text-sky-50">HOLD</Badge>
-}
-
-function recommendationSignalText(rec: any): string {
-  return String(rec?.signal ?? rec?.trade_signal ?? rec?.tradeSignal ?? rec?.signal_raw ?? '').toUpperCase()
-}
-
-function isBuySignalRecommendation(rec: any): boolean {
-  if (rec?.has_buy_signal === 1 || rec?.has_buy_signal === true) return true
-  return ['BUY', 'STRONG_BUY'].includes(recommendationSignalText(rec))
-}
-
-function isL4ExecutableRecommendation(rec: any): boolean {
-  const allocation = parseRecommendationRecord(rec?.alpha_allocation)
-  const sparse = parseRecommendationRecord(rec?.l4_sparse_allocation)
-  const selected = [allocation, sparse].some((payload) => (
-    payload?.selected === true || Number(payload?.selected) === 1
-  ))
-  const engine = String(sparse?.engine ?? allocation?.engine ?? '').trim()
-  const hasBuySignal = rec?.has_buy_signal === 1 || rec?.has_buy_signal === true
-  return hasBuySignal && selected && engine === 'sparse_tangent_inverse_risk'
-}
-
-function parseRecommendationRecord(value: unknown): Record<string, any> | null {
-  if (!value) return null
-  if (typeof value === 'object' && !Array.isArray(value)) return value as Record<string, any>
-  if (typeof value !== 'string') return null
-  try {
-    const parsed = JSON.parse(value)
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, any> : null
-  } catch {
-    return null
-  }
+  const items: any[] = Array.isArray(data.items) ? data.items : []
+  return <section className="mt-3 border-t border-border pt-3" aria-label="L4 換倉追蹤">
+    <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+      <h3 className="text-sm font-medium text-foreground">L4 換倉追蹤 · {items.length} 筆</h3>
+      {error && <DataState kind="stale" title="更新失敗，顯示上次的資料" onRetry={() => { void refetch() }} className="px-0 py-0" />}
+      <p className="text-[11px] text-muted-foreground">原股後續 20 個交易日走勢，與同日實際換入部位的淨損益分開記錄；未成熟與缺資料不算成零，同批資金共用，不推定一對一因果。</p>
+    </div>
+    {!items.length ? <DataState kind="empty" title="尚無 L4 換倉紀錄" className="px-0" /> : (
+      <div className="mt-2 grid md:grid-cols-2 md:gap-x-4">{items.map((r:any)=>{
+        const floating = Number(r.floating_pnl_pct)
+        return <div key={r.order_id} className="border-b border-border py-2 text-xs">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="sv-num text-muted-foreground" title={`order ${r.order_id}`}>委託 #{r.order_id}</span>
+            <span className={priceToneClass(floating)}>浮盈 {Number.isFinite(floating) ? formatSignedPct(floating * 100, 2) : '—'}</span>
+            <StatusBadge tone={r.status==='mature'?'ok':r.status==='missing_data'?'warn':'na'}>{r.status==='mature'?'已滿 20 日':r.status==='missing_data'?'缺資料':'觀察中'}</StatusBadge>
+          </div>
+          {r.exit_reason && <p className="mt-1 break-words text-muted-foreground" title={String(r.exit_reason)}>{humanExitReason(r.exit_reason, '依出場規則賣出')}</p>}
+          <p className="mt-1 sv-num">原股：{r.original_next_20_sessions?.map((p:any)=>`${formatDateShort(p.date)} $${formatPrice(p.close)}`).join(' → ') || '尚無後續收盤'}</p>
+          {r.replacement_status==='not_replaced'?<p className="mt-1">未換入，資金保留現金</p>:r.replacements?.map((p:any)=><p className="mt-1 sv-num" key={p.order_id}>{p.symbol} · {p.status==='mature'?'20 日':'觀察中'} · 淨損益 {p.net_pnl==null?'待完整資料':<span className={priceToneClass(p.net_pnl)}>{formatSignedTwd(p.net_pnl)}</span>} · 截至 {formatDate(p.as_of_date)}</p>)}
+        </div>})}
+      </div>
+    )}
+  </section>
 }
 
 function finiteNumber(value: unknown): number | null {
@@ -133,106 +100,39 @@ function finiteNumber(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null
 }
 
-function potentialBuyExpectedReturn(rec: any): number | null {
-  const l4Allocation = parseRecommendationRecord(rec?.l4_sparse_allocation)
-  const alphaAllocation = parseRecommendationRecord(rec?.alpha_allocation)
-  const forecastData = parseRecommendationRecord(rec?.forecast_data)
-  const forecastAllocation = parseRecommendationRecord(forecastData?.alpha_allocation)
-  const values = [
-    l4Allocation?.expected_return,
-    alphaAllocation?.expected_return,
-    forecastAllocation?.expected_return,
-    rec?.expected_return,
-    rec?.ml_forecast_pct,
-    rec?.forecast_pct,
-    rec?.predicted_return,
-  ]
-  for (const value of values) {
-    const parsed = finiteNumber(value)
-    if (parsed != null) return parsed
-  }
-  return null
-}
-
-function isPotentialBuyRecommendation(rec: any): boolean {
-  const allocation = parseRecommendationRecord(rec?.alpha_allocation)
-  const l4Allocation = parseRecommendationRecord(rec?.l4_sparse_allocation)
-  const hasPotentialBuyEvidence =
-    recommendationSignalText(rec) === 'POTENTIAL_BUY'
-    || allocation?.potential_buy === true
-    || allocation?.potential_buy === 1
-    || l4Allocation?.potential_buy === true
-    || l4Allocation?.potential_buy === 1
-  const hasExplicitObservationPolicy = [allocation, l4Allocation].some((payload) => (
-    payload?.potential_buy_policy === OBSERVATIONAL_POTENTIAL_BUY_POLICY
-    && (
-      payload?.potential_buy_execution_eligible === false
-      || payload?.potential_buy_execution_eligible === 0
-    )
-  ))
-  const points = Array.isArray(rec?.watch_points)
-    ? rec.watch_points
-    : typeof rec?.watch_points === 'string'
-      ? [rec.watch_points]
-      : []
-  const hasWatchPoint = points.some((point: any) => String(point).includes('allocation:potential_buy'))
-  if (!hasPotentialBuyEvidence && !hasWatchPoint) return false
-  if (hasExplicitObservationPolicy) return true
-  const expectedReturn = potentialBuyExpectedReturn(rec)
-  return expectedReturn != null && expectedReturn >= POTENTIAL_BUY_MIN_EXPECTED_RETURN
-}
-
-// ─── Conviction Gauge（半圓 SVG）──────────────────────────────────────────────
-function ConvictionGauge({ value, size = 48 }: { value: number; size?: number }) {
-  const pct = Math.max(0, Math.min(100, value * 100))
-  const r = size * 0.4
-  const cx = size / 2
-  const cy = size * 0.55
-  const circumHalf = Math.PI * r
-  const filled = (pct / 100) * circumHalf
-  const color = pct >= 75 ? '#22c55e' : pct >= 55 ? '#eab308' : '#ef4444'
-  return (
-    <svg width={size} height={size * 0.6} viewBox={`0 0 ${size} ${size * 0.65}`}>
-      <path d={`M ${cx - r} ${cy} A ${r} ${r} 0 0 1 ${cx + r} ${cy}`}
-        fill="none" stroke="#27272a" strokeWidth={4} strokeLinecap="round" />
-      <path d={`M ${cx - r} ${cy} A ${r} ${r} 0 0 1 ${cx + r} ${cy}`}
-        fill="none" stroke={color} strokeWidth={4} strokeLinecap="round"
-        strokeDasharray={`${filled} ${circumHalf}`} />
-      <text x={cx} y={cy - 2} textAnchor="middle" fill={color} fontSize={size * 0.22} fontFamily="Segoe UI Variable, PingFang TC, Microsoft JhengHei, system-ui, sans-serif" fontWeight="bold">
-        {pct.toFixed(0)}
-      </text>
-    </svg>
-  )
-}
-
 // ─── Portfolio Summary（FinLab 風格 6 卡）───────────────────────────────────
 
 function WinLossBadge({ win }: { win: boolean | null }) {
-  if (win === null) return <span className="text-muted-foreground/60 text-xs">-</span>
+  if (win === null) return <span className="text-muted-foreground text-xs">-</span>
   return win
-    ? <span className="text-xs font-bold text-red-400">勝</span>
-    : <span className="text-xs font-bold text-emerald-400">負</span>
+    ? <span className="text-xs font-bold text-up">勝</span>
+    : <span className="text-xs font-bold text-down">負</span>
 }
 
 function PortfolioSummary() {
-  const { data: account } = useQuery({ queryKey: ['paper', 'account'], queryFn: paperApi.account, staleTime: 60_000 })
-  const { data: positions } = useQuery({
+  const { data: account, isError: accountError } = useQuery({ queryKey: ['paper', 'account'], queryFn: paperApi.account, staleTime: 60_000 })
+  const { data: positions, error: positionsError, refetch: refetchPositions } = useQuery({
     queryKey: ['paper', 'positions'],
     queryFn: paperApi.positions,
     staleTime: 30_000,
     refetchInterval: isTWMarketOpen() ? 60_000 : 5 * 60_000,
     refetchOnWindowFocus: true,
   })
-  const { data: pnlData } = useQuery({ queryKey: ['paper', 'pnl'], queryFn: paperApi.pnl, staleTime: 5 * 60_000 })
+  const { data: pnlData, isError: pnlError } = useQuery({ queryKey: ['paper', 'pnl'], queryFn: paperApi.pnl, staleTime: 5 * 60_000 })
+  // 讀取中／讀取失敗時，依快照算的指標一律顯示「—」，不拿預設值算出假數字。
+  const pnlUnavailable = !pnlData
+  const pnlSub = pnlError ? '讀取失敗' : '載入中'
   // 歷史已實現損益（Server-side 全歷史計算）
-  const { data: realizedData } = useQuery({ queryKey: ['paper', 'realized'], queryFn: paperApi.realized, staleTime: 5 * 60_000 })
+  const { data: realizedData, error: realizedError } = useQuery({ queryKey: ['paper', 'realized'], queryFn: paperApi.realized, staleTime: 5 * 60_000 })
   const totalRealizedPnl = realizedData?.totalRealizedPnl ?? 0
+  const realizedUnavailable = Boolean(realizedError) && !realizedData
   const sellOrderCount = realizedData?.tradeCount ?? 0
 
   const acc = account?.account ?? account ?? {}
   const positionSummary = positions?.summary ?? null
   const cash = positionSummary?.cash ?? acc?.cash ?? 0
-  const initialCash = acc?.initial_cash ?? positionSummary?.initial_cash ?? 1_000_000
+  // 本金只能來自帳戶或持倉摘要；兩者都還沒有時，報酬率不用預設 100 萬去算。
+  const initialCash: number | null = acc?.initial_cash ?? positionSummary?.initial_cash ?? (account ? 1_000_000 : null)
   const posArr = paperPositionsFromPayload(positions)
   const positionValue = Array.isArray(posArr)
     ? posArr.reduce((s: number, p: any) => s + (p.current_price ?? p.avg_cost ?? 0) * (p.shares ?? 0), 0)
@@ -240,10 +140,10 @@ function PortfolioSummary() {
   const netUnsettledSettlement = positionSummary?.net_unsettled_settlement ?? 0
   const valuationPending = positionSummary?.valuation_complete === false
   const totalAssets = valuationPending ? null : positionSummary?.total_value ?? (cash + positionValue + netUnsettledSettlement)
-  const totalReturn = totalAssets == null ? null : initialCash > 0 ? (totalAssets - initialCash) / initialCash : 0
+  const totalReturn = totalAssets == null || initialCash == null ? null : initialCash > 0 ? (totalAssets - initialCash) / initialCash : 0
 
   // PnL snapshots for advanced metrics
-  const snapshots = paperPnlSnapshotsFromPayload(pnlData)
+  const snapshots = sortedSnapshots(pnlData)
   const latest = snapshots.length > 0 ? snapshots[snapshots.length - 1] : null
   const first = snapshots.length > 0 ? snapshots[0] : null
 
@@ -280,23 +180,19 @@ function PortfolioSummary() {
   const retMonth = getReturnSince(30)
   const retQuarter = getReturnSince(90)
 
-  // 大盤比較（0050 benchmark）
-  function getBenchmarkReturnSince(daysAgo: number): number | null {
-    if (snapshots.length < 2) return null
-    const cutoff = new Date(Date.now() - daysAgo * 86400000).toISOString().slice(0, 10)
-    const ref = snapshots.find((s: any) => s.date >= cutoff) ?? snapshots[0]
-    const refBm = ref?.benchmark_value
-    const curBm = latest?.benchmark_value
-    if (!refBm || !curBm) return null
-    return (curBm - refBm) / refBm
-  }
-  const bmWeek = getBenchmarkReturnSince(7)
-  const bmMonth = getBenchmarkReturnSince(30)
-  const bmQuarter = getBenchmarkReturnSince(90)
+  // 大盤比較：和資產曲線同一個 0050 價格基礎（etf_benchmarks['0050'] adj_close；舊 Worker 才用收盤價），由 lib 決定。
+  const bmWeek = benchmarkReturnSince(snapshots, '0050', 7)
+  const bmMonth = benchmarkReturnSince(snapshots, '0050', 30)
+  const bmQuarter = benchmarkReturnSince(snapshots, '0050', 90)
 
   function beatsBenchmark(botRet: number | null, bmRet: number | null): boolean | null {
     if (botRet === null || bmRet === null) return null
     return botRet > bmRet
+  }
+
+  // 持倉讀不到時總資產、報酬都算不出來；不要用 0 冒充。
+  if (positionsError && !positions) {
+    return <DataState kind="error" title="資產摘要讀取失敗" code={positionsError instanceof Error ? positionsError.message : undefined} onRetry={() => { void refetchPositions() }} />
   }
 
   return (
@@ -305,27 +201,28 @@ function PortfolioSummary() {
       <div>
         <div className="text-xs text-muted-foreground normal-case font-medium mb-1">總資產</div>
         <div className="text-3xl sv-num font-bold text-foreground leading-tight">{valuationPending ? 'NAV 待估值' : `$${fmt(totalAssets)}`}</div>
-        <span className={`text-sm sv-num font-semibold ${pctClass(totalReturn)}`}>{totalReturn == null ? '報酬率暫不可評估' : `${totalReturn >= 0 ? '+' : ''}${(totalReturn * 100).toFixed(2)}%`}</span>
-        {valuationPending ? <div className="text-xs text-amber-300 whitespace-normal mt-1">
+        <span className={`text-sm sv-num font-semibold ${pctClass(totalReturn)}`}>{totalReturn == null ? (accountError && initialCash == null ? '帳戶讀取失敗，報酬率暫不可評估' : '報酬率暫不可評估') : `${totalReturn >= 0 ? '+' : ''}${(totalReturn * 100).toFixed(2)}%`}</span>
+        {valuationPending ? <div className="text-xs text-warn whitespace-normal mt-1">
           權利尚無可靠市價；資產區間 ${fmt(positionSummary.nav_lower_bound)}–${fmt(positionSummary.nav_upper_bound)}。不是已實現損失，也不計晉級證據。
         </div> : null}
         {netUnsettledSettlement !== 0 && (
-          <div className="text-[11px] text-muted-foreground/70 mt-1">
+          <div className="text-[11px] text-muted-foreground mt-1">
             含未交割 {netUnsettledSettlement > 0 ? '+' : ''}${fmt(Math.round(netUnsettledSettlement))}
           </div>
         )}
       </div>
       {/* 指標列 */}
       {[
-        { label: '已實現', val: `${totalRealizedPnl >= 0 ? '+' : ''}$${fmt(Math.round(totalRealizedPnl))}`, sub: `${sellOrderCount}筆`, cls: pctClass(totalRealizedPnl) },
-        { label: '年化', val: annualizedReturn == null ? '-' : `${annualizedReturn >= 0 ? '+' : ''}${(annualizedReturn * 100).toFixed(1)}%`, sub: valuationPending ? '待估值' : `${Math.round(daysSinceStart)}天`, cls: pctClass(annualizedReturn) },
-        { label: 'MDD', val: valuationPending ? '-' : `-${(maxDrawdown * 100).toFixed(1)}%`, sub: valuationPending ? '待估值' : '', cls: !valuationPending && maxDrawdown > 0 ? pctClass(-maxDrawdown) : 'text-muted-foreground' },
-        { label: 'Sharpe', val: !valuationPending && sharpe30d != null ? sharpe30d.toFixed(2) : '-', sub: valuationPending ? '待估值' : '30d', cls: !valuationPending && sharpe30d != null ? (sharpe30d > 1 ? 'text-emerald-400' : sharpe30d > 0 ? 'text-foreground' : 'text-red-400') : 'text-muted-foreground' },
-      ].map(m => (
-        <div key={m.label}>
+        { label: '已實現', val: realizedUnavailable ? '—' : formatSignedTwd(Math.round(totalRealizedPnl)), sub: realizedUnavailable ? '讀取失敗' : `${sellOrderCount}筆`, cls: realizedUnavailable ? 'text-muted-foreground' : pctClass(totalRealizedPnl) },
+        { label: '年化', val: annualizedReturn == null || pnlUnavailable ? '—' : `${annualizedReturn >= 0 ? '+' : ''}${(annualizedReturn * 100).toFixed(1)}%`, sub: valuationPending ? '待估值' : pnlUnavailable ? pnlSub : `${Math.round(daysSinceStart)}天`, cls: pnlUnavailable ? 'text-muted-foreground' : pctClass(annualizedReturn) },
+        // 上色規則：報酬與回撤＝漲跌色（MDD 是虧損 → down）；Sharpe 是風險調整比值，不上漲跌色。
+        { label: 'MDD', val: valuationPending || pnlUnavailable ? '—' : `-${(maxDrawdown * 100).toFixed(1)}%`, sub: valuationPending ? '待估值' : pnlUnavailable ? pnlSub : '成立以來', cls: !valuationPending && !pnlUnavailable && maxDrawdown > 0 ? pctClass(-maxDrawdown) : 'text-muted-foreground' },
+        { label: 'Sharpe', val: !valuationPending && !pnlUnavailable && sharpe30d != null ? sharpe30d.toFixed(2) : '—', sub: valuationPending ? '待估值' : pnlUnavailable ? pnlSub : '30 日', title: 'Sharpe 是風險調整後的比值，不是漲跌，所以不套紅綠', cls: !valuationPending && sharpe30d != null ? 'text-foreground' : 'text-muted-foreground' },
+      ].map((m: { label: string; val: string; sub: string; cls: string; title?: string }) => (
+        <div key={m.label} title={m.title}>
           <div className="text-xs text-muted-foreground normal-case font-medium mb-1">{m.label}</div>
           <div className={`text-xl sv-num font-semibold leading-tight ${m.cls}`}>{m.val}</div>
-          <span className="text-[11px] text-muted-foreground/60">{m.sub || '\u00A0'}</span>
+          <span className="text-[11px] text-muted-foreground">{m.sub || '\u00A0'}</span>
         </div>
       ))}
       {/* vs 0050 */}
@@ -336,7 +233,7 @@ function PortfolioSummary() {
             <div key={b.l} className="text-center"><div className="text-[11px] text-muted-foreground">{b.l}</div><WinLossBadge win={b.w} /></div>
           ))}
         </div>
-        <span className="text-[11px] text-muted-foreground/60">{'\u00A0'}</span>
+        <span className="text-[11px] text-muted-foreground" title="0050 用含息調整價（adj_close），與資產曲線同一來源">{pnlUnavailable ? pnlSub : '\u00A0'}</span>
       </div>
       {/* 近期報酬 */}
       <div>
@@ -345,160 +242,22 @@ function PortfolioSummary() {
           {[{ l: '週', v: retWeek }, { l: '月', v: retMonth }, { l: '季', v: retQuarter }].map(({ l, v }) => (
             <div key={l} className="text-center">
               <div className="text-[11px] text-muted-foreground">{l}</div>
-              <div className={`text-base sv-num font-semibold ${v != null ? pctClass(v) : 'text-muted-foreground/60'}`}>{v != null ? `${v >= 0 ? '+' : ''}${(v * 100).toFixed(1)}%` : '-'}</div>
+              <div className={`text-base sv-num font-semibold ${v != null ? pctClass(v) : 'text-muted-foreground'}`}>{v != null ? `${v >= 0 ? '+' : ''}${(v * 100).toFixed(1)}%` : '-'}</div>
             </div>
           ))}
         </div>
-        <span className="text-[11px] text-muted-foreground/60">{'\u00A0'}</span>
+        <span className="text-[11px] text-muted-foreground">{'\u00A0'}</span>
       </div>
     </div>
   )
 }
 
-// ─── Today's ML Signals ─────────────────────────────────────────────────────
-
-function PendingBuyStateBadges({ state, stale, meta, policy }: { state?: any; stale?: boolean; meta?: any; policy?: any }) {
-  const execution = state?.execution_counts ?? {}
-  const events = Array.isArray(meta?.execution_events) ? meta.execution_events.slice(-3) : []
-  const executionPolicy = policy?.execution_pool_policy ?? 'l4_sparse_final_buy_only'
-  const sourceRecoDate = policy?.source_reco_date ?? meta?.source_reco_date ?? null
-  const watchFallbackOff = policy?.watch_fallback_allowed === false
-  const stateClass =
-    state?.state === 'ready_to_execute' ? 'border-emerald-500/30 text-emerald-400'
-      : state?.state === 'debate_pending' ? 'border-sky-500/30 text-sky-400'
-        : state?.state === 'filled' ? 'border-teal-500/30 text-teal-300'
-          : state?.state === 'skipped' || state?.state === 'expired' || state?.state === 'closed' ? 'border-zinc-500/30 text-zinc-300'
-            : state?.state === 'error' || state?.state === 'halted' ? 'border-red-500/40 text-red-300'
-              : state?.state === 'base_ready' ? 'border-amber-500/30 text-amber-300'
-                : 'border-muted-foreground/30 text-muted-foreground'
-
-  return (
-    <div className="px-1 flex items-center gap-2 flex-wrap text-xs sv-num">
-      <Badge variant="outline" className={`h-6 px-2 text-[11px] ${stateClass}`}>
-        {state?.label ?? 'pending buys'}
-      </Badge>
-      <Badge variant="outline" className="h-6 px-2 text-[11px] border-emerald-500/30 text-emerald-400">
-        active {state?.active_count ?? 0}/{state?.total_count ?? 0}
-      </Badge>
-      <Badge
-        variant="outline"
-        title={executionPolicy}
-        className="h-6 px-2 text-[11px] border-emerald-500/30 bg-emerald-500/10 text-emerald-300"
-      >
-        L4 sparse final BUY
-      </Badge>
-      {watchFallbackOff && (
-        <Badge variant="outline" className="h-6 px-2 text-[11px] border-zinc-500/30 text-zinc-300">
-          watch fallback off
-        </Badge>
-      )}
-      {sourceRecoDate && (
-        <Badge variant="outline" className="h-6 px-2 text-[11px] border-sky-500/30 text-sky-300">
-          src {sourceRecoDate}
-        </Badge>
-      )}
-      {(execution.filled ?? 0) > 0 && (
-        <Badge variant="outline" className="h-6 px-2 text-[11px] border-cyan-500/30 text-cyan-300">
-          filled {execution.filled}
-        </Badge>
-      )}
-      {(execution.partially_filled ?? 0) > 0 && (
-        <Badge variant="outline" className="h-6 px-2 text-[11px] border-amber-500/30 text-amber-300">
-          partial {execution.partially_filled}
-        </Badge>
-      )}
-      {(execution.submitted ?? 0) > 0 && (
-        <Badge variant="outline" className="h-6 px-2 text-[11px] border-sky-500/30 text-sky-300">
-          submitted {execution.submitted}
-        </Badge>
-      )}
-      {(execution.checked_waiting ?? 0) > 0 && (
-        <Badge variant="outline" className="h-6 px-2 text-[11px] border-amber-500/30 text-amber-300">
-          checked waiting {execution.checked_waiting}
-        </Badge>
-      )}
-      {(execution.requoted ?? 0) > 0 && (
-        <Badge variant="outline" className="h-6 px-2 text-[11px] border-amber-500/30 text-amber-300">
-          requoted {execution.requoted}
-        </Badge>
-      )}
-      {(execution.stale_quote ?? 0) > 0 && (
-        <Badge variant="outline" className="h-6 px-2 text-[11px] border-amber-500/30 text-amber-300">
-          stale quote {execution.stale_quote}
-        </Badge>
-      )}
-      {(execution.quote_unavailable ?? 0) > 0 && (
-        <Badge variant="outline" className="h-6 px-2 text-[11px] border-red-500/40 text-red-300">
-          quote missing {execution.quote_unavailable}
-        </Badge>
-      )}
-      {(execution.skipped ?? 0) > 0 && (
-        <Badge variant="outline" className="h-6 px-2 text-[11px] border-amber-500/30 text-amber-300">
-          skipped {execution.skipped}
-        </Badge>
-      )}
-      {(execution.cancelled ?? 0) > 0 && (
-        <Badge variant="outline" className="h-6 px-2 text-[11px] border-zinc-500/30 text-zinc-300">
-          cancelled {execution.cancelled}
-        </Badge>
-      )}
-      {(execution.expired ?? 0) > 0 && (
-        <Badge variant="outline" className="h-6 px-2 text-[11px] border-zinc-500/30 text-zinc-400">
-          expired {execution.expired}
-        </Badge>
-      )}
-      {(execution.rejected ?? 0) > 0 && (
-        <Badge variant="outline" className="h-6 px-2 text-[11px] border-red-500/40 text-red-300">
-          rejected {execution.rejected}
-        </Badge>
-      )}
-      {stale && (
-        <Badge variant="outline" className="h-6 px-2 text-[11px] border-amber-500/40 text-amber-400">
-          stale
-        </Badge>
-      )}
-      {state?.error_message && <span className="text-red-300/80">{state.error_message}</span>}
-      {events.map((event: any, idx: number) => {
-        const raw = formatExecutionEvent({
-          kind: 'execution',
-          status: event.status,
-          reason: event.reason,
-          detail: event.detail,
-        })
-        return (
-          <span key={`${event.symbol}-${event.status}-${idx}`} className="text-muted-foreground/70">
-            {event.symbol} {explainExecutionEvent(raw) ?? `${event.status}: ${event.reason}`}
-          </span>
-        )
-      })}
-    </div>
-  )
-}
-
 function executionToneClass(tone: string): string {
-  if (tone === 'ok') return 'border-emerald-500/25 bg-emerald-500/10 text-emerald-200'
-  if (tone === 'warn') return 'border-amber-500/25 bg-amber-500/10 text-amber-200'
-  if (tone === 'error') return 'border-red-500/30 bg-red-500/10 text-red-200'
-  if (tone === 'info') return 'border-sky-500/25 bg-sky-500/10 text-sky-200'
-  return 'border-zinc-500/25 bg-zinc-500/10 text-zinc-200'
-}
-
-function pendingBuyEmptyMessage(meta?: any, state?: any): string {
-  // A failed flow (no decision, or a run never published by 08:45) is not the normal empty state.
-  if (state?.state === 'error') return `今日沒有可執行的盤前決策：${state.error_message ?? meta?.error_message ?? 'unknown'}`
-  const counts = meta?.execution_counts ?? {}
-  const cancelled = Number(counts.cancelled ?? 0)
-  const filled = Number(counts.filled ?? 0)
-  const skipped = Number(counts.skipped ?? 0)
-  const expired = Number(counts.expired ?? 0)
-  const terminal = cancelled + filled + skipped + expired
-  if (cancelled > 0 && terminal > 0) {
-    return '今日執行池的 pending buys 已被風控取消；下一交易日盤前 L4 會產生新的待買清單。'
-  }
-  if (terminal > 0) {
-    return '今日執行池的 pending buys 已進入終態；下一交易日盤前 L4 會產生新的待買清單。'
-  }
-  return 'pending buys 尚未產生；這是正常狀態，因為 pending buys 會在盤前資訊到齊、L4 完成配置後產生；辯論不阻擋發布。'
+  if (tone === 'ok') return STATUS_CHIP.ok
+  if (tone === 'warn') return STATUS_CHIP.warn
+  if (tone === 'error') return STATUS_CHIP.fail
+  if (tone === 'info') return STATUS_CHIP.na
+  return STATUS_CHIP.na
 }
 
 function usePaperDisplayQuotes(symbols: string[]) {
@@ -511,9 +270,75 @@ function usePaperDisplayQuotes(symbols: string[]) {
   })
 }
 
-function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: string) => void; selectedSymbol?: string | null }) {
+// ─── 推薦候選（模擬交易室）─────────────────────────────────────────────────────
+
+const RUN_STATE_VIEW: Record<string, { tone: 'ok' | 'warn' | 'fail' | 'na'; label: string }> = {
+  ready_to_execute: { tone: 'ok', label: '待執行' },
+  debate_pending: { tone: 'na', label: '辯論觀察中' },
+  filled: { tone: 'ok', label: '已成交' },
+  skipped: { tone: 'na', label: '已跳過' },
+  expired: { tone: 'na', label: '已過期' },
+  closed: { tone: 'na', label: '已結束' },
+  error: { tone: 'fail', label: '流程失敗' },
+  halted: { tone: 'fail', label: '風控暫停' },
+  base_ready: { tone: 'warn', label: '基礎名單就緒' },
+  empty_after_hard_safety: { tone: 'na', label: '硬性風控後無候選' },
+  empty_after_soft_risk: { tone: 'na', label: '軟性風險後無候選' },
+  empty: { tone: 'na', label: '沒有候選' },
+}
+
+/** 待買清單的來源與批次：小徽章一排，原始代碼與事件只放 tooltip。 */
+function PendingBuyStateBadges({ state, stale, meta, policy }: { state?: any; stale?: boolean; meta?: any; policy?: any }) {
+  const events = Array.isArray(meta?.execution_events) ? meta.execution_events.slice(-3) : []
+  const executionPolicy = policy?.execution_pool_policy ?? 'l4_sparse_final_buy_only'
+  const sourceRecoDate = policy?.source_reco_date ?? meta?.source_reco_date ?? null
+  const watchFallbackOff = policy?.watch_fallback_allowed === false
+  const run = RUN_STATE_VIEW[String(state?.state ?? 'empty')] ?? { tone: 'na' as const, label: '狀態不明' }
+  const eventText = events.map((event: any) => {
+    const raw = formatExecutionEvent({ kind: 'execution', status: event.status, reason: event.reason, detail: event.detail })
+    return `${event.symbol} ${explainExecutionEvent(raw) ?? `${event.status}: ${event.reason}`}`
+  }).join('\n')
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 sv-num">
+      <StatusBadge tone={run.tone} title={[state?.state, state?.error_message].filter(Boolean).join('：') || undefined}>{run.label} {state?.active_count ?? 0}/{state?.total_count ?? 0}</StatusBadge>
+      <span className="rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground" title={`${executionPolicy}${watchFallbackOff ? ' · watch fallback off' : ''}：只有 L4 終選的買進列進入待買清單，每日推薦在 L4 選中前只是證據`}>
+        L4 終選
+      </span>
+      {sourceRecoDate && <span className="rounded border border-border px-1.5 py-0.5 text-[11px] text-muted-foreground" title={`推薦資料日 ${sourceRecoDate}`}>依 {formatDateShort(sourceRecoDate)} 推薦</span>}
+      {Number.isFinite(Number(meta?.run_id)) && Number(meta?.run_id) > 0 && <span className="text-[11px] text-muted-foreground" title="執行批次">#{meta.run_id}</span>}
+      {stale && <StatusBadge tone="warn">資料過期</StatusBadge>}
+      {eventText && <span className="text-[11px] text-muted-foreground underline decoration-dotted" title={eventText}>最近事件 {events.length}</span>}
+    </div>
+  )
+}
+
+function pendingEmptyState(state: any, meta: any, view: SimroomView, closed: boolean, tradingDay: boolean | null) {
+  if (closed) return <DataState kind="empty" title="今日休市" hint="持倉保護照常；下一個交易日盤前再出計畫" />
+  const s = String(state?.state ?? 'empty')
+  if (s === 'error') return <DataState kind="error" title="今日沒有可執行的盤前決策" hint="流程未完成，今天不會掛新單" code={state?.error_message ?? meta?.error_message ?? null} />
+  if (s === 'halted') return <DataState kind="error" title="風控暫停新進場" hint="持倉保護照常" code={state?.error_message ?? null} />
+  const counts = meta?.execution_counts ?? {}
+  const terminal = ['cancelled', 'filled', 'skipped', 'expired'].reduce((acc, key) => acc + Number(counts[key] ?? 0), 0)
+  if (terminal > 0) return <DataState kind="empty" title="今日待買已全部結束" hint="下一交易日盤前 L4 會產生新清單" />
+  if (s === 'empty_after_hard_safety' || s === 'empty_after_soft_risk') return <DataState kind="empty" title="今日無計畫" hint={`${RUN_STATE_VIEW[s].label}；持倉保護照常`} />
+  // trading_day＝true 才確定是交易日；null（舊 Worker 或查詢失敗）時不斷言是否休市。
+  if (view === 'premarket') return <DataState kind="empty" title="尚未封存" hint={tradingDay === true ? '盤前資訊到齊、L4 完成配置後出現（08:45 前）' : '交易日盤前資訊到齊、L4 完成配置後出現（08:45 前）；休市日不產生計畫'} />
+  return <DataState kind="empty" title="今日沒有待買計畫" hint={tradingDay === true ? '持倉保護照常' : '休市日也不會有；持倉保護照常'} />
+}
+
+// 5 秒一跳：報價 90 秒過期的判斷最多晚 5 秒（原本 30 秒一跳，fetch 失敗時要約 120 秒才標過期）。
+function useTwClock(intervalMs = 5_000): TwClock & { nowMs: number } {
+  const [nowMs, setNowMs] = useState(() => Date.now())
+  useEffect(() => {
+    const id = window.setInterval(() => setNowMs(Date.now()), intervalMs)
+    return () => window.clearInterval(id)
+  }, [intervalMs])
+  return { ...twClock(nowMs), nowMs }
+}
+
+function SignalTable({ onSelectSymbol }: { onSelectSymbol?: (s: string) => void }) {
   // T2 過濾後的掛單（非 raw recommendations）
-  const { data: pbData, isLoading, isFetching, dataUpdatedAt, error } = useQuery({
+  const { data: pbData, isLoading, isFetching, dataUpdatedAt, error, refetch } = useQuery({
     queryKey: ['paper', 'pending-buys'],
     queryFn: () => paperApi.pendingBuys(),
     staleTime: 0,
@@ -521,254 +346,64 @@ function SignalTable({ onSelectSymbol, selectedSymbol }: { onSelectSymbol?: (s: 
     refetchIntervalInBackground: false,
     refetchOnWindowFocus: 'always',
   })
+  const clock = useTwClock()
+  const [manualView, setManualView] = useState<SimroomView | null>(null)
+  // 辯論只是觀察：待買清單不依 debate 狀態或結論過濾。
   const allPendingBuys = visiblePendingBuys(pbData)
   const buys = allPendingBuys
   const completed = completedPendingBuys(pbData)
-  const {data: liveQuotes, dataUpdatedAt: quotesUpdatedAt} = usePaperDisplayQuotes(allPendingBuys.map(row=>row.symbol))
-  const displayNow = Math.max(Date.now(), quotesUpdatedAt)
-  const completedCards = completed.length>0 && <section className="space-y-2">
-    <h3 className="text-base font-semibold text-foreground">今日已結束的待買紀錄</h3>
-    {completed.map((row:any)=>{const badge=formatPendingBuyExecutionBadge(row);return <div key={row.symbol} className="rounded-xl border border-border bg-background/45 p-4">
-      <div className="flex flex-wrap gap-2 text-base font-semibold"><span>{row.symbol} {row.name}</span><span className={executionToneClass(badge.tone)}>{badge.label}</span></div>
-      <p className="mt-2 text-sm text-muted-foreground">{badge.description}</p>
-    </div>})}
-  </section>
-  const showingDate = pbData?.date ?? ''
-  const isStalePending = Boolean(pbData?.is_stale)
+  // 沒有待買時用 0050 探一次 Worker 的交易時段（休市時 Worker 依 holiday:* 回 outside_session）。
+  const quoteSymbols = allPendingBuys.length ? allPendingBuys.map((row) => row.symbol) : ['0050']
+  const { data: liveQuotes, dataUpdatedAt: quotesUpdatedAt, isError: quotesError } = usePaperDisplayQuotes(quoteSymbols)
+  const displayNow = Math.max(clock.nowMs, quotesUpdatedAt)
+  const tradingDay: boolean | null = typeof pbData?.trading_day === 'boolean' ? pbData.trading_day : null
+  const closed = isClosedDay(clock, liveQuotes?.status ?? null, pbData ? { session_date: pbData.session_date, trading_day: pbData.trading_day } : null)
+  const view = manualView ?? defaultView(sessionPhase(clock.minutes))
+
   const pendingState = pbData?.state
   const pendingMeta = pbData?.meta
   const pendingExecutionPolicy = pbData?.execution_policy
-  const refreshStatus = error
-    ? '更新失敗，保留上次資料'
-    : (isFetching ? '更新中 · ' : '') +
-      (dataUpdatedAt ? '同步 ' + formatTwDateTimeShort(new Date(dataUpdatedAt).toISOString()) : '等待同步') +
-      (isTWMarketOpen() ? ' · 盤中每 30 秒自動更新' : ' · 非盤中每 5 分鐘自動更新')
-  const pendingRunLabel = Number.isFinite(Number(pendingMeta?.run_id)) && Number(pendingMeta?.run_id) > 0
-    ? ` · 執行批次 #${pendingMeta.run_id}` : ''
+  const rows = useMemo(() => {
+    const live = buys.map((b: any) => {
+      const dailyReference = b.execution_preview?.daily_assessment ?? b.execution_preview?.last_or15_assessment ?? b.execution_preview?.or15
+      const live = liveQuotes?.prices?.[b.symbol]
+      // 90 秒內的報價優先；過期的不丟掉，交給 buildSimRow 依原始時間標「舊 Ns」（盤後就是最後價）。
+      return buildSimRow(b, selectSimQuote(live, b.market_price, displayNow, dailyReference), displayNow)
+    })
+    const seen = new Set(live.map((row) => row.symbol))
+    return [...live, ...completed.filter((row: any) => !seen.has(row.symbol)).map(buildCompletedRow)]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pbData, liveQuotes, displayNow])
+  const quoteAges = rows.map((row) => row.quoteAgeSec).filter((age): age is number => age != null)
+  const quoteAgeSec = quoteAges.length ? Math.min(...quoteAges) : null
 
-  if (isLoading) return <div className="text-muted-foreground text-sm p-4 sv-num">Loading...</div>
+  if (isLoading) return <DataState kind="loading" title="推薦候選載入中" minHeight={160} />
+  if (error && !pbData) return <DataState kind="error" title="推薦候選讀取失敗" onRetry={() => { void refetch() }} code={String((error as Error)?.message ?? '')} />
 
-  // The execution pool must not borrow portfolio targets or raw recommendation cards.
-  if (!buys.length) {
-    return (
-      <div className="space-y-3">
-        <div className="px-1 text-[11px] text-muted-foreground">{refreshStatus}{pendingRunLabel}</div>
-        {completedCards}
-        <div className="px-1 text-xs text-muted-foreground/60 sv-num">{showingDate || 'today'} pending buys execution state</div>
-        <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} policy={pendingExecutionPolicy} />
-        <div className="rounded-xl border border-muted/40 bg-background/40 p-3 text-xs text-muted-foreground">
-          {pendingBuyEmptyMessage(pendingMeta, pendingState)}
-          <div className="mt-2 sv-num text-xs text-muted-foreground/70">
-            Only L4 sparse final BUY rows enter pending buys; daily recommendations stay evidence until L4 selects them.
-          </div>
-        </div>
-      </div>
-    )
-  }
+  const sync = error
+    ? <DataState kind="stale" title={`更新失敗，顯示 ${dataUpdatedAt ? formatTime(dataUpdatedAt) : '上次'} 的資料`} onRetry={() => { void refetch() }} className="px-0 py-1" />
+    : <span className="text-[11px] text-muted-foreground" title={isTWMarketOpen() ? '盤中每 30 秒自動更新' : '非盤中每 5 分鐘自動更新'}>
+        {isFetching ? '更新中' : dataUpdatedAt ? `同步 ${formatTime(dataUpdatedAt)}` : '等待同步'}
+      </span>
 
   return (
-    <div className="space-y-2">
-      <div className="px-1 text-[11px] text-muted-foreground">{refreshStatus}{pendingRunLabel}</div>
-      {pendingState?.state === 'error'
-        ? <div className="border-t border-muted/40 pt-3 px-1 text-xs font-semibold text-red-300 sv-num">{showingDate} · L4 待買清單（{buys.length} 檔，未發布，不會執行）：{pendingState.error_message ?? pendingMeta?.error_message ?? 'unknown'}</div>
-        : <div className="border-t border-muted/40 pt-3 px-1 text-xs font-semibold text-emerald-300 sv-num">{showingDate} · L4 待買清單（{buys.length} 檔）</div>}
-      <PendingBuyStateBadges state={pendingState} stale={isStalePending} meta={pendingMeta} policy={pendingExecutionPolicy} />
-      <p className="px-1 text-sm text-muted-foreground">辯論僅供觀察，不改變選股、配置或交易資格。行情每 10 秒讀取串流快取；訊號仍在完整 5 分 K 後判斷。</p>
-      {completedCards}
-      <p className="px-1 text-[11px] text-muted-foreground">數量依目前 L4 預算與參考價估算；實際模擬委託仍須通過盤中進場條件、即時報價、風控與委託簿。</p>
-      {buys.map((b: any) => {
-        const executionBadge = b.today_fills?.shares > 0
-          ? {...formatPendingBuyExecutionBadge(b),label:'今日已有成交',tone:'info' as const}
-          : formatPendingBuyExecutionBadge(b)
-        const s12Badge = formatS12IntradayStructureBadge(b.watch_points)
-        const trade = buildPendingBuyTradeView(b)
-        const dailyReference = b.execution_preview?.daily_assessment ?? b.execution_preview?.last_or15_assessment ?? b.execution_preview?.or15
-        const displayPrice = currentDisplayPrice(liveQuotes?.prices?.[b.symbol], b.market_price, displayNow, dailyReference)
-        const quotePrice = displayPrice?.price
-        const quoteReference = displayPrice?.reference_price
-        const priceChange = typeof quotePrice === 'number' && Number.isFinite(quotePrice) && quotePrice > 0
-          && typeof quoteReference === 'number' && Number.isFinite(quoteReference) && quoteReference > 0
-          ? Number((quotePrice - quoteReference).toFixed(6)) : null
-        const priceChangePct = priceChange != null ? priceChange / quoteReference * 100 : null
-        const changeSign = priceChange != null && priceChange > 0 ? '+' : ''
-        const isOr15 = ['or15_vwap_v1','or15-5m-orl8-20-v1'].includes(b.execution_preview?.entry_owner ?? '')
-        const or15 = b.execution_preview?.or15
-        const s12Preview = b.execution_preview?.s12
-        const s12Label = s12Preview
-          ? formatS12IntradayStructureState(s12Preview.state, s12Preview.reason)
-          : s12Badge?.label ?? '等待近期盤中結構資料'
-        const allocatorAction = b.execution_preview?.allocator?.action
-        const sourceRiskSkip = Array.isArray(b.watch_points) && b.watch_points.some(
-          (point: unknown) => typeof point === 'string' && point.startsWith('alpha_risk_overlay:skip=true'),
-        )
-        return (
-          <div
-            key={b.symbol}
-            className={`relative rounded-xl border border-emerald-400/20 bg-background/55 p-4 sv-num ${selectedSymbol === b.symbol ? 'ring-1 ring-emerald-500/40' : ''}`}
-          >
-            <div className="flex flex-wrap items-center gap-2 pr-8">
-              <span className="text-base font-bold text-foreground">{b.symbol}</span>
-              <span className="text-sm text-muted-foreground">{b.name}</span>
-              <span className="rounded-md border border-emerald-400/25 bg-emerald-400/10 px-2 py-0.5 text-[11px] text-emerald-200">
-                {debateObservationLabel(b)}
-              </span>
-              <span className={`rounded-md border px-2 py-0.5 text-[11px] ${executionToneClass(executionBadge.tone)}`}>
-                {executionBadge.label}
-              </span>
-            </div>
-            <button
-              onClick={(e) => { e.stopPropagation(); onSelectSymbol?.(b.symbol) }}
-              className="absolute right-3 top-3 rounded p-1 text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
-              title="查看 K 線"
-            >
-              <Activity className="h-4 w-4" />
-            </button>
-            {sourceRiskSkip && <div className="mt-3 rounded-md border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-sm text-amber-200">
-              來源風控標記「跳過買入」，但此檔仍在今日待買清單；目前等待技術條件不代表風控已否決。
-            </div>}
-            {b.today_fills?.shares > 0 && <div className="mt-3 rounded-lg border border-sky-400/30 bg-sky-400/10 p-3 text-base text-foreground">
-              今日已成交 {formatTaiwanShareLots(b.today_fills.shares)} · 均價 ${fmt(b.today_fills.average_price, 2)}
-              <div className="mt-1 text-sm text-muted-foreground">成交時間 {formatTwDateTimeShort(b.today_fills.last_fill_at)}；下方等待狀態不會撤銷既有成交。</div>
-            </div>}
-            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-4">
-              <div className="rounded-lg border border-muted/30 bg-background/45 px-3 py-2">
-                <div className="text-[11px] text-muted-foreground">目前價位</div>
-                <div className={`mt-1 text-base font-semibold ${priceChange == null ? 'text-foreground' : pctClass(priceChange)}`}>
-                  {displayPrice?.price != null ? '$' + fmt(displayPrice.price, 2) : '報價待更新'}
-                </div>
-                <div className={`text-xs font-medium ${pctClass(priceChange)}`}
-                  title={displayPrice?.reference_source === 'daily_assessment'
-                    ? '相對當日基準的昨收參考價；沿用今日進場檢查已確認的數值'
-                    : '相對券商當日昨收參考價；除權息等調整日依券商參考價計算'}>
-                  {priceChange != null && priceChangePct != null
-                    ? `${priceChange === 0 ? '平盤 ' : ''}${changeSign}${fmt(priceChange, 2)}（${changeSign}${fmt(priceChangePct, 2)}%）`
-                    : '漲跌待更新'}
-                </div>
-                {priceChange != null && <div className="text-[11px] text-muted-foreground">
-                  {displayPrice?.reference_source === 'daily_assessment' ? '當日基準昨收' : '昨收參考'} ${fmt(quoteReference, 2)}
-                </div>}
-                <div className="text-[11px] text-muted-foreground">
-                  {displayPrice?.as_of ? 'Shioaji · ' + formatTwDateTimeShort(displayPrice.as_of) : '僅顯示 90 秒內報價'}
-                </div>
-              </div>
-              <div className="rounded-lg border border-muted/30 bg-background/45 px-3 py-2">
-                <div className="text-[11px] text-muted-foreground">預計買入價</div>
-                <div className="mt-1 text-base font-semibold text-foreground">
-                  {trade.entryPrice != null ? `$${fmt(trade.entryPrice, 2)}` : isOr15 ? '待 OR15 訊號與即時報價' : '待 S12 定價'}
-                </div>
-                <div className="text-[11px] text-muted-foreground">
-                  {trade.entryPrice != null ? `S12 結構價${trade.chaseCeiling != null ? ` · 追價上限 $${fmt(trade.chaseCeiling, 2)}` : ''}` : trade.referencePrice != null ? `選股參考價 $${fmt(trade.referencePrice, 2)}；非委託價` : '尚無選股參考價'}
-                </div>
-              </div>
-              <div className="rounded-lg border border-muted/30 bg-background/45 px-3 py-2">
-                <div className="text-[11px] text-muted-foreground">預估買入數量</div>
-                <div className="mt-1 text-base font-semibold text-foreground">
-                  {trade.estimatedShares != null ? formatTaiwanShareLots(trade.estimatedShares) : '待門檻通過'}
-                </div>
-                <div className="text-[11px] text-muted-foreground">
-                  {trade.quantityBasis === 's12' ? '按 S12 價與 L4 上限估算' : trade.quantityBasis === 'reference' ? '按基準價與 L4 上限估算' : trade.quantityBasis === 'plan_reference' ? '盤前參考價估算（含零股、未扣手續費）；非委託數量' : b.today_fills?.shares > 0 ? '已有成交，剩餘配置須另經執行檢查' : '等待配置資料'}
-                </div>
-              </div>
-              <div className="rounded-lg border border-muted/30 bg-background/45 px-3 py-2">
-                <div className="text-[11px] text-muted-foreground">盤前配置目標</div>
-                <div className="mt-1 text-base font-semibold text-foreground">
-                  {trade.targetValue != null ? `$${fmt(trade.targetValue)}` : '缺少已封存計畫'}
-                </div>
-                <div className="text-[11px] text-muted-foreground">
-                  {b.planned_allocation ? `權重 ${fmt(b.planned_allocation.target_weight * 100, 2)}% · 封存 ${formatTwDateTimeShort(b.planned_allocation.finalized_at)}` : '配置來源尚未確認'}
-                  <div>{trade.budgetCap != null ? '最近執行檢查上限 $' + fmt(trade.budgetCap) : '可執行額度待送單檢查'}</div>
-                </div>
-              </div>
-            </div>
-            {trade.availableCash != null && <div className="mt-2 text-[11px] text-muted-foreground">{'可用資金 $' + fmt(trade.availableCash)}</div>}
-            <div className="mt-3 grid gap-1.5 text-xs leading-5 text-muted-foreground sm:grid-cols-2">
-              <div><span className="text-foreground">交易門檻：</span>{trade.gateReason ?? (allocatorAction === 'buy' || allocatorAction === 'add' ? 'L4 配置可買，等待進場條件' : executionBadge.label)}{trade.l5Status ? ` · L5 ${trade.l5Status === 'pass' ? '報價通過' : '報價未通過'}` : ''}</div>
-              <div><span className="text-foreground">{isOr15 ? 'OR15 盤中結構：' : 'S12 結構：'}</span>{isOr15 ? or15 ? describeOr15Reason(or15.reason) : '等待本輪盤中檢查' : s12Label}</div>
-            </div>
-            {isOr15 && <PendingEntryChecklist preview={b.execution_preview} plannedAllocation={b.planned_allocation} todayFills={b.today_fills} liveQuote={displayPrice} nowMs={displayNow} />}
-            {isOr15 && or15 && <div className="mt-2 text-[11px] leading-5 text-muted-foreground">
-              {or15.or_high != null && `開盤 15 分鐘高點 $${fmt(or15.or_high, 2)}`}
-              {or15.or_low != null && ` · 低點 $${fmt(or15.or_low, 2)}`}
-              {or15.vwap != null && ` · VWAP $${fmt(or15.vwap, 2)}`}
-              {or15.relative_return != null && ` · 相對 0050 ${fmt(or15.relative_return * 100, 2)} 個百分點`}
-              {or15.ma60 != null && ` · 0050 MA60 $${fmt(or15.ma60, 2)}`}
-              {or15.vwap_basis === 'five_minute_typical' && ' · VWAP 使用 5 分 K 典型價近似'}
-              {or15.latest_bar_ms != null && ` · 最新 K 棒 ${formatTwDateTimeShort(new Date(or15.latest_bar_ms).toISOString())}`}
-              {or15.bar_error && ` · 行情異常 ${or15.bar_error}`}
-            </div>}
-            {trade.checkedAt && (
-              <div className="mt-2 text-[11px] text-muted-foreground/70">最近檢查 {formatTwDateTimeShort(trade.checkedAt)}</div>
-            )}
-          </div>
-        )
-      })}
-    </div>
-  )
-}
-
-// Fallback: 無掛單時顯示最新 daily recommendations
-function CandidateRecommendationColumn({
-  title,
-  subtitle,
-  tone,
-  rows,
-  emptyText,
-  selectedSymbol,
-  onSelectSymbol,
-}: {
-  title: string
-  subtitle: string
-  tone: 'buy' | 'potential'
-  rows: any[]
-  emptyText?: string
-  selectedSymbol?: string | null
-  onSelectSymbol?: (s: string) => void
-}) {
-  const toneClass = tone === 'buy'
-    ? {
-        box: 'border-red-500/18 bg-red-500/[0.03]',
-        label: 'text-red-300',
-        badge: 'border-red-300/40 bg-red-500/12 text-red-100',
-        ring: 'ring-red-500/40',
-      }
-    : {
-        box: 'border-yellow-300/24 bg-yellow-300/[0.055]',
-        label: 'text-yellow-100',
-        badge: 'border-yellow-200/55 bg-yellow-300/20 text-yellow-50',
-        ring: 'ring-yellow-300/45',
-      }
-
-  return (
-    <div className={`space-y-2 rounded-[20px] border p-2 ${toneClass.box}`}>
-      <div className="flex items-center justify-between gap-3 px-1">
-        <div className="min-w-0">
-          <p className={`text-[13px] font-semibold ${toneClass.label}`}>{title}</p>
-          <p className="text-[11px] leading-4 text-muted-foreground/75">{subtitle}</p>
-        </div>
-        <Badge variant="outline" className={`h-6 px-2 text-[11px] ${toneClass.badge}`}>
-          {rows.length} 檔
-        </Badge>
-      </div>
-      <div className="grid grid-cols-1 gap-3">
-        {rows.map((r: any, idx: number) => (
-          <div key={r.symbol ?? r.stock_id ?? idx} className={`relative ${selectedSymbol === r.symbol ? `ring-1 ${toneClass.ring} rounded-xl` : ''}`}>
-            <RecommendationCard rec={r} rank={idx + 1} />
-            <button
-              onClick={(e) => { e.stopPropagation(); onSelectSymbol?.(r.symbol) }}
-              className="absolute top-3 right-10 p-1 rounded hover:bg-muted/50 text-muted-foreground hover:text-foreground transition-colors"
-              title="查看 K 線"
-            >
-              <Activity className="h-4 w-4" />
-            </button>
-          </div>
-        ))}
-      </div>
-      {!rows.length && (
-        <div className="rounded-lg border border-muted/30 bg-background/35 p-3 text-xs text-muted-foreground">
-          {emptyText ?? `今日沒有${title}候選。`}
-        </div>
-      )}
-    </div>
+    <SimRoom
+      clock={clock}
+      closed={closed}
+      rows={rows}
+      view={view}
+      onViewChange={(next) => setManualView(next === defaultView(sessionPhase(clock.minutes)) ? null : next)}
+      quoteAgeSec={view === 'intraday' ? quoteAgeSec : null}
+      trend={marketTrend(allPendingBuys)}
+      onOpenChart={onSelectSymbol}
+      quoteError={quotesError && view === 'intraday'}
+      status={<div className="mb-2 flex flex-wrap items-center gap-2">
+        <PendingBuyStateBadges state={pendingState} stale={Boolean(pbData?.is_stale)} meta={pendingMeta} policy={pendingExecutionPolicy} />
+        <span className="ml-auto">{sync}</span>
+      </div>}
+      dataDate={typeof pbData?.date === 'string' ? pbData.date : typeof pbData?.session_date === 'string' ? pbData.session_date : null}
+      empty={pendingEmptyState(pendingState, pendingMeta, view, closed, tradingDay)}
+    />
   )
 }
 
@@ -788,13 +423,6 @@ function parseOrderNote(note: unknown): Record<string, any> {
 
 function formatTwOrderTime(createdAt?: string | null): string {
   return formatTwDateTimeShort(createdAt)
-}
-
-function summarizeOrderReason(order: any): string {
-  const note = parseOrderNote(order?.note)
-  if (note.reason) return String(note.reason)
-  if (note.ml_entry) return `entry ${note.ml_entry} / stop ${note.ml_stop ?? '-'} / T1 ${note.ml_t1 ?? '-'} / T2 ${note.ml_t2 ?? '-'}`
-  return typeof order?.note === 'string' ? order.note : '-'
 }
 
 function realizedPnlFromOrder(order: any): { pnl: number; pct: number | null } | null {
@@ -830,14 +458,14 @@ function formatTaiwanShareLots(sharesInput: unknown): string {
 }
 
 function PositionsTable() {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['paper', 'positions'],
     queryFn: paperApi.positions,
     staleTime: 60_000,
     refetchInterval: isTWMarketOpen() ? 60_000 : 5 * 60_000,
     refetchOnWindowFocus: true,
   })
-  const { data: ordersData } = useQuery({
+  const { data: ordersData, error: ordersError, refetch: refetchOrders } = useQuery({
     queryKey: ['paper', 'orders'],
     queryFn: () => paperApi.orders(200),
     staleTime: 60_000,
@@ -858,94 +486,90 @@ function PositionsTable() {
       return sum + (proceeds - cost)
     }, 0)
 
-  if (isLoading) return <div className="text-muted-foreground text-sm p-4">Loading...</div>
+  if (isLoading) return <DataState kind="loading" />
+  if (error && !data) return <DataState kind="error" title="持倉讀取失敗" code={error instanceof Error ? error.message : undefined} onRetry={() => { void refetch() }} />
   if (!Array.isArray(positions) || positions.length === 0) {
     const latestOrder = orders[0]
     const latestIsSell = latestOrder?.side === 'sell'
     const latestIsBuy = latestOrder?.side === 'buy'
-    const latestReason = summarizeOrderReason(latestOrder)
+    const latestReason = humanOrderReason(latestOrder)
 
     return (
       <div className="p-4">
-        <div className="grid gap-3 lg:grid-cols-[0.8fr_1.2fr]">
-          <div className="rounded-xl border border-[#2b3a49] bg-[#070a10] p-4">
-            <Wallet className="mb-3 h-8 w-8 text-[#d6a85f]/70" />
-            <WorkstationPill tone={latestIsBuy ? 'error' : latestIsSell ? 'warn' : 'neutral'}>
-              {latestIsSell ? '無持倉：最新紀錄為賣出' : latestIsBuy ? '資料需檢查' : '目前無持倉'}
-            </WorkstationPill>
-            <p className="mt-3 text-sm font-semibold text-[#e6edf3]">
+        <div className="grid gap-4 lg:grid-cols-[0.8fr_1.2fr]">
+          <div>
+            <StatusBadge
+              tone={latestIsBuy ? 'warn' : 'na'}
+              title={latestIsBuy ? '最新一筆是買進但持倉為空：paper_positions 與 paper_orders 可能不同步' : undefined}
+            >
+              {latestIsBuy ? '持倉與成交對不上' : '目前無持倉'}
+            </StatusBadge>
+            <p className="mt-3 text-sm font-semibold text-foreground">
               {latestIsSell
-                ? `${latestOrder.symbol} 已於 ${formatTwOrderTime(latestOrder.created_at)} 出場`
+                ? `${latestOrder.symbol} 已於 ${formatTwOrderTime(latestOrder.created_at)} 全數賣出`
                 : latestIsBuy
-                  ? `${latestOrder.symbol} 有買進紀錄但 position 為空`
-                  : '目前沒有 open position'}
+                  ? `${latestOrder.symbol} 有買進成交，但持倉清單是空的`
+                  : '目前沒有持股'}
             </p>
-            <p className="mt-2 text-xs leading-5 text-[#8b9bab]">
+            <p className="mt-2 text-xs leading-5 text-muted-foreground">
               {latestIsSell
-                ? '持倉 API 仍正常；畫面為空是因為 D1 的 paper_positions 已無 shares > 0。'
+                ? '最近一筆是賣出，賣完後就沒有持股。'
                 : latestIsBuy
-                  ? '這代表 order 與 position 可能不同步，應檢查 paper_positions upsert / exit audit。'
-                  : 'Bot 會在 pending buy 通過 quote sanity 與 execution guard 後建立持倉。'}
+                  ? '持倉與成交紀錄可能不同步，需要檢查。'
+                  : '候選股通過報價檢查與送單前檢查、成交後才會出現在這裡。'}
             </p>
             {summary && (
               <div className="mt-4 grid grid-cols-2 gap-2 text-xs">
-                <div className="rounded-lg border border-[#2b3a49] bg-[#0d141d] p-2">
-                  <p className="text-[#8b9bab]">現金</p>
-                  <p className="sv-num text-[#e6edf3]">${fmt(summary.cash)}</p>
+                <div>
+                  <p className="text-muted-foreground">現金</p>
+                  <p className="sv-num text-foreground">${fmt(summary.cash)}</p>
                 </div>
-                <div className="rounded-lg border border-[#2b3a49] bg-[#0d141d] p-2">
-                  <p className="text-[#8b9bab]">總資產</p>
-                  <p className="sv-num text-[#e6edf3]">{summary.valuation_complete === false ? `待估值 $${fmt(summary.nav_lower_bound)}–$${fmt(summary.nav_upper_bound)}` : `$${fmt(summary.total_value)}`}</p>
+                <div>
+                  <p className="text-muted-foreground">總資產</p>
+                  <p className="sv-num text-foreground">{summary.valuation_complete === false ? `待估值 $${fmt(summary.nav_lower_bound)}–$${fmt(summary.nav_upper_bound)}` : `$${fmt(summary.total_value)}`}</p>
                 </div>
               </div>
             )}
           </div>
 
           {latestOrder && (
-            <div className="rounded-xl border border-[#3a3125] bg-[linear-gradient(135deg,#15130d,#0b1118)] p-4">
+            <div className="border-t border-border pt-4 lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0">
               <div className="mb-3 flex items-start justify-between gap-3">
-                <div>
-                  <p className="sv-num text-[10px] normal-case text-[#d6a85f]/80">
-                    latest order evidence
-                  </p>
-                  <h3 className="mt-1 text-sm font-semibold text-[#f2ead8]">最近交易證據</h3>
-                </div>
-                <WorkstationPill tone={latestIsSell ? 'warn' : 'info'}>{latestOrder.side}</WorkstationPill>
+                <h3 className="text-sm font-semibold text-foreground">最近一筆成交</h3>
+                <span className={`text-xs font-medium ${latestIsSell ? 'text-down' : 'text-up'}`}>{latestIsSell ? '賣出' : latestIsBuy ? '買進' : '—'}</span>
               </div>
               <div className="grid gap-2 text-xs sm:grid-cols-4">
                 <div>
-                  <p className="text-[#8b9bab]">標的</p>
-                  <p className="sv-num text-[#e6edf3]">{latestOrder.symbol} {latestOrder.name}</p>
+                  <p className="text-muted-foreground">標的</p>
+                  <p className="sv-num text-foreground">{latestOrder.symbol} {latestOrder.name}</p>
                 </div>
                 <div>
-                  <p className="text-[#8b9bab]">股數</p>
-                  <p className="sv-num text-[#e6edf3]">{fmt(latestOrder.shares)}</p>
+                  <p className="text-muted-foreground">股數</p>
+                  <p className="sv-num text-foreground">{fmt(latestOrder.shares)}</p>
                 </div>
                 <div>
-                  <p className="text-[#8b9bab]">價格</p>
-                  <p className="sv-num text-[#e6edf3]">${fmt(latestOrder.price, 1)}</p>
+                  <p className="text-muted-foreground">價格</p>
+                  <p className="sv-num text-foreground">${fmt(latestOrder.price, 1)}</p>
                 </div>
                 <div>
-                  <p className="text-[#8b9bab]">時間</p>
-                  <p className="sv-num text-[#e6edf3]">{formatTwOrderTime(latestOrder.created_at)}</p>
+                  <p className="text-muted-foreground">時間</p>
+                  <p className="sv-num text-foreground">{formatTwOrderTime(latestOrder.created_at)}</p>
                 </div>
               </div>
-              <div className="mt-3 rounded-lg border border-[#2b3a49] bg-[#070a10] p-3">
-                <p className="text-[10px] normal-case text-[#8b9bab]">原因 / note</p>
-                <p className="mt-1 text-xs leading-5 text-[#c8d3df]">{latestReason}</p>
+              <div className="mt-3 border-t border-border pt-2 text-xs">
+                <span className="text-muted-foreground">原因 </span>
+                <span className="text-foreground" title={latestReason.raw || undefined}>{latestReason.text}</span>
               </div>
             </div>
           )}
 
-          {!latestOrder && (
-            <div className="rounded-xl border border-[#2b3a49] bg-[#070a10] p-4 text-sm text-muted-foreground">
-              交易紀錄也為空，代表目前 paper trading 尚未建立任何 open/closed order。
-            </div>
-          )}
+          {!latestOrder && (ordersError && !ordersData
+            ? <DataState kind="error" title="成交紀錄讀取失敗" code={ordersError instanceof Error ? ordersError.message : undefined} onRetry={() => { void refetchOrders() }} />
+            : <DataState kind="empty" title="還沒有任何模擬成交" hint="第一筆買進成交後，持倉與交易紀錄會出現在這裡。" />)}
         </div>
         {realizedPnl !== 0 && (
           <div className="mt-3 text-right text-xs text-muted-foreground">
-            已實現損益粗估 <span className={pctClass(realizedPnl)}>{realizedPnl >= 0 ? '+' : ''}${fmt(Math.round(realizedPnl))}</span>
+            已實現損益粗估 <span className={pctClass(realizedPnl)}>{formatSignedTwd(Math.round(realizedPnl))}</span>
           </div>
         )}
       </div>
@@ -1005,14 +629,14 @@ function PositionsTable() {
                       <div className="sv-num text-foreground">{p.symbol}</div>
                       <div className="text-xs text-muted-foreground">
                         {p.name}
-                        {daysHeld != null && <span className="ml-1 text-muted-foreground/60">({daysHeld}天)</span>}
+                        {daysHeld != null && <span className="ml-1 text-muted-foreground">({daysHeld}天)</span>}
                       </div>
                     </td>
                     <td className="p-2 text-right sv-num text-foreground/80">{lots}</td>
                     <td className="p-2 text-right sv-num text-foreground/80">${fmt(entry, 2)}</td>
                     <td className="p-2 text-right">
                       <div className="sv-num text-foreground/80">${fmt(current, 1)}</div>
-                      <div className={`mt-0.5 text-[10px] ${p.quote_status === 'fresh' ? 'text-emerald-300' : p.quote_status === 'stale' ? 'text-amber-300' : 'text-red-300'}`}>
+                      <div className={`mt-0.5 text-[10px] ${p.quote_status === 'fresh' ? 'text-ok' : p.quote_status === 'stale' ? 'text-warn' : 'text-fail'}`}>
                         {p.quote_status === 'fresh' ? '即時' : p.quote_status === 'stale' ? '盤中末筆' : '即時報價不可用'}
                         {p.quote_as_of ? ` · ${formatTwDateTimeShort(p.quote_as_of)}` : ''}
                       </div>
@@ -1025,41 +649,41 @@ function PositionsTable() {
                     <td className="p-2 text-right">
                       {riskPlan.stop ? (
                         <div>
-                          <div className={`sv-num text-xs ${riskPlan.stopTone === 'warn' ? 'text-amber-300' : 'text-red-400'}`}>${riskPlan.stop}</div>
-                          {riskPlan.stopSource && <div className="mt-0.5 text-[10px] text-muted-foreground/70">{riskPlan.stopSource}</div>}
+                          <div className={`sv-num text-xs ${riskPlan.stopTone === 'warn' ? 'text-warn' : 'text-down'}`}>${riskPlan.stop}</div>
+                          {riskPlan.stopSource && <div className="mt-0.5 text-[10px] text-muted-foreground">{riskPlan.stopSource}</div>}
                         </div>
-                      ) : <span className="text-muted-foreground/60">—</span>}
+                      ) : <span className="text-muted-foreground">—</span>}
                     </td>
                     <td className="p-2 text-right">
                       {riskPlan.tp1 && (
-                        <div className={`sv-num text-xs ${riskPlan.tp1Hit ? 'text-muted-foreground line-through' : 'text-red-400'}`}>
+                        <div className={`sv-num text-xs ${riskPlan.tp1Hit ? 'text-muted-foreground line-through' : 'text-up'}`}>
                           {riskPlan.fusionV2 ? 'Fusion TP1' : riskPlan.primaryS12 ? 'S12 TP1' : 'T1'} ${riskPlan.tp1}
                         </div>
                       )}
                       {riskPlan.tp2 && (
-                        <div className="sv-num text-xs text-red-300">{riskPlan.primaryS12 ? 'S12 主出場' : 'T2'} ${riskPlan.tp2}</div>
+                        <div className="sv-num text-xs text-up">{riskPlan.primaryS12 ? 'S12 主出場' : 'T2'} ${riskPlan.tp2}</div>
                       )}
                       {riskPlan.tp3 && (
-                        <div className="sv-num text-xs text-red-300">TP3 ${riskPlan.tp3}</div>
+                        <div className="sv-num text-xs text-up">TP3 ${riskPlan.tp3}</div>
                       )}
                       {riskPlan.tp4 && (
-                        <div className="sv-num text-xs text-red-300">TP4 ${riskPlan.tp4}</div>
+                        <div className="sv-num text-xs text-up">TP4 ${riskPlan.tp4}</div>
                       )}
                       {riskPlan.nearPressure && (
-                        <div className="sv-num text-[10px] text-amber-300">
+                        <div className="sv-num text-[10px] text-warn">
                           S12 近端壓力 ${riskPlan.nearPressure}
                         </div>
                       )}
-                      {riskPlan.nearPressureSource && <div className="mt-0.5 text-[10px] text-muted-foreground/70">{riskPlan.nearPressureSource}</div>}
-                      {riskPlan.tpSource && <div className="mt-0.5 text-[10px] text-muted-foreground/70">{riskPlan.tpSource}</div>}
-                      {!riskPlan.tp1 && !riskPlan.tp2 && !riskPlan.tp3 && !riskPlan.tp4 && <span className="text-muted-foreground/60">—</span>}
+                      {riskPlan.nearPressureSource && <div className="mt-0.5 text-[10px] text-muted-foreground">{riskPlan.nearPressureSource}</div>}
+                      {riskPlan.tpSource && <div className="mt-0.5 text-[10px] text-muted-foreground">{riskPlan.tpSource}</div>}
+                      {!riskPlan.tp1 && !riskPlan.tp2 && !riskPlan.tp3 && !riskPlan.tp4 && <span className="text-muted-foreground">—</span>}
                     </td>
                     <td className="p-2 text-right">
                       <div className={`sv-num ${pctClass(pnlPct)}`}>
                         {pnlPct >= 0 ? '+' : ''}{(pnlPct * 100).toFixed(2)}%
                       </div>
                       <div className={`text-xs sv-num ${pctClass(pnlAmt)}`}>
-                        {pnlAmt >= 0 ? '+' : ''}${fmt(Math.round(pnlAmt))}
+                        {formatSignedTwd(Math.round(pnlAmt))}
                       </div>
                     </td>
                   </tr>
@@ -1069,20 +693,20 @@ function PositionsTable() {
                         <div className="grid grid-cols-1 gap-2 lg:grid-cols-2">
                           {s12HoldingDefense && (
                             <div className={[
-                              'rounded-lg border px-3 py-2 text-[12px] leading-5 md:text-[13px]',
+                              'border-0 border-l-2 px-3 py-1.5 text-[12px] leading-5 md:text-[13px]',
                               executionToneClass(s12HoldingDefense.tone),
                             ].join(' ')}>
                               <div className="font-semibold">S12 持倉分析：{s12HoldingDefense.label}</div>
-                              <div className="mt-1 text-muted-foreground/90">{s12HoldingDefense.description}</div>
+                              <div className="mt-1 text-muted-foreground">{s12HoldingDefense.description}</div>
                             </div>
                           )}
                           {riskContractBadge && (
                             <div className={[
-                              'rounded-lg border px-3 py-2 text-[12px] leading-5 md:text-[13px]',
+                              'border-0 border-l-2 px-3 py-1.5 text-[12px] leading-5 md:text-[13px]',
                               executionToneClass(riskContractBadge.tone),
                             ].join(' ')}>
                               <div className="font-semibold">止損 / 停利 contract：{riskContractBadge.label}</div>
-                              <div className="mt-1 text-muted-foreground/90">{riskContractBadge.description}</div>
+                              <div className="mt-1 text-muted-foreground">{riskContractBadge.description}</div>
                             </div>
                           )}
                         </div>
@@ -1097,13 +721,13 @@ function PositionsTable() {
       </div>
 
       {/* Summary bar */}
-      <div className="flex items-center justify-between px-3 py-2 mt-2 bg-muted/40 rounded text-xs">
+      <div className="flex items-center justify-between border-t border-border px-3 py-2 text-xs">
         <div className="flex gap-4">
           <span className="text-muted-foreground">持倉 <span className="text-foreground/80">{positions.length}</span> 檔</span>
           <span className="text-muted-foreground">成本 <span className="text-foreground/80">${fmt(Math.round(totalCostBasis))}</span></span>
         </div>
         <div className="flex gap-4">
-          <span className="text-muted-foreground">未實現 <span className={pctClass(totalUnrealized)}>{totalUnrealized >= 0 ? '+' : ''}${fmt(Math.round(totalUnrealized))}</span></span>
+          <span className="text-muted-foreground">未實現 <span className={pctClass(totalUnrealized)}>{formatSignedTwd(Math.round(totalUnrealized))}</span></span>
           {summary && <span className="text-muted-foreground">現金 <span className="text-foreground/80">${fmt(Math.round(summary.cash))}</span></span>}
         </div>
       </div>
@@ -1116,7 +740,7 @@ function PositionsTable() {
 function TradeHistory() {
   const [page, setPage] = useState(1)
   const pageSize = 20
-  const { data, isLoading, isError } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['paper', 'orders', 'history', page],
     queryFn: () => paperApi.orders(pageSize, page),
     staleTime: 60_000,
@@ -1126,43 +750,39 @@ function TradeHistory() {
   const total = Number(data?.total ?? orders.length)
   const totalPages = Math.max(1, Number(data?.totalPages ?? Math.ceil(total / pageSize)))
   const currentPage = Number(data?.page ?? page)
-  if (isLoading) return <div className="text-muted-foreground text-sm p-4">Loading...</div>
-  if (isError) return <div className="text-muted-foreground text-sm p-4">成交歷史暫時無法載入</div>
-  if (!orders.length) {
+  const listState = listRefreshState({ isLoading, isError, hasData: !!data, count: orders.length })
+  if (listState === 'loading') return <DataState kind="loading" />
+  if (listState === 'error') return <DataState kind="error" title="成交歷史讀取失敗" onRetry={() => { void refetch() }} />
+  if (listState === 'empty' || listState === 'empty-stale') {
     return (
-      <div className="text-center py-12 text-muted-foreground">
-        <Clock className="w-12 h-12 mx-auto mb-3 opacity-30" />
-        <p>No trades yet</p>
+      <div className="space-y-2">
+        {listState === 'empty-stale' && <DataState kind="stale" title="更新失敗，上次讀到的成交是空的" onRetry={() => { void refetch() }} className="px-3 py-1" />}
+        <DataState kind="empty" title="還沒有模擬成交" hint="候選股成交後會逐筆記在這裡。" />
       </div>
     )
   }
 
   return (
     <div className="space-y-3">
+      {listState === 'list-stale' && <DataState kind="stale" title="更新失敗，顯示上次的資料" onRetry={() => { void refetch() }} className="px-3 py-1" />}
       <div className="overflow-x-auto">
       <table className="w-full text-sm">
         <thead>
           <tr className="text-muted-foreground text-xs normal-case border-b border-border">
-            <th className="text-left p-2">Time</th>
-            <th className="text-left p-2">Symbol</th>
-            <th className="text-left p-2">Side</th>
-            <th className="text-right p-2">Shares</th>
-            <th className="text-right p-2">Price</th>
+            <th className="text-left p-2">時間</th>
+            <th className="text-left p-2">股票</th>
+            <th className="text-left p-2">方向</th>
+            <th className="text-right p-2">股數</th>
+            <th className="text-right p-2">價格</th>
             <th className="text-right p-2">已實現</th>
-            <th className="text-left p-2 hidden md:table-cell">Note</th>
+            <th className="text-left p-2 hidden md:table-cell">原因</th>
           </tr>
         </thead>
         <tbody>
           {orders.map((o: any, i: number) => {
             const isBuy = o.side === 'buy'
             const realized = realizedPnlFromOrder(o)
-            let noteDisplay = ''
-            try {
-              const n = typeof o.note === 'string' ? JSON.parse(o.note) : o.note
-              if (n?.ml_entry) noteDisplay = `entry:${n.ml_entry} stop:${n.ml_stop}`
-              else if (n?.reason) noteDisplay = n.reason
-              else noteDisplay = o.note ?? ''
-            } catch { noteDisplay = o.note ?? '' }
+            const noteView = humanOrderReason(o)
             return (
               <tr key={o.id ?? i} className="border-b border-border/50 hover:bg-muted/30">
                 <td className="p-2 text-xs text-muted-foreground sv-num whitespace-nowrap">
@@ -1173,23 +793,20 @@ function TradeHistory() {
                   <span className="text-xs text-muted-foreground ml-1">{o.name}</span>
                 </td>
                 <td className="p-2">
-                  <Badge className={isBuy
-                    ? 'bg-red-500/20 text-red-400 border-red-500/30'
-                    : 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30'
-                  }>
-                    {isBuy ? <ArrowUpRight className="w-3 h-3 mr-1" /> : <ArrowDownRight className="w-3 h-3 mr-1" />}
-                    {o.side?.toUpperCase()}
-                  </Badge>
+                  <span className={`inline-flex items-center text-xs font-medium ${isBuy ? 'text-up' : 'text-down'}`} title={o.side}>
+                    {isBuy ? <ArrowUpRight className="w-3 h-3 mr-0.5" /> : <ArrowDownRight className="w-3 h-3 mr-0.5" />}
+                    {isBuy ? '買進' : '賣出'}
+                  </span>
                 </td>
                 <td className="p-2 text-right sv-num text-foreground/80">{fmt(o.shares)}</td>
                 <td className="p-2 text-right sv-num text-foreground/80">${fmt(o.price, 1)}</td>
                 <td className="p-2 text-right sv-num">
                   {isBuy ? (
-                    <span className="text-muted-foreground/50">—</span>
+                    <span className="text-muted-foreground">—</span>
                   ) : realized ? (
                     <div>
                       <div className={pctClass(realized.pnl)}>
-                        {realized.pnl >= 0 ? '+' : ''}${fmt(Math.round(realized.pnl))}
+                        {formatSignedTwd(Math.round(realized.pnl))}
                       </div>
                       {realized.pct != null && (
                         <div className={`text-xs ${pctClass(realized.pct)}`}>
@@ -1198,11 +815,11 @@ function TradeHistory() {
                       )}
                     </div>
                   ) : (
-                    <span className="text-xs text-amber-300">待補</span>
+                    <span className="text-xs text-warn" title="這筆賣出缺成本或成交資料，還算不出已實現損益">待補</span>
                   )}
                 </td>
-                <td className="p-2 text-xs text-muted-foreground hidden md:table-cell max-w-[200px] truncate">
-                  {noteDisplay}
+                <td className="p-2 text-xs text-muted-foreground hidden md:table-cell max-w-[200px] truncate" title={noteView.raw || undefined}>
+                  {noteView.text}
                 </td>
               </tr>
             )
@@ -1210,7 +827,7 @@ function TradeHistory() {
         </tbody>
       </table>
       </div>
-      <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+      <div className="flex flex-wrap items-center justify-between gap-2 px-3 pb-3 text-xs text-muted-foreground">
         <span>第 {currentPage} / {totalPages} 頁 · 共 {total} 筆，每頁 {pageSize} 筆</span>
         <div className="flex items-center gap-2">
           <button type="button" className="rounded border border-border px-3 py-1.5 disabled:opacity-40" disabled={currentPage <= 1} onClick={() => setPage(currentPage - 1)}>上一頁</button>
@@ -1224,7 +841,7 @@ function TradeHistory() {
 // ─── Bot Status（Live Scheduler Runs）────────────────────────────────────────
 
 function BotStatusPanel() {
-  const { data: risk } = useQuery({
+  const { data: risk, isError: riskError, refetch: refetchRisk } = useQuery({
     queryKey: ['market', 'risk'],
     queryFn: marketApi.risk,
     staleTime: 5 * 60_000,
@@ -1235,27 +852,32 @@ function BotStatusPanel() {
   const ShieldIcon = { alert: ShieldAlert, check: ShieldCheck, neutral: Shield }[marketRiskShield(trading)]
 
   return (
-    <div className="space-y-4">
-      {/* Market Risk */}
-      <div className="flex items-center justify-between p-3 bg-muted/50 rounded-lg">
+    <div className="space-y-3">
+      {/* 市場風險 */}
+      <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <ShieldIcon className={`w-4 h-4 ${trading.style.color}`} />
-          <span className="text-sm text-foreground/80">Market Risk</span>
+          <span className="text-sm text-foreground/80">市場風險</span>
         </div>
-        <div className="text-right">
+        {riskError && !risk ? (
+          <span className="inline-flex items-center gap-2 text-xs text-fail">
+            <StatusIcon tone="fail" /> 讀取失敗
+            <button type="button" className="rounded border border-border px-2 py-0.5 text-muted-foreground hover:text-foreground" onClick={() => { void refetchRisk() }}>重試</button>
+          </span>
+        ) : <div className="text-right">
           {trading.score == null
             ? <span className="text-muted-foreground text-xs">—</span>
             : <><span className={`sv-num font-semibold ${trading.style.color}`}>{Math.round(trading.score)}</span>
               <span className="text-muted-foreground text-xs ml-1">/ 100</span></>}
           <Badge className={`ml-2 text-xs ${trading.style.bg} ${trading.style.color} ${trading.style.border}`}>{trading.label}</Badge>
-        </div>
+        </div>}
       </div>
 
       {/* 排程執行細節集中在排程節奏頁。 */}
       <GateCalibrationPanel />
 
-      <div className="text-center py-4 text-muted-foreground text-sm">
-        <p>排程紀錄已移到 <a href="/scheduler" className="text-sky-400 hover:underline">排程節奏</a></p>
+      <div className="border-t border-border pt-3 text-center text-muted-foreground text-xs">
+        <p>排程紀錄已移到 <a href="/scheduler" className="text-primary hover:underline">排程節奏</a></p>
       </div>
     </div>
   )
@@ -1263,69 +885,73 @@ function BotStatusPanel() {
 
 // ─── Performance Chart（Benchmark overlay + Period selector）────────────────
 
+// 成交＝ok、等待＝warn（與模擬交易室「等待中」同色）、擋單＝fail、略過＝中性灰（已結束、非錯誤）。
+const GATE_BUCKET_COLOR: Record<string, string> = { filled: 'var(--ok)', deferred: 'var(--warn)', blocked: 'var(--fail)', skipped: 'var(--muted-foreground)' }
+
 function GateCalibrationPanel() {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['paper', 'gate-calibration', 7],
     queryFn: () => paperApi.gateCalibration(7),
     staleTime: 60_000,
     refetchInterval: isTWMarketOpen() ? 60_000 : false,
   })
 
+  const view = gateCalibrationView(data, 7)
   const rows: any[] = Array.isArray(data?.rows) ? data.rows : []
-  const total = data?.total_events ?? 0
-  const deferred = data?.deferred_events ?? 0
-  const filled = data?.filled_events ?? 0
-  const skipped = data?.skipped_events ?? 0
-  const deferRate = total > 0 ? deferred / total : 0
   const topRows = rows.slice(0, 5)
+  const maxCount = Math.max(1, ...topRows.map((row) => Number(row.count ?? 0)))
 
+  const GATE_STATUS_PREFIX: Record<string, string> = { deferred: '等待：', blocked: '擋單：', skipped: '略過：', cancelled: '取消：' }
   function describeGate(row: any): string {
-    const raw = formatExecutionEvent({
-      kind: 'execution',
-      status: row.status ?? 'unknown',
-      reason: row.reason ?? 'unknown',
-      detail: null,
-    })
-    return explainExecutionEvent(raw) ?? `${row.status}: ${row.reason}`
+    if ((row.outcome ?? row.status) === 'filled') return '已成交'
+    return `${GATE_STATUS_PREFIX[row.outcome ?? row.status] ?? ''}${humanEntryReason(row.reason, '其他原因')}`
   }
 
   return (
-    <div className="rounded-lg border border-white/[0.06] bg-white/[0.03] p-3">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <div className="text-xs font-medium text-foreground/80">進場卡控校準</div>
-          <div className="mt-1 text-[11px] text-muted-foreground/75">
-            近 7 天統計 execution gate 是否過度保守；這裡看原因分布，不再用感覺判斷。
-          </div>
-        </div>
-        <Badge variant="outline" className={`h-6 text-[10px] ${deferRate > 0.8 ? 'border-amber-500/40 text-amber-300' : 'border-emerald-500/30 text-emerald-300'}`}>
-          defer {(deferRate * 100).toFixed(0)}%
-        </Badge>
+    <div className="border-t border-border pt-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <div className="text-xs font-medium text-foreground">進場卡控</div>
+        {!isLoading && !isError && <div className="sv-num text-[11px] text-muted-foreground" title={`分母＝統計窗內每檔每次進場檢查一筆＋模擬買進成交；成交＋等待＋擋單＋略過＝分母${view.denominatorDefinition ? `\n${view.denominatorDefinition}` : ''}`}>
+          {view.windowLabel ?? `近 ${view.days} 天`} · 分母 {formatNumber(view.total)} 次
+        </div>}
       </div>
 
       {isLoading ? (
-        <div className="mt-3 text-xs text-muted-foreground/60">Loading...</div>
-      ) : total === 0 ? (
-        <div className="mt-3 text-xs text-muted-foreground/60">近 7 天尚無 execution event，可等下一輪 intraday 後觀察。</div>
+        <DataState kind="loading" className="px-0" />
+      ) : isError ? (
+        <DataState kind="error" title="進場卡控讀取失敗" onRetry={() => { void refetch() }} className="px-0" />
+      ) : view.total === 0 ? (
+        <DataState kind="empty" title={`近 ${view.days} 天沒有進場檢查紀錄`} className="px-0" />
       ) : (
         <>
-          <div className="mt-3 grid grid-cols-3 gap-2 text-center">
-            {[
-              { label: 'filled', value: filled, cls: 'text-emerald-300' },
-              { label: 'deferred', value: deferred, cls: 'text-amber-300' },
-              { label: 'skipped', value: skipped, cls: 'text-zinc-300' },
-            ].map((item) => (
-              <div key={item.label} className="rounded-md bg-black/20 px-2 py-1.5">
-                <div className="text-[10px] normal-case text-muted-foreground/60">{item.label}</div>
-                <div className={`sv-num text-sm ${item.cls}`}>{item.value}</div>
+          {view.consistent ? (
+            <>
+              <div className="mt-2 flex h-2.5 overflow-hidden rounded-sm bg-muted" role="img" aria-label={view.buckets.map((b) => `${b.label} ${b.value}`).join('、')}>
+                {view.buckets.map((bucket) => (
+                  <div key={bucket.key} style={{ width: `${(bucket.value ?? 0) / view.total * 100}%`, background: GATE_BUCKET_COLOR[bucket.key] }} title={`${bucket.label} ${bucket.value}`} />
+                ))}
               </div>
-            ))}
-          </div>
-          <div className="mt-3 space-y-1.5">
+              <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1 sv-num text-[11px]">
+                {view.buckets.map((bucket) => (
+                  <span key={bucket.key} className="inline-flex items-center gap-1 text-muted-foreground">
+                    <i className="inline-block h-2 w-2 rounded-sm" style={{ background: GATE_BUCKET_COLOR[bucket.key] }} />
+                    {bucket.label} <b className="text-foreground">{formatNumber(bucket.value)}</b>
+                    <span>{formatNumber((bucket.value ?? 0) / view.total * 100, 0)}%</span>
+                  </span>
+                ))}
+              </div>
+            </>
+          ) : (
+            <div className="mt-2 flex items-center gap-1.5 text-[11px] text-warn" title="Worker 回傳的成交／等待／略過加總不等於總數（舊版統計字彙對不上），不顯示誤導的 0">
+              <StatusIcon tone="warn" /> 口徑不一致：分項加總 ≠ {formatNumber(view.total)}，分項暫不顯示
+            </div>
+          )}
+          <div className="mt-2 space-y-1">
             {topRows.map((row, idx) => (
-              <div key={`${row.status}-${row.reason}-${idx}`} className="flex items-start justify-between gap-3 text-[11px]">
-                <span className="leading-relaxed text-muted-foreground/80">{describeGate(row)}</span>
-                <span className="shrink-0 sv-num text-foreground/70">x{row.count}</span>
+              <div key={`${row.status}-${row.reason}-${idx}`} className="grid grid-cols-[minmax(0,1fr)_64px_40px] items-center gap-2 text-[11px]" title={`${row.status} · ${row.reason}${row.source ? ` · ${row.source}` : ''}`}>
+                <span className="truncate text-muted-foreground" title={typeof row.reason === 'string' && row.reason ? row.reason : undefined}>{describeGate(row)}</span>
+                <span className="h-1.5 overflow-hidden rounded-full bg-muted"><span className="block h-full bg-slate-400/70" style={{ width: `${Number(row.count ?? 0) / maxCount * 100}%` }} /></span>
+                <span className="text-right sv-num text-foreground">{formatNumber(Number(row.count ?? 0))}</span>
               </div>
             ))}
           </div>
@@ -1336,7 +962,7 @@ function GateCalibrationPanel() {
 }
 
 function PerformanceChart() {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['paper', 'pnl'],
     queryFn: paperApi.pnl,
     staleTime: 5 * 60_000,
@@ -1361,6 +987,8 @@ function PerformanceChart() {
       orders={orders}
       pendingBuys={pendingBuys}
       loading={isLoading}
+      error={error}
+      onRetry={() => { void refetch() }}
     />
   )
 }
@@ -1368,17 +996,17 @@ function PerformanceChart() {
 // ─── Backtest Card (skeleton) ────────────────────────────────────────────────
 
 function BacktestCard() {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['backtest', 'latest'],
     queryFn: backtestApi.latest,
     staleTime: 30 * 60_000,
   })
-  const { data: mcData } = useQuery({
+  const { data: mcData, isError: mcError } = useQuery({
     queryKey: ['backtest', 'monte-carlo'],
     queryFn: backtestApi.monteCarlo,
     staleTime: 30 * 60_000,
   })
-  const { data: pboData } = useQuery({
+  const { data: pboData, isError: pboError } = useQuery({
     queryKey: ['backtest', 'pbo'],
     queryFn: backtestApi.pbo,
     staleTime: 30 * 60_000,
@@ -1389,11 +1017,11 @@ function BacktestCard() {
       <Card className="bg-card border-border backdrop-blur-sm">
         <CardHeader className="pb-2">
           <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-            <Scale className="w-4 h-4" /> Backtest
+            <Scale className="w-4 h-4" /> 回測
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-muted-foreground/60 text-xs">Loading...</p>
+          <DataState kind="loading" />
         </CardContent>
       </Card>
     )
@@ -1404,33 +1032,37 @@ function BacktestCard() {
       <Card className="bg-card border-border backdrop-blur-sm">
         <CardHeader className="pb-2">
           <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-            <Scale className="w-4 h-4" /> Backtest
+            <Scale className="w-4 h-4" /> 回測
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-muted-foreground/60 text-xs">尚無回測結果</p>
+          {error
+            ? <DataState kind="error" title="回測結果讀取失敗" code={error instanceof Error ? error.message : undefined} onRetry={() => { void refetch() }} />
+            : <DataState kind="empty" title="尚無回測結果" />}
         </CardContent>
       </Card>
     )
   }
 
-  const metrics = [
-    { label: 'Sharpe', value: data.sharpe != null ? data.sharpe.toFixed(2) : '-', good: (data.sharpe ?? 0) > 1, hint: '每承擔一單位波動換到多少超額報酬；>1 才算有基本效率。' },
-    { label: 'Sortino', value: data.sortino != null ? data.sortino.toFixed(2) : '-', good: (data.sortino ?? 0) > 1.5, hint: '只看下跌波動的風險調整報酬；比 Sharpe 更貼近實際痛感。' },
-    { label: 'MDD', value: data.max_drawdown != null ? `${(data.max_drawdown * 100).toFixed(1)}%` : '-', good: (data.max_drawdown ?? 1) < 0.15, hint: '歷史最大資金回撤；代表策略最壞連續虧損壓力。' },
-    { label: 'Win Rate', value: data.win_rate != null ? `${(data.win_rate * 100).toFixed(1)}%` : '-', good: (data.win_rate ?? 0) > 0.5, hint: '交易勝率；要搭配 PF/Expectancy 看，單獨高不一定好。' },
-    { label: 'PF', value: data.profit_factor != null ? data.profit_factor.toFixed(2) : '-', good: (data.profit_factor ?? 0) > 1.5, hint: '總獲利 / 總虧損；>1 表示有正收益，>1.5 較健康。' },
-    { label: 'CAGR', value: data.cagr != null ? `${(data.cagr * 100).toFixed(1)}%` : '-', good: (data.cagr ?? 0) > 0, hint: '年化複合報酬；用來比較不同期間策略。' },
-    { label: 'Calmar', value: data.calmar != null ? data.calmar.toFixed(2) : '-', good: (data.calmar ?? 0) > 1, hint: 'CAGR / MDD；衡量報酬是否值得承受最大回撤。' },
-    { label: 'Trades', value: data.total_trades ?? '-', good: true, hint: '樣本數；太少時 Sharpe、勝率、PF 都容易失真。' },
-    { label: 'Expectancy', value: data.expectancy != null ? data.expectancy.toFixed(4) : '-', good: (data.expectancy ?? 0) > 0, hint: '每筆交易平均期望值；>0 才代表長期下注有正期望。' },
+  // 上色規則：CAGR、期望值是報酬 → 漲跌色；MDD 是虧損 → down；其餘比值依門檻判斷 → 狀態色＋圖示；交易數中性。
+  type Metric = { label: string; value: string | number; hint: string; kind: 'return' | 'loss' | 'threshold' | 'neutral'; raw?: number | null; tone?: ThresholdTone }
+  const metrics: Metric[] = [
+    { label: 'Sharpe', value: data.sharpe != null ? data.sharpe.toFixed(2) : '-', kind: 'threshold', tone: thresholdTone(data.sharpe, 1), hint: '每承擔一單位波動換到多少超額報酬；>1 才算有基本效率。' },
+    { label: 'Sortino', value: data.sortino != null ? data.sortino.toFixed(2) : '-', kind: 'threshold', tone: thresholdTone(data.sortino, 1.5), hint: '只看下跌波動的風險調整報酬；比 Sharpe 更貼近實際痛感。' },
+    { label: 'MDD', value: formatDrawdownPct(data.max_drawdown), kind: 'loss', raw: data.max_drawdown, hint: '歷史最大資金回撤；代表策略最壞連續虧損壓力（門檻 15%）。' },
+    { label: '勝率', value: data.win_rate != null ? `${(data.win_rate * 100).toFixed(1)}%` : '-', kind: 'threshold', tone: thresholdTone(data.win_rate, 0.5), hint: '交易勝率；要搭配 PF／期望值看，單獨高不一定好。' },
+    { label: 'PF', value: data.profit_factor != null ? data.profit_factor.toFixed(2) : '-', kind: 'threshold', tone: thresholdTone(data.profit_factor, 1.5), hint: '總獲利 / 總虧損；>1 表示有正收益，>1.5 較健康。' },
+    { label: 'CAGR', value: data.cagr != null ? formatSignedPct(data.cagr * 100, 1) : '-', kind: 'return', raw: data.cagr, hint: '年化複合報酬；用來比較不同期間策略。' },
+    { label: 'Calmar', value: data.calmar != null ? data.calmar.toFixed(2) : '-', kind: 'threshold', tone: thresholdTone(data.calmar, 1), hint: 'CAGR / MDD；衡量報酬是否值得承受最大回撤。' },
+    { label: '交易數', value: data.total_trades ?? '-', kind: 'neutral', hint: '樣本數；太少時 Sharpe、勝率、PF 都容易失真。' },
+    { label: '期望值', value: data.expectancy != null ? data.expectancy.toFixed(4) : '-', kind: 'return', raw: data.expectancy, hint: '每筆交易平均期望值；>0 才代表長期下注有正期望。' },
   ]
 
-  // MC MDD verdict badge
+  const VERDICT_LABEL: Record<string, string> = { PASS: '通過', CAUTION: '注意', FAIL: '未通過', INSUFFICIENT_EVIDENCE: '樣本不足' }
+  const VERDICT_TONE: Record<string, 'ok' | 'warn' | 'fail'> = { PASS: 'ok', CAUTION: 'warn', FAIL: 'fail', INSUFFICIENT_EVIDENCE: 'warn' }
+
+  // MC MDD verdict
   const mcVerdict = mcData?.go_live_verdict
-  const mcBadge = mcVerdict === 'PASS' ? 'bg-emerald-500/20 text-emerald-400'
-    : mcVerdict === 'CAUTION' ? 'bg-yellow-500/20 text-yellow-400'
-    : mcVerdict === 'FAIL' ? 'bg-red-500/20 text-red-400' : ''
 
   // PBO uses the latest immutable attempt receipt. Historical numeric rows never masquerade as this week's attempt.
   const pboAttempt = pboData?.latest_attempt
@@ -1438,70 +1070,77 @@ function BacktestCard() {
   const pboVerdict = pboAttempt?.status === 'insufficient_evidence'
     ? 'INSUFFICIENT_EVIDENCE'
     : pboNumeric?.go_live_verdict
-  const pboBadge = pboVerdict === 'PASS' ? 'bg-emerald-500/20 text-emerald-400'
-    : pboVerdict === 'FAIL' ? 'bg-red-500/20 text-red-400'
-      : pboVerdict === 'INSUFFICIENT_EVIDENCE' ? 'bg-amber-500/20 text-amber-300' : ''
+
+  function Verdict({ code }: { code?: string | null }) {
+    if (!code) return <span className="text-muted-foreground">—</span>
+    const tone = VERDICT_TONE[code]
+    return tone ? <StatusBadge tone={tone} title={code}>{VERDICT_LABEL[code]}</StatusBadge> : <span className="text-muted-foreground" title={code}>未知判定</span>
+  }
 
   return (
     <Card className="bg-card border-border backdrop-blur-sm">
       <CardHeader className="py-2">
         <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-          <Scale className="w-4 h-4" /> Backtest
-          <span className="text-muted-foreground/60 text-xs ml-auto">{data.run_date} · {data.strategy}</span>
+          <Scale className="w-4 h-4" /> 回測
+          <span className="text-muted-foreground text-xs ml-auto" title={data.strategy ? `策略 ${data.strategy}` : undefined}>{formatDate(data.run_date)}</span>
         </CardTitle>
       </CardHeader>
       <CardContent className="pb-3">
         <div className="grid grid-cols-3 gap-3">
-          {metrics.map(m => (
-            <div key={m.label} className="text-center" title={m.hint}>
-              <div className="text-muted-foreground text-[10px] normal-case">{m.label}</div>
-              <div className={`text-sm sv-num mt-0.5 ${m.good ? 'text-emerald-400' : 'text-red-400'}`}>
-                {m.value}
+          {metrics.map(m => {
+            const cls = m.kind === 'return' ? priceToneClass(m.raw) : m.kind === 'loss' ? (m.raw ? 'text-down' : 'text-muted-foreground') : m.kind === 'threshold' ? (m.tone === 'ok' ? 'text-ok' : m.tone === 'fail' ? 'text-fail' : 'text-muted-foreground') : 'text-foreground'
+            return (
+              <div key={m.label} className="text-center" title={m.hint}>
+                <div className="text-muted-foreground text-[11px] normal-case">{m.label}</div>
+                <div className={`mt-0.5 inline-flex items-center gap-1 text-sm sv-num ${cls}`}>
+                  {m.kind === 'threshold' && <StatusIcon tone={m.tone ?? 'na'} title={m.tone === 'na' ? '尚無數值，未檢查' : undefined} />} {m.value}
+                </div>
               </div>
-            </div>
-            ))}
+            )
+          })}
         </div>
-        <div className="mt-3 rounded-md border border-white/[0.06] bg-white/[0.03] p-2 text-[10px] leading-relaxed text-muted-foreground/80">
-          <div className="mb-1 font-medium text-foreground/70">怎麼讀這張卡</div>
-          <div>先看 MDD / Calmar 判斷風險是否可承受，再看 Sharpe / Sortino 判斷報酬品質，最後用 PF / Expectancy 確認每筆交易是否真的有正期望；Trades 太少時所有結論都只能當觀察，不應直接 go-live。</div>
-        </div>
+        <p className="mt-3 border-t border-border pt-2 text-[11px] leading-relaxed text-muted-foreground">
+          先看 MDD／Calmar 判斷風險是否可承受，再看 Sharpe／Sortino 判斷報酬品質，最後用 PF／期望值確認每筆交易是否有正期望；交易數太少時結論只能當觀察。
+        </p>
         {/* Weekly Validation split: PBO credibility, MC tail risk, backtest consistency */}
-        {(mcVerdict || pboVerdict) && (
-          <div className="mt-3 grid gap-2 border-t border-white/[0.06] pt-2 md:grid-cols-3">
-            <div className="rounded-md border border-white/[0.06] bg-white/[0.03] p-2">
-              <div className="text-[10px] normal-case text-muted-foreground">PBO alpha credibility</div>
-              <div className={`mt-1 inline-flex px-2 py-0.5 text-[10px] sv-num ${pboBadge || 'bg-white/5 text-muted-foreground'}`}>
-                PBO {pboNumeric?.pbo != null ? `${(pboNumeric.pbo * 100).toFixed(0)}%` : '-'} {pboVerdict ?? '尚無 attempt'}
+        {(mcVerdict || pboVerdict || mcError || pboError) && (
+          <div className="mt-2 grid gap-2 border-t border-border pt-2 text-[11px] md:grid-cols-3 md:divide-x md:divide-border">
+            <div className="md:pr-2">
+              <div className="text-muted-foreground" title="PBO：過度擬合機率">PBO 可信度</div>
+              <div className="mt-1 flex items-center gap-1.5 sv-num">
+                <span>PBO {pboNumeric?.pbo != null ? `${(pboNumeric.pbo * 100).toFixed(0)}%` : '-'}</span>
+                {pboError && !pboData ? <span className="text-fail">讀取失敗</span> : pboVerdict ? <Verdict code={pboVerdict} /> : <span className="text-muted-foreground">本週尚未檢定</span>}
               </div>
-              {pboAttempt ? (
-                <div className="mt-1 text-[10px] text-muted-foreground/75">
-                  {pboAttempt.run_date} · 樣本 {pboAttempt.observed_trades}/{pboAttempt.required_trades} · production effect: none
+              {pboError && !pboData ? null : pboAttempt ? (
+                <div className="mt-1 text-muted-foreground">
+                  {formatDate(pboAttempt.run_date)} · 樣本 {pboAttempt.observed_trades}/{pboAttempt.required_trades} · 不影響實盤
                 </div>
               ) : (
-                <div className="mt-1 text-[10px] text-amber-300/90">
-                  尚無新契約 PBO attempt receipt；不沿用舊 numeric result 作為本週狀態。
+                <div className="mt-1 text-warn" title="不沿用舊 numeric result 作為本週狀態">
+                  本週還沒有 PBO 檢定紀錄；舊的數值不拿來當本週狀態。
                 </div>
               )}
             </div>
-            <div className="rounded-md border border-white/[0.06] bg-white/[0.03] p-2">
-              <div className="text-[10px] normal-case text-muted-foreground">MC tail risk</div>
-              <div className={`mt-1 inline-flex px-2 py-0.5 text-[10px] sv-num ${mcBadge || 'bg-white/5 text-muted-foreground'}`}>
-                95th {mcData?.mdd_95th != null ? `${(mcData.mdd_95th * 100).toFixed(1)}%` : '-'} {mcVerdict ?? 'N/A'}
+            <div className="md:px-2">
+              <div className="text-muted-foreground" title="Monte Carlo 模擬的 95 百分位最大回撤">尾端風險（MC）</div>
+              <div className="mt-1 flex items-center gap-1.5 sv-num">
+                <span>95 分位回撤 {mcData?.mdd_95th != null ? `${(mcData.mdd_95th * 100).toFixed(1)}%` : '-'}</span>
+                {mcError && !mcData ? <span className="text-fail">讀取失敗</span> : <Verdict code={mcVerdict} />}
               </div>
               {String((mcData as any)?.raw_distribution ?? '').includes('LOW_SAMPLE_TAIL_RISK') && (
-                <div className="mt-1 text-[10px] text-amber-300">LOW_SAMPLE_TAIL_RISK</div>
+                <div className="mt-1 text-warn" title="LOW_SAMPLE_TAIL_RISK">樣本少，尾端風險估計不穩</div>
               )}
             </div>
-            <div className="rounded-md border border-white/[0.06] bg-white/[0.03] p-2">
-              <div className="text-[10px] normal-case text-muted-foreground">Backtest consistency</div>
-              <div className="mt-1 text-[10px] sv-num text-slate-200">
-                MDD {data.max_drawdown != null ? `${(data.max_drawdown * 100).toFixed(1)}%` : '-'} / Trades {data.total_trades ?? '-'}
+            <div className="md:pl-2">
+              <div className="text-muted-foreground">回測一致性</div>
+              <div className="mt-1 sv-num text-foreground">
+                MDD {formatDrawdownPct(data.max_drawdown)} · 交易 {data.total_trades ?? '—'}
               </div>
             </div>
           </div>
         )}
         {data.timerange && (
-          <div className="text-muted-foreground/60 text-[10px] mt-2 text-center">{data.timerange}</div>
+          <div className="text-muted-foreground text-[11px] mt-2 text-center">{data.timerange}</div>
         )}
       </CardContent>
     </Card>
@@ -1511,7 +1150,7 @@ function BacktestCard() {
 // ─── Adaptive Params Card ────────────────────────────────────────────────────
 
 function AdaptiveParamsCard() {
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['adaptive', 'params'],
     queryFn: adaptiveApi.get,
     staleTime: 5 * 60_000,
@@ -1522,24 +1161,24 @@ function AdaptiveParamsCard() {
       <Card className="bg-card border-border backdrop-blur-sm">
         <CardHeader className="pb-2">
           <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-            <Cpu className="w-4 h-4" /> Adaptive Params
+            <Cpu className="w-4 h-4" /> 調整參數
           </CardTitle>
         </CardHeader>
-        <CardContent><p className="text-muted-foreground/60 text-xs">Loading...</p></CardContent>
+        <CardContent><DataState kind="loading" /></CardContent>
       </Card>
     )
   }
 
-  if (error) {
+  if (error && !data) {
     return (
       <Card className="bg-card border-border backdrop-blur-sm">
         <CardHeader className="pb-2">
           <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-            <Cpu className="w-4 h-4" /> Adaptive Params
+            <Cpu className="w-4 h-4" /> 調整參數
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-red-400 text-xs">載入失敗：{error instanceof Error ? error.message : 'unknown error'}</p>
+          <DataState kind="error" title="調整參數讀取失敗" code={error instanceof Error ? error.message : undefined} onRetry={() => { void refetch() }} />
         </CardContent>
       </Card>
     )
@@ -1550,10 +1189,10 @@ function AdaptiveParamsCard() {
       <Card className="bg-card border-border backdrop-blur-sm">
         <CardHeader className="pb-2">
           <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-            <Cpu className="w-4 h-4" /> Adaptive Params
+            <Cpu className="w-4 h-4" /> 調整參數
           </CardTitle>
         </CardHeader>
-        <CardContent><p className="text-muted-foreground/60 text-xs">尚未計算（今日 16:05 後可用）</p></CardContent>
+        <CardContent><p className="text-muted-foreground text-xs">尚未計算（今日 16:05 後可用）</p></CardContent>
       </Card>
     )
   }
@@ -1568,39 +1207,39 @@ function AdaptiveParamsCard() {
   const version       = data.version ?? 0
   const computedAt    = data.computed_at ? data.computed_at.slice(0, 16).replace('T', ' ') : '-'
 
-  const confColor = confThreshold > 0.65 ? 'text-amber-400' : confThreshold < 0.58 ? 'text-emerald-400' : 'text-foreground/80'
+  const confColor = confThreshold > 0.65 ? 'text-warn' : confThreshold < 0.58 ? 'text-ok' : 'text-foreground/80'
 
   return (
     <Card className="bg-card border-border backdrop-blur-sm">
       <CardHeader className="py-2">
         <CardTitle className="text-sm font-medium text-muted-foreground flex items-center gap-2">
-          <Cpu className="w-4 h-4" /> Adaptive Params
-          <span className="text-muted-foreground/60 text-xs ml-auto">v{version} · {computedAt}</span>
+          <Cpu className="w-4 h-4" /> 調整參數
+          <span className="text-muted-foreground text-xs ml-auto">v{version} · {computedAt}</span>
         </CardTitle>
       </CardHeader>
       <CardContent className="pb-3">
-        <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
-          <div className="rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2">
+        <div className="grid grid-cols-2 divide-border md:grid-cols-4 md:divide-x [&>div]:px-3 [&>div]:py-1.5 [&>div:first-child]:pl-0">
+          <div>
             <div className="text-muted-foreground text-[10px] normal-case">信心門檻</div>
             <div className={`text-sm sv-num mt-0.5 ${confColor}`}>{confThreshold.toFixed(2)}</div>
           </div>
-          <div className="rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2">
-            <div className="text-muted-foreground text-[10px] normal-case">Risk Score</div>
+          <div>
+            <div className="text-muted-foreground text-[10px] normal-case">風險分數</div>
             <div className="text-sm sv-num mt-0.5 text-foreground/80">{riskScore == null ? '待接資料' : riskScore}</div>
           </div>
-          <div className="rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2">
-            <div className="text-muted-foreground text-[10px] normal-case">30d 準確率</div>
-            <div className={`text-sm sv-num mt-0.5 ${acc30d >= 0.6 ? 'text-emerald-400' : 'text-amber-400'}`}>{(acc30d * 100).toFixed(0)}%</div>
+          <div>
+            <div className="text-muted-foreground text-[10px] normal-case">30 日準確率</div>
+            <div className={`text-sm sv-num mt-0.5 ${acc30d >= 0.6 ? 'text-ok' : 'text-warn'}`}>{(acc30d * 100).toFixed(0)}%</div>
           </div>
-          <div className="rounded-lg border border-white/[0.06] bg-white/[0.03] px-3 py-2">
-            <div className="text-muted-foreground text-[10px] normal-case">Bandit</div>
-            <div className={`text-sm sv-num mt-0.5 ${forceExplore ? 'text-red-400' : 'text-foreground/80'}`}>
+          <div>
+            <div className="text-muted-foreground text-[10px] normal-case">Bandit 倍數</div>
+            <div className={`text-sm sv-num mt-0.5 ${forceExplore ? 'text-warn' : 'text-foreground/80'}`}>
               {forceExplore ? '強制探索' : `×${banditMult.toFixed(1)}`}
             </div>
           </div>
         </div>
         {slOverride && (
-          <div className="text-xs text-amber-400/80 bg-amber-500/5 border border-amber-500/20 rounded px-2 py-1">
+          <div className="mt-2 border-l-2 border-warn px-2 py-1 text-xs text-warn">
             SL +{slOverride.sl_add} ATR / TP +{slOverride.tp_add} ATR（高風險 regime 加寬）
           </div>
         )}
@@ -1635,12 +1274,11 @@ export default function BotDashboard() {
       <AppShell>
         <div className="flex min-h-full items-center justify-center p-4 lg:p-5">
           <div className="w-full max-w-4xl space-y-3">
-            <WorkstationPageTitle
-              kicker="Paper trading companion"
-              title="模擬交易室"
-              description="登入後查看待買清單、辯論結果、成交、滑價、停利停損與資產變化；未登入時只顯示預覽，不讀交易資料。"
-              action={<WorkstationPill tone="warn">需要登入</WorkstationPill>}
-            />
+            <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+              <h1 className="text-[15px] font-semibold text-foreground">模擬交易室</h1>
+              <StatusBadge tone="warn">需要登入</StatusBadge>
+              <span className="text-[11px] text-muted-foreground">登入後查看待買清單、成交、停利停損與資產變化；未登入不讀交易資料。</span>
+            </div>
             <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
               <WorkstationCatCard
                 src="/stockvision-cats/02_red_market_royal_cat.png"
@@ -1655,10 +1293,10 @@ export default function BotDashboard() {
                 tone="info"
               />
             </div>
-            <div className="rounded-2xl border border-[#3a3125] bg-[#171714]/90 p-6 text-center">
-              <Bot className="mx-auto h-12 w-12 text-[#d6a85f]/80" />
-              <p className="mt-3 text-sm text-[#b9b1a1]">請先登入以查看模擬交易室</p>
-              <button onClick={login} className="mt-4 rounded-full border border-[#d6a85f]/35 bg-[#d6a85f]/90 px-4 py-2 text-sm text-[#171714] hover:bg-[#f1c16f]">
+            <div className="rounded-lg border border-border p-6 text-center">
+              <Bot className="mx-auto h-8 w-8 text-muted-foreground" />
+              <p className="mt-3 text-sm text-muted-foreground">請先登入以查看模擬交易室</p>
+              <button onClick={login} className="mt-4 rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90">
                 Google 登入
               </button>
             </div>
@@ -1670,34 +1308,32 @@ export default function BotDashboard() {
 
   return (
     <AppShell>
-      <div className="p-4 lg:p-5 space-y-3 text-sm">
-        <WorkstationPageTitle
-          kicker="Paper trading companion"
-          title="模擬交易室"
-          description="把待買清單、辯論結果、成交、滑價、停利停損與資產變化放在同一張交易桌；資料來源與交易邏輯維持原 API。"
-          action={
-            <div className="flex flex-wrap gap-2">
-              <WorkstationPill tone="warn">模擬交易</WorkstationPill>
-              <WorkstationPill tone={isTWMarketOpen() ? 'ok' : 'neutral'}>{isTWMarketOpen() ? '台股盤中' : '台股休息'}</WorkstationPill>
-            </div>
-          }
-        />
+      <div className="p-3 lg:p-4 space-y-3 text-sm">
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <h1 className="text-[15px] font-semibold text-foreground">模擬交易室</h1>
+          <span className="text-[11px] text-muted-foreground">模擬交易 · 待買、成交與資產變化</span>
+        </div>
 
-        <WorkstationPanel title="資產摘要" kicker="cash, settlement, pnl">
+        {/* 第一屏留給推薦候選（依時段：盤前計畫／盤中／盤後結果）；持倉、紀錄、曲線往下移。 */}
+        <section aria-label="推薦候選">
+          <SignalTable onSelectSymbol={setSelectedSymbol} />
+        </section>
+
+        <WorkstationPanel title="資產摘要" kicker="現金、交割、損益">
           <div className="px-4 pb-2 pt-3">
             <PortfolioSummary />
           </div>
         </WorkstationPanel>
 
-        <WorkstationPanel title="持倉與風險" kicker="open risk and holdings">
+        <WorkstationPanel title="持倉與風險" kicker="持倉、停利停損">
           <PositionsTable />
         </WorkstationPanel>
 
-        <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,0.85fr)_minmax(420px,1.15fr)]">
+        <div className="grid grid-cols-1 items-start gap-3 xl:grid-cols-[minmax(0,0.85fr)_minmax(420px,1.15fr)]">
           <DeferredRender minHeight={360}>
-            <WorkstationPanel title="資產曲線" kicker="paper trading performance">
+            <WorkstationPanel title="資產曲線" kicker="與 0050／TWII／ETF 同起點比較">
               <div className="px-3 pb-2 pt-1">
-                <Suspense fallback={<div className="grid min-h-80 place-items-center text-xs text-muted-foreground">圖表載入中…</div>}>
+                <Suspense fallback={<DataState kind="loading" title="圖表載入中" minHeight={320} />}>
                   <PerformanceChart />
                 </Suspense>
               </div>
@@ -1706,29 +1342,16 @@ export default function BotDashboard() {
           <StockFactorTrajectoryPanel />
         </div>
 
-        <DeferredRender minHeight={720}>
-          <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,1.5fr)_minmax(380px,1fr)]">
-            <WorkstationPanel
-              title="推薦候選"
-              kicker="daily trading candidates"
-              action={<WorkstationPill tone="info">latest</WorkstationPill>}
-            >
-              <div className="border-b border-[#263247] px-4 pb-2 pt-3">
-                <div className="text-xs font-medium text-muted-foreground flex items-center gap-1.5 sv-num normal-case">
-                  <TrendingUp className="w-3.5 h-3.5" /> 推薦候選
-                </div>
-                <p className="mt-1 text-[10px] leading-relaxed text-muted-foreground/70">與晨間概覽同源，點開牌卡查看個股資訊與交易計劃。</p>
-              </div>
-              <div className="p-2">
-                <Suspense fallback={<div className="p-4 text-xs text-muted-foreground">推薦卡載入中…</div>}>
-                  <SignalTable onSelectSymbol={setSelectedSymbol} selectedSymbol={selectedSymbol} />
-                </Suspense>
-              </div>
-            </WorkstationPanel>
-
-            <WorkstationPanel title="交易紀錄" kicker="orders and fills audit">
+        <DeferredRender minHeight={480}>
+          <div className="grid grid-cols-1 items-start gap-3 xl:grid-cols-[minmax(0,1.5fr)_minmax(380px,1fr)]">
+            <WorkstationPanel title="交易紀錄" kicker="委託與成交">
               <RotationAudit />
               <TradeHistory />
+            </WorkstationPanel>
+            <WorkstationPanel title="Bot 狀態" kicker="市場風險與進場卡控">
+              <div className="p-3">
+                <BotStatusPanel />
+              </div>
             </WorkstationPanel>
           </div>
         </DeferredRender>
@@ -1752,18 +1375,6 @@ export default function BotDashboard() {
           <AdaptiveParamsCard />
         </div>
 
-        <details className="group">
-          <summary className="flex items-center gap-2 border border-[#263247] bg-[#070a10] px-4 py-2.5 cursor-pointer hover:border-amber-300/30 transition-colors text-xs font-medium text-muted-foreground select-none">
-            <Bot className="w-3.5 h-3.5" />
-            <span className="sv-num normal-case">Bot 狀態與排程紀錄</span>
-            <svg className="w-3.5 h-3.5 ml-auto transition-transform group-open:rotate-180" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path d="M19 9l-7 7-7-7" /></svg>
-          </summary>
-          <WorkstationPanel title="Bot 狀態" kicker="scheduler runs and market risk" className="mt-2">
-            <div className="p-3">
-              <BotStatusPanel />
-            </div>
-          </WorkstationPanel>
-        </details>
 
       </div>
     </AppShell>

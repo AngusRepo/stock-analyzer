@@ -5,7 +5,8 @@ import { pipelinePhaseName } from '@/lib/pipelineStageCards'
 import { attentionSkipReason } from '@/lib/schedulerDisplay'
 import JobRunTiming from './observability/JobRunTiming'
 import { stageReceiptDateLabel } from './observability/dailyReadinessPhases'
-import { WorkstationPill, type WorkstationTone } from '@/components/workstation/WorkstationChrome'
+import { WorkstationStatusPill, type WorkstationTone } from '@/components/workstation/WorkstationChrome'
+import { StatusIcon } from '@/components/ui/status'
 
 const upstream = [
   ['finlab-v4-backfill', 'FinLab 資料就緒'],
@@ -81,7 +82,7 @@ export function SchedulerStageCard({ id, title, job, timingJob, detail, onSelect
       </span>
     </> : <>
     <p className="text-xs text-slate-100">{title}</p>
-    <div className="mt-2"><WorkstationPill tone={statusTone ?? (attentionSkipReason(job) ? 'warn' : tone(job?.lastStatus))}>{statusText || label(job?.lastStatus)}</WorkstationPill></div>
+    <div className="mt-2"><WorkstationStatusPill tone={statusTone ?? (attentionSkipReason(job) ? 'warn' : tone(job?.lastStatus))}>{statusText || label(job?.lastStatus)}</WorkstationStatusPill></div>
     <p className="mt-2 text-[10px] text-[#8a92a6]">{stageReceiptDateLabel(id, job?.statusRunDate)}</p>
     {detail && <p className="mt-1 text-[10px] leading-4 text-[#8a92a6]">{detail}</p>}
     {job?.summary && <p className="mt-2 line-clamp-2 break-words text-[10px] leading-4 text-[#70809b]" title={job.summary}>{job.summary}</p>}
@@ -94,14 +95,14 @@ export default function SchedulerPipelineChain({ jobs, loading, error }: {
   const byId = new Map(jobs.map(job => [job.id, job]))
   const root = byId.get('evening-chain')
   const pipeline = byId.get('pipeline')
-  if (error) return <div role="alert" className="p-4 text-sm text-rose-200">流程狀態讀取失敗：{String((error as Error).message || error)}</div>
+  if (error) return <div role="alert" className="flex items-center gap-2 p-4 text-sm text-fail"><StatusIcon tone="fail" />流程狀態讀取失敗：{String((error as Error).message || error)}</div>
   if (loading && !jobs.length) return <div className="p-4 text-sm text-slate-400">讀取當日流程收據…</div>
-  if (!jobs.length) return <div className="p-4 text-sm text-slate-500">尚未取得流程狀態。</div>
+  if (!jobs.length) return <div className="p-4 text-sm text-muted-foreground">尚未取得流程狀態。</div>
   return <div className="space-y-4 p-4">
     <div className="flex flex-wrap items-center justify-between gap-2">
       <div><p className="text-xs text-slate-100">每日流程鏈 · 業務日 {root?.statusRunDate || pipeline?.statusRunDate || '—'}</p>
         <p className="mt-1 text-[11px] leading-5 text-[#8a92a6]">資料更新 → 指標 → 當日風險品質／HMM → 成熟策略證據 → 初篩 → 配置前置檢查</p></div>
-      {root && <WorkstationPill tone={tone(root.lastStatus)}>整體流程：{label(root.lastStatus)}</WorkstationPill>}
+      {root && <WorkstationStatusPill tone={tone(root.lastStatus)}>整體流程：{label(root.lastStatus)}</WorkstationStatusPill>}
     </div>
     <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
       {upstream.map(([id, title]) => <SchedulerStageCard key={id} id={id} title={title} job={byId.get(id)}
@@ -110,7 +111,7 @@ export default function SchedulerPipelineChain({ jobs, loading, error }: {
     <div data-stage="pipeline" className="rounded-xl border border-[#d6a85f]/35 bg-[#d6a85f]/[0.03] p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm font-medium text-[#f1c16f]">Pipeline · 下游流程容器</p>
-        <WorkstationPill tone={tone(pipeline?.lastStatus)}>{label(pipeline?.lastStatus)}</WorkstationPill>
+        <WorkstationStatusPill tone={tone(pipeline?.lastStatus)}>{label(pipeline?.lastStatus)}</WorkstationStatusPill>
       </div>
       <p className="mt-2 text-xs text-[#b9b1a1]">{pipelinePreparationLabel(pipeline)}</p>
       <p className="mt-1 text-[11px] leading-5 text-[#8a92a6]">資料準備 → ML Predict／L3 封存 → 次交易日盤前資訊 → Recommendation／L4。共用業務日與 run ID；等待上游的階段不表示正在計算。</p>

@@ -3,7 +3,8 @@ import { stocksApi } from '@/lib/api'
 import { Skeleton } from '@/components/ui/skeleton'
 import { cn } from '@/lib/utils'
 
-const quantileColor = ['', 'text-red-400', 'text-orange-400', 'text-yellow-400', 'text-emerald-400', 'text-green-400']
+// 分位數是排名，不是漲跌：不用紅綠。
+const quantileColor = ['', 'text-foreground', 'text-foreground', 'text-foreground', 'text-foreground', 'text-foreground']
 
 function FactorBar({ label, z, max = 3 }: { label: string; z: number | null; max?: number }) {
   if (z == null) return null

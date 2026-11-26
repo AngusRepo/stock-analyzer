@@ -121,8 +121,16 @@ assert(chain.includes('Running now') && chain.includes('No active runtime · lat
 assert(chain.includes("if (status === 'blocked') return 0") && chain.includes("if (status === 'running') return 1"), 'a primary blocker must remain the current death point while an independent recovery branch is running')
 assert(chainCss.includes('@keyframes obs-death-beacon') && chainCss.includes('@keyframes obs-death-wave'), 'blocked current stage must expose a death-point animation')
 assert(chainCss.includes('.obs-chain__progress-track.is-active::after') && chainCss.includes('@keyframes obs-progress-track-flow'), 'Overall progress track must retain a visible flow animation')
-assert(chain.includes('JobStatusSummary') && chainCss.includes('.obs-chain__error-disclosure[open]'), 'long errors must use progressive disclosure instead of an internal scrollbar')
-assert(chainCss.includes('-webkit-line-clamp: 3') && !chainCss.includes('max-height: 96px'), 'collapsed errors must clamp without restoring the removed scroll box')
+const errorPreviewRule = chainCss.match(/\.obs-chain__error-preview \{[^}]*\}/)?.[0] ?? ''
+assert(
+  chain.includes('JobStatusSummary') &&
+    chain.includes('<p className="obs-chain__error-preview" title={summary}>{clipErrorText(summary).text}</p>') &&
+    !chain.includes('<details') &&
+    errorPreviewRule.includes('white-space: pre-wrap') &&
+    !/line-clamp|overflow(-y)?: (auto|scroll|hidden)|max-height|display: none/.test(errorPreviewRule),
+  'long errors must show up to 600 characters inline and wrapped, without a collapse toggle, clamp or internal scrollbar',
+)
+assert(!chainCss.includes('max-height: 96px') && !chainCss.includes('.obs-chain__error-disclosure'), 'errors must not return to the removed scroll box or the <details> toggle')
 assert(chainCss.includes('@media (prefers-reduced-motion: reduce)'), 'chain animations must respect reduced-motion preference')
 
 assert(page.includes('const schedulerApiError = errorMessage(scheduler.error)'), 'Scheduler API error must remain first-class')

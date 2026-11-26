@@ -80,7 +80,7 @@ function MobileNav({
           </div>
           <div>
             <p className="font-sans text-sm font-bold">StockVision</p>
-            <p className="text-[11px] text-slate-500">market intelligence</p>
+            <p className="text-[11px] text-muted-foreground">market intelligence</p>
           </div>
         </div>
       </div>
@@ -99,9 +99,9 @@ function MobileNav({
                   : 'border-transparent text-slate-400 hover:border-white/[0.08] hover:bg-white/[0.055] hover:text-slate-100'
               }`}
             >
-              <Icon className={`h-4 w-4 ${active ? 'text-blue-300' : 'text-slate-500'}`} />
+              <Icon className={`h-4 w-4 ${active ? 'text-blue-300' : 'text-muted-foreground'}`} />
               <span>{item.label}</span>
-              <ChevronRight className="h-3.5 w-3.5 text-slate-600" />
+              <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
             </button>
           )
         })}
@@ -152,7 +152,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
   }
 
   return (
-    <div className="sv-safe-shell min-h-screen overflow-x-hidden bg-[#090a0d] text-slate-100">
+    <div className="sv-safe-shell min-h-screen overflow-x-clip bg-[#090a0d] text-slate-100">
       <header className="sv-app-header fixed inset-x-0 top-0 z-50 border-b border-white/[0.08] bg-[#111218]/95 shadow-[0_10px_32px_rgba(0,0,0,0.28)] backdrop-blur-xl">
         <div className="sv-app-header-inner flex w-full max-w-none items-center gap-4 px-4 md:px-8 2xl:px-10">
           <button

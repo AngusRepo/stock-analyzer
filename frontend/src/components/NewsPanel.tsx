@@ -12,11 +12,12 @@ import NewsKeywordCloud from './NewsKeywordCloud'
 import { toast } from 'sonner'
 import { useAuth } from '@/_core/hooks/useAuth'
 import { safeExternalUrl } from '@/lib/safeUrl'
+import { TW_COLORS } from '@/lib/colorTokens'
 
 const SENTIMENT_STYLE = {
-  positive: { className: 'border-red-400/50 text-red-400 bg-red-400/10',   label: '正面', icon: TrendingUp },
+  positive: { className: 'border-up/50 text-up bg-up/10',   label: '正面', icon: TrendingUp },
   neutral:  { className: 'border-muted text-muted-foreground bg-muted/30', label: '中性', icon: Minus },
-  negative: { className: 'border-emerald-400/50 text-emerald-400 bg-emerald-400/10', label: '負面', icon: TrendingDown },
+  negative: { className: 'border-down/50 text-down bg-down/10', label: '負面', icon: TrendingDown },
 }
 
 function SentimentSummaryBar({ stockId }: { stockId: number }) {
@@ -32,9 +33,9 @@ function SentimentSummaryBar({ stockId }: { stockId: number }) {
   return (
     <div className="flex items-center gap-2 text-xs">
       <span className="text-muted-foreground">近30日情感：</span>
-      <span className="text-red-400">正面 {pos}%</span>
+      <span className="text-up">▲ 正面 {pos}%</span>
       <span className="text-muted-foreground">中性 {neu}%</span>
-      <span className="text-emerald-400">負面 {neg}%</span>
+      <span className="text-down">▼ 負面 {neg}%</span>
       <span className="text-muted-foreground ml-1">({data.total}篇)</span>
     </div>
   )
@@ -56,9 +57,9 @@ function SentimentTrendMini({ stockId }: { stockId: number }) {
           <XAxis dataKey="date" tick={{ fontSize: 9, fill: '#888' }} tickLine={false} interval={4} />
           <YAxis tick={{ fontSize: 9, fill: '#888' }} tickLine={false} />
           <Tooltip contentStyle={{ background: '#1a1a2e', border: '1px solid #333', fontSize: 11 }} />
-          <Line type="monotone" dataKey="positive" stroke="#f87171" strokeWidth={1.5} dot={false} name="正面" />
-          <Line type="monotone" dataKey="negative" stroke="#34d399" strokeWidth={1.5} dot={false} name="負面" />
-          <Line type="monotone" dataKey="neutral"  stroke="#94a3b8" strokeWidth={1}   dot={false} name="中性" strokeDasharray="3 3" />
+          <Line type="monotone" dataKey="positive" stroke={TW_COLORS.up} strokeWidth={1.5} dot={false} name="正面" />
+          <Line type="monotone" dataKey="negative" stroke={TW_COLORS.down} strokeWidth={1.5} dot={false} name="負面" />
+          <Line type="monotone" dataKey="neutral"  stroke={TW_COLORS.neutral} strokeWidth={1}   dot={false} name="中性" strokeDasharray="3 3" />
         </LineChart>
       </ResponsiveContainer>
     </div>
@@ -126,7 +127,7 @@ export default function NewsPanel({ stockId }: { stockId: number }) {
               return (
                 <a key={item.id} href={safeExternalUrl(item.url)} target="_blank" rel="noopener noreferrer"
                   className="flex gap-3 p-3 rounded-lg border border-border/40 hover:border-border hover:bg-muted/30 transition-colors group">
-                  <Icon className={`w-4 h-4 shrink-0 mt-0.5 ${item.sentiment === 'positive' ? 'text-red-400' : item.sentiment === 'negative' ? 'text-emerald-400' : 'text-muted-foreground'}`} />
+                  <Icon className={`w-4 h-4 shrink-0 mt-0.5 ${item.sentiment === 'positive' ? 'text-up' : item.sentiment === 'negative' ? 'text-down' : 'text-muted-foreground'}`} />
                   <div className="flex-1 min-w-0">
                     <p className="text-sm leading-snug group-hover:text-primary transition-colors line-clamp-2">
                       {item.title}

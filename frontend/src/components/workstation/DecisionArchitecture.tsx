@@ -1,6 +1,6 @@
 ﻿import type { ReactNode } from 'react'
 import { ArrowRight, GitBranch, ShieldCheck, Workflow } from 'lucide-react'
-import { WorkstationPanel, WorkstationPill, type WorkstationTone } from './WorkstationChrome'
+import { WorkstationPanel, WorkstationPill, WorkstationStatusPill, type WorkstationTone } from './WorkstationChrome'
 
 function cx(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(' ')
@@ -37,7 +37,7 @@ export function DecisionTraceRail({
             </div>
             <p className="mt-2 text-xs leading-5 text-[#8a92a6]">{step.detail}</p>
             <div className="mt-3">
-              <WorkstationPill tone={step.tone ?? 'neutral'}>{step.tone ?? 'watch'}</WorkstationPill>
+              <WorkstationStatusPill tone={step.tone ?? 'neutral'}>{step.tone ? undefined : '觀察'}</WorkstationStatusPill>
             </div>
           </div>
         ))}
@@ -72,7 +72,7 @@ export function AudienceRoleStrip() {
         <div key={item.title} className="bg-[#171714] p-4">
           <div className="flex items-center justify-between gap-2">
             <p className="sv-num text-[12px] normal-case text-[#fff1cf]">{item.title}</p>
-            <WorkstationPill tone={item.tone}>{item.subtitle}</WorkstationPill>
+            <WorkstationPill tone={item.tone === 'neutral' ? 'neutral' : 'info'}>{item.subtitle}</WorkstationPill>
           </div>
           <p className="mt-3 text-xs leading-5 text-[#b9b1a1]">{item.body}</p>
         </div>
@@ -86,8 +86,8 @@ export function RecommendationLaneExplainer() {
     <div className="grid gap-px overflow-hidden border border-[#263247] bg-[#263247] md:grid-cols-2">
       <div className="bg-[linear-gradient(135deg,#06140f,#071019)] p-4">
         <div className="flex items-center justify-between gap-2">
-          <p className="sv-num text-[12px] normal-case text-emerald-200">上市櫃交易流</p>
-          <WorkstationPill tone="ok">tradable lane</WorkstationPill>
+          <p className="sv-num text-[12px] normal-case text-foreground">上市櫃交易流</p>
+          <WorkstationPill tone="info">tradable lane</WorkstationPill>
         </div>
         <p className="mt-2 text-xs leading-5 text-[#8a92a6]">
           可進入 morning setup、T2/debate、pending buys 與盤中 quote sanity，這一區才會影響自動交易。
@@ -138,7 +138,7 @@ export function ObsDrilldownMap() {
             <a key={item.href} href={item.href} className="group block bg-[#171714] p-4 transition-colors hover:bg-[#1f211c]">
               <div className="flex items-start justify-between gap-3">
                 <Icon className="h-5 w-5 text-[#d6a85f]" />
-                <WorkstationPill tone={item.tone}>打開</WorkstationPill>
+                <WorkstationPill tone="info">打開</WorkstationPill>
               </div>
               <p className="mt-3 sv-num text-[12px] normal-case text-[#fff7e8] group-hover:text-[#f1c16f]">{item.title}</p>
               <p className="mt-2 text-xs leading-5 text-[#b9b1a1]">{item.body}</p>
@@ -170,7 +170,7 @@ export function SignalInsightCard({
           <p className="sv-num text-[10px] normal-case text-[#8a92a6]">{title}</p>
           <p className="mt-2 sv-num text-2xl font-semibold text-[#fff1cf]">{value}</p>
         </div>
-        <WorkstationPill tone={tone}>{tone}</WorkstationPill>
+        <WorkstationStatusPill tone={tone} />
       </div>
       {detail && <p className="mt-2 text-xs leading-5 text-[#8a92a6]">{detail}</p>}
       {children}

@@ -6,35 +6,49 @@ import type {
 } from '@/lib/pipelineMaturityContract'
 import { Badge } from '@/components/ui/badge'
 import CandidateVersionPanel from '@/components/CandidateVersionPanel'
+import { DataState } from '@/components/ui/data-state'
+import { StatusBadge, StatusIcon, StatusText } from '@/components/ui/status'
+import { priceToneClass, type StatusTone } from '@/lib/colorTokens'
+import { formatDate, formatDateTime } from '@/lib/format'
+import { humanStatus, looksInternal } from '@/lib/humanLabels'
 import { navReadinessReason, preoutcomeSummary } from '@/lib/expectedReturnEvidencePresentation'
 import {
   Activity,
   BrainCircuit,
-  CheckCircle2,
-  CircleAlert,
   Clock3,
   Database,
   GitCompareArrows,
-  RefreshCw,
   Route,
   SlidersHorizontal,
 } from 'lucide-react'
 
+const GLOSSARY: Array<[string, string]> = [
+  ['正式服務中', '這個 owner 的輸出目前真的會進入正式選股或風控。'],
+  ['影子觀察', '會算結果、累積證據，但不會改正式推薦。'],
+  ['累積中', '資料存在，但樣本數、交易日或正式 labeler 尚未滿足升級條件。'],
+  ['必要門檻未通過', '有明確必要條件失敗；不是單純欄位空白。'],
+  ['資料尚未具備', '應該有資料但目前缺漏，因此系統保守不採用。'],
+  ['不適用', '這個欄位本來就不屬於該階段，不是故障。'],
+  ['PIT', '只使用當時已知資料，禁止未來資料回頭滲入。'],
+  ['OOF', '模型未用該樣本訓練時產生的樣本外預測，用來避免自我驗證。'],
+]
+
 const OFFLINE_DIAGNOSTIC_KEYS = new Set(['corr_lcb90', 'spread_lcb90', 'top_return', 'top_lcb90', 'walk_forward', 'residual_corr_lcb90', 'residual_spread_lcb90'])
 
-const STATUS_STYLE: Record<PipelineMaturityStatus, { label: string; cls: string }> = {
-  serving: { label: '正式服務中', cls: 'border-emerald-400/30 bg-emerald-400/10 text-emerald-200' },
-  ready: { label: '證據已備妥', cls: 'border-cyan-400/30 bg-cyan-400/10 text-cyan-200' },
-  collecting: { label: '累積中', cls: 'border-amber-400/30 bg-amber-400/10 text-amber-200' },
-  failed_quality: { label: '品質未過', cls: 'border-rose-400/30 bg-rose-400/10 text-rose-200' },
-  blocked: { label: '必要條件被擋住', cls: 'border-rose-400/30 bg-rose-400/10 text-rose-200' },
-  unavailable: { label: '資料尚未具備', cls: 'border-slate-400/30 bg-slate-400/10 text-slate-300' },
+// 狀態（是否就緒／通過）走 ok／warn／fail／na token＋圖示；與漲跌紅綠分開。
+const STATUS_STYLE: Record<PipelineMaturityStatus, { label: string; tone: StatusTone }> = {
+  serving: { label: '正式服務中', tone: 'ok' },
+  ready: { label: '證據已備妥', tone: 'ok' },
+  collecting: { label: '累積中', tone: 'warn' },
+  failed_quality: { label: '品質未過', tone: 'fail' },
+  blocked: { label: '必要條件被擋住', tone: 'fail' },
+  unavailable: { label: '資料尚未具備', tone: 'na' },
 }
 
 const MODE_STYLE = {
-  production: { label: '正式路徑', cls: 'border-emerald-400/25 text-emerald-200' },
+  production: { label: '正式路徑', cls: 'border-white/15 text-slate-200' },
   shadow: { label: '影子學習（不影響正式結果）', cls: 'border-violet-400/25 text-violet-200' },
-  evidence_only: { label: '只累積證據', cls: 'border-amber-400/25 text-amber-200' },
+  evidence_only: { label: '只累積證據', cls: 'border-white/15 text-slate-300' },
 } as const
 
 const METRIC_LABELS: Record<string, string> = {
@@ -76,6 +90,7 @@ const FIELD_LABELS: Record<string, string> = {
   'Evidence advanced': '是否新增成熟 evidence', 'OOF min': '樣本外證據最早日期', 'OOF dates': '樣本外交易日數',
   'OOF rows': '樣本外列數', 'Usable samples': '可用樣本數', 'Usable dates': '可用交易日數',
   'Degraded streak': '連續惡化日數', 'Recovery streak': '連續恢復日數', 'Last date': '最新預測日期', 'Lineage bound': '是否綁定同一產物 lineage',
+  'Candidate freeze date': '候選凍結日', 'OOF prediction max': 'OOF 預測截止日', 'Label known max': '結果揭露截止日',
 }
 
 const BLOCKER_LABELS: Record<string, string> = {
@@ -193,67 +208,69 @@ function blockerText(blocker: string): string {
   return suffix?.[1] ?? normalized.replace(/_/g, ' ')
 }
 
-function signedValueTone(value: number | null | undefined): string {
-  if (value == null || !Number.isFinite(value) || value === 0) return 'text-[#dfe7f5]'
-  return value > 0 ? 'text-rose-300' : 'text-emerald-300'
+/** 只有報酬類（報酬、R、價差）才走漲跌色：正數紅、負數綠。計數、日期、相關係數、IC、Brier 一律中性。 */
+function isReturnLike(key: string, unit?: PipelineMaturityMetric['unit']): boolean {
+  if (unit === 'return' || unit === 'r_multiple') return true
+  if (unit === 'rows' || unit === 'dates' || unit === 'count' || unit === 'status' || unit === 'score') return false
+  return /(return|spread|nav_delta)/.test(key) && !/(corr|_ic\b|brier)/.test(key)
+}
+
+function returnTone(value: number | null | undefined, returnLike: boolean): string {
+  if (!returnLike || value == null || !Number.isFinite(value) || value === 0) return 'text-[#dfe7f5]'
+  return priceToneClass(value)
 }
 
 function MetricCell({ metric }: { metric: PipelineMaturityMetric }) {
   const target = targetText(metric)
   const tone = typeof metric.value === 'number'
-    ? signedValueTone(metric.value)
+    ? returnTone(metric.value, isReturnLike(metric.key, metric.unit))
     : metric.passed === true
-      ? 'text-emerald-300'
+      ? 'text-ok'
       : metric.passed === false
-        ? 'text-rose-300'
+        ? 'text-fail'
         : 'text-[#dfe7f5]'
+  const reason = metric.reason_code ? (BLOCKER_LABELS[metric.reason_code] ?? (looksInternal(metric.reason_code) ? '另有原因代碼' : metric.reason_code)) : null
   return (
-    <div className="min-w-0 border-b border-white/[0.06] py-3 last:border-b-0 sm:border-b-0 sm:border-r sm:px-3 sm:last:border-r-0">
+    <div className="min-w-0 border-b border-white/[0.06] py-2 sm:px-3">
       <div className="flex items-start justify-between gap-2">
-        <p className="min-w-0 text-xs leading-5 text-slate-500">{METRIC_LABELS[metric.key] ?? metric.label}</p>
-        {metric.passed === true ? <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-emerald-400" /> : null}
-        {metric.passed === false ? <CircleAlert className="h-3.5 w-3.5 shrink-0 text-rose-400" /> : null}
+        <p className={`min-w-0 text-xs leading-5 text-muted-foreground ${metric.note ? 'cursor-help underline decoration-dotted decoration-white/20 underline-offset-2' : ''}`} title={metric.note ?? metric.key}>{METRIC_LABELS[metric.key] ?? metric.label}</p>
+        {metric.passed === true ? <StatusIcon tone="ok" title="通過門檻" /> : null}
+        {metric.passed === false ? <StatusIcon tone="fail" title="未通過門檻" /> : null}
       </div>
-      <div className="mt-1 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
-        <span className={`sv-num break-all text-sm font-semibold ${tone}`}>{displayValue(metric)}</span>
-        {target ? <span className="sv-num text-[11px] text-slate-600">門檻 {target}</span> : null}
+      <div className="mt-0.5 flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+        <span className={`sv-num break-words text-sm font-semibold ${tone}`}>{displayValue(metric)}</span>
+        {target ? <span className="sv-num text-[11px] text-muted-foreground">門檻 {target}</span> : null}
       </div>
-      {metric.note ? <p className="mt-1 text-[11px] leading-4 text-slate-600">{metric.note}</p> : null}
-      {metric.reason_code ? <code className="mt-1 block break-all text-[10px] leading-4 text-slate-700">{BLOCKER_LABELS[metric.reason_code] ?? metric.reason_code}</code> : null}
+      {reason ? <p className="mt-0.5 text-[10px] leading-4 text-muted-foreground" title={metric.reason_code ?? undefined}>{reason}</p> : null}
     </div>
   )
 }
 
+/**
+ * 指標區塊一律就地呈現（不收合）。說明文字放標題 tooltip；
+ * secondary＝選用的診斷區，只降低視覺權重，不藏內容。
+ */
 function MetricSection({
   title,
   description,
   metrics,
-  collapsible = false,
+  secondary = false,
 }: {
   title: string
   description: string
   metrics: PipelineMaturityMetric[]
-  collapsible?: boolean
+  secondary?: boolean
 }) {
   if (!metrics.length) return null
-  const body = (
-    <>
-      <p className="text-xs font-semibold text-slate-200">{title}</p>
-      <p className="mt-1 text-[11px] leading-4 text-slate-500">{description}</p>
-      <div className="mt-2 grid border-y border-white/[0.07] px-1 sm:grid-cols-2">
-        {metrics.map((item) => <MetricCell key={item.key} metric={item} />)}
-      </div>
-    </>
-  )
-  if (!collapsible) return <div>{body}</div>
   return (
-    <details className="rounded-lg border border-white/[0.07] bg-black/15 p-3">
-      <summary className="cursor-pointer text-xs font-semibold text-slate-300">{title} · {metrics.length} 項</summary>
-      <p className="mt-1 text-[11px] leading-4 text-slate-500">{description}</p>
-      <div className="mt-2 grid border-y border-white/[0.07] px-1 sm:grid-cols-2">
+    <div className={secondary ? 'rounded-lg border border-white/[0.06] bg-black/15 px-2 py-2' : ''}>
+      <p className={`cursor-help text-xs font-semibold ${secondary ? 'text-slate-300' : 'text-slate-200'}`} title={description}>
+        {title} <span className="font-normal text-muted-foreground">· {metrics.length} 項 ⓘ</span>
+      </p>
+      <div className="mt-1 grid gap-x-2 border-t border-white/[0.07] sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
         {metrics.map((item) => <MetricCell key={item.key} metric={item} />)}
       </div>
-    </details>
+    </div>
   )
 }
 
@@ -286,10 +303,11 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
   const historyComparison = historyDelta != null
     ? `${historyDelta > 0 ? '+' : ''}${historyMetric(historyDelta)}`
     : latestHistory?.value == null || latestHistory.identity_valid === false
-      ? 'Current evidence unavailable or identity-blocked'
+      ? '目前證據不可用或身分受阻'
       : priorFiniteHistory && priorFiniteHistory.artifact_contract_version !== latestHistory.artifact_contract_version
-        ? `First comparable ${latestHistory.artifact_contract_version ?? 'contract'} evidence · prior ${priorFiniteHistory.artifact_contract_version ?? 'contract unknown'}`
-        : 'First comparable evidence'
+        ? `首筆可比較證據（${latestHistory.artifact_contract_version ?? '契約'}；前次 ${priorFiniteHistory.artifact_contract_version ?? '契約不明'}）`
+        : '首筆可比較證據'
+  const historyReturnLike = isReturnLike('history', latestHistory?.unit)
   const historyTrend = history
     .filter((point) => point.value != null
       && point.identity_valid !== false
@@ -297,7 +315,7 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
     .slice(-4)
   const blockerGroups = stage.blocker_groups?.length
     ? stage.blocker_groups
-    : [{ scope: 'stage', title: 'Blockers', blockers: stage.blockers }]
+    : [{ scope: 'stage', title: '阻擋條件', blockers: stage.blockers }]
   const scopedCandidateStage = stage.id === 'l4' || stage.id === 'fusion'
   const navGate = stage.nav_gate
   const retainedEvidenceSummary = preoutcomeSummary(stage)
@@ -323,10 +341,10 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
   const evidenceScopes = stage.lineage.evidence_scopes
   const productionServingState = evidenceScopes?.serving_pointer
     ? evidenceScopes.serving_pointer.artifact_state === 'safe_abstention'
-      ? 'Production：安全基線運作中（learned alpha 貢獻 0；上游選股流程持續運作）'
+      ? '正式：安全基線運作中（學習模型貢獻 0；上游選股照常）'
       : evidenceScopes.serving_pointer.artifact_state === 'serving'
-        ? 'Production：learned expected-return artifact 正式服務中'
-        : `Production：serving pointer ${evidenceScopes.serving_pointer.availability}`
+        ? '正式：預期報酬模型服務中'
+        : `正式：服務指標${humanStatus(evidenceScopes.serving_pointer.availability, '狀態不明')}`
     : null
   const metricByKey = new Map(stage.metrics.map((item) => [item.key, item]))
   const prospectiveDateMetric = metricByKey.get('prospective_evaluable_dates')
@@ -446,8 +464,8 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
     } : null,
   ].filter((item): item is { scope: string; title: string; rows: Array<Array<string | null>> } => item != null)
   return (
-    <details open className="group overflow-hidden rounded-[18px] border border-white/[0.07] bg-white/[0.032]">
-      <summary className="grid cursor-pointer list-none gap-4 px-4 py-4 marker:hidden">
+    <article className="overflow-hidden rounded-[18px] border border-white/[0.07] bg-white/[0.032]">
+      <header className="grid items-start gap-4 px-4 py-3 lg:grid-cols-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] border border-white/[0.08] bg-black/20 text-amber-300">
@@ -459,46 +477,42 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
             </div>
           </div>
           <div className="mt-2 flex flex-wrap gap-1.5">
-            <Badge variant="outline" className={`h-auto whitespace-normal rounded-full px-2 py-0.5 text-[11px] ${status.cls}`}>{status.label}</Badge>
+            <StatusBadge tone={status.tone} title={stage.status}>{status.label}</StatusBadge>
             <Badge variant="outline" className={`h-auto whitespace-normal rounded-full px-2 py-0.5 text-[11px] ${mode.cls}`}>{mode.label}</Badge>
           </div>
-          {productionServingState ? <p className="mt-2 text-xs font-semibold leading-5 text-emerald-200">{productionServingState}</p> : null}
-          {scopedEvidenceTruth ? <p className="mt-2 rounded-md border border-cyan-300/15 bg-cyan-300/[0.05] px-2.5 py-2 text-[11px] leading-5 text-cyan-100">{scopedEvidenceTruth}</p> : null}
+          {productionServingState ? <p className="mt-2 flex items-start gap-1.5 text-xs font-semibold leading-5 text-slate-100"><StatusIcon tone={evidenceScopes?.serving_pointer?.artifact_state === 'serving' ? 'ok' : 'na'} />{productionServingState}</p> : null}
+          {scopedEvidenceTruth ? <p className="mt-2 rounded-md border border-white/[0.08] bg-black/20 px-2.5 py-2 text-[11px] leading-5 text-slate-200">{scopedEvidenceTruth}</p> : null}
           {retainedEvidenceSummary ? <p className="mt-2 text-xs leading-5 text-slate-200">{retainedEvidenceSummary}</p> : null}
         </div>
 
         <div className="min-w-0">
           <div className="flex items-center justify-between gap-3 text-xs">
-            <span className="font-semibold text-slate-500">{navGate ? 'NAV 審查進度（非 pre-outcome 成熟度）' : '成熟進度'}</span>
+            <span className="font-semibold text-muted-foreground">{navGate ? 'NAV 審查進度（非 pre-outcome 成熟度）' : '成熟進度'}</span>
             <span className="sv-num text-right text-slate-300">{progressLabel}</span>
           </div>
           <div className="mt-2 h-2 overflow-hidden rounded-sm bg-black/35">
             <div
-              className={`h-full rounded-sm ${progress?.complete ? 'bg-emerald-400' : stage.status === 'failed_quality' ? 'bg-rose-400' : 'bg-amber-400'}`}
+              className={`h-full rounded-sm ${progress?.complete ? 'bg-ok' : stage.status === 'failed_quality' ? 'bg-fail' : 'bg-warn'}`}
               style={{ width: `${Math.max(2, Math.round((progress?.ratio ?? 0) * 100))}%` }}
             />
           </div>
-          <p className="mt-2 break-words text-xs leading-5 text-slate-500">{stage.decision}</p>
+          <p className="mt-2 break-words text-xs leading-5 text-muted-foreground">{stage.decision}</p>
         </div>
 
-        <div className="min-w-0 border-t border-white/[0.07] pt-3">
-          <p className="text-xs font-semibold text-slate-500">本階段實際貢獻</p>
+        <div className="min-w-0">
+          <p className="text-xs font-semibold text-muted-foreground">本階段實際貢獻</p>
           <p className="mt-1 break-words text-sm leading-6 text-slate-300">{stage.production_effect}</p>
+          <p className="mt-1 cursor-help text-[11px] leading-4 text-muted-foreground" title={stage.contribution}>
+            <Activity className="mr-1 inline h-3 w-3 text-cyan-300" />責任邊界與決策用途 ⓘ
+          </p>
         </div>
-      </summary>
+      </header>
 
-      <div className="border-t border-white/[0.06] bg-black/[0.12] px-4 py-4 lg:px-5">
+      <div className="border-t border-white/[0.06] bg-black/[0.12] px-4 py-3 lg:px-5">
         <CandidateVersionPanel versions={stage.candidate_versions} />
-        <div className="grid gap-4 2xl:grid-cols-[minmax(0,1.5fr)_minmax(240px,0.8fr)]">
+        <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(260px,320px)]">
           <div className="min-w-0">
-            <div className="mb-3 flex items-start gap-2">
-              <Activity className="mt-0.5 h-4 w-4 shrink-0 text-cyan-300" />
-              <div>
-                <p className="text-xs font-semibold text-slate-100">責任邊界與決策用途</p>
-                <p className="mt-1 text-xs leading-5 text-slate-400">{stage.contribution}</p>
-                <p className="mt-1 text-[11px] leading-4 text-slate-500">數值正紅、負綠（台股慣例），零與缺值中性；是否通過門檻請看圖示。</p>
-              </div>
-            </div>
+            <p className="mb-2 text-[11px] leading-4 text-muted-foreground">報酬：正數紅、負數綠；門檻是否通過看圖示。</p>
             <div className="space-y-4">
               <MetricSection
                 title={navGate ? '成本後配對 NAV 正式升級判定' : navRoute ? '已採用版本的原始 NAV 證據' : scopedCandidateStage
@@ -525,13 +539,13 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
                 title="Rolling cohort 日更診斷（非升級成熟度）"
                 description="模型健康檢查：用擴充資料重新切分訓練／測試並擬合診斷模型，查看排序與跨窗穩定性。不是原鎖定候選的逐日績效，不直接決定晉級、權重或買股。產生／封存失敗仍會要求日更流程修復重試。"
                 metrics={monitoringMetrics}
-                collapsible
+                secondary
               />
               <MetricSection
                 title="離線候選驗證診斷（固定母體，非日更績效）"
                 description="這是該候選建模時的驗證結果；同一母體可連續多日維持相同數值，不代表新成熟日期的表現。"
                 metrics={offlineDiagnosticMetrics}
-                collapsible
+                secondary
               />
               <MetricSection
                 title="Production 物化覆蓋與下一批候選 readiness"
@@ -547,81 +561,82 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
                 title="診斷與不適用欄位（非必要門檻）"
                 description="供 root-cause 分析；舊 EV／離線統計不再作為第二套 NAV 正式晉級門檻。資料完整性與 serving 安全檢查仍須通過。"
                 metrics={diagnosticMetrics}
-                collapsible
+                secondary
               />
             </div>
           </div>
 
           <div className="min-w-0 space-y-3">
             <div>
-              <p className="text-xs font-semibold text-slate-500">
+              <p className="text-xs font-semibold text-muted-foreground">
                 {scopedCandidateStage ? '分範圍的未通過條件' : '尚未通過的必要條件'}
               </p>
               {scopedCandidateStage ? (
-                <p className="mt-1 text-[11px] leading-4 text-slate-600">
-                  離線候選門檻只決定候選能否升級，不等於目前 production 被擋；正式狀態請以 Production serving pointer 範圍為準。
+                <p className="mt-1 text-[11px] leading-4 text-muted-foreground">
+                  只決定候選能否升級，不代表正式流程被擋。
                 </p>
               ) : null}
               {blockerGroups.some((group) => group.blockers.length) ? (
                 <div className="mt-2 space-y-3">
                   {blockerGroups.map((group) => (
                     <div key={group.scope}>
-                      <p className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">{group.title}</p>
-                      <div className="space-y-1.5">
+                      <p className="mb-1 text-[11px] font-semibold text-muted-foreground" title={group.scope}>{group.title}</p>
+                      <div className="space-y-1">
                         {group.blockers.length ? group.blockers.map((blocker) => (
-                          <div key={blocker} className="border-l-2 border-rose-400/45 pl-2">
-                            <p className="text-xs leading-5 text-rose-200">{blockerText(blocker)}</p>
-                            <code className="mt-0.5 block break-all text-[11px] leading-4 text-slate-600">系統代碼：{blocker}</code>
-                          </div>
-                        )) : <p className="text-[11px] text-emerald-300">No blockers in this scope</p>}
+                          <p key={blocker} className="flex items-start gap-1.5 text-xs leading-5 text-slate-200" title={`系統代碼：${blocker}`}>
+                            <StatusIcon tone="fail" />
+                            <span className="min-w-0">{blockerText(blocker)}</span>
+                          </p>
+                        )) : <StatusText tone="ok" className="text-[11px]">此範圍沒有阻擋條件</StatusText>}
                       </div>
                     </div>
                   ))}
                 </div>
               ) : (
-                <p className="mt-2 flex items-center gap-1.5 text-xs text-emerald-300">
-                  <CheckCircle2 className="h-3.5 w-3.5" /> 目前沒有 blocker
-                </p>
+                <StatusText tone="ok" className="mt-2 text-xs">目前沒有阻擋條件</StatusText>
               )}
             </div>
 
             <div className="border-t border-white/[0.07] pt-3">
-              <p className="flex items-center gap-1.5 text-xs font-semibold text-slate-500"><Database className="h-3.5 w-3.5" /> 資料來源與版本 lineage</p>
-              <dl className="mt-2 grid grid-cols-[84px_minmax(0,1fr)] gap-x-2 gap-y-1 text-[11px] leading-4">
-                <dt className="text-slate-600">{scopedCandidateStage ? '離線升級候選截止日' : '資料截止日'}</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.data_cutoff_date ?? stage.lineage.evidence_date ?? '資料尚未具備'}</dd>
-                <dt className="text-slate-600">成熟結果已知截至</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.mature_outcome_max_date ?? '尚未發布'}</dd>
-                <dt className="text-slate-600">OOF 訊號截止日</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.oof_applicable === false ? '不適用（此階段不是 OOF）' : stage.lineage.oof_max_date ?? `資料尚未具備 · ${stage.lineage.oof_unavailable_reason ?? '原因未提供'}`}</dd>
-                <dt className="text-slate-600">監控封包業務日（非成熟進度）</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.frozen_forward_business_date ?? '不適用／尚未具備'}</dd>
-                {stage.lineage.cadence ? <><dt className="text-slate-600">更新頻率</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.cadence}</dd></> : null}
-                {stage.lineage.role ? <><dt className="text-slate-600">用途角色</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.role}</dd></> : null}
-                <dt className="text-slate-600">前次證據</dt><dd className="sv-num break-all text-slate-400">{previousHistory?.evidence_date ?? '首次證據'}</dd>
-                <dt className="text-slate-600">相較前次變化</dt><dd className={`sv-num break-words ${signedValueTone(historyDelta)}`}>{historyComparison}</dd>
-                <dt className="text-slate-600">{scopedCandidateStage ? '離線候選驗證歷史（非每日績效）' : '近期趨勢'}</dt>
-                <dd className="sv-num break-words text-slate-400">
+              <p className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground"><Database className="h-3.5 w-3.5" /> 資料來源與版本 lineage</p>
+              <dl className="mt-2 grid grid-cols-[minmax(0,7.5rem)_minmax(0,1fr)] gap-x-2 gap-y-1 text-[11px] leading-4">
+                <dt className="text-muted-foreground" title={stage.lineage.evidence_semantics ?? undefined}>{scopedCandidateStage ? '離線升級候選截止日' : '資料截止日'}</dt><dd className="sv-num text-slate-300">{formatDate(stage.lineage.data_cutoff_date ?? stage.lineage.evidence_date, '資料尚未具備')}</dd>
+                <dt className="text-muted-foreground">成熟結果已知截至</dt><dd className="sv-num text-slate-300">{formatDate(stage.lineage.mature_outcome_max_date, '尚未發布')}</dd>
+                <dt className="text-muted-foreground">OOF 訊號截止日</dt><dd className="sv-num text-slate-300" title={stage.lineage.oof_unavailable_reason ?? undefined}>{stage.lineage.oof_applicable === false ? '不適用（此階段不是 OOF）' : stage.lineage.oof_max_date ? formatDate(stage.lineage.oof_max_date) : '資料尚未具備'}</dd>
+                <dt className="text-muted-foreground">監控封包業務日（非成熟進度）</dt><dd className="sv-num text-slate-300">{formatDate(stage.lineage.frozen_forward_business_date, '不適用／尚未具備')}</dd>
+                {stage.lineage.cadence ? <><dt className="text-muted-foreground">更新頻率</dt><dd className="sv-num truncate text-slate-300" title={stage.lineage.cadence}>{stage.lineage.cadence}</dd></> : null}
+                {stage.lineage.role ? <><dt className="text-muted-foreground">用途角色</dt><dd className="sv-num truncate text-slate-300" title={stage.lineage.role}>{stage.lineage.role}</dd></> : null}
+                <dt className="text-muted-foreground">前次證據</dt><dd className="sv-num text-slate-300">{formatDate(previousHistory?.evidence_date, '首次證據')}</dd>
+                <dt className="text-muted-foreground">相較前次變化</dt><dd className={`sv-num break-words ${returnTone(historyDelta, historyReturnLike)}`}>{historyComparison}</dd>
+                <dt className="text-muted-foreground">{scopedCandidateStage ? '離線候選驗證歷史（非每日績效）' : '近期趨勢'}</dt>
+                <dd className="sv-num break-words text-slate-300">
                   {historyTrend.length ? historyTrend.map((point, index) => (
                     <span key={point.evidence_date}>
-                      {index > 0 ? ' | ' : ''}{point.evidence_date.slice(5)}{' '}
-                      <span className={signedValueTone(point.value)}>{displayValue({ key: 'history', label: 'history', value: point.value, unit: point.unit })}</span>
+                      {index > 0 ? ' | ' : ''}{formatDate(point.evidence_date).slice(5)}{' '}
+                      <span className={returnTone(point.value, historyReturnLike)}>{displayValue({ key: 'history', label: 'history', value: point.value, unit: point.unit })}</span>
                     </span>
                   )) : '尚無前次歷史'}
                 </dd>
-                <dt className="text-slate-600">版本</dt><dd className="sv-num break-all text-slate-400">{stage.version ?? '資料尚未具備'}</dd>
-                <dt className="text-slate-600">產物 ID</dt><dd className="sv-num break-all text-slate-400">{stage.lineage.artifact_id ?? '不適用'}</dd>
-                <dt className="text-slate-600">來源</dt><dd className="break-words text-slate-400">{stage.lineage.source}</dd>
-                {stage.lineage.evidence_semantics ? <><dt className="text-slate-600">資料截止規則</dt><dd className="break-words text-slate-400">{stage.lineage.evidence_semantics}</dd></> : null}
+                <dt className="text-muted-foreground">版本</dt><dd className="sv-num truncate text-slate-300" title={stage.version ?? undefined}>{stage.version ?? '資料尚未具備'}</dd>
+                <dt className="text-muted-foreground">產物 ID</dt><dd className="sv-num truncate text-slate-300" title={stage.lineage.artifact_id ?? undefined}>{stage.lineage.artifact_id ?? '不適用'}</dd>
+                <dt className="text-muted-foreground">來源</dt><dd className="truncate text-slate-300" title={stage.lineage.source}>{looksInternal(stage.lineage.source) ? '系統資料' : stage.lineage.source}</dd>
               </dl>
               {evidenceScopeRows.length ? (
                 <div className="mt-3 grid gap-2">
                   {evidenceScopeRows.map((scope) => (
                     <div key={scope.scope} className="rounded-lg border border-white/[0.07] bg-black/15 p-2">
-                      <p className="text-[11px] font-semibold text-cyan-200">{scope.title}</p>
-                      <dl className="mt-1 grid grid-cols-[76px_minmax(0,1fr)] gap-x-2 gap-y-1 text-[10px] leading-4">
-                        {scope.rows.map(([label, value]) => (
-                          <div key={label} className="contents">
-                            <dt className="text-slate-600">{FIELD_LABELS[label] ?? label}</dt>
-                            <dd className="sv-num break-all text-slate-400">{value ?? (label === 'Reason' ? '沒有額外原因' : '資料缺漏')}</dd>
-                          </div>
-                        ))}
+                      <p className="text-[11px] font-semibold text-slate-200" title={scope.scope}>{scope.title}</p>
+                      <dl className="mt-1 grid grid-cols-[minmax(0,6.5rem)_minmax(0,1fr)] gap-x-2 gap-y-1 text-[10px] leading-4">
+                        {scope.rows.map(([label, value]) => {
+                          const raw = value ?? (label === 'Reason' ? '沒有額外原因' : '資料缺漏')
+                          const shown = label === 'Availability' ? humanStatus(raw, raw) : raw
+                          return (
+                            <div key={label} className="contents">
+                              <dt className="text-muted-foreground">{FIELD_LABELS[label ?? ''] ?? label}</dt>
+                              <dd className="sv-num truncate text-slate-300" title={raw ?? undefined}>{shown}</dd>
+                            </div>
+                          )
+                        })}
                       </dl>
                     </div>
                   ))}
@@ -631,7 +646,7 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
           </div>
         </div>
       </div>
-    </details>
+    </article>
   )
 }
 
@@ -648,35 +663,22 @@ export default function PipelineMaturityContribution({
 }) {
   if (loading) {
     return (
-      <section className="sv-readable-card-content overflow-hidden rounded-[24px] border border-white/[0.09] bg-[linear-gradient(180deg,rgba(22,23,30,0.96),rgba(10,11,15,0.985))]" aria-label="成熟度與決策貢獻載入中">
-        <div className="p-5"><div className="h-5 w-64 animate-pulse rounded bg-white/[0.08]" /></div>
-        <div className="space-y-3 p-4">
-          <div className="grid gap-3 lg:grid-cols-3">
-            {[1, 2, 3].map((row) => <div key={row} className="h-64 animate-pulse rounded-[18px] border border-white/[0.06] bg-white/[0.032]" />)}
-          </div>
-          <div className="grid gap-3 lg:grid-cols-2">
-            {[4, 5].map((row) => <div key={row} className="h-64 animate-pulse rounded-[18px] border border-white/[0.06] bg-white/[0.032]" />)}
-          </div>
-        </div>
+      <section className="sv-readable-card-content rounded-[24px] border border-white/[0.09] bg-[linear-gradient(180deg,rgba(22,23,30,0.96),rgba(10,11,15,0.985))]" aria-label="成熟度與決策貢獻載入中">
+        <DataState kind="loading" title="成熟度與決策貢獻載入中" className="p-5" />
       </section>
     )
   }
 
   if (error || !data) {
     return (
-      <section className="sv-readable-card-content rounded-[24px] border border-rose-400/25 bg-rose-400/[0.06] p-5">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-start gap-3">
-            <CircleAlert className="mt-0.5 h-5 w-5 shrink-0 text-rose-300" />
-            <div>
-              <h2 className="font-semibold text-rose-100">成熟度與決策貢獻讀取失敗</h2>
-              <p className="mt-1 break-words text-xs leading-5 text-rose-100/65">{error?.message ?? 'pipeline maturity evidence unavailable'}</p>
-            </div>
-          </div>
-          <button type="button" onClick={onRetry} className="inline-flex items-center justify-center gap-2 rounded-md border border-rose-300/25 bg-rose-300/10 px-3 py-2 text-xs font-semibold text-rose-100 hover:bg-rose-300/15">
-            <RefreshCw className="h-4 w-4" /> 重新載入
-          </button>
-        </div>
+      <section className="sv-readable-card-content rounded-[24px] border border-fail/25 bg-fail/[0.04] p-3">
+        <DataState
+          kind="error"
+          title="成熟度與決策貢獻讀取失敗"
+          hint="其他流程欄位不受影響"
+          code={error?.message ?? 'pipeline maturity evidence unavailable'}
+          onRetry={onRetry}
+        />
       </section>
     )
   }
@@ -716,20 +718,20 @@ export default function PipelineMaturityContribution({
           <div>
             <p className="text-[11px] font-semibold text-amber-300">誰負責正式決策、證據成熟到哪裡</p>
             <h2 id="pipeline-maturity-title" className="mt-1 text-base font-semibold text-slate-100">各階段目前是否真的影響正式選股</h2>
-            <p className="mt-1 max-w-4xl text-xs leading-5 text-slate-500">
+            <p className="mt-1 max-w-4xl text-xs leading-5 text-muted-foreground">
               重構流程：完整 L3 訊號 → 三頭 L4 → sparse＋OPB → 全池配置 → Paper 成交與持倉回饋。下列狀態以實際設定與執行證據為準。
             </p>
           </div>
-          <div className="flex items-center gap-2 text-[11px] text-slate-600">
+          <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
             <Clock3 className="h-3.5 w-3.5" />
-            <span className="sv-num">evidence {data.requested_date} · generated {new Date(data.generated_at).toLocaleString('zh-TW', { hour12: false })}</span>
+            <span className="sv-num" title="資料日＝證據對應的交易日；產生＝這份報表的計算時間（台北時間）">資料日 {formatDate(data.requested_date)} · 產生 {formatDateTime(data.generated_at)}</span>
           </div>
         </div>
 
         <div className="mt-4 grid gap-2 sm:grid-cols-2 xl:grid-cols-5">
           {summaryItems.map((item) => (
             <div key={item.label} className="min-w-0 rounded-[14px] border border-white/[0.06] bg-white/[0.032] px-3 py-3">
-              <p className="truncate text-[11px] font-semibold text-slate-500" title={item.label}>{item.label}</p>
+              <p className="text-[11px] font-semibold leading-4 text-muted-foreground" title={item.label}>{item.label}</p>
               <p className="mt-2 break-words sv-num text-sm font-bold text-slate-100">{item.value}</p>
             </div>
           ))}
@@ -737,87 +739,82 @@ export default function PipelineMaturityContribution({
         {data.active_ml_ensemble && <div className="mt-3 rounded-xl border border-white/[0.07] px-3 py-3 text-xs leading-5 text-slate-400">
           <p className="font-semibold text-slate-200">目前正式 L3 ensemble</p>
           {data.active_ml_ensemble.status === 'serving' ? <>
-            <p>驗證樣本截止：{data.active_ml_ensemble.validation_end_date ?? '未知'} · 結果已知截止：{data.active_ml_ensemble.knowledge_cutoff_date ?? '未知'}</p>
-            <p className="break-all">{data.active_ml_ensemble.cohort_id}</p>
+            <p>驗證樣本截止：{formatDate(data.active_ml_ensemble.validation_end_date, '未知')} · 結果已知截止：{formatDate(data.active_ml_ensemble.knowledge_cutoff_date, '未知')} · <span className="cursor-help underline decoration-dotted decoration-white/25" title={data.active_ml_ensemble.cohort_id ?? undefined}>版本身分</span></p>
             <p>{data.l4_distribution ? '新 L4 必須與此 L3 版本相容；版本不符時暫停新配置。' : '此為目前正式 L3 版本；收益模型證據列於下方。'}</p>
-          </> : <p className="text-amber-200">{data.active_ml_ensemble.status === 'missing' ? '尚無正式 ensemble pointer' : '正式 ensemble 身分讀取或驗證受阻'}</p>}
+          </> : <StatusText tone="warn">{data.active_ml_ensemble.status === 'missing' ? '尚無正式 ensemble 指標' : '正式 ensemble 身分讀取或驗證受阻'}</StatusText>}
         </div>}
-        <details className="mt-3 rounded-xl border border-white/[0.07] bg-black/20 px-3 py-2 text-xs text-slate-400">
-          <summary className="cursor-pointer font-semibold text-slate-200">頁面名詞白話說明</summary>
-          <div className="mt-2 grid gap-2 leading-5 md:grid-cols-2 xl:grid-cols-4">
-            <p><span className="font-semibold text-emerald-200">正式服務中（Production）</span>：這個 owner 的輸出目前真的會進入正式選股或風控。</p>
-            <p><span className="font-semibold text-cyan-200">影子觀察（Shadow）</span>：會算結果、累積證據，但不會改正式推薦。</p>
-            <p><span className="font-semibold text-amber-200">累積中（Collecting）</span>：資料存在，但樣本數、交易日或正式 labeler 尚未滿足升級條件。</p>
-            <p><span className="font-semibold text-rose-200">必要門檻未通過（Blocked）</span>：有明確必要條件失敗；不是單純欄位空白。</p>
-            <p><span className="font-semibold text-slate-200">資料尚未具備</span>：應該有資料但目前缺漏，因此系統保守不採用。</p>
-            <p><span className="font-semibold text-slate-200">不適用（N/A）</span>：這個欄位本來就不屬於該階段，不是故障。</p>
-            <p><span className="font-semibold text-slate-200">PIT</span>：只使用當時已知資料，禁止未來資料回頭滲入。</p>
-            <p><span className="font-semibold text-slate-200">OOF</span>：模型未用該樣本訓練時產生的樣本外預測，用來避免自我驗證。</p>
-          </div>
-        </details>
+        <div className="mt-3 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground" aria-label="頁面名詞白話說明">
+          <span>名詞（滑過看說明）：</span>
+          {GLOSSARY.map(([term, meaning]) => (
+            <span key={term} title={meaning} className="cursor-help rounded border border-white/[0.08] px-1.5 py-0.5 text-slate-300">{term}</span>
+          ))}
+        </div>
       </div>
 
       {strategyRouteBundle ? (
-        <div className="mx-4 mt-4 rounded-[18px] border border-cyan-400/20 bg-cyan-400/[0.045] p-4">
+        <div className="mx-4 mt-4 rounded-[18px] border border-white/[0.08] bg-white/[0.03] p-4">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
                 <Route className="h-4 w-4 text-cyan-300" />
                 <h3 className="text-sm font-semibold text-slate-100">{navRouteStage ? 'NAV 路由採用與當日選股生效確認' : '門檻證據 V2 + 路由分數 V2 必須一起升級'}</h3>
-                <Badge variant="outline" className={`h-auto rounded-full px-2 py-0.5 text-[11px] ${STATUS_STYLE[strategyRouteBundle.status].cls}`}>
+                <StatusBadge tone={STATUS_STYLE[strategyRouteBundle.status].tone} title={strategyRouteBundle.status}>
                   {STATUS_STYLE[strategyRouteBundle.status].label}
-                </Badge>
+                </StatusBadge>
                 <Badge variant="outline" className={`h-auto rounded-full px-2 py-0.5 text-[11px] ${MODE_STYLE[strategyRouteBundle.contribution_mode].cls}`}>
                   {MODE_STYLE[strategyRouteBundle.contribution_mode].label}
                 </Badge>
               </div>
-              <p className="mt-2 text-xs leading-5 text-slate-400">
-                {navRouteStage
+              <p className="mt-2 cursor-help text-xs leading-5 text-muted-foreground" title={navRouteStage
                   ? '原始 NAV 證據負責路由採用；當日門檻資料、全 universe Route 分數及 canonical 使用紀錄負責確認已生效。不再加一套 weekly OOS 晉級門檻。'
-                  : 'Threshold 完整只代表當日策略門檻資料可用；必須同時具備全 universe Route 分數、purged OOS 品質通過與同一份 promotion commit，才會進 production。'}
+                  : 'Threshold 完整只代表當日策略門檻資料可用；必須同時具備全 universe Route 分數、purged OOS 品質通過與同一份 promotion commit，才會進 production。'}>
+                {navRouteStage
+                  ? 'NAV 證據決定路由採用；當日門檻與分數確認已生效。ⓘ'
+                  : '門檻資料、全市場路由分數、樣本外品質與同一次升級紀錄齊備才進正式。ⓘ'}
               </p>
             </div>
             <div className="grid shrink-0 grid-cols-3 gap-2 text-center text-xs">
-              <div className="rounded-xl border border-white/[0.07] px-3 py-2"><p className="text-slate-500">門檻資料覆蓋</p><p className="mt-1 font-semibold text-slate-100">{strategyRouteBundle.threshold_coverage_ready ? '已完整' : '尚未完整'}</p></div>
-              <div className="rounded-xl border border-white/[0.07] px-3 py-2"><p className="text-slate-500">已有 Route 分數／應有股票</p><p className="sv-num mt-1 font-semibold text-slate-100">{strategyRouteBundle.current_route_rows}/{strategyRouteBundle.current_reference_rows}</p></div>
-              <div className="rounded-xl border border-white/[0.07] px-3 py-2"><p className="text-slate-500">成熟交易日／要求日數</p><p className="sv-num mt-1 font-semibold text-slate-100">{strategyRouteBundle.route_mature_dates}/{strategyRouteBundle.route_required_dates}</p></div>
+              <div className="rounded-xl border border-white/[0.07] px-3 py-2"><p className="text-muted-foreground">門檻資料覆蓋</p><p className="mt-1 font-semibold text-slate-100"><StatusText tone={strategyRouteBundle.threshold_coverage_ready ? 'ok' : 'warn'}>{strategyRouteBundle.threshold_coverage_ready ? '已完整' : '尚未完整'}</StatusText></p></div>
+              <div className="rounded-xl border border-white/[0.07] px-3 py-2"><p className="text-muted-foreground">已有 Route 分數／應有股票</p><p className="sv-num mt-1 font-semibold text-slate-100">{strategyRouteBundle.current_route_rows}/{strategyRouteBundle.current_reference_rows}</p></div>
+              <div className="rounded-xl border border-white/[0.07] px-3 py-2"><p className="text-muted-foreground">成熟交易日／要求日數</p><p className="sv-num mt-1 font-semibold text-slate-100">{strategyRouteBundle.route_mature_dates}/{strategyRouteBundle.route_required_dates}</p></div>
             </div>
           </div>
           {strategyRouteBundle.maturity_projection ? (
             <div className="mt-3 grid gap-2 text-xs sm:grid-cols-2 xl:grid-cols-4">
               <div className="rounded-xl border border-white/[0.07] px-3 py-2">
-                <p className="text-slate-500">合法／待成熟／不可重建</p>
+                <p className="text-muted-foreground">合法／待成熟／不可重建</p>
                 <p className="sv-num mt-1 font-semibold text-slate-100">{strategyRouteBundle.maturity_projection.eligibleDates}/{strategyRouteBundle.maturity_projection.pendingDates}/{strategyRouteBundle.maturity_projection.unavailableDates}</p>
               </div>
               <div className="rounded-xl border border-white/[0.07] px-3 py-2">
-                <p className="text-slate-500">最早待成熟日期</p>
-                <p className="sv-num mt-1 font-semibold text-slate-100">{strategyRouteBundle.maturity_projection.earliestPendingMaturityDate ?? '官方日曆尚未具備'}</p>
+                <p className="text-muted-foreground">最早待成熟日期</p>
+                <p className="sv-num mt-1 font-semibold text-slate-100">{formatDate(strategyRouteBundle.maturity_projection.earliestPendingMaturityDate, '官方日曆尚未具備')}</p>
               </div>
               <div className="rounded-xl border border-white/[0.07] px-3 py-2">
-                <p className="text-slate-500">最佳情境達 11 日</p>
-                <p className="sv-num mt-1 font-semibold text-slate-100">{strategyRouteBundle.maturity_projection.bestCaseThresholdDate ?? '尚無法投影'}</p>
+                <p className="text-muted-foreground">最佳情境達 11 日</p>
+                <p className="sv-num mt-1 font-semibold text-slate-100">{formatDate(strategyRouteBundle.maturity_projection.bestCaseThresholdDate, '尚無法投影')}</p>
               </div>
               <div className="rounded-xl border border-white/[0.07] px-3 py-2">
-                <p className="text-slate-500">仍需合法成熟日</p>
+                <p className="text-muted-foreground">仍需合法成熟日</p>
                 <p className="sv-num mt-1 font-semibold text-slate-100">{strategyRouteBundle.maturity_projection.datesRemaining}</p>
               </div>
-              <p className="text-[11px] leading-4 text-slate-500 sm:col-span-2 xl:col-span-4">未來日期僅為最佳情境投影；每一日仍須完整 V5 carrier、T+5 outcome、canonical identity 與 re-audit 全部通過，才會真正計入。</p>
+              <p className="text-[11px] leading-4 text-muted-foreground sm:col-span-2 xl:col-span-4">未來日期僅為最佳情境投影；每一日仍須完整 V5 carrier、T+5 outcome、canonical identity 與 re-audit 全部通過，才會真正計入。</p>
             </div>
           ) : null}
           {strategyRouteBundle.blockers.length ? (
             <div className="mt-3 flex flex-wrap gap-2">
-              {strategyRouteBundle.blockers.map((blocker) => <span key={blocker} className="rounded-full border border-rose-400/20 bg-rose-400/[0.06] px-2 py-1 text-[11px] text-rose-200">{blockerText(blocker)}</span>)}
+              {strategyRouteBundle.blockers.map((blocker) => <StatusBadge key={blocker} tone="fail" title={`系統代碼：${blocker}`} className="whitespace-normal">{blockerText(blocker)}</StatusBadge>)}
             </div>
           ) : null}
         </div>
       ) : null}
 
       <div className="space-y-3 p-4">
-        <div className="grid items-start gap-3 lg:grid-cols-[minmax(0,32fr)_minmax(0,32fr)_minmax(0,36fr)]">
+        {/* 每個階段佔整列：卡片內再分「指標｜阻擋與 lineage」兩欄，不在窄欄裡再套欄。 */}
+        <div className="grid items-start gap-3">
           {upstreamStages.map((stage) => <StageRow key={stage.id} stage={stage} />)}
         </div>
         {otherStages.length ? (
-          <div className="grid items-start gap-3 lg:grid-cols-2">
+          <div className="grid items-start gap-3">
             {otherStages.map((stage) => <StageRow key={stage.id} stage={stage} />)}
           </div>
         ) : null}

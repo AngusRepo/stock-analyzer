@@ -5,6 +5,7 @@ import {
   BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell,
   AreaChart, Area, CartesianGrid, ReferenceLine,
 } from 'recharts'
+import { priceToneClass, priceColor } from '@/lib/colorTokens'
 
 function Row({ label, value }: { label: string; value: any }) {
   return (
@@ -16,16 +17,16 @@ function Row({ label, value }: { label: string; value: any }) {
 }
 
 const fmt = (n: number) => n >= 1e8 ? `${(n / 1e8).toFixed(1)}億` : n >= 1e4 ? `${(n / 1e4).toFixed(0)}萬` : `${n}`
-const pctClass = (v: number | null) => !v ? '' : v > 0 ? 'text-red-400' : 'text-green-400'
+const pctClass = (v: number | null) => !v ? '' : priceToneClass(v)
 const fmtCapital = (v: number | null | undefined) => v && Number.isFinite(Number(v)) ? fmt(Number(v)) : null
 
 // ── PE River helpers ──────────────────────────────────────────────────────────
 const PE_ZONES = [
-  { key: 'zone0_10', from: 0,  to: 10, color: '#166534', label: 'PE < 10 偏低' },
-  { key: 'zone10_15', from: 10, to: 15, color: '#4ade80', label: 'PE 10-15' },
-  { key: 'zone15_20', from: 15, to: 20, color: '#facc15', label: 'PE 15-20 合理' },
-  { key: 'zone20_25', from: 20, to: 25, color: '#fb923c', label: 'PE 20-25' },
-  { key: 'zone25_30', from: 25, to: 30, color: '#f87171', label: 'PE > 25 偏高' },
+  { key: 'zone0_10', from: 0,  to: 10, color: '#1d4ed8', label: 'PE < 10 偏低' },
+  { key: 'zone10_15', from: 10, to: 15, color: '#60a5fa', label: 'PE 10-15' },
+  { key: 'zone15_20', from: 15, to: 20, color: '#94a3b8', label: 'PE 15-20 合理' },
+  { key: 'zone20_25', from: 20, to: 25, color: '#fbbf24', label: 'PE 20-25' },
+  { key: 'zone25_30', from: 25, to: 30, color: '#fb923c', label: 'PE > 25 偏高' },
 ]
 
 function buildPeRiverData(financials: any[]) {
@@ -109,7 +110,7 @@ function YoYLabel(props: any) {
       y={y - 4}
       textAnchor="middle"
       fontSize={9}
-      fill={yoy > 0 ? '#f87171' : '#4ade80'}
+      fill={priceColor(yoy)}
       className="sv-num"
     >
       {yoy > 0 ? '+' : ''}{yoy.toFixed(1)}%
@@ -194,7 +195,7 @@ export default function FinancialSummary({ stockId }: { stockId: number }) {
             近 {peRiverData.length} 季 P/E 估值區間
             {latest?.pe != null && (
               <span className="ml-2 sv-num">
-                目前 P/E：<span className={latest.pe > 25 ? 'text-red-400' : latest.pe < 10 ? 'text-green-400' : 'text-foreground'}>{latest.pe.toFixed(1)}</span>
+                目前 P/E：<span className={latest.pe > 25 ? 'text-orange-400' : latest.pe < 10 ? 'text-sky-300' : 'text-foreground'}>{latest.pe.toFixed(1)}</span>
               </span>
             )}
           </p>
@@ -276,7 +277,7 @@ export default function FinancialSummary({ stockId }: { stockId: number }) {
                 <Tooltip content={<RevenueTooltip />} cursor={{ fill: 'hsl(var(--muted-foreground)/0.08)' }} />
                 <Bar dataKey="revenue" radius={[3, 3, 0, 0]} label={<YoYLabel />}>
                   {revenueChartData.map((d, i) => (
-                    <Cell key={i} fill={d.yoy != null && d.yoy > 0 ? '#f87171' : '#4ade80'} />
+                    <Cell key={i} fill={priceColor(d.yoy)} />
                   ))}
                 </Bar>
               </BarChart>

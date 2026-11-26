@@ -314,34 +314,34 @@ function maxTone(tones: WorkstationTone[]): WorkstationTone {
 
 
 function statusLabel(tone: WorkstationTone): string {
-  if (tone === 'ok') return 'OK'
-  if (tone === 'warn') return 'WARN'
-  if (tone === 'error') return 'CRIT'
-  if (tone === 'info') return 'INFO'
-  return 'NO DATA'
+  if (tone === 'ok') return '正常'
+  if (tone === 'warn') return '注意'
+  if (tone === 'error') return '異常'
+  if (tone === 'info') return '資訊'
+  return '無資料'
 }
 
 function grafanaCellClass(tone: WorkstationTone): string {
   const base = 'rounded-[10px] shadow-[inset_0_1px_0_rgba(255,255,255,0.10)]'
-  if (tone === 'ok') return `${base} border-emerald-300/35 bg-emerald-400/75 text-[#07130d]`
-  if (tone === 'warn') return `${base} border-amber-300/40 bg-amber-300/80 text-[#1b1300]`
-  if (tone === 'error') return `${base} border-rose-300/40 bg-rose-500/80 text-white`
+  if (tone === 'ok') return `${base} border-ok/35 bg-ok/75 text-[#07101f]`
+  if (tone === 'warn') return `${base} border-warn/40 bg-warn/80 text-[#1b1300]`
+  if (tone === 'error') return `${base} border-fail/40 bg-fail/80 text-[#1a0612]`
   if (tone === 'info') return `${base} border-sky-300/40 bg-sky-400/75 text-[#06111a]`
   return `${base} border-slate-500/45 bg-slate-700/45 text-slate-200`
 }
 
 function grafanaBorderClass(tone: WorkstationTone): string {
-  if (tone === 'ok') return 'border-emerald-400/35'
-  if (tone === 'warn') return 'border-amber-300/40'
-  if (tone === 'error') return 'border-rose-300/40'
+  if (tone === 'ok') return 'border-ok/35'
+  if (tone === 'warn') return 'border-warn/40'
+  if (tone === 'error') return 'border-fail/40'
   if (tone === 'info') return 'border-sky-300/35'
   return 'border-slate-600/40'
 }
 
 function grafanaTextClass(tone: WorkstationTone): string {
-  if (tone === 'ok') return 'text-emerald-300'
-  if (tone === 'warn') return 'text-amber-300'
-  if (tone === 'error') return 'text-rose-300'
+  if (tone === 'ok') return 'text-ok'
+  if (tone === 'warn') return 'text-warn'
+  if (tone === 'error') return 'text-fail'
   if (tone === 'info') return 'text-sky-300'
   return 'text-slate-400'
 }
@@ -1139,7 +1139,7 @@ function CandidateHousekeepingPanel({
                 {compactText(id, 28)}
               </span>
             )) : (
-              <span className="rounded-full border border-emerald-300/20 bg-emerald-300/[0.07] px-2.5 py-1 text-[11px] font-semibold text-emerald-200">clean</span>
+              <span className="rounded-full border border-ok/20 bg-ok/[0.07] px-2.5 py-1 text-[11px] font-semibold text-ok" title="clean">無阻擋</span>
             )}
           </div>
           <div className="mt-3 grid gap-1.5">
@@ -1164,7 +1164,7 @@ function CandidateHousekeepingPanel({
                   return (
                     <span
                       key={row.artifact_id ?? `${row.model_name}-${row.version}`}
-                      className="max-w-full rounded-full border border-rose-300/20 bg-rose-300/[0.07] px-2.5 py-1 sv-num text-[11px] normal-case text-rose-100"
+                      className="max-w-full rounded-full border border-fail/20 bg-fail/[0.07] px-2.5 py-1 sv-num text-[11px] normal-case text-fail"
                       title={`${row.artifact_id ?? row.version ?? row.model_name}: ${failedGates.join(', ') || 'offline gate failed'}`}
                     >
                       {row.model_name}: {failedGates.length ? failedGates.map(humanizeToken).join(', ') : 'offline gate failed'}
@@ -1208,7 +1208,7 @@ function FleetStatusStrip({
           >
             <div className="flex items-center justify-between gap-2">
               <p className="truncate font-['Space_Grotesk'] text-[14px] font-semibold text-[#f2ead8]">{record.candidate.id}</p>
-              <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${record.fleetTone === 'ok' ? 'bg-emerald-400' : record.fleetTone === 'warn' ? 'bg-amber-300' : record.fleetTone === 'error' ? 'bg-rose-400' : record.fleetTone === 'info' ? 'bg-sky-400' : 'bg-slate-500'}`} />
+              <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${record.fleetTone === 'ok' ? 'bg-ok' : record.fleetTone === 'warn' ? 'bg-warn' : record.fleetTone === 'error' ? 'bg-fail' : record.fleetTone === 'info' ? 'bg-sky-400' : 'bg-slate-500'}`} />
             </div>
             <p className="mt-1 truncate text-[12px] text-[#90a0b8]">{record.family} / {record.dataset?.window ?? 'model-specific'}</p>
             <p className="mt-1 truncate sv-num text-[11px] normal-case text-[#a7b5c8]">slot {record.slotStatus} / {record.servingStatus}</p>

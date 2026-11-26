@@ -8,11 +8,12 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { CheckCircle, XCircle, Clock, ShieldCheck, User, RefreshCw } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { STATUS_CHIP } from '@/lib/colorTokens'
 
 const STATUS_CONFIG = {
-  approved: { label: '已核准', color: 'bg-green-100 text-green-700 border-green-200',  icon: CheckCircle },
-  pending:  { label: '待審核', color: 'bg-amber-100 text-amber-700  border-amber-200',  icon: Clock },
-  rejected: { label: '已拒絕', color: 'bg-red-100   text-red-700    border-red-200',    icon: XCircle },
+  approved: { label: '已核准', color: STATUS_CHIP.ok,   icon: CheckCircle },
+  pending:  { label: '待審核', color: STATUS_CHIP.warn, icon: Clock },
+  rejected: { label: '已拒絕', color: STATUS_CHIP.fail, icon: XCircle },
 }
 
 export function AdminUsersPanel() {
@@ -43,7 +44,7 @@ export function AdminUsersPanel() {
           <ShieldCheck className="w-4 h-4 text-purple-500" />
           <h2 className="text-sm font-semibold">使用者管理</h2>
           {pendingCount > 0 && (
-            <Badge variant="outline" className="text-[10px] px-1.5 py-0 bg-amber-100 text-amber-700 border-amber-200">
+            <Badge variant="outline" className={`text-[10px] px-1.5 py-0 ${STATUS_CHIP.warn}`}>
               {pendingCount} 待審
             </Badge>
           )}
@@ -72,7 +73,7 @@ export function AdminUsersPanel() {
                 key={user.id}
                 className={cn(
                   'flex items-center gap-2 p-2 rounded-lg border transition-colors',
-                  isPending ? 'border-amber-300/60 bg-amber-950/10' : 'border-white/[0.06] bg-white/[0.02]',
+                  isPending ? 'border-warn/40 bg-warn/[0.05]' : 'border-white/[0.06] bg-white/[0.02]',
                 )}
               >
                 {/* Avatar */}
@@ -101,7 +102,7 @@ export function AdminUsersPanel() {
                     <>
                       <Button
                         size="sm" variant="outline"
-                        className="h-6 w-6 p-0 text-green-600 border-green-300 hover:bg-green-50"
+                        className="h-6 w-6 p-0 text-ok border-ok/30 hover:bg-ok/10"
                         disabled={approveMutation.isPending}
                         onClick={() => approveMutation.mutate(user.id)}
                         title="核准"
@@ -110,7 +111,7 @@ export function AdminUsersPanel() {
                       </Button>
                       <Button
                         size="sm" variant="outline"
-                        className="h-6 w-6 p-0 text-red-500 border-red-300 hover:bg-red-50"
+                        className="h-6 w-6 p-0 text-fail border-fail/35 hover:bg-fail/10"
                         disabled={rejectMutation.isPending}
                         onClick={() => rejectMutation.mutate(user.id)}
                         title="拒絕"

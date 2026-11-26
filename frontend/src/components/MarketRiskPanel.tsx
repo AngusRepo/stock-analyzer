@@ -13,6 +13,11 @@ import {
 import { marketApi } from '@/lib/api'
 import { formatTwDateTimeShort } from '@/lib/twTime'
 import { safeExternalUrl } from '@/lib/safeUrl'
+import { DataState } from '@/components/ui/data-state'
+import { StatusIcon } from '@/components/ui/status'
+import { STATUS_CHIP, TW_COLORS, type StatusTone } from '@/lib/colorTokens'
+import { formatDate, formatNumber } from '@/lib/format'
+import { humanSource, humanStatus, looksInternal } from '@/lib/humanLabels'
 import { marketRiskLevelStyle, normalizeMarketRiskLevel, tradingMarketRisk, type MarketRiskLevel } from '@/lib/marketRiskLevel'
 
 type FactorStatus = 'ok' | 'info' | 'warn' | 'error' | 'missing'
@@ -80,12 +85,12 @@ interface FactorGroup {
   Icon: typeof Activity
 }
 
-const STATUS_STYLE: Record<FactorStatus, string> = {
-  ok: 'border-emerald-400/25 bg-emerald-400/[0.07] text-emerald-100',
-  info: 'border-sky-400/25 bg-sky-400/[0.07] text-sky-100',
-  warn: 'border-amber-400/30 bg-amber-400/[0.08] text-amber-100',
-  error: 'border-red-400/30 bg-red-400/[0.08] text-red-100',
-  missing: 'border-slate-500/30 bg-slate-500/[0.06] text-slate-300',
+const STATUS_TONE: Record<FactorStatus, StatusTone> = {
+  ok: 'ok',
+  info: 'ok',
+  warn: 'warn',
+  error: 'fail',
+  missing: 'na',
 }
 
 const STATUS_LABEL: Record<FactorStatus, string> = {
@@ -101,7 +106,7 @@ const GROUPS = [
     id: 'trend_volatility',
     label: '趨勢 / 波動',
     factorIds: ['price_trend', 'volatility'],
-    sourceHint: 'TWII 20MA 乖離與 VIX / 20 日波動',
+    sourceHint: '加權指數 20MA 乖離、VIX、20 日波動',
     Icon: Waves,
   },
   {
@@ -109,35 +114,35 @@ const GROUPS = [
     label: '景氣對策燈號',
     // Packets written before 2026-11 keyed this factor as 'breadth'.
     factorIds: ['business_cycle', 'breadth'],
-    sourceHint: 'FinLab tw_business_indicators',
+    sourceHint: '國發會景氣指標（FinLab）',
     Icon: Landmark,
   },
   {
     id: 'chips',
     label: '三大法人',
     factorIds: ['chips'],
-    sourceHint: 'canonical_chip_daily：外資、投信、自營商 5 日金額',
+    sourceHint: '外資、投信、自營商 5 日金額',
     Icon: TrendingDown,
   },
   {
     id: 'leverage',
     label: '融資融券',
     factorIds: ['leverage'],
-    sourceHint: 'canonical_chip_daily：融資餘額與融券餘額',
+    sourceHint: '融資餘額與融券餘額',
     Icon: Activity,
   },
   {
     id: 'macro_global',
     label: '總經 / 全球',
     factorIds: ['macro', 'global', 'global_risk'],
-    sourceHint: 'market_regime_state：macro_liquidity / global_risk raw evidence',
+    sourceHint: '總經流動性與全球風險',
     Icon: Globe2,
   },
   {
     id: 'event_pressure',
     label: '全球事件',
     factorIds: ['event_monitors', 'lppls', 'hawkes'],
-    sourceHint: 'market_regime_state：LPPLS / Hawkes 監控',
+    sourceHint: 'LPPLS／Hawkes 泡沫與連鎖事件監控',
     Icon: AlertTriangle,
   },
 ] as const
@@ -197,7 +202,7 @@ function buildFactorGroups(factors: MarketRiskFactor[]): FactorGroup[] {
       status,
       source: sources.length ? sources.join(' + ') : group.sourceHint,
       sourceDate: latestSourceDate(matched),
-      detail: details.length ? details.join(' / ') : group.sourceHint,
+      detail: details.filter((detail) => !looksInternal(detail)).join(' / ') || group.sourceHint,
       missingReason: missingReasons.length ? missingReasons.join(' / ') : undefined,
       factors: matched,
       Icon: group.Icon,
@@ -219,40 +224,29 @@ function fallbackFactors(risk: MarketRisk): MarketRiskFactor[] {
   ]
 }
 
-function MarketFearGauge({ score, cfg }: { score: number | null; cfg: { label: string; color: string } }) {
+// Single-colour arc in the level's status tone; the five level names sit under it as text.
+function MarketFearGauge({ score, cfg }: { score: number | null; cfg: { label: string; color: string; tone: StatusTone } }) {
   const safeScore = score == null ? null : Math.max(0, Math.min(100, score))
   const angle = Math.PI + ((safeScore ?? 0) / 100) * Math.PI
   const needleX = 120 + Math.cos(angle) * 76
   const needleY = 120 + Math.sin(angle) * 76
+  const stroke = cfg.tone === 'na' ? TW_COLORS.neutral : TW_COLORS[cfg.tone]
   return (
     <div className="rounded-xl border border-white/10 bg-black/20 p-4 text-center">
-      <div className="text-[10px] font-semibold normal-case text-muted-foreground">Market Composite</div>
+      <div className="text-[10px] font-semibold text-muted-foreground">市場風險綜合分數</div>
       <svg viewBox="0 0 240 150" className="mx-auto mt-2 h-32 w-full max-w-[260px] overflow-visible">
-        <defs>
-          <linearGradient id="market-risk-gauge" x1="0" x2="1" y1="0" y2="0">
-            <stop offset="0%" stopColor="#10b981" />
-            <stop offset="44%" stopColor="#facc15" />
-            <stop offset="70%" stopColor="#fb923c" />
-            <stop offset="100%" stopColor="#fb3b6f" />
-          </linearGradient>
-          <filter id="market-risk-glow" x="-40%" y="-40%" width="180%" height="180%">
-            <feGaussianBlur stdDeviation="4" result="blur" />
-            <feMerge>
-              <feMergeNode in="blur" />
-              <feMergeNode in="SourceGraphic" />
-            </feMerge>
-          </filter>
-        </defs>
         <path d="M30 120 A90 90 0 0 1 210 120" fill="none" stroke="rgba(148,163,184,.18)" strokeWidth="18" strokeLinecap="round" />
-        <path d="M30 120 A90 90 0 0 1 210 120" fill="none" stroke="url(#market-risk-gauge)" strokeWidth="18" strokeLinecap="round" pathLength="100" strokeDasharray="100 100" filter="url(#market-risk-glow)" />
-        {safeScore != null && <line x1="120" y1="120" x2={needleX} y2={needleY} stroke="#facc15" strokeWidth="3" strokeLinecap="round" />}
-        <circle cx="120" cy="120" r="8" fill="#facc15" stroke="#fff7ad" strokeWidth="2" />
+        {safeScore != null && (
+          <path d="M30 120 A90 90 0 0 1 210 120" fill="none" stroke={stroke} strokeWidth="18" strokeLinecap="round" pathLength="100" strokeDasharray={`${safeScore} 100`} />
+        )}
+        {safeScore != null && <line x1="120" y1="120" x2={needleX} y2={needleY} stroke="#e2e8f0" strokeWidth="3" strokeLinecap="round" />}
+        <circle cx="120" cy="120" r="7" fill="#e2e8f0" />
       </svg>
-      <div className={`-mt-8 text-5xl font-bold tabular-nums ${cfg.color}`}>{safeScore == null ? '—' : Math.round(safeScore)}</div>
-      <div className={`mt-1 text-sm font-semibold ${cfg.color}`}>{cfg.label}</div>
+      <div className={`-mt-8 text-4xl font-bold tabular-nums ${cfg.color}`}>{safeScore == null ? '—' : Math.round(safeScore)}</div>
+      <div className={`mt-1 inline-flex items-center gap-1 text-sm font-semibold ${cfg.color}`}><StatusIcon tone={cfg.tone} size={12} />{cfg.label}</div>
       <div className="mt-4 grid grid-cols-5 gap-1 text-[10px] text-muted-foreground">
         {['貪婪', '中性', '偏熱', '恐慌', '極恐慌'].map((label) => (
-          <span key={label}>{label}</span>
+          <span key={label} className={label === cfg.label || (label === '極恐慌' && cfg.label === '極度恐慌') ? cfg.color : undefined}>{label}</span>
         ))}
       </div>
     </div>
@@ -262,30 +256,32 @@ function MarketFearGauge({ score, cfg }: { score: number | null; cfg: { label: s
 function FactorCard({ group }: { group: FactorGroup }) {
   const Icon = group.Icon
   const sourceUrl = safeExternalUrl(group.source)
+  const tone = STATUS_TONE[group.status]
   return (
-    <div className={`rounded-lg border p-3 ${STATUS_STYLE[group.status]}`}>
+    <div className="rounded-lg border border-white/[0.08] bg-white/[0.03] p-3 text-slate-100">
       <div className="flex items-start justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
-          <Icon className="h-4 w-4 shrink-0" />
+          <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
           <span className="truncate text-sm font-semibold">{group.label}</span>
         </div>
-        <span className="shrink-0 rounded-full border border-current/25 px-2 py-0.5 text-[10px]">
+        <span className={`inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] ${STATUS_CHIP[tone]}`}>
+          <StatusIcon tone={tone} size={10} />
           {STATUS_LABEL[group.status]}
         </span>
       </div>
       <div className="mt-3 break-words sv-num text-base font-semibold leading-6 tabular-nums">{group.value}</div>
-      <div className="mt-2 text-[11px] leading-5 text-muted-foreground">
-        {group.missingReason ? `缺資料：${group.missingReason}` : group.detail}
+      <div className="mt-2 text-[11px] leading-5 text-muted-foreground" title={group.missingReason}>
+        {group.missingReason ? '缺資料' : group.detail}
       </div>
-      <div className="mt-2 flex items-center justify-between gap-2 sv-num text-[10px] text-muted-foreground/80">
+      <div className="mt-2 flex items-center justify-between gap-2 sv-num text-[10px] text-muted-foreground">
         {sourceUrl ? (
           <a className="truncate text-sky-300 hover:text-sky-200" href={sourceUrl} target="_blank" rel="noopener noreferrer">
-            source link
+            來源連結
           </a>
         ) : (
-          <span className="truncate">{group.source}</span>
+          <span className="truncate" title={group.source}>{humanSource(group.source, '系統資料')}</span>
         )}
-        {group.sourceDate ? <span className="shrink-0">{group.sourceDate}</span> : null}
+        {group.sourceDate ? <span className="shrink-0">{formatDate(group.sourceDate)}</span> : null}
       </div>
     </div>
   )
@@ -294,13 +290,13 @@ function FactorCard({ group }: { group: FactorGroup }) {
 function fmtIndex(value: number | null | undefined) {
   return value == null || !Number.isFinite(Number(value))
     ? 'n/a'
-    : Number(value).toLocaleString('zh-TW', { maximumFractionDigits: 2 })
+    : formatNumber(Number(value), 2)
 }
 
 function MarketOutlookCard({ outlook }: { outlook: NonNullable<MarketRisk['marketOutlook']> }) {
   const target = fmtIndex(outlook.optimistic_target)
   const base = fmtIndex(outlook.base_price)
-  const upside = outlook.upside_pct == null ? 'n/a' : `+${Number(outlook.upside_pct).toFixed(2)}%`
+  const upside = outlook.upside_pct == null ? 'n/a' : `▲ +${formatNumber(Number(outlook.upside_pct), 2)}%`
   const missing = outlook.missing_reasons?.length ? outlook.missing_reasons.join(' / ') : null
   return (
     <div className="mt-4 rounded-lg border border-sky-400/25 bg-sky-400/[0.07] p-3 text-sky-100">
@@ -324,11 +320,11 @@ function MarketOutlookCard({ outlook }: { outlook: NonNullable<MarketRisk['marke
         </div>
         <div>
           <div className="text-[10px] normal-case text-muted-foreground">{outlook.horizon_trading_days}D Upside</div>
-          <div className="sv-num text-base font-semibold tabular-nums">{upside}</div>
+          <div className="sv-num text-base font-semibold tabular-nums text-up">{upside}</div>
         </div>
       </div>
-      <div className="mt-2 text-[11px] leading-5 text-muted-foreground">
-        {missing ?? outlook.target_basis}
+      <div className="mt-2 text-[11px] leading-5 text-muted-foreground" title={missing ?? outlook.target_basis}>
+        {missing ? '部分資料缺漏' : looksInternal(outlook.target_basis) ? '依 20MA 與近期波動推估' : outlook.target_basis}
       </div>
     </div>
   )
@@ -360,22 +356,11 @@ export default function MarketRiskPanel() {
   }, [risk])
 
   if (loading) {
-    return (
-      <div className="flex h-36 items-center justify-center text-sm text-muted-foreground">
-        <div className="mr-2 h-4 w-4 animate-spin rounded-full border-2 border-primary/30 border-t-primary" />
-        載入市場判讀...
-      </div>
-    )
+    return <DataState kind="loading" title="載入市場判讀" minHeight={144} />
   }
 
   if (error) {
-    return (
-      <div className="rounded-lg border border-amber-500/20 bg-amber-500/[0.04] p-5 text-sm">
-        <p className="font-semibold text-amber-200">市場判讀 API 載入失敗</p>
-        <p className="mt-1 text-xs text-muted-foreground">請檢查 OBS/Data Quality 的 market_risk 與 market_regime_state。</p>
-        <p className="mt-2 sv-num text-[10px] text-muted-foreground/70">source=market/risk status=degraded</p>
-      </div>
-    )
+    return <DataState kind="error" title="市場判讀暫時讀不到" code={error} />
   }
 
   if (!risk) return null
@@ -398,21 +383,24 @@ export default function MarketRiskPanel() {
             <ShieldCheck className={`h-4 w-4 ${cfg.color}`} />
             <span className="text-xs font-semibold normal-case text-muted-foreground">今日市場判讀</span>
             {missingCount > 0 && (
-              <span className="rounded-full border border-slate-500/30 px-2 py-0.5 text-[10px] text-slate-300">
-                missing {missingCount}
+              <span className="inline-flex items-center gap-1 rounded-full border border-slate-500/30 px-2 py-0.5 text-[10px] text-slate-300">
+                <StatusIcon tone="na" size={10} />
+                缺 {missingCount} 項
               </span>
             )}
           </div>
           <div className="mt-2 flex flex-wrap items-end gap-3">
-            <div className={`text-2xl font-bold ${cfg.color}`}>{trading.label}</div>
-            <div className="sv-num text-xs text-muted-foreground">交易採用 runtime={trading.status}</div>
-            <div className="sv-num text-xs text-muted-foreground">run_date={risk.regimeState?.runDate ?? risk.date}</div>
-            <div className="sv-num text-xs text-muted-foreground">generated={formatTwDateTimeShort(packetGeneratedAt)}</div>
+            <div
+              className={`inline-flex items-center gap-1.5 text-2xl font-bold ${cfg.color}`}
+              title={trading.blockers.length ? `交易狀態 ${humanStatus(trading.status)}；阻擋原因 ${trading.blockers.slice(0, 4).join(', ')}` : `交易狀態 ${humanStatus(trading.status)}`}
+            >
+              <StatusIcon tone={cfg.tone} size={16} />
+              {trading.label}
+            </div>
+            <div className="sv-num text-xs text-muted-foreground">資料日 {formatDate(risk.regimeState?.runDate ?? risk.date)}</div>
+            <div className="sv-num text-xs text-muted-foreground">產生 {formatTwDateTimeShort(packetGeneratedAt)}</div>
             <div className={`sv-num text-xs ${packetCfg.color}`}>因子封包 {packetCfg.label}{Number.isFinite(packetScore) ? ` ${Math.round(packetScore)}` : ''}</div>
           </div>
-          {trading.blockers.length > 0 && trading.status === 'blocked' && (
-            <div className="mt-1 sv-num text-[10px] text-muted-foreground">blockers={trading.blockers.slice(0, 4).join(',')}</div>
-          )}
           {risk.marketOutlook && <MarketOutlookCard outlook={risk.marketOutlook} />}
           <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
             {groups.map((group) => (
@@ -420,7 +408,7 @@ export default function MarketRiskPanel() {
             ))}
           </div>
         </div>
-        <MarketFearGauge score={trading.score} cfg={{ label: trading.label, color: cfg.color }} />
+        <MarketFearGauge score={trading.score} cfg={{ label: trading.label, color: cfg.color, tone: cfg.tone }} />
       </div>
     </div>
   )

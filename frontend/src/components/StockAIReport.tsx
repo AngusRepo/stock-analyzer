@@ -13,25 +13,28 @@ import {
   Shield, Zap, RefreshCw, Tag, Building2, DollarSign,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import { priceToneClass } from '@/lib/colorTokens'
 
+// 買賣訊號是模型評等，不是當日漲跌：用中性深淺表強弱（實心＝強、外框＝一般），文字與圖示表方向。
+// 紅綠只留給價格與報酬（batch3 顏色規則；Wei 可否決）。
 const SIGNAL_CFG: Record<string, { label: string; accent: string; bg: string; border: string }> = {
-  STRONG_BUY:  { label: '強力買進', accent: 'text-red-400',     bg: 'bg-red-500/10',     border: 'border-red-500/30' },
-  BUY:         { label: '買進',     accent: 'text-orange-400',  bg: 'bg-orange-500/10',  border: 'border-orange-500/30' },
-  HOLD:        { label: '持有觀望', accent: 'text-yellow-400',  bg: 'bg-yellow-500/10',  border: 'border-yellow-500/30' },
-  SELL:        { label: '賣出',     accent: 'text-emerald-400', bg: 'bg-emerald-500/10', border: 'border-emerald-500/30' },
-  STRONG_SELL: { label: '強力賣出', accent: 'text-emerald-300', bg: 'bg-emerald-400/10', border: 'border-emerald-400/30' },
+  STRONG_BUY:  { label: '▲ 強力買進', accent: 'text-foreground', bg: 'bg-white/[0.08]', border: 'border-white/35' },
+  BUY:         { label: '▲ 買進',     accent: 'text-foreground', bg: 'bg-white/[0.04]', border: 'border-white/20' },
+  HOLD:        { label: '持有觀望',   accent: 'text-foreground', bg: 'bg-muted/20',     border: 'border-border' },
+  SELL:        { label: '▼ 賣出',     accent: 'text-foreground', bg: 'bg-transparent',  border: 'border-white/25' },
+  STRONG_SELL: { label: '▼ 強力賣出', accent: 'text-foreground', bg: 'bg-transparent',  border: 'border-white/40' },
   NO_SIGNAL:   { label: '訊號不明', accent: 'text-muted-foreground', bg: 'bg-muted/20', border: 'border-border' },
 }
 const MODEL_COLORS: Record<string, string> = {
   'LightGBM': '#14b8a6',
-  'XGBoost': '#10b981',
+  'XGBoost': '#c084fc',
   'ExtraTrees': '#ec4899',
   'TabM': '#6366f1',
-  'GNN': '#22c55e',
+  'GNN': '#facc15',
   'DLinear': '#8b5cf6',
   'PatchTST': '#f59e0b',
   'iTransformer': '#38bdf8',
-  'TimesFM': '#f43f5e',
+  'TimesFM': '#fb923c',
   'KalmanFilter': '#3b82f6',
   'MarkovSwitching': '#06b6d4',
 }
@@ -83,7 +86,7 @@ function LLMSection({ title, icon: Icon, data, isPending, field }: {
       ) : text ? (
         <div className="text-sm leading-relaxed whitespace-pre-wrap text-foreground/85">{text}</div>
       ) : (
-        <p className="text-xs text-muted-foreground/50 py-2">分析產生中或無資料</p>
+        <p className="text-xs text-muted-foreground py-2">分析產生中或無資料</p>
       )}
     </Section>
   )
@@ -161,7 +164,7 @@ export default function StockAIReport({ stockId }: { stockId: number }) {
                 )}
                 {ml?.forecast_pct != null && (
                   <span className="text-muted-foreground">
-                    5日預測 <span className={cn('font-bold', ml.forecast_pct >= 0 ? 'text-red-400' : 'text-emerald-400')}>
+                    5日預測 <span className={cn('font-bold', priceToneClass(ml.forecast_pct))}>
                       {(ml.forecast_pct * 100).toFixed(1)}%
                     </span>
                   </span>
@@ -177,7 +180,7 @@ export default function StockAIReport({ stockId }: { stockId: number }) {
             )}
           </div>
           {rec?.reason && (
-            <p className="mt-3 text-xs text-muted-foreground/80 leading-relaxed border-t border-white/[0.06] pt-2">{rec.reason}</p>
+            <p className="mt-3 text-xs text-muted-foreground leading-relaxed border-t border-white/[0.06] pt-2">{rec.reason}</p>
           )}
         </div>
 
@@ -195,9 +198,9 @@ export default function StockAIReport({ stockId }: { stockId: number }) {
           <div className="grid grid-cols-4 gap-2 mt-3">
             {[
               { label: '進場參考', value: ml.entry_price, cls: 'text-foreground' },
-              { label: '停損',     value: ml.stop_loss,   cls: 'text-emerald-400' },
-              { label: '目標 1',   value: ml.target1,     cls: 'text-red-400' },
-              { label: '目標 2',   value: ml.target2,     cls: 'text-red-300' },
+              { label: '停損',     value: ml.stop_loss,   cls: 'text-down' },
+              { label: '目標 1',   value: ml.target1,     cls: 'text-up' },
+              { label: '目標 2',   value: ml.target2,     cls: 'text-up' },
             ].map(item => (
               <div key={item.label} className="rounded-lg border border-white/[0.08] bg-muted/20 p-2.5 text-center">
                 <p className="text-[10px] text-muted-foreground mb-1">{item.label}</p>
@@ -220,19 +223,19 @@ export default function StockAIReport({ stockId }: { stockId: number }) {
                   style={{ backgroundColor: MODEL_COLORS[m.name] ?? '#888' }}>
                   {modelDisplayName(m.name)}
                 </span>
-                <span className={cn('w-8 text-center', m.direction === 'up' ? 'text-red-400' : 'text-emerald-400')}>
+                <span className={cn('w-8 text-center', m.direction === 'up' ? 'text-up' : 'text-down')}>
                   {m.direction === 'up' ? '↑ 漲' : '↓ 跌'}
                 </span>
                 <div className="flex-1 bg-muted rounded-full h-2 overflow-hidden">
                   <div className="h-full rounded-full" style={{ width: `${(m.confidence * 100).toFixed(0)}%`, backgroundColor: MODEL_COLORS[m.name] ?? '#888' }} />
                 </div>
                 <span className="text-muted-foreground w-10 text-right sv-num">{(m.confidence * 100).toFixed(0)}%</span>
-                <span className="text-muted-foreground/60 w-16 text-right">準確 {(m.direction_accuracy * 100).toFixed(0)}%</span>
+                <span className="text-muted-foreground w-16 text-right">準確 {(m.direction_accuracy * 100).toFixed(0)}%</span>
               </div>
             ))}
           </div>
           {ml.reasoning && (
-            <p className="mt-3 text-xs text-muted-foreground/70 leading-relaxed border-t border-white/[0.06] pt-2">{ml.reasoning}</p>
+            <p className="mt-3 text-xs text-muted-foreground leading-relaxed border-t border-white/[0.06] pt-2">{ml.reasoning}</p>
           )}
         </Section>
       )}
@@ -244,13 +247,13 @@ export default function StockAIReport({ stockId }: { stockId: number }) {
             <div className="flex flex-wrap gap-1.5">
               {tags.map((t: any) => (
                 <span key={t.tag} className="text-xs px-2 py-1 rounded-lg bg-primary/10 text-primary/80 border border-primary/20">
-                  {t.tag}{t.weight < 1 && <span className="text-muted-foreground/50 ml-1">{t.weight.toFixed(1)}</span>}
+                  {t.tag}{t.weight < 1 && <span className="text-muted-foreground ml-1">{t.weight.toFixed(1)}</span>}
                 </span>
               ))}
             </div>
-          ) : <p className="text-xs text-muted-foreground/50">尚未分類</p>}
+          ) : <p className="text-xs text-muted-foreground">尚未分類</p>}
           {profile?.business_desc && (
-            <p className="mt-2 text-[11px] text-muted-foreground/60 leading-relaxed line-clamp-3 border-t border-white/[0.05] pt-2">
+            <p className="mt-2 text-[11px] text-muted-foreground leading-relaxed line-clamp-3 border-t border-white/[0.05] pt-2">
               {profile.business_desc.replace(/\*\*/g, '').slice(0, 200)}
             </p>
           )}
@@ -262,13 +265,13 @@ export default function StockAIReport({ stockId }: { stockId: number }) {
               {[{ label: '外資', value: chip.foreign_net }, { label: '投信', value: chip.trust_net }].map(row => (
                 <div key={row.label} className="flex items-center justify-between">
                   <span className="text-sm text-muted-foreground">{row.label}</span>
-                  <span className={cn('text-sm font-bold sv-num', (row.value ?? 0) >= 0 ? 'text-emerald-400' : 'text-red-400')}>
+                  <span className={cn('text-sm font-bold sv-num', priceToneClass(row.value))}>
                     {row.value != null ? `${row.value >= 0 ? '+' : ''}${(row.value / 1000).toFixed(0)}張` : '-'}
                   </span>
                 </div>
               ))}
             </div>
-          ) : <p className="text-xs text-muted-foreground/50">無資料</p>}
+          ) : <p className="text-xs text-muted-foreground">無資料</p>}
         </Section>
 
         <Section title="基本面" icon={DollarSign}>
@@ -285,7 +288,7 @@ export default function StockAIReport({ stockId }: { stockId: number }) {
                 </div>
               ))}
             </div>
-          ) : <p className="text-xs text-muted-foreground/50">無資料</p>}
+          ) : <p className="text-xs text-muted-foreground">無資料</p>}
         </Section>
       </div>
 
@@ -302,7 +305,7 @@ export default function StockAIReport({ stockId }: { stockId: number }) {
         </Section>
       )}
 
-      <p className="text-[10px] text-muted-foreground/40 text-center py-2">⚠ AI 分析僅供參考，不構成投資建議</p>
+      <p className="text-[10px] text-muted-foreground text-center py-2">⚠ AI 分析僅供參考，不構成投資建議</p>
     </div>
   )
 }

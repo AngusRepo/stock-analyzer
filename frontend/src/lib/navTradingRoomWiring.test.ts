@@ -22,7 +22,7 @@ test('UI separates absent data, actual zero, comparison identity and cost eviden
   assert.ok(source('./navTradingRoom.ts').includes('增量比較（基準為凍結 L4）'))
   assert.equal(navNumber(0), '0'); assert.equal(navPercent(0), '0.00%')
   assert.equal(navPercent(null), '尚無可驗證數值'); assert.equal(navNumber(NaN), '尚無可驗證數值')
-  assert.equal(navSign(0.01), 'text-emerald-300'); assert.equal(navSign(-0.01), 'text-red-300')
+  assert.equal(navSign(0.01), 'text-up'); assert.equal(navSign(-0.01), 'text-down')
 })
 
 test('shared account type remains within the deployed Cloud Run Worker source root', () => {

@@ -1,6 +1,7 @@
 ﻿import { useQuery } from '@tanstack/react-query'
 import { systemApi } from '@/lib/api'
 import { formatTwDateKey, formatTwDateShort, formatTwTime } from '@/lib/twTime'
+import { StatusIcon } from '@/components/ui/status'
 
 function formatDate(dateStr: string | null): string {
   if (!dateStr) return '無資料'
@@ -14,11 +15,7 @@ function formatDate(dateStr: string | null): string {
 }
 
 function Dot({ ok, warn }: { ok: boolean; warn?: boolean }) {
-  return (
-    <span className={`inline-block h-1.5 w-1.5 shrink-0 rounded-full ${
-      ok ? 'bg-emerald-400' : warn ? 'animate-pulse bg-yellow-400' : 'animate-pulse bg-red-400'
-    }`} />
-  )
+  return <StatusIcon tone={ok ? 'ok' : warn ? 'warn' : 'fail'} size={10} />
 }
 
 interface Props {
@@ -35,7 +32,7 @@ export default function SystemStatusBar({ mode = 'compact' }: Props) {
 
   if (isLoading) {
     return (
-      <div className="flex items-center gap-1.5 px-3 py-2 text-[10px] text-muted-foreground/50">
+      <div className="flex items-center gap-1.5 px-3 py-2 text-[10px] text-muted-foreground">
         <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-muted-foreground/30" />
         <span>載入資料狀態...</span>
       </div>
@@ -103,7 +100,7 @@ function Row({ label, date, ok }: { label: string; date: string | null; ok: bool
         <Dot ok={ok} />
         <span className="text-[11px] text-muted-foreground">{label}</span>
       </div>
-      <span className={`sv-num text-[11px] tabular-nums ${ok ? 'text-foreground' : 'text-yellow-400'}`}>
+      <span className={`sv-num text-[11px] tabular-nums ${ok ? 'text-foreground' : 'text-warn'}`}>
         {formatDate(date)}
       </span>
     </div>

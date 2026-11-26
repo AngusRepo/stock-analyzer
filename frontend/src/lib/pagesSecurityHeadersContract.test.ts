@@ -17,4 +17,7 @@ assert(headers.includes('X-Frame-Options: DENY'), 'Pages must refuse framing (fr
 assert(headers.includes('Cross-Origin-Opener-Policy: same-origin'), 'Pages must isolate the browsing context')
 assert(headers.includes('/assets/*\n  Cache-Control: public, max-age=31536000, immutable'), 'Hashed assets must keep their immutable cache rule')
 
+assert(/^  Content-Security-Policy-Report-Only: /m.test(headers) && !/^  Content-Security-Policy: /m.test(headers), 'CSP stays Report-Only until production reports are reviewed')
+assert(/^  Strict-Transport-Security: max-age=31536000$/m.test(headers), 'Pages must send HSTS for one year, without preload or includeSubDomains')
+
 console.log('pagesSecurityHeadersContract: OK')

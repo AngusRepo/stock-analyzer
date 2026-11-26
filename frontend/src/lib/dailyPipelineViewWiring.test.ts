@@ -42,3 +42,18 @@ test('daily flow requests are abortable and bounded', () => {
   assert(apiClient.includes('new AbortController()'))
   assert(apiClient.includes('timeoutTriggered'))
 })
+
+test('strategy summary separates registry-active strategies from observed ones', () => {
+  // active_strategy_count (registry) and strategies.length (active + observed) were both labelled 活躍.
+  assert(!page.includes('>活躍策略<'))
+  assert(page.includes("row?.status === 'observed'"))
+  assert(page.includes('data-strategy-group={group.key}'))
+  assert(page.includes('正式啟用') && page.includes('當日命中的觀察策略'))
+  // Overlap averages are computed over every listed strategy; the label must say so.
+  // N7: the label says it averages N strategies' pairs, not N pairs.
+  assert(page.includes('個策略兩兩平均'))
+  // Worker display_name wins; the mechanical id label is only the fallback.
+  assert(page.includes('strategyDisplayLabel(row.strategy_id, row.display_name)'))
+  // Legacy fallback shows "—" for the count, so it must not draw a length bar either.
+  assert(page.includes('canonicalMatrixReady\n                        ? <div'))
+})

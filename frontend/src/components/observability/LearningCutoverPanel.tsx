@@ -39,7 +39,7 @@ export default function LearningCutoverPanel({ report }: { report?: DataDomainCu
   return (
     <WorkstationPanel title="D1 十年架構切換里程碑" kicker="production strict readiness">
       <div className="grid gap-3 p-3 lg:grid-cols-[minmax(0,1.05fr)_minmax(0,1.45fr)]">
-        <div className="space-y-3 rounded-lg border border-[#263247] bg-[#070a10] p-3">
+        <div className="space-y-3">
           <div className="flex flex-wrap items-center gap-2">
             <WorkstationPill tone={domain?.cutover_ready ? 'ok' : 'warn'}>
               {domain?.cutover_ready ? '可切換正式' : '禁止切換'}
@@ -68,18 +68,18 @@ export default function LearningCutoverPanel({ report }: { report?: DataDomainCu
             </div>
           ))}
           <div className="grid grid-cols-2 gap-2 text-xs">
-            <div className="rounded border border-[#263247] p-2 text-slate-400">Learning routing contract <span className="float-right text-slate-200">{domain?.routing_contract_ready ? '已 closure' : '未 closure'}</span></div>
-            <div className="rounded border border-[#263247] p-2 text-slate-400">Learning 跨域 contract <span className="float-right text-slate-200">{domain?.projection_contract_ready ? '已 closure' : '未 closure'}</span></div>
-            <div className="rounded border border-[#263247] p-2 text-slate-400">Writer epoch <span className="float-right sv-num text-slate-200">{domain?.current_writer_epoch ?? 'N/A'}</span></div>
-            <div className="rounded border border-[#263247] p-2 text-slate-400">Projection errors <span className="float-right sv-num text-slate-200">{domain?.projection_error_events ?? 'N/A'}</span></div>
+            <div className="border-b border-border py-1.5 text-slate-400">Learning routing contract <span className="float-right text-slate-200">{domain?.routing_contract_ready ? '已 closure' : '未 closure'}</span></div>
+            <div className="border-b border-border py-1.5 text-slate-400">Learning 跨域 contract <span className="float-right text-slate-200">{domain?.projection_contract_ready ? '已 closure' : '未 closure'}</span></div>
+            <div className="border-b border-border py-1.5 text-slate-400">Writer epoch <span className="float-right sv-num text-slate-200">{domain?.current_writer_epoch ?? 'N/A'}</span></div>
+            <div className="border-b border-border py-1.5 text-slate-400">Projection errors <span className="float-right sv-num text-slate-200">{domain?.projection_error_events ?? 'N/A'}</span></div>
           </div>
         </div>
-        <div className="rounded-lg border border-[#263247] bg-[#070a10] p-3">
+        <div className="border-t border-border pt-3 lg:border-l lg:border-t-0 lg:pl-3 lg:pt-0">
           <p className="mb-2 sv-num text-xs normal-case text-slate-300">尚未 closure 的原因</p>
           <div className="space-y-2">
             {(domain?.blockers ?? ['cutover readiness 尚未載入']).map((blocker, index) => (
               <div key={`${blocker}-${index}`} className="flex gap-2 text-xs leading-5 text-slate-400">
-                <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-300" />
+                <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" />
                 <span>{explainBlocker(blocker)}</span>
               </div>
             ))}

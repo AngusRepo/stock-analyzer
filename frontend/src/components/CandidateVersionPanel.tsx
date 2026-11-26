@@ -18,11 +18,12 @@ export default function CandidateVersionPanel({ versions }: { versions?: Candida
             {!candidate.identity_valid || queryStatus === 'blocked'
               ? <p className="text-amber-200">候選身分或 NAV 證據驗證受阻，不能套用其他版本數據</p> : null}
             <p className="text-slate-400">離線診斷：{candidate.offline_decision ?? '尚無資料'}（非 NAV 採用判定）</p>
-            <details className="mt-2 text-slate-400"><summary className="cursor-pointer">Cohort 與產物身分</summary>
-              <p className="break-all">{candidate.cohort_id ?? 'cohort 未驗證'}</p>
-              <p className="break-all">{candidate.artifact_id ?? 'artifact 未知'}</p>
-              <p className="break-all">checksum：{candidate.checksum ?? '未知'}</p>
-            </details>
+            <p className="mt-1 text-muted-foreground">
+              <span
+                className="cursor-help border-b border-dotted border-white/25"
+                title={[`cohort：${candidate.cohort_id ?? '未驗證'}`, `artifact：${candidate.artifact_id ?? '未知'}`, `checksum：${candidate.checksum ?? '未知'}`].join('\n')}
+              >Cohort 與產物身分</span>
+            </p>
           </>}
       </div>)}
     </div>

@@ -1,5 +1,5 @@
 ﻿import { useQuery } from '@tanstack/react-query'
-import { Activity, AlertTriangle, Clock, ExternalLink, RefreshCw } from 'lucide-react'
+import { AlertTriangle, Clock, ExternalLink, RefreshCw } from 'lucide-react'
 import { lazy, Suspense } from 'react'
 import AppShell from '@/components/AppShell'
 import SchedulerPipelineChain from '@/components/SchedulerPipelineChain'
@@ -10,8 +10,12 @@ import {
   WorkstationPageTitle,
   WorkstationPanel,
   WorkstationPill,
+  WorkstationStatusPill,
+  WorkstationToneIcon,
   type WorkstationTone,
 } from '@/components/workstation/WorkstationChrome'
+import { STATUS_CHIP } from '@/lib/colorTokens'
+import { StatusIcon } from '@/components/ui/status'
 import { VirtualizedList } from '@/components/performance/VirtualizedList'
 
 const LazySchedulerCadenceChart = lazy(() => import('@/components/charts/SchedulerCadenceChart'))
@@ -36,11 +40,14 @@ function suspiciousDuration(job: SchedulerJob) {
 }
 
 function statusLabel(status?: string) {
-  if (status === 'blocked') return 'BLOCKED'
-  if (status === 'waiting') return 'WAITING'
-  if (status === 'sleep') return 'NOT TODAY'
-  if (status === 'skip') return 'SKIPPED'
-  return status || 'unknown'
+  if (status === 'success') return '成功'
+  if (status === 'failed') return '失敗'
+  if (status === 'running') return '執行中'
+  if (status === 'blocked') return '被擋下'
+  if (status === 'waiting') return '等待中'
+  if (status === 'sleep') return '今日不跑'
+  if (status === 'skip' || status === 'skipped') return '略過'
+  return status || '未知'
 }
 
 function consolidationTone(job: SchedulerJob): WorkstationTone {
@@ -54,12 +61,12 @@ function consolidationTone(job: SchedulerJob): WorkstationTone {
 
 function consolidationLabel(job: SchedulerJob) {
   const kind = job.consolidation?.consolidationClass
-  if (kind === 'keep_scheduler') return 'KEEP'
-  if (kind === 'merge_into_chain') return 'MERGE'
-  if (kind === 'downstream_evidence') return 'EVIDENCE'
-  if (kind === 'manual_maintenance_candidate') return 'MANUAL'
-  if (kind === 'disable_candidate') return 'DISABLE?'
-  return 'UNCLASSIFIED'
+  if (kind === 'keep_scheduler') return '保留'
+  if (kind === 'merge_into_chain') return '併入鏈'
+  if (kind === 'downstream_evidence') return '下游證據'
+  if (kind === 'manual_maintenance_candidate') return '手動維護'
+  if (kind === 'disable_candidate') return '可停用？'
+  return '未分類'
 }
 
 function HistoryStrip({ history }: { history: SchedulerHistoryCell[] }) {
@@ -87,15 +94,15 @@ function MetricCell({ label, value, tone = 'neutral', detail }: {
     <div className="border-r border-[#263247] bg-[#070a10] p-3 last:border-r-0">
       <div className="flex items-center justify-between gap-2">
         <p className="sv-num text-[10px] normal-case text-[#8a92a6]">{label}</p>
-        <WorkstationPill tone={tone}>{tone}</WorkstationPill>
+        <WorkstationToneIcon tone={tone} size={12} />
       </div>
-      <p className={`mt-2 sv-num text-xl font-semibold ${tone === 'ok' ? 'text-emerald-300' : tone === 'warn' ? 'text-amber-300' : tone === 'error' ? 'text-rose-300' : 'text-slate-100'}`}>
+      <p className={`mt-2 sv-num text-xl font-semibold ${tone === 'ok' ? 'text-ok' : tone === 'warn' ? 'text-warn' : tone === 'error' ? 'text-fail' : 'text-slate-100'}`}>
         {value}
       </p>
       <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800">
-        <div className={`h-full rounded-full ${tone === 'ok' ? 'bg-emerald-400' : tone === 'warn' ? 'bg-amber-400' : tone === 'error' ? 'bg-rose-400' : 'bg-slate-500'}`} style={{ width: tone === 'error' ? '100%' : tone === 'warn' ? '64%' : '92%' }} />
+        <div className={`h-full rounded-full ${tone === 'ok' ? 'bg-ok' : tone === 'warn' ? 'bg-warn' : tone === 'error' ? 'bg-fail' : 'bg-slate-500'}`} style={{ width: tone === 'error' ? '100%' : tone === 'warn' ? '64%' : '92%' }} />
       </div>
-      {detail && <p className="mt-1 truncate text-xs text-slate-500">{detail}</p>}
+      {detail && <p className="mt-1 truncate text-xs text-muted-foreground">{detail}</p>}
     </div>
   )
 }
@@ -109,13 +116,13 @@ function JobRow({ job }: { job: SchedulerJob }) {
     <div className="grid min-h-[92px] grid-cols-1 gap-2 border-b border-[#263247] px-3 py-2 sv-num text-[11px] sm:grid-cols-[1fr_96px_92px_112px] sm:items-center">
       <div className="min-w-0">
         <div className="flex items-center gap-2">
-          <WorkstationPill tone={jobTone(job)}>{statusLabel(job.lastStatus)}</WorkstationPill>
+          <WorkstationStatusPill tone={jobTone(job)}>{statusLabel(job.lastStatus)}</WorkstationStatusPill>
           {replay && <WorkstationPill tone="info">{replay}</WorkstationPill>}
-          <WorkstationPill tone={consolidationTone(job)}>{consolidationLabel(job)}</WorkstationPill>
+          <span title={job.consolidation?.consolidationClass}><WorkstationPill tone={consolidationTone(job)}>{consolidationLabel(job)}</WorkstationPill></span>
           <p className="truncate text-slate-100">{job.name}</p>
-          {(suspicious || attention) && <AlertTriangle className="h-3.5 w-3.5 text-amber-300" />}
+          {(suspicious || attention) && <AlertTriangle className="h-3.5 w-3.5 text-warn" />}
         </div>
-        <p className={`mt-1 truncate ${attention ? 'text-amber-300' : 'text-[#70809b]'}`} title={job.summary || undefined}>
+        <p className={`mt-1 truncate ${attention ? 'text-warn' : 'text-[#70809b]'}`} title={job.summary || undefined}>
           {job.group} / {attention || job.summary || job.schedule}
         </p>
         {consolidation && (
@@ -130,7 +137,7 @@ function JobRow({ job }: { job: SchedulerJob }) {
         </div>
       </div>
       <div className="grid grid-cols-3 gap-2 text-[#8a92a6] sm:contents">
-        <span className={suspicious ? 'text-amber-300' : 'text-[#8a92a6]'}>{job.lastDuration || '-'}</span>
+        <span className={suspicious ? 'text-warn' : 'text-[#8a92a6]'}>{job.lastDuration || '-'}</span>
         <span className="truncate">{job.rate7d || '-'}</span>
         <span className="truncate text-right text-[#70809b]">{job.nextRun || '-'}</span>
       </div>
@@ -190,8 +197,8 @@ export default function SchedulerPage() {
         />
 
         {scheduler.error && (
-          <div className="border border-rose-400/30 bg-rose-400/[0.05] p-3 text-sm text-rose-200">
-            Scheduler API 載入失敗：{(scheduler.error as Error).message}
+          <div className={`flex items-center gap-2 border p-3 text-sm ${STATUS_CHIP.fail}`}>
+            <StatusIcon tone="fail" />Scheduler API 載入失敗：{(scheduler.error as Error).message}
           </div>
         )}
 
@@ -223,14 +230,14 @@ export default function SchedulerPage() {
               itemHeight={92}
               getKey={(job) => job.id}
               renderItem={(job) => <JobRow job={job} />}
-              empty={<div className="p-4 text-sm text-slate-500">尚未取得 scheduler jobs。</div>}
+              empty={<div className="p-4 text-sm text-muted-foreground">尚未取得 scheduler jobs。</div>}
             />
           </WorkstationPanel>
 
           <WorkstationPanel title="Needs Attention / 優先處理" kicker="failed or suspicious duration">
-            <div className="space-y-2 p-3">
+            <div className="divide-y divide-border">
               {suspiciousJobs.slice(0, 8).map((job) => (
-                <div key={job.id} className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
+                <div key={job.id} className="px-4 py-3">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
                       <p className="truncate sv-num text-[11px] normal-case text-slate-100">{job.name}</p>
@@ -241,21 +248,21 @@ export default function SchedulerPage() {
                         </p>
                       )}
                     </div>
-                    <WorkstationPill tone={jobTone(job)}>{statusLabel(job.lastStatus)}</WorkstationPill>
+                    <WorkstationStatusPill tone={jobTone(job)}>{statusLabel(job.lastStatus)}</WorkstationStatusPill>
                   </div>
                   <p className="mt-2 sv-num text-[10px] text-[#70809b]">last {job.lastRun}{historicalReplayLabel(job) ? ` / run_date ${historicalReplayLabel(job)}` : ''} / duration {job.lastDuration} / next {job.nextRun}</p>
                 </div>
               ))}
               {!suspiciousJobs.length && (
-                <div className="flex items-start gap-2 rounded-xl border border-emerald-400/20 bg-emerald-400/[0.05] p-3 text-sm text-emerald-300">
-                  <Activity className="mt-0.5 h-4 w-4" />
+                <div className="flex items-start gap-2 px-4 py-3 text-sm text-ok">
+                  <StatusIcon tone="ok" size={14} />
                   目前沒有 failed、suspicious duration 或未正式執行的 job。
                 </div>
               )}
-              <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3 text-xs leading-5 text-slate-400">
-                <div className="mb-2 flex items-center gap-2 text-sky-300">
+              <div className="px-4 py-3 text-xs leading-5 text-muted-foreground">
+                <div className="mb-1 flex items-center gap-2 text-foreground">
                   <Clock className="h-4 w-4" />
-                  Reading rule
+                  判讀規則
                 </div>
                 <span className="sv-num">&lt;1s</span>、<span className="sv-num">--</span>、<span className="sv-num">N/A</span> 代表需要追 callback / queue / run log，不應直接視為成功。
               </div>

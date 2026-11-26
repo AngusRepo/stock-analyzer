@@ -3,6 +3,7 @@ import { stocksApi } from '@/lib/api'
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Cell } from 'recharts'
 import { Skeleton } from '@/components/ui/skeleton'
 import { format } from 'date-fns'
+import { priceColor, priceToneClass } from '@/lib/colorTokens'
 
 export default function ChipChart({ stockId }: { stockId: number }) {
   const { data: chips = [], isLoading } = useQuery({
@@ -34,7 +35,7 @@ export default function ChipChart({ stockId }: { stockId: number }) {
         ].map(item => (
           <div key={item.label} className="rounded-lg border border-border/50 p-3">
             <p className="text-xs text-muted-foreground">{item.label}</p>
-            <p className={`text-lg sv-num font-bold ${(item.value ?? 0) >= 0 ? 'text-red-400' : 'text-emerald-400'}`}>
+            <p className={`text-lg sv-num font-bold ${priceToneClass(item.value)}`}>
               {item.value != null ? `${item.value > 0 ? '+' : ''}${item.value.toLocaleString()}` : '—'}
             </p>
             <p className="text-xs text-muted-foreground">張</p>
@@ -48,7 +49,7 @@ export default function ChipChart({ stockId }: { stockId: number }) {
           <YAxis tick={{ fontSize: 10, fill: '#888' }} tickLine={false} />
           <Tooltip contentStyle={{ background: '#1a1a2e', border: '1px solid #333', fontSize: 12 }} />
           <Bar dataKey="foreign" name="外資" radius={[2, 2, 0, 0]}>
-            {chartData.map((d, i) => <Cell key={i} fill={d.foreign >= 0 ? '#f87171' : '#34d399'} />)}
+            {chartData.map((d, i) => <Cell key={i} fill={priceColor(d.foreign)} />)}
           </Bar>
         </BarChart>
       </ResponsiveContainer>

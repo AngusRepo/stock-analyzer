@@ -1,3 +1,5 @@
+import { formatDateShort, formatDateTimeShort } from './format'
+
 const TW_TIME_ZONE = 'Asia/Taipei'
 
 function hasExplicitTimeZone(value: string): boolean {
@@ -21,16 +23,9 @@ export function parseBackendTimestamp(value?: string | null): Date | null {
 }
 
 export function formatTwDateTimeShort(value?: string | null, fallback = '-'): string {
+  // 全站日期分隔符統一為「-」（MM-DD HH:mm，台北時間）。
   const parsed = parseBackendTimestamp(value)
-  if (!parsed) return fallback
-  return new Intl.DateTimeFormat('zh-TW', {
-    timeZone: TW_TIME_ZONE,
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).format(parsed)
+  return parsed ? formatDateTimeShort(parsed, fallback) : fallback
 }
 
 export function formatTwTime(value?: string | null, fallback = '-'): string {
@@ -62,10 +57,5 @@ export function formatTwDateKey(value?: string | null): string | null {
 
 export function formatTwDateShort(value?: string | null, fallback = '-'): string {
   const parsed = parseBackendTimestamp(value)
-  if (!parsed) return fallback
-  return new Intl.DateTimeFormat('zh-TW', {
-    timeZone: TW_TIME_ZONE,
-    month: 'numeric',
-    day: 'numeric',
-  }).format(parsed)
+  return parsed ? formatDateShort(parsed, fallback) : fallback
 }

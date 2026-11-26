@@ -15,6 +15,8 @@ import {
   summarizeDashboardV4Packet,
   type ChartLaneStatus,
 } from '@/lib/dashboardV4ChartViewModel'
+import { STATUS_CHIP, TW_COLORS, type StatusTone } from '@/lib/colorTokens'
+import { StatusIcon, STATUS_LABEL } from '@/components/ui/status'
 
 type DashboardV4LightweightChartProps = {
   packet?: DashboardV4ChartPacket
@@ -22,11 +24,11 @@ type DashboardV4LightweightChartProps = {
   error?: unknown
 }
 
-function laneColor(status: ChartLaneStatus) {
-  if (status === 'ok') return 'border-emerald-400/25 bg-emerald-400/10 text-emerald-200'
-  if (status === 'warn') return 'border-amber-400/25 bg-amber-400/10 text-amber-200'
-  if (status === 'error') return 'border-rose-400/30 bg-rose-400/10 text-rose-200'
-  return 'border-slate-500/25 bg-slate-500/10 text-slate-300'
+function laneTone(status: ChartLaneStatus): StatusTone {
+  if (status === 'ok') return 'ok'
+  if (status === 'warn') return 'warn'
+  if (status === 'error') return 'fail'
+  return 'na'
 }
 
 function chartOptions(width: number): DeepPartial<ChartOptions> {
@@ -69,8 +71,8 @@ function EmptyPanel({ message }: { message: string }) {
   return (
     <div className="grid min-h-[460px] place-items-center rounded-[20px] border border-white/[0.08] bg-[#0a0b0f] px-4 text-center">
       <div>
-        <p className="sv-num text-[11px] normal-case text-amber-200">chart unavailable</p>
-        <p className="mt-2 text-sm text-slate-400">{message}</p>
+        <p className="inline-flex items-center gap-1 text-[11px] text-warn"><StatusIcon tone="warn" size={10} />圖表無法顯示</p>
+        <p className="mt-2 text-sm text-muted-foreground">{message}</p>
       </div>
     </div>
   )
@@ -90,12 +92,12 @@ export default function DashboardV4LightweightChart({ packet, loading, error }: 
     chartRef.current = chart
 
     const candleSeries = chart.addSeries(CandlestickSeries, {
-      upColor: '#ff3b45',
-      downColor: '#00c076',
-      borderUpColor: '#ff3b45',
-      borderDownColor: '#00c076',
-      wickUpColor: '#ff6b72',
-      wickDownColor: '#28d190',
+      upColor: TW_COLORS.up,
+      downColor: TW_COLORS.down,
+      borderUpColor: TW_COLORS.up,
+      borderDownColor: TW_COLORS.down,
+      wickUpColor: TW_COLORS.up,
+      wickDownColor: TW_COLORS.down,
     })
     candleSeries.setData(viewModel.candles)
     createSeriesMarkers(candleSeries, viewModel.modelMarkers)
@@ -149,12 +151,12 @@ export default function DashboardV4LightweightChart({ packet, loading, error }: 
         </div>
         <div className="grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-3 lg:min-w-[520px]">
           {viewModel.lanes.map((lane) => (
-            <div key={lane.id} className={`border px-2.5 py-2 ${laneColor(lane.status)}`}>
+            <div key={lane.id} className={`border px-2.5 py-2 ${STATUS_CHIP[laneTone(lane.status)]}`}>
               <div className="flex items-center justify-between gap-2">
-                <span className="sv-num normal-case">{lane.label}</span>
+                <span className="inline-flex min-w-0 items-center gap-1 sv-num normal-case" title={lane.status}><StatusIcon tone={laneTone(lane.status)} size={10} title={STATUS_LABEL[laneTone(lane.status)]} />{lane.label}</span>
                 <span className="sv-num text-xs">{lane.value}</span>
               </div>
-              <p className="mt-1 truncate text-[10px] opacity-75">{lane.detail}</p>
+              <p className="mt-1 truncate text-[10px] text-muted-foreground" title={lane.detail}>{lane.detail}</p>
             </div>
           ))}
         </div>
@@ -165,13 +167,13 @@ export default function DashboardV4LightweightChart({ packet, loading, error }: 
       <footer className="grid gap-2 border-t border-white/[0.07] bg-[#101116] p-3 text-[11px] text-[#8b9bab] lg:grid-cols-[minmax(0,1fr)_auto]">
         <div className="min-w-0">
           <span className="text-[#d6a85f]">regime</span> {viewModel.regimeLabel}
-          <span className="mx-2 text-slate-600">/</span>
+          <span className="mx-2 text-muted-foreground">/</span>
           <span className="text-[#d6a85f]">quality</span> {viewModel.dataQualityStatus}
-          <span className="mx-2 text-slate-600">/</span>
+          <span className="mx-2 text-muted-foreground">/</span>
           <span className="text-[#d6a85f]">warnings</span> {summary?.warningCount ?? 0}
         </div>
         {summary?.hasExternalWidget && (
-          <span className="text-rose-300">external widget source blocked by Dashboard V4 policy</span>
+          <span className="inline-flex items-center gap-1 text-fail" title="external widget source blocked by Dashboard V4 policy"><StatusIcon tone="fail" size={10} />已封鎖外部 widget 來源</span>
         )}
       </footer>
     </section>

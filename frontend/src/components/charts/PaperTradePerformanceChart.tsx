@@ -13,33 +13,41 @@ import {
   type SeriesMarker,
   type Time,
 } from 'lightweight-charts'
-import { Activity } from 'lucide-react'
-import { paperOrdersFromPayload, paperPendingBuysFromPayload, paperPnlSnapshotsFromPayload } from '@/lib/paperPayload'
+import { paperOrdersFromPayload, paperPendingBuysFromPayload } from '@/lib/paperPayload'
+import {
+  benchmarkBases,
+  benchmarkLineData,
+  botLineData,
+  buildPaperTradePerformancePoints,
+  periodMaxDrawdown,
+  dateOnly,
+  periodRows,
+  sortedSnapshots,
+  type BenchmarkKey,
+  type PerformancePoint,
+} from '@/lib/paperPerformanceSeries'
+import { TW_COLORS, priceToneClass } from '@/lib/colorTokens'
+import { formatDateShort, formatSignedPct } from '@/lib/format'
+import { DataState } from '@/components/ui/data-state'
 
 type PaperTradePerformanceChartProps = {
   pnl?: any
   orders?: unknown
   pendingBuys?: unknown
   loading?: boolean
-}
-
-type BenchmarkKey = '0050' | 'TWII' | '00981A' | '00631L' | '00403A'
-
-type PerformancePoint = {
-  time: string
-  bot: number
-  benchmarks: Partial<Record<BenchmarkKey, number>>
-  drawdown: number
-  totalValue: number
+  /** /paper/pnl 讀取失敗：顯示讀取失敗，不要當成「還沒有資產紀錄」。 */
+  error?: unknown
+  onRetry?: () => void
 }
 
 const PERIODS = [
-  { key: '1W', days: 7, label: '1W' },
-  { key: '1M', days: 30, label: '1M' },
-  { key: '3M', days: 90, label: '3M' },
-  { key: 'ALL', days: 9999, label: 'ALL' },
+  { key: '1W', label: '1W' },
+  { key: '1M', label: '1M' },
+  { key: '3M', label: '3M' },
+  { key: 'ALL', label: 'ALL' },
 ] as const
 
+// 基準線用中性系列色（不是漲跌、也不是狀態），避免和 bot 的紅綠混讀。
 const BENCHMARK_SERIES: Array<{
   key: BenchmarkKey
   label: string
@@ -50,88 +58,9 @@ const BENCHMARK_SERIES: Array<{
   { key: '0050', label: '0050', color: '#818cf8', lineStyle: LineStyle.Dashed, width: 2 },
   { key: 'TWII', label: 'TWII', color: '#a78bfa', lineStyle: LineStyle.Dotted, width: 1 },
   { key: '00981A', label: '00981A', color: '#fbbf24', lineStyle: LineStyle.Solid, width: 1 },
-  { key: '00631L', label: '00631L', color: '#fb7185', lineStyle: LineStyle.Solid, width: 1 },
+  { key: '00631L', label: '00631L', color: '#fb923c', lineStyle: LineStyle.Solid, width: 1 },
   { key: '00403A', label: '00403A', color: '#38bdf8', lineStyle: LineStyle.Solid, width: 1 },
 ]
-
-function dateOnly(value: unknown): string | null {
-  if (!value) return null
-  const raw = String(value)
-  if (/^\d{4}-\d{2}-\d{2}/.test(raw)) return raw.slice(0, 10)
-  const parsed = new Date(raw)
-  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString().slice(0, 10)
-}
-
-function numberOrNull(value: unknown): number | null {
-  // Number(null) and Number('') are 0; a missing snapshot value must stay missing, not plot as -100%.
-  if (value == null || value === '') return null
-  const parsed = Number(value)
-  return Number.isFinite(parsed) ? parsed : null
-}
-
-function pct(value: number, base: number): number {
-  if (!Number.isFinite(value) || !Number.isFinite(base) || base <= 0) return 0
-  return ((value / base) - 1) * 100
-}
-
-function benchmarkRawValue(row: any, key: BenchmarkKey): number | null {
-  const map = row?.etf_benchmarks && typeof row.etf_benchmarks === 'object'
-    ? row.etf_benchmarks as Record<string, unknown>
-    : {}
-  const raw = key === '0050' ? row?.benchmark_value
-    : key === 'TWII' ? row?.twii_value
-      : map[key] ?? row?.[`${key}_value`] ?? row?.[key]
-  // A benchmark price is never zero or negative; treat one as a gap in the series.
-  const value = numberOrNull(raw)
-  return value != null && value > 0 ? value : null
-}
-
-function firstPositiveValue(rows: any[], getter: (row: any) => unknown, fallback: number) {
-  for (const row of rows) {
-    const value = numberOrNull(getter(row))
-    if (value != null && value > 0) return value
-  }
-  return fallback
-}
-
-function buildPaperTradePerformancePoints(pnl: any, period: string): PerformancePoint[] {
-  const rawSnapshots = paperPnlSnapshotsFromPayload(pnl)
-  const allSnapshots = [...rawSnapshots]
-    .filter((row) => dateOnly(row?.date ?? row?.snapshot_date ?? row?.ts))
-    .sort((a, b) => String(dateOnly(a?.date ?? a?.snapshot_date ?? a?.ts)).localeCompare(String(dateOnly(b?.date ?? b?.snapshot_date ?? b?.ts))))
-
-  if (!allSnapshots.length) return []
-
-  const periodDays = PERIODS.find((row) => row.key === period)?.days ?? 9999
-  const cutoffDate = new Date(Date.now() - periodDays * 86_400_000).toISOString().slice(0, 10)
-  const snapshots = period === 'ALL' ? allSnapshots : allSnapshots.filter((row) => String(dateOnly(row?.date ?? row?.snapshot_date ?? row?.ts)) >= cutoffDate)
-  const rows = snapshots.length ? snapshots : allSnapshots
-  const baseValue = firstPositiveValue(rows, (row) => row?.total_value ?? row?.portfolio_value, 1_000_000)
-  const benchmarkBases = BENCHMARK_SERIES.reduce<Partial<Record<BenchmarkKey, number>>>((acc, item) => {
-    const base = firstPositiveValue(rows, (row) => benchmarkRawValue(row, item.key), 0)
-    if (base > 0) acc[item.key] = base
-    return acc
-  }, {})
-
-  return rows.map((row) => {
-    const totalValue = numberOrNull(row?.total_value ?? row?.portfolio_value) ?? baseValue
-    const maxDrawdown = Math.abs(numberOrNull(row?.max_drawdown_to_date ?? row?.drawdown ?? 0) ?? 0)
-    const benchmarks = BENCHMARK_SERIES.reduce<Partial<Record<BenchmarkKey, number>>>((acc, item) => {
-      const raw = benchmarkRawValue(row, item.key)
-      const base = benchmarkBases[item.key]
-      if (raw != null && base != null && base > 0) acc[item.key] = pct(raw, base)
-      return acc
-    }, {})
-
-    return {
-      time: String(dateOnly(row?.date ?? row?.snapshot_date ?? row?.ts)),
-      bot: pct(totalValue, baseValue),
-      benchmarks,
-      drawdown: -maxDrawdown * 100,
-      totalValue,
-    }
-  })
-}
 
 function executionTime(row: any): string | null {
   return dateOnly(row?.filled_at ?? row?.executed_at ?? row?.submitted_at ?? row?.created_at ?? row?.date ?? row?.trade_date)
@@ -153,7 +82,7 @@ function buildExecutionMarkers(orders: unknown = [], pendingBuys: unknown = [], 
         time,
         position: isSell ? 'aboveBar' : 'belowBar',
         shape: isBlocked ? 'circle' : isSell ? 'arrowDown' : 'arrowUp',
-        color: isBlocked ? '#fbbf24' : isSell ? '#34d399' : '#fb7185',
+        color: isBlocked ? TW_COLORS.warn : isSell ? TW_COLORS.down : TW_COLORS.up,
         size: 0.8,
       } satisfies SeriesMarker<Time>
     })
@@ -164,7 +93,7 @@ function buildExecutionMarkers(orders: unknown = [], pendingBuys: unknown = [], 
     time: executionTime(buy) ?? fallbackTime ?? new Date().toISOString().slice(0, 10),
     position: 'belowBar',
     shape: 'circle',
-    color: '#38bdf8',
+    color: TW_COLORS.ok,
     size: 0.65,
   } satisfies SeriesMarker<Time>))
 
@@ -208,31 +137,23 @@ function latestBenchmarkReturn(points: PerformancePoint[], key: BenchmarkKey): n
   return null
 }
 
-function formatPct(value: number | null | undefined) {
-  if (value == null || !Number.isFinite(value)) return 'n/a'
-  return `${value >= 0 ? '+' : ''}${value.toFixed(2)}%`
-}
-
-function EmptyPanel({ message }: { message: string }) {
+function EmptyPanel({ kind, message, code, onRetry }: { kind: 'loading' | 'empty' | 'error'; message: string; code?: string; onRetry?: () => void }) {
   return (
-    <div className="grid min-h-[320px] place-items-center rounded-[20px] border border-white/[0.08] bg-[#0a0b0f] px-4 text-center">
-      <div>
-        <Activity className="mx-auto mb-3 h-10 w-10 text-[#d6a85f]/45" />
-        <p className="sv-num text-[10px] normal-case text-[#d6a85f]">Paper Trading Visual Workbench</p>
-        <p className="mt-2 text-sm text-slate-400">{message}</p>
-      </div>
+    <div className="grid min-h-[200px] place-items-center">
+      <DataState kind={kind} title={message} code={code} onRetry={onRetry} />
     </div>
   )
 }
 
-export default function PaperTradePerformanceChart({ pnl, orders = [], pendingBuys = [], loading }: PaperTradePerformanceChartProps) {
+export default function PaperTradePerformanceChart({ pnl, orders = [], pendingBuys = [], loading, error, onRetry }: PaperTradePerformanceChartProps) {
   const [period, setPeriod] = useState<string>('ALL')
   const containerRef = useRef<HTMLDivElement | null>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const points = useMemo(() => buildPaperTradePerformancePoints(pnl, period), [period, pnl])
+  const bases = useMemo(() => benchmarkBases(periodRows(sortedSnapshots(pnl), period)), [period, pnl])
   const markers = useMemo(() => buildExecutionMarkers(orders, pendingBuys, points[points.length - 1]?.time), [orders, pendingBuys, points])
   const latest = points[points.length - 1]
-  const maxDrawdown = points.length ? Math.min(...points.map((point) => point.drawdown)) : 0
+  const maxDrawdown = periodMaxDrawdown(points)
   const visibleBenchmarks = useMemo(
     () => BENCHMARK_SERIES.filter((item) => points.some((point) => point.benchmarks[item.key] != null)),
     [points],
@@ -246,14 +167,14 @@ export default function PaperTradePerformanceChart({ pnl, orders = [], pendingBu
     chartRef.current = chart
 
     const botSeries = chart.addSeries(AreaSeries, {
-      lineColor: latest?.bot != null && latest.bot >= 0 ? '#fb7185' : '#34d399',
-      topColor: 'rgba(251, 113, 133, 0.22)',
-      bottomColor: 'rgba(52, 211, 153, 0.03)',
+      lineColor: latest?.bot != null && latest.bot < 0 ? TW_COLORS.down : TW_COLORS.up,
+      topColor: latest?.bot != null && latest.bot < 0 ? 'rgba(34, 197, 94, 0.18)' : 'rgba(255, 77, 79, 0.18)',
+      bottomColor: 'rgba(10, 11, 15, 0)',
       lineWidth: 2,
       priceLineVisible: false,
       title: 'bot',
     })
-    botSeries.setData(points.map((point) => ({ time: point.time, value: point.bot })))
+    botSeries.setData(botLineData(points))
     if (markers.length) createSeriesMarkers(botSeries, markers)
 
     for (const benchmark of visibleBenchmarks) {
@@ -264,20 +185,19 @@ export default function PaperTradePerformanceChart({ pnl, orders = [], pendingBu
         priceLineVisible: false,
         title: benchmark.label,
       })
-      series.setData(points
-        .filter((point) => point.benchmarks[benchmark.key] != null)
-        .map((point) => ({ time: point.time, value: point.benchmarks[benchmark.key] ?? 0 })))
+      // Missing adj_close days are whitespace points so the line breaks instead of bridging the gap.
+      series.setData(benchmarkLineData(points, benchmark.key))
     }
 
     const drawdownSeries = chart.addSeries(HistogramSeries, {
       priceFormat: { type: 'volume' },
       priceScaleId: '',
-      color: '#34d399',
+      color: TW_COLORS.down,
     }, 1)
-    drawdownSeries.setData(points.map((point) => ({
+    drawdownSeries.setData(points.map((point) => point.drawdown == null ? { time: point.time } : ({
       time: point.time,
       value: point.drawdown,
-      color: point.drawdown < -5 ? '#34d399' : 'rgba(148, 163, 184, 0.35)',
+      color: point.drawdown < -5 ? TW_COLORS.down : 'rgba(148, 163, 184, 0.35)',
     })))
 
     chart.timeScale().fitContent()
@@ -294,64 +214,52 @@ export default function PaperTradePerformanceChart({ pnl, orders = [], pendingBu
     }
   }, [latest?.bot, loading, markers, points, visibleBenchmarks])
 
-  if (loading) return <EmptyPanel message="Paper performance API 載入中，正在整理資產曲線。" />
-  if (!points.length) return <EmptyPanel message="No performance data yet. Chart will appear after the first trading day." />
+  if (loading) return <EmptyPanel kind="loading" message="資產曲線載入中" />
+  if (error && !points.length) return <EmptyPanel kind="error" message="資產曲線讀取失敗" code={error instanceof Error ? error.message : undefined} onRetry={onRetry} />
+  if (!points.length) return <EmptyPanel kind="empty" message="還沒有資產紀錄；第一個交易日收盤後出現" />
 
+  const start = points[0]?.time
   return (
-    <section className="overflow-hidden rounded-[22px] border border-white/[0.09] bg-[linear-gradient(180deg,rgba(22,23,30,0.96),rgba(10,11,15,0.985))] shadow-[inset_0_1px_0_rgba(255,255,255,0.045),0_18px_52px_rgba(0,0,0,0.34)]">
-      <header className="grid gap-3 border-b border-white/[0.07] bg-[#101116] p-3 lg:grid-cols-[minmax(0,1fr)_380px] lg:items-center">
-        <div>
-          <p className="sv-num text-[10px] normal-case text-[#d6a85f]">Paper Trading Visual Workbench</p>
-          <h2 className="mt-1 text-lg font-semibold text-[#f2ead8]">資產曲線與基準比較</h2>
-          <p className="mt-1 text-xs leading-5 text-[#9badbf]">
-            Bot equity、0050/TWII 與 ETF benchmark 同軸比較；買賣事件改為無文字標記，避免遮住曲線。
-          </p>
-        </div>
-        <div className="grid grid-cols-3 gap-2 sv-num text-[11px]">
-          <div className="border border-rose-400/20 bg-rose-400/10 px-3 py-2 text-rose-200">bot {formatPct(latest?.bot)}</div>
-          <div className="border border-emerald-400/25 bg-emerald-400/10 px-3 py-2 text-emerald-200">mdd {maxDrawdown.toFixed(2)}%</div>
-          <div className="border border-sky-400/20 bg-sky-400/10 px-3 py-2 text-sky-200">bench {visibleBenchmarks.length}</div>
-        </div>
-      </header>
-
-      <div className="border-b border-white/[0.07] bg-[#101116] px-3 py-2">
-        <div className="flex flex-wrap items-center gap-1">
+    <section className="overflow-hidden" data-testid="paper-performance-chart">
+      <header className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border px-3 py-2 sv-num text-[11px]">
+        <span className="sr-only">Paper Trading Visual Workbench</span>
+        <div className="flex items-center gap-0.5">
           {PERIODS.map((row) => (
             <button
               key={row.key}
               type="button"
               onClick={() => setPeriod(row.key)}
-              className={`rounded-full border px-3 py-1 text-xs font-medium transition-colors ${
-                period === row.key
-                  ? 'border-emerald-500/30 bg-emerald-500/20 text-emerald-300'
-                  : 'border-transparent text-muted-foreground hover:text-foreground/80'
+              className={`rounded px-2 py-0.5 text-[11px] transition-colors ${
+                period === row.key ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'
               }`}
             >
               {row.label}
             </button>
           ))}
         </div>
-        <div className="mt-2 flex flex-wrap gap-2 sv-num text-[10px]">
-          <span className="inline-flex items-center gap-1 rounded-full border border-rose-400/20 px-2 py-1 text-rose-200">
-            <span className="h-2 w-2 rounded-full bg-rose-400" /> BOT {formatPct(latest?.bot)}
-          </span>
-          {BENCHMARK_SERIES.map((item) => {
-            const value = latestBenchmarkReturn(points, item.key)
-            const active = value != null
-            return (
-              <span
-                key={item.key}
-                className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 ${
-                  active ? 'border-slate-500/30 text-slate-200' : 'border-slate-700/40 text-slate-600'
-                }`}
-              >
-                <span className="h-2 w-2 rounded-full" style={{ backgroundColor: active ? item.color : '#475569' }} />
-                {item.label} {formatPct(value)}
-              </span>
-            )
-          })}
-        </div>
-      </div>
+        <span className="text-muted-foreground" title="bot 與基準都從期間第一個資產紀錄日起算">起點 {start ? formatDateShort(start) : '—'}</span>
+        <span className="inline-flex items-center gap-1">
+          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: (latest?.bot ?? 0) < 0 ? TW_COLORS.down : TW_COLORS.up }} />
+          bot <b className={priceToneClass(latest?.bot)}>{formatSignedPct(latest?.bot)}</b>
+        </span>
+        <span title="所選期間內 bot 總值從期間最高點的最大跌幅（不含期間之前的回撤）">期間 MDD <b className={maxDrawdown != null && maxDrawdown < 0 ? 'text-down' : 'text-muted-foreground'}>{maxDrawdown == null ? '—' : formatSignedPct(maxDrawdown)}</b></span>
+        {BENCHMARK_SERIES.map((item) => {
+          const value = latestBenchmarkReturn(points, item.key)
+          const base = bases[item.key]
+          const late = base && !base.aligned
+          return (
+            <span
+              key={item.key}
+              className={`inline-flex items-center gap-1 ${value != null ? 'text-foreground' : 'text-muted-foreground'}`}
+              title={late ? `${item.label} 在起點日沒有資料，從 ${base.startDate} 起算，與 bot 不同區間` : `${item.label} 與 bot 同起點`}
+            >
+              <span className="h-0.5 w-3" style={{ backgroundColor: value != null ? item.color : '#475569' }} />
+              {item.label} <b className={priceToneClass(value)}>{formatSignedPct(value)}</b>
+              {late && <span className="text-warn">自 {formatDateShort(base.startDate)} 起算</span>}
+            </span>
+          )
+        })}
+      </header>
 
       <div ref={containerRef} className="h-[360px] min-h-[360px] max-h-[360px] w-full overflow-hidden bg-[#0a0b0f]" />
     </section>

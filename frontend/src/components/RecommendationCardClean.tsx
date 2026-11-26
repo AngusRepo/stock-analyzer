@@ -1,4 +1,4 @@
-﻿import { useEffect, useRef, useState, type ElementType } from 'react'
+﻿import { useEffect, useRef, type ElementType } from 'react'
 import {
   CandlestickSeries,
   ColorType,
@@ -16,8 +16,7 @@ import { useQuery } from '@tanstack/react-query'
 import {
   AlertCircle,
   BarChart3,
-  ChevronDown,
-  ChevronUp,
+  ChevronRight,
   ExternalLink,
   Minus,
   ShieldCheck,
@@ -43,6 +42,8 @@ import { buildAtrBandSeries, buildTradingPlanLevels, normalizeOhlcvRows, type Tr
 import { buildTradePlanStructureZones } from '@/lib/tradePlanStructureZones'
 import { cn } from '@/lib/utils'
 import { safeExternalUrl } from '@/lib/safeUrl'
+import { selectableRowProps } from '@/components/ui/list-detail'
+import { TW_COLORS } from '@/lib/colorTokens'
 
 type AlphaContext = {
   bucket?: string
@@ -69,6 +70,15 @@ type RecommendationCardContext = 'full' | 'home'
 type RecommendationCardCleanProps = {
   rec: any
   rank: number
+  context?: RecommendationCardContext
+  // List + detail panel: the row only selects; the selected rec's detail renders in
+  // RecommendationCardDetail next to (or below) the list. Nothing expands in place.
+  selected?: boolean
+  onSelect?: () => void
+}
+
+type RecommendationCardDetailProps = {
+  rec: any
   context?: RecommendationCardContext
 }
 
@@ -578,8 +588,8 @@ function fmtAbsLotsFromShares(value: number | string | null | undefined): string
 
 function signedFlowClass(value: unknown): string {
   const numeric = Number(value)
-  if (!Number.isFinite(numeric) || numeric === 0) return 'text-slate-400'
-  return numeric > 0 ? 'text-red-300' : 'text-emerald-300'
+  if (!Number.isFinite(numeric) || numeric === 0) return 'text-muted-foreground'
+  return numeric > 0 ? 'text-up' : 'text-down'
 }
 
 function institutionalRawFromRec(rec: any): { date?: string; rows: InstitutionalRawCardRow[]; total_net_shares?: number | string | null } | null {
@@ -841,13 +851,15 @@ function allocationSlotText(raw: unknown): string {
   return value == null ? 'capacity unknown' : `max ${fmtNumber(value, 0)} slots`
 }
 
+// 買賣訊號是模型評等，不是當日漲跌：用中性深淺表強弱（實心＝強、外框＝一般），文字與圖示表方向。
+// 紅綠只留給價格與報酬（batch3 顏色規則；Wei 可否決）。
 const SIGNAL_CONFIG: Record<string, { label: string; color: string; icon: ElementType }> = {
-  STRONG_BUY: { label: '強買', color: 'border-red-300/55 bg-red-500/90 text-white shadow-[0_0_18px_rgba(239,68,68,0.20)]', icon: Zap },
-  BUY: { label: '買進', color: 'border-red-300/45 bg-red-500/80 text-white shadow-[0_0_16px_rgba(239,68,68,0.16)]', icon: TrendingUp },
-  POTENTIAL_BUY: { label: '潛在買進', color: 'border-yellow-200/70 bg-yellow-300/28 text-yellow-50 shadow-[0_0_18px_rgba(250,204,21,0.18)]', icon: TrendingUp },
-  HOLD: { label: '觀望', color: 'border-sky-200/45 bg-sky-500/28 text-sky-50 shadow-[0_0_14px_rgba(56,189,248,0.12)]', icon: Minus },
-  SELL: { label: '賣出', color: 'bg-blue-500 text-white', icon: TrendingDown },
-  STRONG_SELL: { label: '強賣', color: 'bg-purple-600 text-white', icon: TrendingDown },
+  STRONG_BUY: { label: '強買', color: 'border-white/40 bg-white/[0.16] text-foreground font-bold', icon: Zap },
+  BUY: { label: '買進', color: 'border-white/25 bg-white/[0.08] text-foreground', icon: TrendingUp },
+  POTENTIAL_BUY: { label: '潛在買進', color: 'border-dashed border-white/25 bg-transparent text-foreground', icon: TrendingUp },
+  HOLD: { label: '觀望', color: 'border-border bg-transparent text-muted-foreground', icon: Minus },
+  SELL: { label: '賣出', color: 'border-white/25 bg-transparent text-foreground', icon: TrendingDown },
+  STRONG_SELL: { label: '強賣', color: 'border-white/40 bg-transparent text-foreground font-bold', icon: TrendingDown },
 }
 
 function recommendationSignalKey(rec: any): string {
@@ -1467,16 +1479,16 @@ function ScoreFormulaSummary({ viewModel }: { viewModel: ReturnType<typeof build
       </div>
       <div className="grid gap-2 sm:grid-cols-3">
         <div className="rounded-xl border border-cyan-400/18 bg-cyan-400/[0.055] p-2">
-          <p className="text-[10px] font-medium text-cyan-200/80">基礎分數</p>
+          <p className="text-[10px] font-medium text-muted-foreground">基礎分數</p>
           <p className="mt-0.5 sv-num text-lg font-semibold text-cyan-100">{fmtNumber(viewModel.baseScore, 1)}</p>
         </div>
         <div className="rounded-xl border border-amber-400/18 bg-amber-400/[0.07] p-2">
-          <p className="text-[10px] font-medium text-amber-200/80">Alpha 調整</p>
+          <p className="text-[10px] font-medium text-muted-foreground">Alpha 調整</p>
           <p className="mt-0.5 sv-num text-lg font-semibold text-amber-100">{signedText(viewModel.alphaAdjustment)}</p>
         </div>
-        <div className="rounded-xl border border-emerald-400/18 bg-emerald-400/[0.06] p-2">
-          <p className="text-[10px] font-medium text-emerald-200/80">最終分數</p>
-          <p className="mt-0.5 sv-num text-lg font-semibold text-emerald-100">{fmtNumber(viewModel.finalScore, 1)}</p>
+        <div className="rounded-xl border border-sky-400/18 bg-sky-400/[0.06] p-2">
+          <p className="text-[10px] font-medium text-muted-foreground">最終分數</p>
+          <p className="mt-0.5 sv-num text-lg font-semibold text-sky-100">{fmtNumber(viewModel.finalScore, 1)}</p>
         </div>
       </div>
       {Math.abs(viewModel.residual) >= 0.1 && (
@@ -1521,7 +1533,7 @@ function ScoreBreakdownV2({ rec }: { rec: any }) {
     <div className="rounded-[18px] border border-white/[0.08] bg-[linear-gradient(135deg,rgba(20,23,31,0.9),rgba(11,13,19,0.96))] p-3 text-xs shadow-[inset_0_1px_0_rgba(255,255,255,0.045)]">
       <div className="mb-2 flex items-center justify-between gap-3">
         <span className="font-semibold text-slate-200">Score V2 分解</span>
-        <span className="sv-num text-[11px] font-medium text-slate-500">技術結構 + Alpha 明細</span>
+        <span className="sv-num text-[11px] font-medium text-muted-foreground">技術結構 + Alpha 明細</span>
       </div>
       {technicalRows.length > 0 && (
         <div className="mt-2 space-y-2 rounded-xl border border-violet-400/20 bg-violet-400/[0.06] p-2">
@@ -1608,14 +1620,14 @@ function FundamentalSnapshotBlock({ rec }: { rec: any }) {
           <div key={item.label} className="rounded-xl border border-white/[0.06] bg-black/15 p-2">
             <p className="text-[11px] font-medium text-slate-400">{item.label}</p>
             <p className="mt-1 sv-num text-sm font-bold text-slate-100">{isLoading ? '讀取中' : item.value}</p>
-            <p className="mt-0.5 text-[10px] text-slate-500">{item.note}</p>
+            <p className="mt-0.5 text-[10px] text-muted-foreground">{item.note}</p>
           </div>
         ))}
       </div>
       <div className="mt-2 rounded-xl border border-white/[0.06] bg-black/15 p-2">
         <div className="mb-1 flex items-center justify-between gap-2">
           <p className="text-[11px] font-medium text-slate-400">近四季 EPS 趨勢</p>
-          <p className="sv-num text-[10px] text-slate-500">{epsTrend.length ? 'latest 4Q' : '待資料'}</p>
+          <p className="sv-num text-[10px] text-muted-foreground">{epsTrend.length ? 'latest 4Q' : '待資料'}</p>
         </div>
         {epsTrend.length ? (
           <div className="flex flex-wrap gap-1.5">
@@ -1630,7 +1642,7 @@ function FundamentalSnapshotBlock({ rec }: { rec: any }) {
             ))}
           </div>
         ) : (
-          <p className="text-[11px] text-slate-500">季度 EPS 尚未入庫。</p>
+          <p className="text-[11px] text-muted-foreground">季度 EPS 尚未入庫。</p>
         )}
       </div>
     </div>
@@ -1650,9 +1662,9 @@ function StrategyRouterEvidenceBlock({ router }: { router: StrategyRouterSummary
   const teacherModels = teacherModelList.length ? teacherModelList.join(' / ') : ROSTER_NOT_PROVIDED
 
   return (
-    <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/[0.05] p-3 text-xs">
+    <div className="rounded-lg border border-sky-500/20 bg-sky-500/[0.05] p-3 text-xs">
       <div className="mb-2 flex items-center justify-between gap-3">
-        <span className="font-medium text-emerald-700 dark:text-emerald-300">L1.5 連續策略路由</span>
+        <span className="font-medium text-sky-700 dark:text-sky-300">L1.5 連續策略路由</span>
         <span className="sv-num text-[11px] text-muted-foreground">diversified ML slate, no forced fill</span>
       </div>
       <div className="grid gap-2 sm:grid-cols-3">
@@ -1692,18 +1704,18 @@ function EvidenceFusionBlock({ fusion }: { fusion: Layer35FusionSummary | null }
   if (!fusion) return null
   const conflict = String(fusion?.conflict_level ?? '').toLowerCase()
   const conflictTone = conflict === 'high'
-    ? 'text-rose-600 dark:text-rose-300'
+    ? 'text-fail'
     : conflict === 'medium'
-      ? 'text-amber-600 dark:text-amber-300'
-      : 'text-emerald-600 dark:text-emerald-300'
+      ? 'text-warn'
+      : 'text-ok'
   const fusionGap = (fusion as Record<string, unknown>)[['strategy_ml', 'score_gap'].join('_')]
   const hardShrinkAllowed = boolFromValue(fusion.hard_shrink_allowed)
   const finalAllocator = boolFromValue(fusion.is_final_allocator)
 
   return (
-    <div className="rounded-lg border border-lime-500/20 bg-lime-500/[0.05] p-3 text-xs">
+    <div className="rounded-lg border border-cyan-500/20 bg-cyan-500/[0.05] p-3 text-xs">
       <div className="mb-2 flex items-center justify-between gap-3">
-        <span className="font-medium text-lime-700 dark:text-lime-300">L3.5 Evidence Fusion</span>
+        <span className="font-medium text-cyan-700 dark:text-cyan-300">L3.5 Evidence Fusion</span>
         <span className={cn('sv-num text-[11px] font-semibold normal-case', conflictTone)}>
           {fusion.conflict_level ?? fusion.decision ?? 'unknown'}
         </span>
@@ -1742,10 +1754,10 @@ function HardGateEvidenceBlock({ gate }: { gate: HardGateSummary | null }) {
   const medianDailyValue = finiteMetric(gate.median_daily_traded_value_twd)
   const minimumDailyValue = finiteMetric(gate.min_median_daily_traded_value_twd)
   const tone = hardBlocked
-    ? 'border-rose-500/25 bg-rose-500/[0.06] text-rose-700 dark:text-rose-300'
+    ? 'border-fail/25 bg-fail/[0.06] text-fail'
     : pendingBlocked
-      ? 'border-amber-500/25 bg-amber-500/[0.06] text-amber-700 dark:text-amber-300'
-      : 'border-sky-500/25 bg-sky-500/[0.06] text-sky-700 dark:text-sky-300'
+      ? 'border-warn/25 bg-warn/[0.06] text-warn'
+      : 'border-ok/25 bg-ok/[0.06] text-ok'
 
   return (
     <div className={cn('rounded-lg border p-3 text-xs', tone)}>
@@ -1857,9 +1869,9 @@ function StrategyPortfolioIntelligenceBlock({ portfolio }: { portfolio: Strategy
   const familyIds = portfolio.family_ids?.length ? portfolio.family_ids.join(' / ') : 'families unavailable'
 
   return (
-    <div className="rounded-lg border border-teal-500/20 bg-teal-500/[0.05] p-3 text-xs">
+    <div className="rounded-lg border border-cyan-500/20 bg-cyan-500/[0.05] p-3 text-xs">
       <div className="mb-2 flex items-center justify-between gap-3">
-        <span className="font-medium text-teal-700 dark:text-teal-300">L1.25 FinLab Portfolio Intelligence</span>
+        <span className="font-medium text-cyan-700 dark:text-cyan-300">L1.25 FinLab Portfolio Intelligence</span>
         <span className="sv-num text-[11px] text-muted-foreground">strategy-as-asset weights, not stock selector</span>
       </div>
       <div className="grid gap-2 sm:grid-cols-4">
@@ -1976,7 +1988,7 @@ function SparseAllocationBlock({ allocation }: { allocation: SparseAllocationSum
       <div className="grid gap-2 sm:grid-cols-2">
         <div className="rounded-md border border-border/40 bg-background/50 p-2">
           <p className="text-[10px] normal-case text-muted-foreground">decision</p>
-          <p className={cn('mt-0.5 sv-num text-sm font-semibold', selected ? 'text-emerald-600 dark:text-emerald-300' : 'text-muted-foreground')}>
+          <p className={cn('mt-0.5 sv-num text-sm font-semibold', selected ? 'text-ok' : 'text-muted-foreground')}>
             {selected
               ? `BUY weight ${allocationWeightText(allocationWeight)}`
               : potentialBuy
@@ -2103,14 +2115,14 @@ function InstitutionalBrokerFlowBlock({
               {institutional.rows.map((row) => (
                 <div key={row.key ?? row.label} className="grid grid-cols-[3.5rem_1fr_1fr_1fr] items-center gap-1 text-[11px]">
                   <span className="truncate text-foreground/85">{row.label ?? row.key ?? '-'}</span>
-                  <span className="text-right sv-num tabular-nums text-red-500 dark:text-red-300">{fmtShares(row.buy_shares)}</span>
-                  <span className="text-right sv-num tabular-nums text-emerald-500 dark:text-emerald-300">{fmtShares(row.sell_shares)}</span>
+                  <span className="text-right sv-num tabular-nums text-up">{fmtShares(row.buy_shares)}</span>
+                  <span className="text-right sv-num tabular-nums text-down">{fmtShares(row.sell_shares)}</span>
                   <span className={cn('text-right sv-num tabular-nums', signedFlowClass(row.net_shares))}>{fmtShares(row.net_shares)}</span>
                 </div>
               ))}
             </div>
           ) : (
-            <p className="text-[11px] text-muted-foreground">最新交易日法人 raw 尚未入庫。</p>
+            <p className="text-[11px] text-muted-foreground">最新交易日法人明細尚未入庫。</p>
           )}
         </div>
 
@@ -2124,17 +2136,17 @@ function InstitutionalBrokerFlowBlock({
           {hasBrokerRanks ? (
             <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-1">
               <div>
-                <p className="mb-1 text-[11px] font-medium text-red-500 dark:text-red-300">買超前三大</p>
+                <p className="mb-1 text-[11px] font-medium text-up">▲ 買超前三大</p>
                 {renderBrokerRankRows(topBuy, '買超前三大尚無資料')}
               </div>
               <div>
-                <p className="mb-1 text-[11px] font-medium text-emerald-500 dark:text-emerald-300">賣超前三大</p>
+                <p className="mb-1 text-[11px] font-medium text-down">▼ 賣超前三大</p>
                 {renderBrokerRankRows(topSell, '賣超前三大尚無資料')}
               </div>
             </div>
           ) : (
             <div className="space-y-1.5 text-[11px] text-muted-foreground">
-              <p className="text-amber-600 dark:text-amber-300">分券商前三大尚未入庫；目前顯示 canonical 聚合分點。</p>
+              <p className="text-warn">分券商前三大尚未入庫；先顯示分點合計。</p>
               {aggregate ? (
                 <div className="grid grid-cols-3 gap-1">
                   <MetricPill label="買" value={fmtLots(aggregate.buy_lots)} />
@@ -2144,7 +2156,7 @@ function InstitutionalBrokerFlowBlock({
               ) : (
                 <p>當日券商聚合資料尚未入庫。</p>
               )}
-              <p className="break-words sv-num text-[10px] text-muted-foreground/80">
+              <p className="break-words sv-num text-[10px] text-muted-foreground">
                 {brokerFlow?.missing_reason ?? 'broker_level_detail_table_missing'}
               </p>
             </div>
@@ -2210,11 +2222,12 @@ function compactLine(text: string): string {
   return text.replace(/\s+/g, ' ').trim()
 }
 
+// Flat subsection (heading + text); the parent section supplies the dividers, so no nested bordered box.
 function PlanBlock({ title, accent, lines }: { title: string; accent: string; lines: string[] }) {
   return (
-    <div className="flex overflow-hidden rounded-md border border-border/50 bg-background/55">
-      <div className={cn('w-1 shrink-0', accent)} />
-      <div className="min-w-0 flex-1 p-3">
+    <div className="flex min-w-0 gap-2 py-3">
+      <div className={cn('mt-0.5 h-3 w-0.5 shrink-0 rounded-full', accent)} />
+      <div className="min-w-0 flex-1">
         <p className="text-xs font-medium text-foreground">{title}</p>
         <div className="mt-1.5 space-y-1 text-xs leading-relaxed text-muted-foreground">
           {lines.filter(Boolean).map((line, index) => (
@@ -2234,15 +2247,15 @@ type TradePlanReadRow = {
 }
 
 function tradePlanToneClass(tone: TradePlanReadRow['tone']) {
-  if (tone === 'good') return 'text-emerald-600 dark:text-emerald-300'
-  if (tone === 'warn') return 'text-amber-600 dark:text-amber-300'
+  if (tone === 'good') return 'text-ok'
+  if (tone === 'warn') return 'text-warn'
   return 'text-sky-700 dark:text-sky-300'
 }
 
 function tradePlanValueClass(row: TradePlanReadRow): string {
   if (row.label.includes('籌碼')) {
-    if (row.value.includes('買超')) return 'text-red-500 dark:text-red-300'
-    if (row.value.includes('賣超')) return 'text-emerald-500 dark:text-emerald-300'
+    if (row.value.includes('買超')) return 'text-up'
+    if (row.value.includes('賣超')) return 'text-down'
   }
   return tradePlanToneClass(row.tone)
 }
@@ -2365,7 +2378,7 @@ function priceRowsToVolume(rows: any[], candles: KlineCandle[], limit = 42) {
       return {
         time,
         value: Number.isFinite(value) ? value : 0,
-        color: candle && candle.close >= candle.open ? 'rgba(239, 68, 68, 0.24)' : 'rgba(0, 192, 118, 0.24)',
+        color: `${candle && candle.close >= candle.open ? TW_COLORS.up : TW_COLORS.down}3d`,
       }
     })
     .filter((item) => Boolean(item.time))
@@ -2480,12 +2493,12 @@ function KLinePlanSketch({
     }
 
     const candleSeries = chart.addSeries(CandlestickSeries, {
-      upColor: '#ff3b45',
-      downColor: '#00c076',
-      borderUpColor: '#ff3b45',
-      borderDownColor: '#00c076',
-      wickUpColor: '#ff6b72',
-      wickDownColor: '#28d190',
+      upColor: TW_COLORS.up,
+      downColor: TW_COLORS.down,
+      borderUpColor: TW_COLORS.up,
+      borderDownColor: TW_COLORS.down,
+      wickUpColor: TW_COLORS.up,
+      wickDownColor: TW_COLORS.down,
       priceLineVisible: false,
     })
     candleSeries.setData(candles)
@@ -2533,14 +2546,14 @@ function KLinePlanSketch({
 
     if (atrUpperSeries.length && atrLowerSeries.length) {
       const atrUpperLine = chart.addSeries(LineSeries, {
-        color: 'rgba(244, 63, 94, 0.55)',
+        color: 'rgba(244, 114, 182, 0.5)',
         lineWidth: 1,
         lineStyle: LineStyle.Dashed,
         priceLineVisible: false,
         lastValueVisible: false,
       })
       const atrLowerLine = chart.addSeries(LineSeries, {
-        color: 'rgba(34, 197, 94, 0.55)',
+        color: 'rgba(244, 114, 182, 0.5)',
         lineWidth: 1,
         lineStyle: LineStyle.Dashed,
         priceLineVisible: false,
@@ -2553,7 +2566,7 @@ function KLinePlanSketch({
     if (resistance) {
       candleSeries.createPriceLine({
         price: resistance,
-        color: '#f87171',
+        color: '#fb923c',
         lineWidth: 1,
         lineStyle: LineStyle.Dashed,
         axisLabelVisible: shouldShowAxisLabel(resistance),
@@ -2573,7 +2586,7 @@ function KLinePlanSketch({
     if (support) {
       candleSeries.createPriceLine({
         price: support,
-        color: '#22c55e',
+        color: '#e2e8f0',
         lineWidth: 1,
         lineStyle: LineStyle.Solid,
         axisLabelVisible: shouldShowAxisLabel(support),
@@ -2595,7 +2608,7 @@ function KLinePlanSketch({
     if (atrDefense) {
       candleSeries.createPriceLine({
         price: atrDefense,
-        color: '#f43f5e',
+        color: '#f472b6',
         lineWidth: 1,
         lineStyle: LineStyle.Dashed,
         axisLabelVisible: shouldShowAxisLabel(atrDefense),
@@ -2606,7 +2619,7 @@ function KLinePlanSketch({
     if (buyReferenceLow) {
       candleSeries.createPriceLine({
         price: buyReferenceLow,
-        color: '#34d399',
+        color: '#93c5fd',
         lineWidth: 1,
         lineStyle: LineStyle.Dotted,
         axisLabelVisible: false,
@@ -2617,7 +2630,7 @@ function KLinePlanSketch({
     if (buyReferenceHigh) {
       candleSeries.createPriceLine({
         price: buyReferenceHigh,
-        color: '#22c55e',
+        color: '#93c5fd',
         lineWidth: 1,
         lineStyle: LineStyle.Dotted,
         axisLabelVisible: false,
@@ -2628,7 +2641,7 @@ function KLinePlanSketch({
     if (optimisticLow && optimisticHigh && optimisticHigh !== optimisticLow) {
       candleSeries.createPriceLine({
         price: optimisticHigh,
-        color: '#fb7185',
+        color: '#fdba74',
         lineWidth: 1,
         lineStyle: LineStyle.Dashed,
         axisLabelVisible: false,
@@ -2647,7 +2660,7 @@ function KLinePlanSketch({
       rsiLine.setData(rsi)
       rsiLine.createPriceLine({
         price: 70,
-        color: 'rgba(248, 113, 113, 0.5)',
+        color: 'rgba(148, 163, 184, 0.5)',
         lineWidth: 1,
         lineStyle: LineStyle.Dotted,
         axisLabelVisible: true,
@@ -2655,7 +2668,7 @@ function KLinePlanSketch({
       })
       rsiLine.createPriceLine({
         price: 30,
-        color: 'rgba(52, 211, 153, 0.5)',
+        color: 'rgba(148, 163, 184, 0.5)',
         lineWidth: 1,
         lineStyle: LineStyle.Dotted,
         axisLabelVisible: true,
@@ -2691,29 +2704,26 @@ function KLinePlanSketch({
   }, [chartKey])
 
   if (isLoading && candles.length === 0) {
-    return <div className="h-[300px] animate-pulse rounded-[20px] border border-white/[0.08] bg-[#0a0b0f]" />
+    return <div className="h-[300px] animate-pulse bg-[#0a0b0f]" />
   }
 
   if (prices.length === 0 || candles.length === 0) {
     return (
-      <div className="rounded-[20px] border border-white/[0.08] bg-[#0a0b0f] p-3 text-xs text-muted-foreground">
+      <div className="py-3 text-xs text-muted-foreground">
         K線策略圖：價格資料不足，暫時只能保留文字交易計劃。
       </div>
     )
   }
   return (
-    <div className="overflow-hidden rounded-[20px] border border-white/[0.09] bg-[linear-gradient(180deg,rgba(22,23,30,0.96),rgba(10,11,15,0.985))] shadow-[inset_0_1px_0_rgba(255,255,255,0.045),0_18px_46px_rgba(0,0,0,0.28)]">
-      <div className="flex items-center justify-between border-b border-white/[0.07] px-3 py-2">
-        <span className="text-xs font-semibold text-slate-100">K線交易計劃圖</span>
-        <span className="sv-num text-[11px] text-slate-500">Lightweight Charts</span>
-      </div>
+    <div className="min-w-0 overflow-hidden py-3">
+      <p className="mb-2 text-xs font-medium text-foreground">K線交易計劃圖</p>
       <div ref={containerRef} className="h-[260px] min-h-[260px] max-h-[260px] w-full overflow-hidden bg-[#0a0b0f]" role="img" aria-label="Lightweight Charts K線交易計劃圖" />
-      <div className="grid gap-1 border-t border-white/[0.07] px-3 py-2 text-[11px] sm:grid-cols-4 lg:grid-cols-8">
-        <span className="sv-num text-rose-500">壓力 {resistance ? fmtNumber(resistance, 2) : '-'}</span>
+      <div className="grid gap-1 pt-2 text-[11px] sm:grid-cols-4 lg:grid-cols-8">
+        <span className="sv-num text-orange-400">壓力 {resistance ? fmtNumber(resistance, 2) : '-'}</span>
         <span className="sv-num text-sky-500">轉強 {confirmation ? fmtNumber(confirmation, 2) : '-'}</span>
-        <span className="sv-num text-emerald-500">支撐 {support ? fmtNumber(support, 2) : '-'}</span>
+        <span className="sv-num text-slate-200">支撐 {support ? fmtNumber(support, 2) : '-'}</span>
         <span className="sv-num text-violet-500">量能 {volumeNode ? fmtNumber(volumeNode, 2) : '-'}</span>
-        <span className="sv-num text-rose-500">ATR {atrDefense ? fmtNumber(atrDefense, 2) : '-'}</span>
+        <span className="sv-num text-pink-400">ATR {atrDefense ? fmtNumber(atrDefense, 2) : '-'}</span>
         <span className="sv-num text-amber-500">MA20 {ma20 ? fmtNumber(ma20, 2) : '-'}</span>
         <span className="sv-num text-violet-500">MA60 {ma60 ? fmtNumber(ma60, 2) : '-'}</span>
         <span className="sv-num text-fuchsia-500">RSI {latestRsi != null ? fmtNumber(latestRsi, 1) : '-'}</span>
@@ -2961,20 +2971,21 @@ function TradingPlanNarrative({
     brokerFlow,
   })
 
+  // Section heading + divided subsections (chart / 盤勢判讀 / 風控規則); no box nested inside another box.
   return (
-    <div className="rounded-lg border border-sky-500/20 bg-sky-500/[0.05] p-3">
-      <p className="mb-2 flex items-center gap-1 text-xs font-medium text-sky-700 dark:text-sky-300">
-        <ShieldCheck className="h-3 w-3" />
+    <section className="border-t border-white/[0.08] pt-3">
+      <p className="mb-1 flex items-center gap-1 text-xs font-semibold text-slate-200">
+        <ShieldCheck className="h-3 w-3 text-sky-300" />
         推薦理由 / Alpha 交易計劃
       </p>
-      <p className="mb-2 text-[11px] leading-relaxed text-muted-foreground/85">
+      <p className="text-[11px] leading-relaxed text-muted-foreground">
         StockVision Alpha 規則引擎依 Score V2、alpha context 與 K 線價位結構產生交易計劃。
       </p>
-      <div className="grid gap-2">
+      <div className="divide-y divide-white/[0.07]">
         <KLinePlanSketch rec={rec} priceRows={priceRows} isLoading={isLoading} plan={plan} />
-        <div className="flex overflow-hidden rounded-md border border-border/50 bg-background/55">
-          <div className="w-1 shrink-0 bg-sky-400" />
-          <div className="min-w-0 flex-1 p-3">
+        <div className="flex min-w-0 gap-2 py-3">
+          <div className="mt-0.5 h-3 w-0.5 shrink-0 rounded-full bg-sky-400" />
+          <div className="min-w-0 flex-1">
             <p className="text-xs font-medium text-foreground">盤勢判讀</p>
             <p className="hidden">
               {marketLine || '市場結構資料不足，先以盤中價量與風控為主。'}
@@ -2996,7 +3007,7 @@ function TradingPlanNarrative({
           ]}
         />
       </div>
-    </div>
+    </section>
   )
 }
 function AlphaContextBlock({ context }: { context: AlphaContext | null }) {
@@ -3040,7 +3051,7 @@ function AlphaContextBlock({ context }: { context: AlphaContext | null }) {
         {context.latestClose != null && <span>區間最後收盤價：{fmtNumber(context.latestClose, 2)}</span>}
         <span className="sm:col-span-2">價格位置：{shortLabelFor(location, LOCATION_TEXT)}</span>
       </div>
-      <div className="mt-3 space-y-1.5 text-xs leading-relaxed text-muted-foreground/85">
+      <div className="mt-3 space-y-1.5 text-xs leading-relaxed text-muted-foreground">
         <p>{ALPHA_BUCKET_TEXT[bucket]?.help ?? 'Alpha bucket 是系統判斷這檔股票目前主要 edge 來源的分類。'}</p>
         <p>{REGIME_TEXT[regime] ?? 'Regime 是目前大盤狀態，用來調整不同策略類型的權重。'}</p>
         <p>{VOL_TEXT[volatility] ?? VOL_TEXT.unknown} {LIQUIDITY_TEXT[liquidity] ?? LIQUIDITY_TEXT.unknown}</p>
@@ -3199,7 +3210,7 @@ function RecommendationConfidenceStrip({ confidence }: { confidence: Recommendat
     <div className="flex flex-wrap items-center gap-2 border-t border-white/[0.07] bg-black/10 px-4 py-2 text-[11px] leading-5">
       <span className="font-semibold text-slate-300">信心度</span>
       <span
-        className={cn('rounded-md border px-2 py-0.5', percentileOk ? 'border-amber-300/25 bg-amber-400/[0.08] text-amber-100' : 'border-white/[0.08] bg-white/[0.04] text-slate-400')}
+        className={cn('rounded-md border px-2 py-0.5', percentileOk ? 'border-amber-300/25 bg-amber-400/[0.08] text-amber-100' : 'border-white/[0.08] bg-white/[0.04] text-muted-foreground')}
         title={percentile?.definition ?? '當日全池 R33 分數排名百分位'}
       >
         排名百分位 <span className="sv-num font-semibold">{percentileText(confidence)}</span>
@@ -3210,7 +3221,7 @@ function RecommendationConfidenceStrip({ confidence }: { confidence: Recommendat
         {!percentileOk && <span className="ml-1">{confidenceUnavailableText(percentile?.reason)}</span>}
       </span>
       <span
-        className={cn('rounded-md border px-2 py-0.5', winRateOk ? 'border-emerald-300/25 bg-emerald-400/[0.08] text-emerald-100' : 'border-white/[0.08] bg-white/[0.04] text-slate-400')}
+        className={cn('rounded-md border px-2 py-0.5', winRateOk ? 'border-sky-300/25 bg-sky-400/[0.08] text-sky-100' : 'border-white/[0.08] bg-white/[0.04] text-muted-foreground')}
         title={winRate?.definition ?? 'P(5 日池內超額報酬 > 0)，R33 正式 OOF 擬合'}
       >
         校準勝率 <span className="sv-num font-semibold">{winRateText(confidence)}</span>
@@ -3220,39 +3231,17 @@ function RecommendationConfidenceStrip({ confidence }: { confidence: Recommendat
         {!winRateOk && <span className="ml-1">{confidenceUnavailableText(winRate?.reason)}</span>}
       </span>
       {confidence?.signal_date && (
-        <span className="sv-num text-slate-500">資料日 {confidence.signal_date}</span>
+        <span className="sv-num text-muted-foreground">資料日 {confidence.signal_date}</span>
       )}
     </div>
   )
 }
 
-export function RecommendationCardClean({ rec, rank, context = 'full' }: RecommendationCardCleanProps) {
-  const [expanded, setExpanded] = useState(false)
-  const sig = SIGNAL_CONFIG[recommendationSignalKey(rec)] ?? SIGNAL_CONFIG.HOLD
-  const SigIcon = sig.icon
-  const isHomeContext = context === 'home'
-  const showFullDecisionDetail = !isHomeContext
-  const watchPoints = normalizeWatchPoints(rec.watch_points)
-  const noticePoints = displayWatchPoints(watchPoints)
-  const alphaContext = alphaContextFromRec(rec, watchPoints)
-  const displayReason = translateRecommendationReason(rec.reason)
-  const mlVoteSummary = mlVoteSummaryFromRec(rec)
-  const mlDiagnostics = mlDiagnosticsFromRec(rec)
-  const mlSummary = formatMlVoteSummaryForBadge(mlVoteSummary) ?? formatMlVoteSummaryReadable(mlVoteSummary) ?? formatMlVoteSummary(mlVoteSummary) ?? extractMlSummary(displayReason)
-  const mlMetadataGap = mlMetadataGapText(rec, mlVoteSummary)
-  const chip5dRaw = rec.chip_cash_total_5d ?? (
-    (rec.chip_cash_foreign_5d ?? rec.foreign_net_5d ?? 0)
-    + (rec.chip_cash_trust_5d ?? rec.trust_net_5d ?? 0)
-    + (rec.dealer_net_5d ?? 0)
-  )
-  const evidenceLinks = normalizeEvidenceLinks(rec.evidence_links)
-  const isEmerging = String(rec.market_segment ?? '').toUpperCase() === 'EMERGING'
-    || String(rec.recommendation_lane ?? '').toLowerCase() === 'emerging_watchlist'
-  const scoreViewModel = buildScoreBreakdownViewModel(rec)
-  const confidence = confidenceFromRec(rec)
+// Chip context fallback: only fetched for the selected rec (the row and the detail panel share
+// one react-query cache entry, so the header badge and the detail agree without a second request).
+function useCardChipContext(rec: any, enabled: boolean) {
   const institutionalRaw = institutionalRawFromRec(rec)
   const brokerTopFlows = brokerTopFlowsFromRec(rec)
-  const chipDisplaySummary = chipDisplaySummaryFromRec(rec)
   const stockId = Number(rec.stock_id ?? rec.stockId ?? rec.id)
   const chipContextAsOf = String(rec.recommendation_date ?? rec.date ?? rec.prediction_date ?? '').slice(0, 10)
   const brokerHasData = Boolean(
@@ -3260,7 +3249,7 @@ export function RecommendationCardClean({ rec, rank, context = 'full' }: Recomme
       || (Array.isArray(brokerTopFlows?.top_buy) && brokerTopFlows.top_buy.length > 0)
       || (Array.isArray(brokerTopFlows?.top_sell) && brokerTopFlows.top_sell.length > 0),
   )
-  const shouldFetchChipContext = expanded
+  const shouldFetchChipContext = enabled
     && Number.isFinite(stockId)
     && stockId > 0
     && (!institutionalRaw || !brokerHasData)
@@ -3272,8 +3261,31 @@ export function RecommendationCardClean({ rec, rank, context = 'full' }: Recomme
   })
   const fallbackInstitutionalRaw = institutionalRawFromRec(fallbackChipContext)
   const fallbackBrokerTopFlows = brokerTopFlowsFromRec(fallbackChipContext)
-  const effectiveInstitutionalRaw = institutionalRaw ?? fallbackInstitutionalRaw
-  const effectiveBrokerTopFlows = brokerHasData ? brokerTopFlows : (fallbackBrokerTopFlows ?? brokerTopFlows)
+  return {
+    effectiveInstitutionalRaw: institutionalRaw ?? fallbackInstitutionalRaw,
+    effectiveBrokerTopFlows: brokerHasData ? brokerTopFlows : (fallbackBrokerTopFlows ?? brokerTopFlows),
+  }
+}
+
+export function RecommendationCardClean({ rec, rank, selected = false, onSelect }: RecommendationCardCleanProps) {
+  const sig = SIGNAL_CONFIG[recommendationSignalKey(rec)] ?? SIGNAL_CONFIG.HOLD
+  const SigIcon = sig.icon
+  const watchPoints = normalizeWatchPoints(rec.watch_points)
+  const alphaContext = alphaContextFromRec(rec, watchPoints)
+  const displayReason = translateRecommendationReason(rec.reason)
+  const mlVoteSummary = mlVoteSummaryFromRec(rec)
+  const mlSummary = formatMlVoteSummaryForBadge(mlVoteSummary) ?? formatMlVoteSummaryReadable(mlVoteSummary) ?? formatMlVoteSummary(mlVoteSummary) ?? extractMlSummary(displayReason)
+  const mlMetadataGap = mlMetadataGapText(rec, mlVoteSummary)
+  const chip5dRaw = rec.chip_cash_total_5d ?? (
+    (rec.chip_cash_foreign_5d ?? rec.foreign_net_5d ?? 0)
+    + (rec.chip_cash_trust_5d ?? rec.trust_net_5d ?? 0)
+    + (rec.dealer_net_5d ?? 0)
+  )
+  const isEmerging = String(rec.market_segment ?? '').toUpperCase() === 'EMERGING'
+    || String(rec.recommendation_lane ?? '').toLowerCase() === 'emerging_watchlist'
+  const confidence = confidenceFromRec(rec)
+  const chipDisplaySummary = chipDisplaySummaryFromRec(rec)
+  const { effectiveInstitutionalRaw } = useCardChipContext(rec, selected)
   const todayInstitutionalNetShares = institutionalNetShares(effectiveInstitutionalRaw)
   const chipBadge = chipDisplaySummary
     ? {
@@ -3293,17 +3305,18 @@ export function RecommendationCardClean({ rec, rank, context = 'full' }: Recomme
         signedValue: Number(chip5dRaw),
       }
 
+  const rowProps = onSelect ? selectableRowProps(selected, onSelect) : {}
+
   return (
-    <div className={cn(
+    <div {...rowProps} className={cn(
       'sv-recommendation-card-detail sv-stockintelli-rec-card overflow-hidden rounded-[20px] border transition-all duration-200',
+      onSelect && 'cursor-pointer select-none focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-300/70',
+      selected && 'outline-2 -outline-offset-2 outline-sky-300/45',
       rank === 1
         ? 'border-amber-300/30 bg-[radial-gradient(circle_at_92%_8%,rgba(245,158,11,0.13),transparent_34%),linear-gradient(135deg,rgba(28,28,24,0.96),rgba(14,16,22,0.99))] shadow-[inset_0_1px_0_rgba(255,255,255,0.055),0_18px_48px_rgba(0,0,0,0.22)]'
         : 'border-white/[0.08] bg-[linear-gradient(135deg,rgba(21,24,33,0.96),rgba(12,14,20,0.99))] shadow-[inset_0_1px_0_rgba(255,255,255,0.045)] hover:border-sky-300/20 hover:bg-[#151923]',
     )}>
-      <div
-        className="grid cursor-pointer select-none grid-cols-[2rem_minmax(0,1fr)_4.5rem] items-center gap-3 p-3 sm:grid-cols-[2rem_minmax(0,1fr)_4.75rem] sm:p-4"
-        onClick={() => setExpanded((value) => !value)}
-      >
+      <div className="grid grid-cols-[2rem_minmax(0,1fr)_4.5rem] items-center gap-3 p-3 sm:grid-cols-[2rem_minmax(0,1fr)_4.75rem] sm:p-4">
         <div className={cn(
           'flex h-8 w-8 shrink-0 items-center justify-center rounded-full border text-sm font-bold shadow-[inset_0_1px_0_rgba(255,255,255,0.16)]',
           rank === 1 ? 'border-amber-300/40 bg-amber-400/20 text-amber-100' :
@@ -3354,19 +3367,46 @@ export function RecommendationCardClean({ rec, rank, context = 'full' }: Recomme
         <div className="grid min-w-[4.5rem] shrink-0 grid-cols-[minmax(0,1fr)_1rem] items-center gap-1 justify-self-end">
           <div className="min-w-0 text-right">
             <div className="sv-num whitespace-nowrap text-xl font-bold leading-none text-amber-200" title="R33 分數在當日全池的排名百分位">{percentileText(confidence)}</div>
-            <div className="mt-1 whitespace-nowrap text-[10px] font-medium leading-none text-slate-500">排名百分位</div>
+            <div className="mt-1 whitespace-nowrap text-[10px] font-medium leading-none text-muted-foreground">排名百分位</div>
           </div>
-          <div className="flex h-7 w-4 items-center justify-end">
-            {expanded ? (
-              <ChevronUp className="h-4 w-4 shrink-0 text-slate-400" />
-            ) : (
-              <ChevronDown className="h-4 w-4 shrink-0 text-slate-400" />
-            )}
+          <div className="flex h-7 w-4 items-center justify-end" title={selected ? '明細顯示中' : undefined}>
+            {selected && <ChevronRight aria-hidden="true" className="h-4 w-4 shrink-0 text-sky-300" />}
           </div>
         </div>
       </div>
 
       <RecommendationConfidenceStrip confidence={confidence} />
+    </div>
+  )
+}
+
+export function RecommendationCardDetail({ rec, context = 'full' }: RecommendationCardDetailProps) {
+  const sig = SIGNAL_CONFIG[recommendationSignalKey(rec)] ?? SIGNAL_CONFIG.HOLD
+  const SigIcon = sig.icon
+  const isHomeContext = context === 'home'
+  const showFullDecisionDetail = !isHomeContext
+  const watchPoints = normalizeWatchPoints(rec.watch_points)
+  const noticePoints = displayWatchPoints(watchPoints)
+  const alphaContext = alphaContextFromRec(rec, watchPoints)
+  const displayReason = translateRecommendationReason(rec.reason)
+  const mlVoteSummary = mlVoteSummaryFromRec(rec)
+  const mlDiagnostics = mlDiagnosticsFromRec(rec)
+  const mlSummary = formatMlVoteSummaryForBadge(mlVoteSummary) ?? formatMlVoteSummaryReadable(mlVoteSummary) ?? formatMlVoteSummary(mlVoteSummary) ?? extractMlSummary(displayReason)
+  const mlMetadataGap = mlMetadataGapText(rec, mlVoteSummary)
+  const evidenceLinks = normalizeEvidenceLinks(rec.evidence_links)
+  const scoreViewModel = buildScoreBreakdownViewModel(rec)
+  const { effectiveInstitutionalRaw, effectiveBrokerTopFlows } = useCardChipContext(rec, true)
+
+  return (
+    <div className="sv-recommendation-card-detail sv-stockintelli-rec-card overflow-hidden rounded-[20px] border border-white/[0.08]">
+      <div className="flex flex-wrap items-center gap-2 px-4 py-3">
+        <span className="sv-num text-base font-bold text-slate-50">{rec.symbol}</span>
+        <span className="text-sm font-semibold text-slate-300">{rec.name}</span>
+        <Badge className={cn('border px-2 py-0.5 text-[11px] leading-5', sig.color)}>
+          <SigIcon className="mr-1 h-3 w-3" />
+          {sig.label}
+        </Badge>
+      </div>
 
       {evidenceLinks.length > 0 && (
         <div className="flex flex-wrap gap-2 border-t border-white/[0.07] bg-black/10 px-4 py-2">
@@ -3376,7 +3416,6 @@ export function RecommendationCardClean({ rec, rank, context = 'full' }: Recomme
               href={safeExternalUrl(link.url)}
               target="_blank"
               rel="noopener noreferrer"
-              onClick={(event) => event.stopPropagation()}
               className="inline-flex max-w-full items-center gap-1 rounded-md border border-sky-300/20 bg-sky-400/[0.075] px-2 py-1 text-[11px] leading-tight text-sky-200 hover:border-sky-300/40"
             >
               <ExternalLink className="h-3 w-3 shrink-0" />
@@ -3387,68 +3426,66 @@ export function RecommendationCardClean({ rec, rank, context = 'full' }: Recomme
         </div>
       )}
 
-      {expanded && (
-        <div className="sv-card-expanded-content space-y-4 border-t border-white/[0.08] bg-[linear-gradient(180deg,rgba(17,20,28,0.92),rgba(9,11,16,0.98))] px-4 pb-4 pt-3">
-          <div className="space-y-1.5">
-            <p className="mb-2 text-xs font-semibold text-slate-200">四構面基礎分數</p>
-            {scoreViewModel.rows.map((item) => (
-              <div key={item.key} className="space-y-1">
-                <ScoreBar label={item.label} value={item.value} max={item.max} color={item.color} />
-                {item.explanation && (
-                  <p className="pl-[72px] text-[11px] leading-relaxed text-slate-400 sm:pl-[74px]">
-                    {item.explanation}
-                  </p>
-                )}
-              </div>
-            ))}
-          </div>
-
-          <ScoreBreakdownV2 rec={rec} />
-
-          <FundamentalSnapshotBlock rec={rec} />
-
-          <InstitutionalBrokerFlowBlock institutional={effectiveInstitutionalRaw} brokerFlow={effectiveBrokerTopFlows} />
-
-          <TradingPlanNarrative
-            rec={rec}
-            context={alphaContext}
-            reason={displayReason}
-            institutionalRaw={effectiveInstitutionalRaw}
-            brokerFlow={effectiveBrokerTopFlows}
-          />
-
-          {showFullDecisionDetail && (mlSummary || mlMetadataGap || mlDiagnostics) && (
-            <div className="rounded-[18px] border border-indigo-300/20 bg-indigo-400/[0.07] p-3 text-xs leading-relaxed text-slate-300 shadow-[inset_0_1px_0_rgba(255,255,255,0.045)]">
-              <p className="mb-1 font-semibold text-indigo-100">ML 解讀</p>
-              <p className="text-slate-300">{mlSummary ?? mlMetadataGap}</p>
-              <MlDiagnosticsStrip diagnostics={mlDiagnostics} />
+      <div className="sv-card-expanded-content space-y-4 border-t border-white/[0.08] px-4 pb-4 pt-3">
+        <div className="space-y-1.5">
+          <p className="mb-2 text-xs font-semibold text-slate-200">四構面基礎分數</p>
+          {scoreViewModel.rows.map((item) => (
+            <div key={item.key} className="space-y-1">
+              <ScoreBar label={item.label} value={item.value} max={item.max} color={item.color} />
+              {item.explanation && (
+                <p className="pl-[72px] text-[11px] leading-relaxed text-slate-400 sm:pl-[74px]">
+                  {item.explanation}
+                </p>
+              )}
             </div>
-          )}
-
-          {showFullDecisionDetail && noticePoints.length > 0 && (
-            <div>
-              <p className="mb-1.5 flex items-center gap-1 text-xs font-semibold text-slate-300">
-                <AlertCircle className="h-3 w-3" />
-                注意事項
-              </p>
-              <ul className="space-y-1">
-                {noticePoints.map((point, index) => (
-                  <li key={`${point}-${index}`} className="flex items-start gap-1.5 text-xs leading-relaxed text-slate-300">
-                    <span className="mt-0.5 shrink-0 text-amber-500">!</span>
-                    {normalizeWatchPoint(point)}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {showFullDecisionDetail && rec.current_price != null && (
-            <p className="text-[11px] text-slate-400">
-              <span>{'\u53c3\u8003\u6536\u76e4\u50f9'} ${fmtNumber(rec.current_price, 2)}{'\uff08\u975e\u6700\u7d42\u639b\u50f9\uff09'}</span>
-            </p>
-          )}
+          ))}
         </div>
-      )}
+
+        <ScoreBreakdownV2 rec={rec} />
+
+        <FundamentalSnapshotBlock rec={rec} />
+
+        <InstitutionalBrokerFlowBlock institutional={effectiveInstitutionalRaw} brokerFlow={effectiveBrokerTopFlows} />
+
+        <TradingPlanNarrative
+          rec={rec}
+          context={alphaContext}
+          reason={displayReason}
+          institutionalRaw={effectiveInstitutionalRaw}
+          brokerFlow={effectiveBrokerTopFlows}
+        />
+
+        {showFullDecisionDetail && (mlSummary || mlMetadataGap || mlDiagnostics) && (
+          <div className="border-t border-white/[0.08] pt-3 text-xs leading-relaxed text-slate-300">
+            <p className="mb-1 font-semibold text-slate-200">ML 解讀</p>
+            <p className="text-slate-300">{mlSummary ?? mlMetadataGap}</p>
+            <MlDiagnosticsStrip diagnostics={mlDiagnostics} />
+          </div>
+        )}
+
+        {showFullDecisionDetail && noticePoints.length > 0 && (
+          <div>
+            <p className="mb-1.5 flex items-center gap-1 text-xs font-semibold text-slate-300">
+              <AlertCircle className="h-3 w-3" />
+              注意事項
+            </p>
+            <ul className="space-y-1">
+              {noticePoints.map((point, index) => (
+                <li key={`${point}-${index}`} className="flex items-start gap-1.5 text-xs leading-relaxed text-slate-300">
+                  <span className="mt-0.5 shrink-0 text-amber-500">!</span>
+                  {normalizeWatchPoint(point)}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {showFullDecisionDetail && rec.current_price != null && (
+          <p className="text-[11px] text-slate-400">
+            <span>{'\u53c3\u8003\u6536\u76e4\u50f9'} ${fmtNumber(rec.current_price, 2)}{'\uff08\u975e\u6700\u7d42\u639b\u50f9\uff09'}</span>
+          </p>
+        )}
+      </div>
     </div>
   )
 }

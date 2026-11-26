@@ -42,6 +42,7 @@ import { applyScreenerNewsSentiment, applyScreenerBuzz, applyScreenerExternalRis
 import { readScreenerNewsSentiment, readScreenerForeignFlow } from './screenerOverlayReads'
 import { ADJUSTED_GAP_BAR_SOURCE, loadAdjustedGapBars, loadMarketDataFromD1, type CanonicalScreenerChip, type CanonicalScreenerPrice, type ScreenerChipFreshness } from './screenerMarketData'
 import { adjustedGapDown, volaCv90dFromCloses, type AdjustedGapBar } from './screenerPriceSignals'
+import { evaluatePriceHistoryGate, loadPrepPriceHistoryCounts, MIN_PRICE_ROWS_FOR_SELECTION } from './priceHistoryEligibility'
 import {
   annotateCandidatesWithStrategySpecs,
 } from './screenerStrategyConsumer'
@@ -3778,18 +3779,25 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
   const universe: { stockId: string; prices: CanonicalScreenerPrice[]; liquidityCapacity: L05LiquidityCapacityReceipt }[] = []
   let skipPriceHistory = 0, skipPrice = 0, skipLiquidity = 0, skipPunish = 0, skipVolZero = 0, skipEtf = 0
 
+  // ROSTER-PREP-60: the R33 prep gives a symbol below the contract minimum no row, so it is never
+  // selected. Counted in the prep's own source up to the run date (not stock_prices); a stale source or
+  // a failed read throws. The latest primary session must already be in the prep source.
+  const historySessions = [...new Set(allPrices.map((row) => row.date))].sort()
+  const prepHistoryCounts = await loadPrepPriceHistoryCounts(env, [...data.prices.keys()], endDate,
+    historySessions[historySessions.length - 1] ?? endDate)
+  debugLog.push(`[Universe] prep price history: symbols=${prepHistoryCounts.size} ` +
+    `below_${MIN_PRICE_ROWS_FOR_SELECTION}=${[...prepHistoryCounts.values()].filter((n) => n < MIN_PRICE_ROWS_FOR_SELECTION).length}`)
+
   for (const [stockId, prices] of data.prices) {
-    if (prices.length < 3) {
+    const historyGate = evaluatePriceHistoryGate(prices.length, prepHistoryCounts.get(stockId) ?? 0)
+    if (!historyGate.passed) {
       skipPriceHistory++
       pushFunnelItem(funnelItems, {
         symbol: stockId,
         stage: 'universe',
         decision: 'drop',
         reasonCode: 'insufficient_price_history',
-        evidence: {
-          price_row_count: prices.length,
-          minimum_required_price_rows: 3,
-        },
+        evidence: historyGate.evidence,
       })
       continue
     }

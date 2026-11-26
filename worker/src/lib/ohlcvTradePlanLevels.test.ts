@@ -50,6 +50,19 @@ const continuationPlan = resolveOhlcvEntryPlan(levels!, { latestPrice: breakoutP
 assert(continuationPlan?.mode === 'breakout_continuation', 'price beyond optimistic range should become continuation mode, not stale confirmation mode')
 assert(continuationPlan?.entryPrice === breakoutPlan!.optimisticHigh, 'continuation entry should anchor to a live executable ceiling instead of old confirmation')
 
+const crashedLatest = round2(breakoutPlan!.buyReferenceLow * 0.6)
+const crashedPlan = resolveOhlcvEntryPlan(levels!, { latestPrice: crashedLatest })
+
+assert(crashedPlan?.mode === 'pullback', 'price below the buy zone is still a pullback')
+assert(crashedPlan?.entryPrice === crashedLatest, 'entry must not sit above the latest price when price fell through the buy zone')
+assert(crashedPlan!.stopLoss < crashedLatest, 'stop must sit below the executable entry')
+const crashedRisk = crashedPlan!.entryPrice - crashedPlan!.stopLoss
+assert(crashedPlan!.target1 < crashedPlan!.entryPrice + 1.5 * crashedRisk + 1, 'below the zone, target1 is 1.5R, not the stale confirmation level')
+assert(crashedPlan!.target1 < levels!.confirmation, 'below the zone, target1 must not anchor to the old confirmation level')
+
+const zonePlan = resolveOhlcvEntryPlan(levels!, { latestPrice: breakoutPlan!.buyReferenceHigh + 0.5 })
+assert(zonePlan?.entryPrice === zonePlan!.buyReferenceHigh, 'price above the buy zone keeps the zone-high limit')
+
 const watchPoint = formatOhlcvTradePlanWatchPoint(breakoutPlan!)
 
 assert(watchPoint.startsWith('ohlcv_trade_plan:'), 'OHLCV backend plan should be persisted as a watch point')

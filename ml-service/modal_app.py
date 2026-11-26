@@ -200,6 +200,15 @@ except Exception:
     print("[modal_app] stockvision-retrain-callback secret not found, legacy retrain callback auth remains active")
     retrain_callback_secret = modal.Secret.from_dict({})
 
+# The public web app (fastapi_app) only. No from_dict fallback: a missing secret must fail
+# the deploy, never serve the HTTP routes with an empty token (app/main.py fails closed too).
+#   modal secret create stockvision-ml-service-token ML_SERVICE_SECRET=<token>
+ML_SERVICE_TOKEN_SECRET = "stockvision-ml-service-token"
+ml_service_token_secret = modal.Secret.from_name(
+    ML_SERVICE_TOKEN_SECRET,
+    required_keys=["ML_SERVICE_SECRET"],
+)
+
 runtime_env_secret = modal.Secret.from_dict({
     key: value
     for key, value in {
@@ -210,6 +219,8 @@ runtime_env_secret = modal.Secret.from_dict({
         "FINLAB_SESSION_ID": os.environ.get("FINLAB_SESSION_ID", "").strip(),
         # Chip PIT daily log (docs/chip-pit-contract.md): on for every deploy; deploy with =0 to turn it off.
         "CHIP_PIT_DAILY_RECORD": os.environ.get("CHIP_PIT_DAILY_RECORD", "1").strip(),
+        # Breeze2 remote-code pin (40-hex Hub commit); unset keeps model execution off.
+        "BREEZE2_REASON_MODEL_REVISION": os.environ.get("BREEZE2_REASON_MODEL_REVISION", "").strip(),
     }.items()
     if value
 })
@@ -5146,6 +5157,7 @@ def finlab_v4_training_capture(payload: dict) -> dict:
     timeout=1800,     # Optuna signal/SLTP trials can take several minutes.
     scaledown_window=60,
     max_containers=2,
+    secrets=[ml_service_token_secret],
 )
 @modal.concurrent(max_inputs=4)
 @modal.asgi_app()

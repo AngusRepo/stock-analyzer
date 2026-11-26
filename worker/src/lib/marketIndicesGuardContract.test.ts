@@ -12,7 +12,7 @@ assert(
   'TAIEX fallback should use TWSE official MI_5MINS_HIST',
 )
 assert(
-  source.includes('market:indices:finlab-clean:v17-taifex-controller-live-night'),
+  source.includes('market:indices:finlab-clean:v18-futures-settlement-change'),
   'market indices cache key should be bumped for TWII canonical date fallback',
 )
 assert(
@@ -43,8 +43,13 @@ assert(
   'market_risk.twii_close must not override canonical_market_index_daily for TWII price-index serving',
 )
 assert(
-  source.includes("session = 'day'") && source.includes("SELECT date, close FROM canonical_futures_daily"),
+  source.includes("session = 'day'") && source.includes("SELECT date, close, change, change_pct FROM canonical_futures_daily"),
   'TXF day canonical query should use the explicit day session instead of requiring open_interest history',
+)
+assert(
+  source.includes('reportedChange: numberOrNull(row.change), reportedChangePct: numberOrNull(row.change_pct)') &&
+    source.includes('const change = hasReported ? reportedChange'),
+  'TXF change must use the source-reported move (prior settlement price), not close minus the prior close',
 )
 assert(
   source.includes("session = 'night'") && source.includes('canonicalNightFallback'),

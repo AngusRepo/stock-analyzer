@@ -16,11 +16,13 @@ export type MonitoringEnv = AuthEnv & {
   KV: KVNamespace
   /** Optional override of the contract's 18:30 (Taiwan): a trading day with no chain row after it is a missed chain. */
   CHAIN_ROOT_EXPECTED_BY_TW?: string
-  /** Set per request by the handler when the Cache API is available; absent = every read goes to its source. */
+  /** Route cache and memo store on workers.dev (kvCache.ts); never exposed to routes. */
+  MONITORING_CACHE?: KVNamespace
+  /** Set per request by the handler when a cache is available; absent = every read goes to its source. */
   MEMO?: Memo
 }
 
-/** Values a later request reuses instead of reading them again (Cache API entries next to the route cache). */
+/** Values a later request reuses instead of reading them again (cache entries next to the route cache). */
 export type Memo = {
   get<T>(key: string): Promise<T | null>
   put(key: string, value: unknown, ttlS: number): Promise<void>
@@ -40,6 +42,7 @@ export const D1_BINDINGS = ['DB', 'CORE_DB', 'MARKET_DB', 'LEARNING_DB', 'OPS_DB
 /** Same bindings, every D1 wrapped read-only and accounted in one ledger; KV exposes get() only. */
 export function readOnlyEnv(env: MonitoringEnv, ledger: ReadLedger): MonitoringEnv {
   const out: Record<string, unknown> = { ...env }
+  delete out.MONITORING_CACHE
   for (const name of D1_BINDINGS) {
     const db = env[name]
     if (db) out[name] = readOnlyD1(db, name, ledger)

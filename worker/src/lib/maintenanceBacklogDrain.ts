@@ -1,7 +1,6 @@
 import type { Bindings, UpdateQueueMsg } from '../types'
 import { logSchedulerResult } from './schedulerRunLogger'
-import { runWithMaintenanceLease } from './maintenanceLease'
-import { maintenanceLeaseYieldRequested, runWithMaintenanceLeaseYielding } from './maintenanceLeaseYield'
+import { maintenanceLeaseYieldRequested, runWithMaintenanceLeaseYielding, runWithRunStepMaintenanceLease } from './maintenanceLeaseYield'
 import { activeDataDomainShadowBackfillRunId } from './dataDomainShadowSession'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { updateSchedulerExecutionTicket } from './schedulerExecutionTickets'
@@ -108,13 +107,19 @@ function auditFailureKey(): string {
   return 'maintenance:backlog-drain:audit-json-retention:failure'
 }
 
+// Last fault that escaped a ticketed chunk to the queue retry, kept for the terminal ticket.
+function auditChunkErrorKey(runId: string): string {
+  return `maintenance:backlog-drain:audit-json-retention:chunk-error:${runId}`
+}
+
 // A D1 overload is a shared 10-second budget, not a fault in this drain. A 6-hour
 // cooldown turned one overload at 03:47 into a lost night; 20 minutes lets the
-// next 15-minute slot resume the backlog.
+// next 15-minute slot resume the backlog. Exhausted lease deferrals are contention
+// too (11/24: the run's own leaked lease), so they cool down the same way.
 const AUDIT_JSON_OVERLOAD_COOLDOWN_SECONDS = 20 * 60
 
 export function auditJsonFailureCooldownSeconds(error: string): number {
-  return /D1 DB is overloaded/i.test(error) ? AUDIT_JSON_OVERLOAD_COOLDOWN_SECONDS : ACTIVE_TTL_SECONDS
+  return /D1 DB is overloaded|^maintenance_lease_deferrals_exhausted:/i.test(error) ? AUDIT_JSON_OVERLOAD_COOLDOWN_SECONDS : ACTIVE_TTL_SECONDS
 }
 
 type MaintenanceIdentity = Pick<UpdateQueueMsg, 'schedulerTicketId' | 'schedulerRunId'>
@@ -170,8 +175,10 @@ async function closeSupersededAuditTicket(env: Bindings, msg: UpdateQueueMsg): P
   }
 }
 
-async function finishAuditFailure(env: Bindings, msg: UpdateQueueMsg, error: string, now: Date): Promise<void> {
+async function finishAuditFailure(env: Bindings, msg: UpdateQueueMsg, terminalError: string, now: Date): Promise<void> {
   const runId = String(msg.runId)
+  const chunkError = await env.KV.get(auditChunkErrorKey(runId)).catch(() => null)
+  const error = chunkError && !terminalError.includes(chunkError) ? `${terminalError}; last_chunk_error=${chunkError}` : terminalError
   const originalFailure = await env.KV.get(`${auditFailureKey()}:${runId}`, 'json') as Record<string, unknown> | null
   const failure = originalFailure ?? {
     run_id: runId, scheduler_ticket_id: msg.schedulerTicketId ?? null,
@@ -388,6 +395,11 @@ async function runAuditChunkWithReceipt(env: Bindings, msg: UpdateQueueMsg, now:
     SET metadata_json=json_set(metadata_json,'$.maintenance_chunk',json(?))
     WHERE ticket_id=? AND run_id=? AND metadata_json=? AND status IN ('accepted','queued','running','triggered')`)
     .bind(JSON.stringify(receipt), msg.schedulerTicketId, msg.runId, ticket.metadata_json).run()
+    .catch((error) => {
+      // A receipt that did not land must not lose the chunk's own fault with it.
+      if (!result.failureError) throw error
+      throw new Error(`${error instanceof Error ? error.message : String(error)}; chunk_error=${result.failureError}`)
+    })
   if (Number(saved.meta?.changes ?? 0) !== 1) throw new Error('maintenance_chunk_receipt_cas_lost')
   return result
 }
@@ -550,8 +562,11 @@ export async function processMaintenanceBacklogDrain(
       leaseResult = opsShadowBackfillRunId
         ? auditJsonOpsShadowBackfillActiveResult(opsShadowBackfillRunId)
         : task === 'audit-json-retention'
-          ? await runWithMaintenanceLease(databaseForDataDomain(env, 'ops'), {
+          ? await runWithRunStepMaintenanceLease(databaseForDataDomain(env, 'ops'), {
             taskName: `${task}:queue`,
+            runId,
+            // Grows along the run, so a later step can reclaim a lease its earlier delivery leaked.
+            step: [cycle, attempt, Math.max(0, Math.floor(msg.maintenanceFailureAttempt ?? 0)), Math.max(0, Math.floor(msg.leaseRetryAttempt ?? 0))],
             leaseGroup: 'd1_heavy_maintenance',
             leaseSeconds: 300,
             run: () => runAuditChunkWithReceipt(env, ownedMessage, now),
@@ -565,6 +580,12 @@ export async function processMaintenanceBacklogDrain(
           }, 0)
     }
   } catch (error) {
+    if (task === 'audit-json-retention' && msg.schedulerTicketId) {
+      // The queue retries this delivery; a fault outside the chunk receipt (or one whose receipt
+      // write failed) otherwise reaches only Workers Logs, so the terminal ticket carries it.
+      await env.KV.put(auditChunkErrorKey(runId), (error instanceof Error ? error.message : String(error)).slice(0, 1000),
+        { expirationTtl: ACTIVE_TTL_SECONDS }).catch(() => {})
+    }
     if (task !== 'audit-json-retention' || msg.schedulerTicketId) throw error
     const failureAttempt = Math.max(0, Math.floor(msg.maintenanceFailureAttempt ?? 0)) + 1
     const errorMessage = error instanceof Error ? error.message : String(error)
@@ -635,6 +656,8 @@ export async function processMaintenanceBacklogDrain(
     }
     return
   }
+  // The chunk got through: an earlier escaped fault must not ride on a later, unrelated terminal error.
+  if (task === 'audit-json-retention' && msg.schedulerTicketId) await env.KV.delete(auditChunkErrorKey(runId)).catch(() => {})
   await env.KV.put(progressKey(task), JSON.stringify({
     run_id: runId,
     attempt,

@@ -16,6 +16,8 @@ from typing import Mapping
 
 from google.cloud import run_v2
 
+from services.json_logging import ROOT_TICKET_ENV, current_root_ticket_id
+
 logger = logging.getLogger(__name__)
 
 # GCP project / region / job name are env-driven so staging / prod share code.
@@ -187,6 +189,12 @@ class CloudRunJobsClient:
                 raise JobAlreadyRunningError(active)
 
         client = self._get_client()
+
+        # L1 correlation id: every Job execution started for a scheduler run carries its root
+        # ticket (an explicit override from the caller wins).
+        root_ticket_id = current_root_ticket_id()
+        if root_ticket_id and ROOT_TICKET_ENV not in (env_overrides or {}):
+            env_overrides = {**dict(env_overrides or {}), ROOT_TICKET_ENV: root_ticket_id}
 
         overrides: run_v2.RunJobRequest.Overrides | None = None
         if env_overrides:

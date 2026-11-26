@@ -112,6 +112,8 @@ MULTI_D1_STRICT = "true"
 # Cutover control plane (data_domain_* / domain_projection_*): "legacy" until the
 # copy + verify is done, then "ops" (rollback: back to "legacy"). See legacyDatabase.ts.
 DATA_DOMAIN_CONTROL_PLANE = "legacy"
+# Observability P2 chain stage state (OPS_DB ops_chain_stage_state_v1). Rollback: "0" stops all writes.
+OPS_CHAIN_STAGE_STATE_WRITES = "1"
 PAGES_ORIGIN = "https://stockvision-frontend.pages.dev"
 FINLAB_L5_MARKET_DATA_ENABLED = "1"
 FINLAB_L5_MARKET_DATA_ALLOW_BROKER_LOGIN = "0"

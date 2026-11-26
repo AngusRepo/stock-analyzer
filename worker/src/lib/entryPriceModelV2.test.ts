@@ -95,3 +95,14 @@ const plan = {
   assert(model.anchorSource === 'daily_proxy_fallback', 'price action observe must not pretend to be a true volume profile source')
   assert(model.confidence > 0.45, 'confirmed structure can lift confidence without changing the anchor source')
 }
+
+{
+  // 8932 on 2026-11-24: close 52.3 fell through the 91.77~94.09 pullback zone.
+  const model = buildEntryPriceModelV2FromOhlcvPlan({
+    ...plan, mode: 'pullback' as const, entryPrice: 52.3, stopLoss: 44.9, target1: 63.4, target2: 74.5,
+    latestClose: 52.3, buyReferenceLow: 91.77, buyReferenceHigh: 94.09, volumeNode: 92.93,
+    support: 46.3, confirmation: 119.33, optimisticLow: 119.33, optimisticHigh: 123.78,
+  })
+  assert(model.entryLow === 52.3 && model.entryHigh === 52.3, `below-zone entry band must sit on the plan entry: ${model.entryLow}~${model.entryHigh}`)
+  assert(model.preferredEntry === 52.3, 'below-zone preferred entry must equal the plan entry')
+}

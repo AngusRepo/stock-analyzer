@@ -406,9 +406,13 @@ def test_orchestrator_pools_stay_under_the_workspace_container_limit():
     assert pool(mc.TABM_FUNCTION) == mc.TAIL_GPU_PARALLEL <= 10  # the tail's L4s; the champion's are free by then
 
 
-def test_gate_waits_for_every_gpu_family_but_the_exempt_timexer():
-    """A new GPU family is waited for unless it is named here; the exemption is TimeXer alone."""
-    assert mc.GATE_EXEMPT_GPU_FAMILIES == ("TimeXer",)
+def test_gate_waits_for_every_gpu_family_but_the_exempt_timexer_and_gnn():
+    """A new GPU family is waited for unless it is named here. GNN is exempt only while its function stays pinned
+    to one L4 (one challenger then never delays it): TimeXer 7 + GNN 1 + challenger 1 stays under the 10 L4s."""
+    assert mc.GATE_EXEMPT_GPU_FAMILIES == ("TimeXer", "GNN")
+    specs = _decorators()
+    assert re.search(r"max_containers\s*=\s*1\b", specs["train_gnn_graphsage_universal"])
+    assert re.search(r"max_containers\s*=\s*7\b", specs["train_timexer_universal"])
     source = MODAL_APP.read_text()
     assert ('gpu=[f for kind, f in tasks if kind in dict(family_tasks) and kind not in market_state["exempt"]]'
             in source)

@@ -195,6 +195,23 @@ test('resuming after the feature wait runs in the feature card and leaves input 
   assert.match(cards[3].summary,/L2 前輸入重新驗證/)
 })
 
+test('11/25-shaped batch build after the snapshot runs in the feature-batch card, not assembly',()=>{
+  const p=parent(),progress=p.pipelineProgress!
+  progress.executions={a:[row('node_build_payloads','waiting')],b:[row('input_snapshot'),row('node_resume_l2_inputs')]} as any
+  progress.phase='feature_preparation';progress.status='running';delete p.pipelineBatches
+  progress.phase_started_at='2026-10-16T15:30:00Z';progress.observed_at='2026-10-16T15:30:00Z'
+  const cards=pipelineStageCards(p,Date.parse('2026-10-16T15:32:00Z'))
+  assert.deepEqual(cards.slice(1,4).map(c=>[c.stageVisualStatus,c.summary]),
+    [['completed','階段已完成'],['running','特徵資料準備'],['waiting','等待特徵批次完成']])
+  // The consuming execution reports assembly only (its prep call returns the sealed receipt).
+  progress.executions={...progress.executions,b:[...progress.executions.b,row('node_build_payloads','waiting')],
+    c:[row('input_prep'),row('node_resume_l2_inputs')]} as any
+  progress.phase='node_build_payloads';progress.phase_started_at='2026-10-16T15:50:00Z';progress.observed_at='2026-10-16T15:50:00Z'
+  const consuming=pipelineStageCards(p,Date.parse('2026-10-16T15:52:00Z'))
+  assert.deepEqual(consuming.slice(2,4).map(c=>[c.stageVisualStatus,c.summary]),
+    [['completed','階段已完成'],['running','特徵與推論輸入']])
+})
+
 test('sequence input preparation runs in the L2 card instead of leaving it unstarted',()=>{
   const p=parent(),progress=p.pipelineProgress!
   progress.executions={a:[row('node_load_inputs'),row('node_load_market_env'),row('node_attach_serving_context'),

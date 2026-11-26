@@ -107,6 +107,16 @@ export type ChainAlert = {
 }
 
 const parse = (value: string | null | undefined) => (value ? Date.parse(value) : Number.NaN)
+/** One timestamp shape for every reader: Python writers store microseconds and `+00:00`, and Grafana's
+ * JSONata reads those as the date's midnight. A stamp with no zone is UTC (SQLite datetime()); a date alone stays as is. */
+export function isoStamp(value: unknown): unknown {
+  if (typeof value !== 'string' || !/\d{2}:\d{2}/.test(value)) return value
+  const ms = Date.parse(/[zZ]|[+-]\d{2}:?\d{2}$/.test(value) ? value : `${value.replace(' ', 'T')}Z`)
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : value
+}
+const STAMP_FIELDS = ['started_at', 'completed_at', 'heartbeat_at', 'updated_at', 'transition_at'] as const
+const withIsoStamps = <T extends Record<string, unknown>>(row: T): T =>
+  Object.fromEntries(Object.entries(row).map(([key, value]) => [key, (STAMP_FIELDS as readonly string[]).includes(key) ? isoStamp(value) : value])) as T
 const minutesSince = (fromMs: number, nowMs: number) => (Number.isFinite(fromMs) ? Math.floor((nowMs - fromMs) / 60_000) : null)
 
 function alert(row: ChainStateRow, kind: AlertKind, since: string | null, nowMs: number): ChainAlert {
@@ -518,7 +528,7 @@ export async function chainStateReport(env: MonitoringEnv, nowMs: number, reques
     history_available: historyAvailable,
     active_business_date: active,
     current,
-    rows: [...stageRows, ...cardRows].sort(stageOrder),
+    rows: [...stageRows, ...cardRows].sort(stageOrder).map(withIsoStamps),
   }
 }
 
@@ -610,6 +620,6 @@ export async function chainTimelineReport(env: MonitoringEnv, nowMs: number, day
     business_date: dates.x, from: plan.from, to: dates.x, ...windowFields(dates, plan.span, plan.periods), chain_id: chainId,
     truncated: rows.length > TIMELINE_ROW_LIMIT,
     // Truncation drops the oldest dates, never X.
-    rows: rows.slice(-TIMELINE_ROW_LIMIT).map((row) => ({ time: row.transition_at, ...row })),
+    rows: rows.slice(-TIMELINE_ROW_LIMIT).map(withIsoStamps).map((row) => ({ time: row.transition_at, ...row })),
   }
 }

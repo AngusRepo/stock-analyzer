@@ -1,7 +1,8 @@
 """The real walk_forward_orchestrator wiring of the market challengers, on fake Modal functions (no Modal, no cost).
 
 Scaled timeline per window w: tree, TabM, PatchTST, iTransformer 0.05 s; GNN 0.1 + 0.1w s; TimeXer 0.8 + 0.1w s;
-each TabM challenger fold 0.2 s. The gate opens with the last GNN and one L4 challenger runs at a time; once the
+each TabM challenger fold 0.2 s. The gate opens with the last gated GPU call (TabM, PatchTST, iTransformer; GNN and
+TimeXer are exempt) and one L4 challenger runs at a time; once the
 last TimeXer is done every window's champion results are final, the rest run TAIL_GPU_PARALLEL at a time, and
 whatever is left at the tail cap is cancelled. A failed challenger call is sent once more.
 """
@@ -28,8 +29,8 @@ SEVEN = [{"window_id": w, "train_start": DAYS[0], "train_end": DAYS[39], "test_s
 WINDOWS = SEVEN[:3]
 ORDER = mc.GPU_ARM_ORDER  # the L4 challengers' arm order
 FIRST = ORDER[0]
-GATED_GPU = ("train_tabm_universal", "train_gnn_graphsage_universal", "train_patchtst_universal",
-             "train_itransformer_universal")
+GATED_GPU = ("train_tabm_universal", "train_patchtst_universal", "train_itransformer_universal")
+CHAMPION_GPU = (*GATED_GPU, "train_gnn_graphsage_universal")
 SLACK = 0.05
 
 
@@ -146,7 +147,7 @@ def challenger(clock, name, seconds, failures=None, counted=False, cancel_hangs=
 def timexer_roster(monkeypatch):
     """The 2026-11-07 release roster has no sequence family, so these gate scenarios (TimeXer holds its L4s
     past every other champion GPU call) run on the pre-11/7 seven-model R33 roster. GpuGate itself is
-    roster-generic: GATE_EXEMPT_GPU_FAMILIES applies to whichever roster carries TimeXer."""
+    roster-generic: GATE_EXEMPT_GPU_FAMILIES (TimeXer, GNN) applies to whichever roster carries them."""
     import app.alpha_model_roster as service_roster
     import services.alpha_model_roster as controller_roster
     seven = tuple(n for n in controller_roster.TIMEXER_MODELS if n != "XGBoost")
@@ -219,7 +220,7 @@ def ends(clock, names):
 
 
 def champion_end(clock):
-    return max(ends(clock, {"hmm", "tree", "train_timexer_universal", *GATED_GPU}))
+    return max(ends(clock, {"hmm", "tree", "train_timexer_universal", *CHAMPION_GPU}))
 
 
 def challenger_metrics(manifest):
@@ -250,7 +251,7 @@ def test_one_l4_challenger_at_a_time_until_the_champion_is_final_then_the_tail_c
                         gnn_fail=lambda payload: payload["window_id"] == 2)  # a failed GPU call is done all the same
     run(SEVEN)
     gated, timexer, done = max(ends(clock, GATED_GPU)), max(ends(clock, {"train_timexer_universal"})), champion_end(clock)
-    # The gate opens once the last non-TimeXer GPU call (GNN w6; w2 failed) is done, while TimeXer still runs.
+    # The gate opens once the last gated GPU call is done, while GNN (w2 failed) and TimeXer still run.
     assert clock.spawns[0][0] >= gated - 0.005 and gated < timexer - 0.3 and done == timexer
     mid = [(start, key, active) for start, key, active in clock.spawns if start < done]
     assert mid and max(active for *_, active in mid) == 1  # one L4 challenger while the champion runs
@@ -268,6 +269,20 @@ def test_one_l4_challenger_at_a_time_until_the_champion_is_final_then_the_tail_c
     finished = {key for name, key, *_ in clock.calls if name in ("tabm_challenger", "tree_challenger")}
     assert not [c for c in clock.cancels if c[1] not in finished] and clock.active == 0  # (a failed get is cancelled too)
     assert 0 < published["at"] - done < mc.TAIL_CAP_S
+
+
+def test_on_the_core4_roster_the_l4_challengers_start_while_gnn_still_runs(monkeypatch):
+    """X-DEC-W4A-FU (11/9): GNN, one container and the cohort's last GPU family, no longer holds the gate, so
+    the TabM challengers run one at a time beside it instead of all landing in the capped tail."""
+    clock = Clock()
+    published = install(monkeypatch, clock, windows=SEVEN)
+    run(SEVEN)
+    gated, gnn, done = max(ends(clock, GATED_GPU)), max(ends(clock, {"train_gnn_graphsage_universal"})), champion_end(clock)
+    assert not ends(clock, {"train_timexer_universal"}) and done == gnn  # core4: GNN is the last champion call
+    assert gated - 0.005 <= clock.spawns[0][0] < gnn - 0.3
+    mid = [(start, key, active) for start, key, active in clock.spawns if start < done]
+    assert len(mid) >= 2 and max(active for *_, active in mid) == 1  # one L4 challenger beside GNN
+    assert {m["status"] for m in challenger_metrics(published["manifest"]).values()} == {"ready"}
 
 
 def test_the_tail_cap_cancels_what_is_left_and_the_cohort_publishes(monkeypatch, timexer_roster):
@@ -308,7 +323,9 @@ def test_champion_results_are_final_before_the_tail_and_identical_to_the_kill_sw
     published = install(monkeypatch, clock, tabm_failures={(f"TabM_{FIRST.upper()}", 0): ["raise", "error"],
                                                            (f"TabM_{FIRST.upper()}", 1): ["raise"]},
                         tree_failures={(f"LightGBM_{FIRST.upper()}", 2): ["error"]},
-                        gnn_fail=gnn_fail, tree_seconds=1.3)  # tree challengers run on past the champion
+                        # tree challengers run on past the champion (~0.3 s) and end well inside the cap: with the
+                        # default 1.0 s cap they ended 20 ms before it and were cancelled on a slow host
+                        gnn_fail=gnn_fail, tree_seconds=1.3, cap=3.0)
     run()
     done = champion_end(clock)
     # Every window's fold readiness is decided as soon as its champion calls are done, never after a challenger.

@@ -1,5 +1,6 @@
 /** stockvision-monitoring: read-only JSON for Grafana (Infinity datasource).
- * GET only (405) → Cloudflare Access JWT (403) → Bearer (401) → route → Cache API (state 30 s, timeline and slow reads 300 s).
+ * GET only (405) → Cloudflare Access JWT (403) → Bearer (401) → route → cache (state 30 s, timeline and slow reads 300 s).
+ * The cache is MONITORING_CACHE (memory + KV, kvCache.ts) when bound, as on workers.dev; otherwise the Cache API.
  * Every response carries generated_at and rows_read (sum of D1 meta.rows_read of the reads behind it). */
 import { authorize } from './auth'
 import { capacityReport } from './capacity'
@@ -9,6 +10,7 @@ import { readOnlyEnv, isIsoDate, twDate, type Memo, type MonitoringEnv } from '.
 import { CHAIN_IDS, isChainId, type ChainId } from './judgment/chainCatalog'
 import { evidenceClocksReport } from './evidenceClocks'
 import { ReadLedger, type ExecutedQuery } from './readOnlyD1'
+import { kvCache } from './kvCache'
 import { isTradingDay } from './tradingDay'
 
 /** D11: state-type 30 s, timeline-type 300 s. */
@@ -86,7 +88,7 @@ export const ROUTES: Record<string, Route> = {
 export type MonitoringDeps = {
   now: () => number
   fetch: typeof fetch
-  /** Cache API cache; null disables caching. */
+  /** Route cache (Cache API or kvCache); null disables caching. */
   cache: Pick<Cache, 'match' | 'put'> | null
   onQuery?: (query: ExecutedQuery) => void
 }
@@ -168,9 +170,13 @@ export function createMonitoringHandler(deps: MonitoringDeps) {
   }
 }
 
+/** Per isolate: kvCache's memory layer outlives a request. */
+const isolateMemory: Parameters<typeof kvCache>[2] = new Map()
+
 export default {
   fetch(request: Request, env: MonitoringEnv, ctx: ExecutionContext): Promise<Response> {
-    const cache = typeof caches !== 'undefined' ? (caches as unknown as { default: Cache }).default : null
+    const cache = env.MONITORING_CACHE ? kvCache(env.MONITORING_CACHE, Date.now, isolateMemory)
+      : typeof caches !== 'undefined' ? (caches as unknown as { default: Cache }).default : null
     return createMonitoringHandler({ now: Date.now, fetch: (input, init) => fetch(input, init), cache })(request, env, ctx)
   },
 }

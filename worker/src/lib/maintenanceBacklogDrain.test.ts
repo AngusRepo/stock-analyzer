@@ -289,7 +289,9 @@ void (async () => {
     6,
   )
   const scheduler = fs.readFileSync('../infra/gcp-scheduler-jobs.json', 'utf8')
-  assert.match(scheduler, /legacy-strategy-evidence-migration[^\n]+durable=1/)
+  // The strategy migration drain finished on 11/07; its job is retired and the task stays manual-only.
+  assert.doesNotMatch(scheduler, /"id": "legacy-strategy-evidence-migration"/)
+  assert.match(scheduler, /"legacy-strategy-evidence-migration"/)
   assert.match(scheduler, /audit-json-retention[^\n]+durable=1/)
   assert.doesNotMatch(scheduler, /"id": "d1-evidence-scrub"/)
   assert.match(scheduler, /"d1-evidence-scrub"/)

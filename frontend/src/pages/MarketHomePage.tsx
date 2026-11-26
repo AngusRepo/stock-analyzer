@@ -28,6 +28,7 @@ import {
   type ConfidenceSortMode,
 } from '@/lib/recommendationConfidence'
 import { queryTtl, recommendationDailyKey } from '@/lib/queryPolicy'
+import { hedgeSentimentView } from '@/lib/hedgeSentimentView'
 
 const loadRecommendationCardClean = () =>
   import('@/components/RecommendationCardClean').then((module) => ({ default: module.RecommendationCardClean }))
@@ -50,6 +51,8 @@ type IndexTile = {
   status: string
   history: number[]
   available: boolean
+  // Each tile carries its own data date: TWSE publishes TWII after the close, FinLab tiles update in the evening.
+  date: string | null
 }
 
 type RiskFactor = {
@@ -241,6 +244,13 @@ function shortDate(value: unknown) {
   return raw ? raw.slice(0, 10).replace(/-/g, '/') : 'latest'
 }
 
+function isoDate(value: unknown): string | null {
+  const raw = String(value ?? '').trim()
+  const compact = raw.match(/^(\d{4})(\d{2})(\d{2})$/)
+  if (compact) return `${compact[1]}-${compact[2]}-${compact[3]}`
+  return /^\d{4}-\d{2}-\d{2}/.test(raw) ? raw.slice(0, 10) : null
+}
+
 function parseHistory(raw: any): number[] {
   return asArray<MarketPoint>(raw?.history)
     .map((point) => asNumber(point.close ?? point.value))
@@ -265,6 +275,7 @@ function toIndexTile(raw: any, label: string, source: string): IndexTile {
     status: raw?.status ?? (current == null ? 'missing' : 'ok'),
     history,
     available: current != null,
+    date: current == null ? null : isoDate(raw?.date),
   }
 }
 
@@ -279,6 +290,7 @@ function pendingIndexTile(label: string, source: string): IndexTile {
     status: 'missing',
     history: [],
     available: false,
+    date: null,
   }
 }
 
@@ -301,59 +313,6 @@ function factorDisplay(factor: RiskFactor | null, fallback = '待接資料') {
   if (factor.value != null && factor.value !== '') return String(factor.value)
   const raw = asNumber(factor.raw_value)
   return raw == null ? fallback : formatNumber(raw, 2)
-}
-
-function riskLevelLabel(score: number | null, level: unknown) {
-  const raw = String(level ?? '').toLowerCase()
-  if (raw.includes('red')) return '偏高'
-  if (raw.includes('orange')) return '升溫'
-  if (raw.includes('yellow')) return '中性偏高'
-  if (raw.includes('green')) return '低檔'
-  if (score == null) return '待接資料'
-  if (score >= 70) return '高風險'
-  if (score >= 46) return '中高風險'
-  if (score >= 28) return '表現中性'
-  return '低風險'
-}
-
-function clampScore(value: number) {
-  return Math.max(0, Math.min(100, Math.round(value)))
-}
-
-function volatilityStressScore(usVix: number | null, twVol20: number | null) {
-  const scores: number[] = []
-
-  if (usVix != null) {
-    scores.push(usVix >= 35 ? 85 : usVix >= 25 ? 65 : usVix >= 20 ? 52 : usVix <= 16 ? 25 : 40)
-  }
-
-  if (twVol20 != null) {
-    scores.push(twVol20 >= 40 ? 80 : twVol20 >= 25 ? 60 : twVol20 >= 18 ? 45 : 30)
-  }
-
-  if (!scores.length) return null
-  return scores.reduce((sum, value) => sum + value, 0) / scores.length
-}
-
-function deriveHedgeSentimentScore(risk: any) {
-  const hedgeSource = risk?.hedgeSentiment?.source ?? '專屬避險分數'
-  if (risk?.hedgeSentiment) {
-    const explicitHedgeScore = asNumber(risk.hedgeSentiment.score)
-    if (explicitHedgeScore != null) return { score: clampScore(explicitHedgeScore), source: hedgeSource }
-  }
-  const hedgeFactors = asArray<RiskFactor>(risk?.hedgeSentimentFactors)
-  const hedgeRaw = (id: string) => asNumber(hedgeFactors.find((factor) => String(factor.id ?? '') === id)?.raw_value)
-  const explicit = asNumber(risk?.hedgeScore ?? risk?.hedgeRiskValue)
-  const riskScore = asNumber(risk?.riskScore ?? risk?.risk_score)
-  const usVix = asNumber(risk?.vix ?? risk?.usVix ?? hedgeRaw('us_vix'))
-  const twVol20 = asNumber(risk?.twiiVol20 ?? risk?.realizedVol20 ?? hedgeRaw('twii_vol20'))
-  const volScore = volatilityStressScore(usVix, twVol20)
-
-  if (explicit != null) return { score: clampScore(explicit), source: hedgeSource }
-  if (riskScore != null && volScore != null) return { score: clampScore(riskScore * 0.75 + volScore * 0.25), source: '市場風險 + 波動 overlay' }
-  if (riskScore != null) return { score: clampScore(riskScore), source: '市場風險 fallback' }
-  if (volScore != null) return { score: clampScore(volScore), source: 'VIX / 台股波動 fallback' }
-  return { score: null, source: '待接資料' }
 }
 
 function Sparkline({ values, tone }: { values: number[]; tone: Tone }) {
@@ -382,7 +341,9 @@ function Sparkline({ values, tone }: { values: number[]; tone: Tone }) {
   )
 }
 
-function IndexTileCard({ tile }: { tile: IndexTile }) {
+function IndexTileCard({ tile, panelDate }: { tile: IndexTile; panelDate: string | null }) {
+  // The night session always trades ahead of the day-session panel date, so it is not compared.
+  const dateDiffers = tile.label !== '台指期貨夜盤' && tile.date != null && panelDate != null && tile.date !== panelDate
   return (
     <div className={cx(
       'relative min-h-[122px] overflow-hidden border-white/[0.045] px-5 py-4 md:border-r',
@@ -407,7 +368,12 @@ function IndexTileCard({ tile }: { tile: IndexTile }) {
           </span>
         )}
       </div>
-      <p className="mt-3 truncate text-[11px] text-slate-500" title={tile.source}>
+      {tile.date && (
+        <p className={cx('mt-3 text-[11px] tabular-nums', dateDiffers ? 'font-semibold text-amber-200' : 'text-slate-400')}>
+          資料日 {shortDate(tile.date)}{dateDiffers ? '（與上方日期不同）' : ''}
+        </p>
+      )}
+      <p className={cx('truncate text-[11px] text-slate-500', tile.date ? 'mt-1' : 'mt-3')} title={tile.source}>
         {tile.status === 'missing' ? 'source missing' : tile.status === 'finlab_not_materialized' ? 'FinLab 尚未 materialize' : tile.source}
       </p>
     </div>
@@ -713,7 +679,7 @@ function HedgeFactor({ label, value, note, tone = 'slate' }: { label: string; va
 }
 
 function HedgeSentimentCard({ risk }: { risk: any }) {
-  const sentiment = deriveHedgeSentimentScore(risk)
+  const sentiment = hedgeSentimentView(risk)
   const normalized = sentiment.score
   const hedgeFactors = asArray<RiskFactor>(risk?.hedgeSentimentFactors)
   const byHedgeId = (id: string) => hedgeFactors.find((factor) => String(factor.id ?? '') === id) ?? null
@@ -727,7 +693,7 @@ function HedgeSentimentCard({ risk }: { risk: any }) {
   const fxChange = asNumber(risk?.usdTwdChangePct ?? risk?.fxChangePct)
   const usVix = asNumber(usVixFactor?.raw_value ?? risk?.vix ?? risk?.usVix)
   const twVol20 = asNumber(twVolFactor?.raw_value ?? risk?.twiiVol20 ?? risk?.realizedVol20)
-  const hedgeLabel = risk?.hedgeSentiment?.label ?? riskLevelLabel(normalized, null)
+  const hedgeLabel = sentiment.label
   const hedgeMarker = normalized == null ? 0 : Math.max(0, Math.min(100, normalized))
 
   return (
@@ -995,6 +961,8 @@ function MarketOverviewBlock() {
     indices?.txfDay ? toIndexTile(indices.txfDay, '台指期貨', indices.txfDay.source ?? 'FinLab futures_price') : pendingIndexTile('台指期貨', 'FinLab futures_price'),
     indices?.txfNight ? toIndexTile(indices.txfNight, '台指期貨夜盤', indices.txfNight.source ?? 'TAIFEX MIS') : pendingIndexTile('台指期貨夜盤', 'TAIFEX MIS'),
   ], [indices])
+  // Only the risk packet's business date is a trading date; updatedAt is a UTC cache timestamp.
+  const panelDate = isoDate(risk?.date)
 
   return (
     <section className="space-y-4" aria-label="市場概況與風險">
@@ -1006,7 +974,7 @@ function MarketOverviewBlock() {
         />
         <div className="border-t border-white/[0.055] bg-white/[0.045]">
           <div className="grid bg-[#101116] md:grid-cols-2 xl:grid-cols-4">
-            {indexTiles.map((tile) => <IndexTileCard key={tile.label} tile={tile} />)}
+            {indexTiles.map((tile) => <IndexTileCard key={tile.label} tile={tile} panelDate={panelDate} />)}
           </div>
           <div className="border-t border-white/[0.055] bg-[#101116] p-4">
             <MarketStatsRibbonClean risk={risk} />

@@ -19,7 +19,7 @@ import {
   LegacyEvidenceResolveError,
 } from '../lib/legacyEvidenceResolver'
 import { resolveScreenerEvidence } from '../lib/screenerEvidenceResolver'
-import { isTransientD1Reset } from '../lib/d1TransientRetry'
+import { isTransientD1Reset, withD1ReadRetry } from '../lib/d1TransientRetry'
 import {
   acceptPipelineExecutionCallback,
   isPipelineStageCanonicalState,
@@ -395,21 +395,43 @@ adminControlRoutes.post('/api/internal/evidence-artifacts/retention/read', async
   if (!input || Object.keys(input).join(',') !== 'artifact_id'
     || typeof input.artifact_id !== 'string' || input.artifact_id.length > 400)
     return c.json({ error: 'retention_artifact_identity_invalid' }, 400)
-  const row = await databaseForDataDomain(c.env, 'ops').prepare(`
-    SELECT artifact_id, r2_key, checksum, byte_size FROM run_artifacts
-     WHERE artifact_id=? AND schema_version='d1-retention-hot-window-drain-v1'
-       AND retention_class='ten_year_cold_archive' AND status='ready'
-       AND checksum_verified_at IS NOT NULL AND payload_deleted_at IS NULL
-    LIMIT 1`).bind(input.artifact_id).first<{
-      artifact_id: string; r2_key: string; checksum: string; byte_size: number
-    }>()
+  // A D1 or R2 failure here is the reader's to retry: answer 503 with the failing stage instead of
+  // letting it escape to the default 500 handler.
+  const transient = (stage: 'ops_manifest' | 'r2_get' | 'r2_body', error: unknown) => {
+    console.error(`[retention/read] stage=${stage} artifact_id=${input.artifact_id} error=${String(error)}`)
+    return c.json({ error: 'retention_artifact_read_transient', stage }, 503)
+  }
+  const opsDb = databaseForDataDomain(c.env, 'ops')
+  let row: { artifact_id: string; r2_key: string; checksum: string; byte_size: number } | null
+  try {
+    row = await withD1ReadRetry('retention_artifact_manifest', 'run_artifacts', () => opsDb.prepare(`
+      SELECT artifact_id, r2_key, checksum, byte_size FROM run_artifacts
+       WHERE artifact_id=? AND schema_version='d1-retention-hot-window-drain-v1'
+         AND retention_class='ten_year_cold_archive' AND status='ready'
+         AND checksum_verified_at IS NOT NULL AND payload_deleted_at IS NULL
+      LIMIT 1`).bind(input.artifact_id).first<{
+        artifact_id: string; r2_key: string; checksum: string; byte_size: number
+      }>())
+  } catch (error) {
+    return transient('ops_manifest', error)
+  }
   if (!row) return c.json({ error: 'retention_artifact_manifest_missing' }, 404)
   if (!Number.isSafeInteger(row.byte_size) || row.byte_size < 1 || row.byte_size > 8 * 1024 * 1024)
     return c.json({ error: 'retention_artifact_requires_bounded_chunk' }, 413)
-  const object = await c.env.ARTIFACTS?.get(row.r2_key)
+  let object: { size: number; text(): Promise<string> } | null | undefined
+  try {
+    object = await c.env.ARTIFACTS?.get(row.r2_key)
+  } catch (error) {
+    return transient('r2_get', error)
+  }
   if (!object) return c.json({ error: 'retention_artifact_object_missing' }, 404)
   if (object.size !== row.byte_size) return c.json({ error: 'retention_artifact_size_mismatch' }, 409)
-  const text = await object.text()
+  let text: string
+  try {
+    text = await object.text()
+  } catch (error) {
+    return transient('r2_body', error)
+  }
   const { sha256Text } = await import('../lib/datasetSnapshots')
   if (await sha256Text(text) !== row.checksum)
     return c.json({ error: 'retention_artifact_checksum_mismatch' }, 409)

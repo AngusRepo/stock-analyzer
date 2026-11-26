@@ -8,6 +8,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import threading
 from pathlib import Path
 
 SCHEMA = "d1-retention-hot-window-drain-v1"
@@ -105,18 +106,115 @@ def restore_archives(archives, output: Path) -> dict:
         db.close()
 
 
-def download_archive(manifest: dict, *, post=None, require_restore_schema: bool = True) -> bytes:
-    """Fetch through the existing service-authenticated Worker, then verify locally."""
+# Retry waits after a 429, a 5xx or a transport error; any other status fails at once.
+DOWNLOAD_RETRY_DELAYS_SECONDS = (2.0, 4.0, 8.0)
+DOWNLOAD_ATTEMPT_TIMEOUT_SECONDS = 60.0
+# Archives download one after another inside the dataset-snapshot job (3600 s task timeout).
+# Its after-close run is research + quiet wait until at most 14:50 TW (~30 min from the 14:20
+# dispatch) + export (~13 min), leaving ~17 min. A kill at the task timeout skips the job's error
+# callback, so retries across the whole job may spend about 300 s (sleeps plus retried attempts,
+# each reserved at its 60 s timeout before it starts): about a third of that slack, and more than
+# one archive's worst case (2+4+8 s waits + 3 x 60 s attempts = 194 s). Once spent, a transient
+# failure raises at once, as before retries existed. The bound is approximate: httpx applies the
+# 60 s timeout to each phase (connect, write, read, pool), so a single attempt can run past 60 s.
+DOWNLOAD_RETRY_BUDGET_SECONDS = 300.0
+DOWNLOAD_RETRY_BUDGET_ENV = "RETENTION_ARCHIVE_RETRY_BUDGET_SECONDS"
+# Only a Cloud Run Job (CLOUD_RUN_JOB is set) is a bounded run whose retries share one budget.
+# The long-lived controller service gives each call its own ledger, so one bad hour never
+# disables retries until the instance restarts.
+_job_retry_ledger = {"seconds": 0.0}
+_retry_lock = threading.Lock()
+_warned_budget_values: set[str] = set()
+
+
+def _retry_budget_seconds() -> float:
+    import logging
+    import math
+    import os
+    raw = os.environ.get(DOWNLOAD_RETRY_BUDGET_ENV, "").strip()
+    if not raw:
+        return DOWNLOAD_RETRY_BUDGET_SECONDS
+    try:
+        value = float(raw)
+    except ValueError:
+        value = math.nan
+    if math.isfinite(value) and value >= 0:
+        return value
+    with _retry_lock:
+        first = raw not in _warned_budget_values
+        _warned_budget_values.add(raw)
+    if first:
+        logging.getLogger(__name__).warning("%s=%r is not a finite non-negative number; using %.0f s",
+                                            DOWNLOAD_RETRY_BUDGET_ENV, raw, DOWNLOAD_RETRY_BUDGET_SECONDS)
+    return DOWNLOAD_RETRY_BUDGET_SECONDS
+
+
+def _retry_ledger() -> dict:
+    import os
+    return _job_retry_ledger if os.environ.get("CLOUD_RUN_JOB") else {"seconds": 0.0}
+
+
+def _spend(ledger: dict, seconds: float) -> None:
+    with _retry_lock:
+        ledger["seconds"] += max(0.0, seconds)
+
+
+def download_archive(manifest: dict, *, post=None, require_restore_schema: bool = True,
+                     sleep=None, clock=None) -> bytes:
+    """Fetch through the existing service-authenticated Worker, then verify locally.
+
+    A transient Worker answer (429, 5xx) or transport error is retried after each
+    DOWNLOAD_RETRY_DELAYS_SECONDS wait while the retry budget (job-wide inside a Cloud Run Job,
+    per call elsewhere) still covers the wait and a full attempt; every 200 body is verified
+    before it is returned.
+    """
+    import logging
+    import time
     import httpx
     from services.worker_config_client import worker_auth_headers, worker_url
     sender = post or httpx.post
-    response = sender(worker_url() + "/api/internal/evidence-artifacts/retention/read",
-                      headers=worker_auth_headers(), json={"artifact_id": manifest["artifact_id"]}, timeout=60.)
-    if response.status_code != 200:
-        raise RuntimeError(f"retention_archive_read_http_{response.status_code}")
-    raw = response.content
-    verify_archive(raw, manifest, require_restore_schema=require_restore_schema)
-    return raw
+    wait = sleep or time.sleep
+    now = clock or time.monotonic
+    ledger = _retry_ledger()
+    attempts = len(DOWNLOAD_RETRY_DELAYS_SECONDS) + 1
+    for attempt in range(1, attempts + 1):
+        started = now()
+        try:
+            response = sender(worker_url() + "/api/internal/evidence-artifacts/retention/read",
+                              headers=worker_auth_headers(), json={"artifact_id": manifest["artifact_id"]},
+                              timeout=DOWNLOAD_ATTEMPT_TIMEOUT_SECONDS)
+        except httpx.TransportError as error:
+            failure = RuntimeError(f"retention_archive_read_transport_{type(error).__name__}")
+            failure.__cause__ = error
+        else:
+            if response.status_code == 200:
+                raw = response.content
+                verify_archive(raw, manifest, require_restore_schema=require_restore_schema)
+                return raw
+            failure = RuntimeError(f"retention_archive_read_http_{response.status_code}")
+            if response.status_code != 429 and response.status_code < 500:
+                raise failure
+        finally:
+            if attempt > 1:
+                _spend(ledger, now() - started)
+        if attempt == attempts:
+            raise failure
+        delay = DOWNLOAD_RETRY_DELAYS_SECONDS[attempt - 1]
+        budget = _retry_budget_seconds()
+        with _retry_lock:
+            spent = ledger["seconds"]
+        log = logging.getLogger(__name__)
+        if spent + delay + DOWNLOAD_ATTEMPT_TIMEOUT_SECONDS > budget:
+            log.warning("retention archive read retry budget spent artifact_id=%s attempt=%d/%d cause=%s "
+                        "spent_s=%.0f budget_s=%.0f", manifest["artifact_id"], attempt, attempts, failure,
+                        spent, budget)
+            raise failure
+        log.warning("retention archive read retry artifact_id=%s attempt=%d/%d cause=%s retry_s=%.0f",
+                    manifest["artifact_id"], attempt, attempts, failure, delay)
+        started = now()
+        wait(delay)
+        _spend(ledger, now() - started)
+    raise AssertionError("unreachable")
 
 
 def create_history_projection_table(db, payload, query_source):

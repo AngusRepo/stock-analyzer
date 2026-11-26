@@ -13,9 +13,10 @@ import { evidenceClocksReport } from './evidenceClocks'
 import { ReadLedger, type ExecutedQuery } from './readOnlyD1'
 import { kvCache } from './kvCache'
 import { modelRosterReport } from './modelRoster'
+import { modelServingReport, opbLedgerReport, policySealReport, servingGuardReport } from './modelOps'
 import { opbReport } from './opb'
 import { paperNavReport } from './paperNav'
-import { failureClassesReport, kvDriftReport } from './schedulerTickets'
+import { d1OverloadReport, failureClassesReport, kvDriftReport } from './schedulerTickets'
 import { isTradingDay } from './tradingDay'
 
 /** D11: state-type 30 s, timeline-type 300 s. */
@@ -99,8 +100,20 @@ const P4_SOURCES: Record<string, Route> = {
   },
   '/v1/kv-drift': { ttl: KV_DRIFT_TTL_S, params: [], page: '⑥ KV config drift', run: (env, nowMs) => kvDriftReport(env, nowMs) },
 }
-export const P4_ROUTES: Record<string, Route> = Object.fromEntries(Object.entries(P4_SOURCES).map(([path, route]) =>
+const withStamps = (sources: Record<string, Route>): Record<string, Route> => Object.fromEntries(Object.entries(sources).map(([path, route]) =>
   [path, { ...route, run: async (env, nowMs, query) => withIsoStampsDeep(await route.run(env, nowMs, query)) as Record<string, unknown> }]))
+export const P4_ROUTES: Record<string, Route> = withStamps(P4_SOURCES)
+
+/** v6 ④ and ① (11/26: 研究資料新鮮度 folded into the existing pages; modelOps.ts, monitoringV6Endpoints.test.ts).
+ * The seal and overload reads follow the day (300 s); the ledger, serving and guard rows change once a trading day. */
+const V6_SOURCES: Record<string, Route> = {
+  '/v1/policy/seal': { ttl: SLOW_TTL_S, params: [], page: '④ 今日正式政策是否封存（盤前 cutoff 前）、14 天封存紀錄', run: (env, nowMs) => policySealReport(env, nowMs) },
+  '/v1/opb/ledger': { ttl: OPB_TTL_S, params: [], page: '④ OPB reward 帳本（arm replay）落後交易日數', run: (env, nowMs) => opbLedgerReport(env, nowMs) },
+  '/v1/models/serving': { ttl: OPB_TTL_S, params: [], page: '④ 模型服務狀態 14 日（每模型每交易日）', run: (env, nowMs) => modelServingReport(env, nowMs) },
+  '/v1/serving-guard': { ttl: OPB_TTL_S, params: [], page: '④ ① serving guard（T+5 連續惡化／恢復日數）', run: (env, nowMs) => servingGuardReport(env, nowMs) },
+  '/v1/d1/overloaded': { ttl: SLOW_TTL_S, params: [], page: '① D1 overloaded 次數（24h，scheduler tickets）', run: (env, nowMs) => d1OverloadReport(env, nowMs) },
+}
+export const V6_ROUTES: Record<string, Route> = withStamps(V6_SOURCES)
 
 export const ROUTES: Record<string, Route> = {
   '/v1/trading-day': {
@@ -131,6 +144,7 @@ export const ROUTES: Record<string, Route> = {
   '/v1/capacity': { ttl: SLOW_TTL_S, params: [], page: '⑥ 成本、用量 (DB capacity)', run: (env, nowMs) => capacityReport(env, nowMs) },
   '/v1/evidence-clocks': { ttl: SLOW_TTL_S, params: [], page: '⑤ 模型、決策與 Paper (evidence clocks)', run: (env, nowMs) => evidenceClocksReport(env, nowMs) },
   ...P4_ROUTES,
+  ...V6_ROUTES,
 }
 
 export type MonitoringDeps = {

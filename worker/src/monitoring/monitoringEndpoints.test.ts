@@ -10,7 +10,7 @@ import { chainStageIds } from './judgment/chainPhases'
 import { STAGES as STAGES_DAG } from './judgment/executionChainDag'
 import { FINLAB_STAGE_CARDS } from './judgment/finlabStageCards'
 import { PIPELINE_STAGE_CARDS } from './judgment/pipelineStageCards'
-import { createMonitoringHandler, P4_ROUTES, ROUTES, SLOW_TTL_S, TIMELINE_TTL_S } from './index'
+import { createMonitoringHandler, P4_ROUTES, ROUTES, SLOW_TTL_S, TIMELINE_TTL_S, V6_ROUTES } from './index'
 import { kvCache } from './kvCache'
 import { day, finishedProgress, insertRows, midRunProgress, seedStageProgress, startFixture, tableScans, tempSorts, weekdays, type Fixture } from './monitoringFixture.testSupport'
 import type { ExecutedQuery } from './readOnlyD1'
@@ -1105,8 +1105,8 @@ test('every query the endpoints ran is read-only and EXPLAINs without a table SC
     // A temp B-tree bills every sorted row twice; the one left is the RFS latest-observed_at tie-break (a handful of rows).
     if (!/FROM rfs_sparse_comparisons_v1/.test(query.sql)) assert.deepEqual(sorts, [], `temp sort: ${query.sql.replace(/\s+/g, ' ').slice(0, 160)}`)
   }
-  // Every route was exercised (the p4 routes in monitoringP4Endpoints.test.ts).
-  for (const path of Object.keys(ROUTES).filter((path) => !(path in P4_ROUTES))) assert.ok(path === '/v1/trading-day' || measured[path] != null || measured[`${path}?days=14`] != null
+  // Every route was exercised (the p4 routes in monitoringP4Endpoints.test.ts, the v6 routes in monitoringV6Endpoints.test.ts).
+  for (const path of Object.keys(ROUTES).filter((path) => !(path in P4_ROUTES) && !(path in V6_ROUTES))) assert.ok(path === '/v1/trading-day' || measured[path] != null || measured[`${path}?days=14`] != null
     || Object.keys(measured).some((key) => key.startsWith(path)), path)
   console.log('monitoring rows_read', JSON.stringify(measured))
 })

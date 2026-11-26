@@ -55,8 +55,10 @@ const gate = (row: GateRow | undefined) => ({
 
 const DOWS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat']
 
-/** Next run of a "first <weekday> of month HH:MM" job after nowMs, in the job's Asia/Taipei time. Same phrase as
- * schedulerPolicy.parseFirstWeekdayOfMonth, which is not exported. */
+/** Next run of a "first <weekday> of month HH:MM" job after nowMs, in the job's Asia/Taipei time, as a millisecond `Z`
+ * stamp (toISOString): the one shape Grafana's JSONata $toMillis reads as that instant (an offset stamp without seconds
+ * throws D3110; any other shape reads as the date's UTC midnight). Same phrase as schedulerPolicy.parseFirstWeekdayOfMonth,
+ * which is not exported. */
 export function nextFirstWeekdayRun(schedule: string, timeZone: string | undefined, nowMs: number): string | null {
   const match = /^first\s+([a-z]{3})[a-z]*\s+of\s+month\s+(\d{1,2}):(\d{2})$/i.exec(schedule.trim())
   const dow = match ? DOWS.indexOf(match[1].toLowerCase()) : -1
@@ -66,7 +68,7 @@ export function nextFirstWeekdayRun(schedule: string, timeZone: string | undefin
   for (let month = 0; month < 3; month++) {
     const first = new Date(Date.UTC(local.getUTCFullYear(), local.getUTCMonth() + month, 1, Number(match[2]), Number(match[3])))
     first.setUTCDate(1 + (dow - first.getUTCDay() + 7) % 7)
-    if (first.getTime() - offsetMs > nowMs) return `${first.toISOString().slice(0, 16)}${offsetMs ? '+08:00' : 'Z'}`
+    if (first.getTime() - offsetMs > nowMs) return new Date(first.getTime() - offsetMs).toISOString()
   }
   return null
 }

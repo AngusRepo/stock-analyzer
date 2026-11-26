@@ -6,13 +6,14 @@
  *   node build.mjs --mode preview --out <dir>  → <dir>/<uid>-v4.json (the four desktop pages for the preview folder)
  *   node build.mjs --mode preview5 --out <dir> → <dir>/<uid>-v5.json (the v5 redesign, dashboard_rethink_v5.md)
  *   node build.mjs --mode preview5live --out <dir> → <dir>/<uid>-v5live.json (v5 ② ④ over the live monitoring Worker)
+ *   node build.mjs --mode preview6live --out <dir> → <dir>/<uid>-v6live.json (v6 ① ② ④; routes not deployed yet over mock.mjs)
  * Fixtures and dag.json come from dump-fixtures.mts and export-dag.mts. A panel reading a Worker route this checkout
  * does not serve (or a source not wired yet) is planned: the fixture build draws it over mock.mjs, the live build leaves it out. */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { chainCanvas, CHAIN_PIVOT, DOTS_PIVOT, laneCanvas, laneSlots, readinessCanvas, readinessPivot, SHORT_LABELS, slowPivot } from './canvas.mjs'
-import { BIGQUERY_DS, C, COOL, GCP_DS, KPI_KEY, N, NO_SOURCE, READINESS_VOCAB, S, STATUS_LABELS_JSONATA, T, dashboard, donut, gauges, gp, grid, heatmap, kpi, lcd,
+import { WATCHERS, chainCanvas, CHAIN_PIVOT, DOTS_PIVOT, laneCanvas, laneSlots, readinessCanvas, readinessPivot, SHORT_LABELS, slowPivot } from './canvas.mjs'
+import { ALERT_KIND, BIGQUERY_DS, C, COOL, TONE, GCP_DS, KPI_KEY, N, NO_SOURCE, READINESS_VOCAB, S, STATUS_LABELS_JSONATA, T, dashboard, donut, gauges, gp, grid, heatmap, kpi, lcd,
   querySource, spark, stackedBars, states, statusMappings, table, th } from './lib.mjs'
 import { mockResponses } from './mock.mjs'
 
@@ -146,7 +147,7 @@ function today(q) {
       sizing: 'auto', minVizWidth: 60, minVizHeight: 60, text: { titleSize: 12, valueSize: 20 } },
     fieldConfig: { defaults: { min: 0, decimals: 0, noValue: NO_SOURCE, color: { mode: 'thresholds' }, thresholds: th([C.run, null]) }, overrides: [] } }
   const strip = kpi('這一輪', [
-    q(ALERTS, { root: `{ 'k': 1, 'bad': counts.failed + counts.stuck + counts.missed, 'overdue': counts.overdue }`,
+    q(ALERTS, { root: `{ 'k': 1, 'bad': counts.failed + counts.stuck + counts.missed, 'overdue': counts.overdue + ($exists(counts.blocked) ? counts.blocked : 0) }`,
       columns: [KPI_KEY, N('bad', '失敗'), N('overdue', '逾時')], refId: 'A' }),
     state(`($now := $toMillis(generated_at); { 'k': 1, 'risk': $count(rows[active = true and display_status = 'at_risk']),
       'at': $max(rows[active = true and updated_at != null].$toMillis(updated_at)),
@@ -155,14 +156,14 @@ function today(q) {
     q(READINESS, { root: `($all := $append(rows, checks[id != 'market_dashboard_materialization']); $ok := $count($all[status in ['ready', 'ok']]);
       { 'k': 1, 'ready': ($ok = $count($all) ? 'ok|' : 'warn|') & $string($ok) & '／' & $string($count($all)) })`, columns: [KPI_KEY, S('ready', '資料就緒')], refId: 'C' }),
   ], 4, 0, 20, 4, [
-    { name: '失敗', th: th([C.txt, null], [C.bad, 1]) }, { name: '逾時／趕不上', th: th([C.txt, null], [C.warn, 1]) },
+    { name: '失敗', th: th([C.txt, null], [C.bad, 1]) }, { name: '逾時／趕不上／被擋住', th: th([C.txt, null], [C.warn, 1]) },
     { name: '最新寫入', unit: 'dateTimeFromNow' }, { name: '資料就緒', mappings: FLAG_MAPPINGS }, { name: '下一個截止', unit: 'm', th: th([C.warn, null], [C.txt, 15]) },
   ])
-  strip.description = '失敗＝四條鏈的失敗＋卡住＋漏跑；逾時／趕不上＝四條鏈逾時＋每日鏈預估會超過截止的站；最新寫入＝每日鏈最後一次狀態回報；'
+  strip.description = '失敗＝四條鏈的失敗＋卡住＋漏跑；逾時／趕不上／被擋住＝四條鏈逾時＋每日鏈預估會超過截止的站＋盤中監控過了 09:10 仍被擋住（被擋住不是逾時，在要處理清單裡分開列）；最新寫入＝每日鏈最後一次狀態回報；'
     + '資料就緒＝正常的資料集／全部；下一個截止＝還沒完成的必要階段裡，最近一個截止還有多久。'
-  strip.transformations.push(calc({ mode: 'binary', binary: { left: '逾時', operator: '+', right: '趕不上' }, alias: '逾時／趕不上' }),
+  strip.transformations.push(calc({ mode: 'binary', binary: { left: '逾時', operator: '+', right: '趕不上' }, alias: '逾時／趕不上／被擋住' }),
     { id: 'organize', options: { excludeByName: { 逾時: true, 趕不上: true }, renameByName: {},
-      indexByName: Object.fromEntries(['失敗', '逾時／趕不上', '最新寫入', '資料就緒', '下一個截止'].map((name, i) => [name, i])) } })
+      indexByName: Object.fromEntries(['失敗', '逾時／趕不上／被擋住', '最新寫入', '資料就緒', '下一個截止'].map((name, i) => [name, i])) } })
   const items = `$sort($append(
     rows.{ 'rank': $lookup(${READINESS_RANK}, status), 'name': label, 'status': status, 'short': latestDate ? $replace($substring(latestDate, 5), '-', '/') : '—',
       'detail': value & '｜' & detail, 'source': '來源：' & source },
@@ -174,14 +175,14 @@ function today(q) {
     progress,
     strip,
     chainPanel(state, q),
-    table('要處理', q(ALERTS, { root: `(${HM}; rows.{ 'chain': $lookup(${CHAIN_NAMES}, ${ROW_CHAIN}), 'stage': $lookup(${NAMES}, stage_id), 'kind': kind,
+    table('要處理', q(ALERTS, { root: `(${HM}; rows.{ 'chain': $lookup(${CHAIN_NAMES}, ${ROW_CHAIN}), 'stage': $lookup(${NAMES}, stage_id), 'kind': ${ALERT_KIND()},
         'minutes': minutes, 'times': failures_14d, 'error': error ? error : summary ? summary : '沒有錯誤訊息',
         'when': $join(['業務日 ' & business_date, since ? '開始 ' & $hm(since), expected_by ? '截止 ' & $hm(expected_by), attempt ? '第 ' & $string(attempt) & ' 次',
           run_id ? 'run ' & run_id], '｜') })`,
       columns: [S('chain', '鏈'), S('stage', '階段'), S('kind', '狀況'), N('minutes', '持續'), N('times', '次數'), S('error', '錯誤'), S('when', '時間')] }),
       0, 20, 7, 6, { status: ['狀況'], num: { 次數: [[C.txt, null], [C.bad, 2]] }, unit: { 持續: 'm' }, wd: { 鏈: 52, 狀況: 64, 持續: 64, 次數: 52 },
         hidden: ['錯誤', '時間'], details: { 階段: ['錯誤', '時間'] }, empty: '沒有',
-        desc: '四條鏈裡失敗、逾時、卡住、漏跑的站；全部正常時只顯示「沒有」。持續＝這個狀況已經多久；次數＝近 14 天第幾次失敗。點階段名稱看錯誤與起訖、截止、嘗試次數。' }),
+        desc: '四條鏈裡失敗、逾時、卡住、漏跑的站，和過了 09:10 仍被擋住的盤中監控；全部正常時只顯示「沒有」。持續＝這個狀況已經多久；次數＝近 14 天第幾次失敗。點階段名稱看錯誤與起訖、截止、嘗試次數。' }),
     readinessCanvas('資料就緒', q(READINESS, { root: readinessPivot(items) }), READINESS_SLOTS, 7, 20, 17, 6, { cols: Math.ceil(READINESS_SLOTS / 2),
       desc: '每個資料集一格，有問題的排前面。格子下方＝狀態與最新資料日（或落後天數），顏色：正常＝綠、遲到＝琥珀、缺漏＝紅、未到＝灰；遲到與缺漏的格子另加同色外框。'
         + '滑鼠停在格子上看說明與來源。' }),
@@ -200,9 +201,14 @@ function chainPanel(state, q) {
   return panel
 }
 const HISTORIES = Object.entries(JSON.parse(CHAIN_NAMES)).map(([id, name]) => [id === 'daily_readiness' ? HISTORY : `${HISTORY}&chain=${id}`, name])
-/** History results are the raw ChainStatus: blocked (the chain aborted there) counts as a failure. */
-const FAILED = `result in ['error', 'blocked']`
-const FINISHED = `result in ['success', 'retry_success', 'error', 'blocked']`
+/** A history row of a watcher (intraday-check): the row's own `watcher`, else the stage id (Workers that do not send it). */
+const WATCHER_ROW = `($type(watcher) = 'boolean' ? watcher : stage_id in ${WATCHERS})`
+/** History results are the raw ChainStatus: blocked (the chain aborted there) counts as a failure. A watcher's blocked is
+ * the amber 被擋住 (Wei 11/26): neither a failure nor a finished run, so it leaves the success rate alone. */
+const FAILED = `(result = 'error' or (result = 'blocked' and $not(${WATCHER_ROW})))`
+const FINISHED = `(result in ['success', 'retry_success', 'error'] or (result = 'blocked' and $not(${WATCHER_ROW})))`
+/** A history row's result as a STATUS key. */
+const RESULT = `(result = 'blocked' and ${WATCHER_ROW} ? 'watcher_blocked' : result)`
 /** One row per business date of a history response: time (Taiwan midnight) and `value` over that date's rows `$r`. */
 const perDate = (value) => `$sort($distinct(rows.business_date)).($d := $; $r := $$.rows[business_date = $d]; { 'time': $r[0].time, 'v': ${value} })`
 /** Only a final failure is red and in progress blue (statuses); two classes take categorical slots, and the two smallest
@@ -237,7 +243,7 @@ function health(q) {
       fieldConfig: { defaults: { unit: 'm', decimals: 0, min: 0, noValue: NO_SOURCE, color: { mode: 'fixed', fixedColor: COOL.cat[0] },
         custom: { drawStyle: 'bars', barAlignment: 0, fillOpacity: 70, lineWidth: 0, axisPlacement: 'right' } }, overrides: [] } },
     states('status-history', '每日鏈近 14 天', q(HISTORY, {
-      root: `${byChainOrder('rows', 'time')}.{ 'time': time, 'stage': ($n := $lookup(${PHASED_NAMES}, stage_id); $n ? $n : label), 'result': result }`,
+      root: `${byChainOrder('rows', 'time')}.{ 'time': time, 'stage': ($n := $lookup(${PHASED_NAMES}, stage_id); $n ? $n : label), 'result': ${RESULT} }`,
       columns: [T('time', 'time'), S('stage', 'stage'), S('result', 'result')] }), 'stage', 0, 8, 16, 14,
     { opts: { colWidth: 0.92 }, desc: '一格＝一站一個業務日的最終結果；列順序＝今天頁的流程鏈（①–④＝phase）。' }),
     // One query per chain, rows stacked: daily and intraday cover 14 days, weekly its last 5 periods, monthly 3.
@@ -258,7 +264,7 @@ function health(q) {
     lanePanel('盤中守門與收盤帳務', 'intraday_guard', 0, 28, 11, 8, q),
     // One row per intraday stage (8): h 8 gives each row room for its name.
     states('status-history', '盤中鏈近 14 天', q(intraday[0], {
-      root: `$sort(rows, function($a, $b) { $a.position > $b.position or ($a.position = $b.position and $a.time > $b.time) }).{ 'time': time, 'stage': label, 'result': result }`,
+      root: `$sort(rows, function($a, $b) { $a.position > $b.position or ($a.position = $b.position and $a.time > $b.time) }).{ 'time': time, 'stage': label, 'result': ${RESULT} }`,
       columns: [T('time', 'time'), S('stage', 'stage'), S('result', 'result')] }), 'stage', 11, 28, 13, 8, { opts: { colWidth: 0.92 },
       desc: '一格＝一站一個業務日的最終結果。' }),
   ]
@@ -510,7 +516,7 @@ function mobile(q) {
   return [
     verdict(q, 0, 0, 24, 3),
     table('要處理', q(ALERTS, {
-      root: `rows.{ 'level': severity, 'item': $lookup(${CHAIN_NAMES}, ${ROW_CHAIN}) & '｜' & $lookup(${NAMES}, stage_id) & '｜' & $lookup(${STATUS_LABELS_JSONATA}, kind), 'due': expected_by }`,
+      root: `rows.{ 'level': severity, 'item': $lookup(${CHAIN_NAMES}, ${ROW_CHAIN}) & '｜' & $lookup(${NAMES}, stage_id) & '｜' & $lookup(${STATUS_LABELS_JSONATA}, ${ALERT_KIND()}), 'due': expected_by }`,
       columns: [S('level', '級別'), S('item', '事項'), T('due', '期限')] }), 0, 3, 24, 6,
       { status: ['級別'], unit: { 期限: CLOCK }, wd: { 級別: 76, 期限: 100 }, empty: '沒有需要處理的事項' }),
     marginTable(q, '未完成的必要階段（離截止還剩多久）', 0, 9, 24, 8, { hide: ['截止'] }),
@@ -578,7 +584,7 @@ function health5(q) {
     // Infinity serves an empty match as a frame without fields, which the state timeline reports as "Data does not have a
     // time field" instead of its noValue; a quiet window is one 正常 row over the whole window.
     root: `($bad := $distinct(rows[result in ['error', 'blocked', 'retry_success']].stage_id); $bad ? ${order('rows[stage_id in $bad]')}.{ 'time': time,
-      'stage': '${name}｜' & label, 'result': result } : { 'time': ${DAY_TIME('from')}, 'stage': '${name}｜14 天內沒有站出狀況', 'result': 'ok' })` })
+      'stage': '${name}｜' & label, 'result': ${RESULT} } : { 'time': ${DAY_TIME('from')}, 'stage': '${name}｜14 天內沒有站出狀況', 'result': 'ok' })` })
   // A count of past failures is not an alert by itself (they are listed below); amber only from about one a business day.
   Object.assign(v4[2][0].fieldConfig.defaults, { thresholds: th([C.txt, null], [C.warn, 10]) })
   v4[2][0].description = '近 14 個業務日失敗或中止的站次合計（10 次以上標琥珀）；折線＝每天幾站。'
@@ -740,6 +746,189 @@ function model5(q) {
         + 'RFS allocator 的證據日數、被擋的收據與滿 20 日的日數要等 rfs_sparse_comparisons_v1(policy_identity) 加上 D1 索引後 Worker 才提供（目前固定回 0／null），所以這一格先停在 0。' }),
   ]
 }
+/* ---- v6 preview (11/26 Wei: 今天頁朝圖表多樣性與配色): each panel the chart its question asks for; a normal state is a
+ * muted teal instead of no colour, anomalies keep the saturated amber / red. ---- */
+
+/** Muted teal for a normal value or a finished stage: visible, but quieter than amber and red (white text 6.3:1). */
+const CALM_OK = '#1d6b73'
+/** A background stat's "nothing to show" value: −1 from the selector, drawn as words in a stated colour. A null would
+ * take the lowest threshold step and read as normal (or amber) when there is no data. */
+const NONE = -1
+const noneMapping = (text, color) => [{ type: 'value', options: { [NONE]: { text, color, index: 0 } } }]
+const orNone = (expr) => `($v := ${expr}; $type($v) = 'number' ? $v : ${NONE})`
+const DONE_DARK = '#173d42'
+/** Chain states on the v6 timeline: waiting grey, running blue, failed red; done is a dark teal, because a state lasts
+ * until the next transition and a finished stage's band runs on to now: the running (blue) stretch is the duration. */
+const TIMELINE_MAPPINGS = [{ type: 'value', options: Object.fromEntries(Object.entries({
+  pending: ['未開始', C.dim], waiting: ['等待中', C.idle], running: ['執行中', C.run], success: ['完成', DONE_DARK], retry_success: ['重試後完成', DONE_DARK],
+  skipped: ['略過', C.skip], error: ['失敗', C.bad], blocked: ['中止', C.bad] }).map(([key, [text, color]], index) => [key, { text, color, index }])) }]
+/** Minutes a history row took: to completed_at, or to the response's generated_at while it still runs. */
+const DURATION = `$mins := function($r, $now) { (($r.completed_at ? $toMillis($r.completed_at) : $now) - $toMillis($r.started_at)) / ${MIN_MS} }`
+const MEDIAN = `$median := function($v) { ($s := $sort($v); $c := $count($s); $c = 0 ? null : $c % 2 = 1 ? $s[$floor($c / 2)] : ($s[$c / 2 - 1] + $s[$c / 2]) / 2) }`
+/** A stage's usual duration: the median of its successful runs on other business dates in the 14-day history (at least 3),
+ * else 0 (Infinity's JSONata cannot compare null, so `$u >= 1` must see a number). */
+const USUAL = `$usual := function($id, $day) { ($v := $all[stage_id = $id and business_date != $day and status = 'success' and started_at and completed_at].$mins($, 0);
+  $count($v) >= 3 ? $median($v) : 0) }`
+/** Duration ÷ usual: the usual band (0.8–1.2×) is CALM_OK, faster the deep blue, slower the grey blue, from 1.5× amber. Red is
+ * for failures only (Wei 11/26): a stage twice as slow as usual is still a warning. */
+const RATIO_TH = th([COOL.margin[2], null], [CALM_OK, 0.8], [COOL.margin[0], 1.2], [C.warn, 1.5])
+const RATIO_DESC = '耗時倍數＝這一站這天的耗時 ÷ 近 14 天其他業務日成功時的中位數耗時（至少 3 天樣本才算）。'
+  + '深藍＝比平常快（< 0.8×）、暗青＝平常（0.8–1.2×）、灰藍＝偏慢（1.2–1.5×）、琥珀＝慢一半以上（≥ 1.5×）。耗時不到 1 分鐘的站不列。'
+
+function today6(q) {
+  const [progress, , chain, todo, readiness] = today(q)
+  const stageName = `($n := $lookup(${SLACK_NAMES}, stage_id); $n ? $n : $lookup(${NAMES}, stage_id))`
+  // Tonight's duration ratio per stage: running stages count up to now, so a stage that is already slow shows before it ends.
+  const ratios = q(HISTORY, { root: `(${DURATION}; ${MEDIAN}; $all := rows; $day := business_date; $now := $toMillis(generated_at); ${USUAL};
+    $r := $all[business_date = $day and started_at and status in ['running', 'success', 'error']].($u := $usual(stage_id, $day); $m := $mins($, $now);
+      $u >= 1 ? { 'stage': ${stageName} & '｜' & $string($round($m)) & 'm', 'ratio': $round($m / $u, 2) });
+    $r ? $sort($r, function($a, $b) { $a.ratio < $b.ratio }) : [])`, columns: [S('stage', 'stage'), N('ratio', '倍數')] })
+  const slow = lcd('今晚各站耗時 ÷ 平常（最慢在上）', ratios, 'stage', '倍數', 15, 22, 9, 14, { unit: 'suffix:×', dec: 1, max: 3, th: RATIO_TH,
+    empty: '平常耗時要至少 3 個其他業務日的紀錄（流程鏈狀態表 11/25 起寫入）', desc: `${RATIO_DESC}執行中的站算到現在，所以還沒跑完就能看出變慢。名稱後＝今晚已用分鐘。` })
+  slow.options = { ...slow.options, displayMode: 'gradient', valueMode: 'color', showUnfilled: true, maxVizHeight: 18 }
+  const timeline = states('state-timeline', '最近兩晚各站時間軸', q('/v1/chain/timeline?days=2', { root: `${byChainOrder('rows', 'transition_at')}.{
+      'time': transition_at, 'stage': ${stageName}, 'status': to_status }`, columns: [T('time', 'time'), S('stage', 'stage'), S('status', 'status')] }),
+  'stage', 0, 22, 15, 14, { mappings: TIMELINE_MAPPINGS, legend: true, timeFrom: '36h', opts: { rowHeight: 0.8, mergeValues: true },
+    desc: '最近兩個業務日每一站的狀態變化（前一晚完整、今晚進行中），一列一站（順序同流程鏈）：藍＝執行中（藍色那段的長度＝耗時）、深青＝已完成（延續到下一次狀態變化）、紅＝失敗或中止、灰＝未開始。滑鼠停在色帶上看起訖。' })
+  // Background-coloured numbers: muted teal when nothing needs doing, amber / red when something does.
+  const bg = (panel) => Object.assign(panel, { options: { ...panel.options, colorMode: 'background', graphMode: 'none' } })
+  const tail = spark('L3 收尾（14 日）', q(HISTORY, { root: `rows[stage_id = 'pipeline' and status = 'success' and completed_at].{ 'time': time,
+    'tail': ${CLOCK_BASE} + $toMillis(completed_at) - $toMillis(time) }`, columns: [T('time', 'time'), N('tail', '完成時間')] }), 4, 0, 4, 4,
+  { unit: 'time:HH:mm', timeFrom: '14d', th: th([C.txt, null], [C.warn, CLOCK_BASE + (PIPELINE_DEADLINE - 15) * MIN_MS]),
+    desc: '最近一晚 L3 Pipeline 全部完成的時間（隔天早上）；折線＝近 14 天每晚，往上＝越跑越晚。截止前 15 分起轉琥珀（晚到不算失敗，所以不轉紅）。' })
+  const failed = spark('每晚失敗站次（14 日）', q(HISTORY, { root: perDate(`$count($r[${FAILED}])`), columns: [T('time', 'time'), N('v', '失敗站次')] }), 8, 0, 4, 4,
+    { timeFrom: '14d', th: th([C.txt, null], [C.warn, 1], [C.bad, 3]), desc: '這個業務日失敗或中止的站數；折線＝近 14 天每天。' })
+  const counts = bg(kpi('現在', [
+    // Red only when a failure is among them (failed, stuck, missed: the critical kinds); warnings alone are amber.
+    q(ALERTS, { root: `($b := counts.failed + counts.stuck + counts.missed; { 'k': 1,
+      'todo': ($b > 0 ? 'bad|' : counts.total > 0 ? 'warn|' : 'ok|') & $string(counts.total) })`, columns: [KPI_KEY, S('todo', '要處理')], refId: 'A' }),
+    q(READINESS, { root: `($all := $append(rows, checks[id != 'market_dashboard_materialization']); { 'k': 1,
+      'late': $count($all[status in ['waiting', 'warn', 'blocked', 'fail']]) })`, columns: [KPI_KEY, N('late', '資料遲到／缺漏')], refId: 'B' }),
+    // No pending deadline is NONE (−1), not null: a null value takes the base step (amber) on a background stat.
+    q(STATE, { root: `($now := $toMillis(generated_at); $m := $min(rows[active = true and optional = false and sub_stage != true and $not(completed_at)
+      and expected_by != null].(($toMillis(expected_by) - $now) / 60000)[$ >= 0]); { 'k': 1, 'next': $type($m) = 'number' ? $m : ${NONE} })`,
+    columns: [KPI_KEY, N('next', '下一個截止')], refId: 'C' }),
+  ], 12, 0, 8, 4, [{ name: '要處理', mappings: TONE6 }, { name: '資料遲到／缺漏', th: th([CALM_OK, null], [C.warn, 1]) },
+    { name: '下一個截止', unit: 'm', th: th([C.warn, null], [CALM_OK, 15]), mappings: noneMapping('今晚無待截止', CALM_OK) }]))
+  counts.description = '要處理＝四條鏈的失敗、逾時、卡住、漏跑，和過了 09:10 仍被擋住的盤中監控；其中有失敗、卡住或漏跑時紅底，只有逾時、被擋住時琥珀底；資料遲到／缺漏＝已過寫入期限還沒到的資料集；下一個截止＝還沒完成的必要階段裡最近的截止還剩幾分鐘（沒有待截止的階段＝今晚無待截止）。都正常時是青色底。'
+  Object.assign(progress, { gridPos: gp(0, 0, 4, 4) })
+  progress.fieldConfig.defaults.thresholds = th([C.run, null])
+  Object.assign(chain, { gridPos: gp(0, 4, 24, 18) })
+  Object.assign(todo, { gridPos: gp(0, 36, 8, 6) })
+  Object.assign(readiness, { gridPos: gp(8, 36, 16, 6) })
+  return [progress, ...tail, ...failed, counts, d1Overloaded(q, 20, 0, 4, 2), guardCell(q, 20, 2, 4, 2), chain, timeline, slow, todo, readiness]
+}
+
+/** v6 ②: the deadline-margin grid becomes duration ÷ usual (Wei 11/26: 餘裕看不出資訊), same rows and cells. */
+function health6(q) {
+  const panels = health5(q)
+  const at = panels.findIndex((panel) => panel.title?.startsWith('距截止的餘裕'))
+  const old = panels[at]
+  const ratio = grid('耗時倍數（必要階段 × 業務日，÷ 平常）', q(HISTORY, { root: `(${DURATION}; ${MEDIAN}; $all := rows; ${USUAL};
+    ${byChainOrder(SLACK_ROWS, 'time')}.($u := $usual(stage_id, business_date); $u >= 1 ? { 'time': time,
+      'stage': ($n := $lookup(${SLACK_NAMES}, stage_id); $n ? $n : label), 'ratio': $round($mins($, 0) / $u, 2) }))`,
+  columns: [T('time', 'time'), S('stage', 'stage'), N('ratio', '倍數')] }), old.gridPos.x, old.gridPos.y, old.gridPos.w, old.gridPos.h,
+  { unit: 'suffix:×', dec: 1, th: RATIO_TH, empty: '平常耗時要至少 3 個其他業務日的紀錄（流程鏈狀態表 11/25 起寫入）', desc: `一格＝一個必要階段一個業務日。${RATIO_DESC}同一列越往右越暖色＝這一站越跑越慢。只算成功完成的必要階段；失敗、略過、還沒完成的格子是空的。` })
+  ratio.transformations.push({ id: 'partitionByValues', options: { fields: ['stage'], keepFields: false, naming: { asLabels: true } } })
+  ratio.fieldConfig.defaults.displayName = '${__field.labels.stage}'
+  panels[at] = ratio
+  // Late is not a failure (Wei 11/26: red is for failures only): past the deadline amber, the 15 minutes before a light amber.
+  const tail = panels.find((panel) => panel.title === 'L3 Pipeline 收尾時間')
+  tail.fieldConfig.defaults.thresholds.steps = tail.fieldConfig.defaults.thresholds.steps.map((step) =>
+    ({ ...step, color: step.color === C.bad ? C.warn : step.color === C.warn ? TONE.warn.text : step.color }))
+  tail.description = tail.description.replace('紅區＝超過截止、琥珀＝截止前 15 分內。', '琥珀區＝超過截止、淡琥珀＝截止前 15 分內（晚到不算失敗，所以不用紅）。')
+  return panels
+}
+
+/* ---- v6 ④ and ① additions (11/26 Wei: 研究資料新鮮度 folded into ④ and ①, no new dashboard; worker/src/monitoring/modelOps.ts). ---- */
+const SEAL = '/v1/policy/seal'
+const LEDGER = '/v1/opb/ledger'
+const SERVING = '/v1/models/serving'
+const GUARD = '/v1/serving-guard'
+const D1_OVERLOADED = '/v1/d1/overloaded'
+/** Worker routes this checkout serves that prod does not yet: preview6live draws them over mock.mjs (示範資料).
+ * Remove a path once the monitoring Worker that serves it is deployed. */
+const NOT_DEPLOYED = new Set([SEAL, LEDGER, SERVING, GUARD, D1_OVERLOADED])
+/** '<tone>|<text>' cells: the tone picks the colour, the text is what the cell or tooltip shows. */
+const toneMappings = (pairs) => pairs.map(([key, color], index) => ({ type: 'regex', options: { pattern: `^${key}\\|(.*)$`, result: { text: '$1', color, index } } }))
+const TONE6 = toneMappings([['ok', CALM_OK], ['info', COOL.cat[1]], ['wait', C.idle], ['na', C.idle], ['warn', C.warn], ['bad', C.bad]])
+/** A field that is a quantity, not a judgment: the quiet steel blue, so a background stat never shows a white tile. */
+const NEUTRAL = th([COOL.calm, null])
+function bgKpi(title, targets, x, y, w, h, fields, desc, textMode = 'value_and_name') {
+  const panel = kpi(title, targets, x, y, w, h, fields)
+  panel.options = { ...panel.options, colorMode: 'background', graphMode: 'none', textMode }
+  panel.description = desc
+  return panel
+}
+/** The T+5 serving guard as one cell (expected_return_serving_forward_guard.py: 3 jointly inferior dates bypass, 3 passing recover). */
+const GUARD_CELL = `($s := summary.status; $s = 'not_applicable' ? 'na|未啟用' : $s = 'mismatch' ? 'bad|版本不符' : $s = 'bypass' ? 'bad|已旁路・恢復 ' & $string(summary.recovery_streak) & '／' & $string(thresholds.pass_streak_to_recover)
+  : $s = 'warning' ? 'warn|惡化 ' & $string(summary.degraded_streak) & '／' & $string(thresholds.degraded_streak_to_bypass) & ' 日' : 'ok|正常')`
+const GUARD_DESC = 'Fusion artifact 上線後的 T+5 前向檢查（expected_return_forward_guard_state）：連續 3 個預測日 IC 與價差都輸 L4 就旁路 residual，旁路後要連續 3 日通過才恢復（至少 5 個可評估日）。'
+  + '未啟用＝目前沒有 Fusion residual 在服務，不需要這道保護（灰）；正常＝青；惡化中＝琥珀；已旁路＝紅；'
+  + '版本不符＝guard 綁的 artifact／fingerprint 不是目前服務中的 Fusion（紅，日數不顯示）。'
+function guardCell(q, x, y, w, h) {
+  return bgKpi('serving guard（T+5）', [q(GUARD, { root: `{ 'g': ${GUARD_CELL} }`, columns: [S('g', 'guard')] })], x, y, w, h,
+    [{ name: 'guard', mappings: TONE6 }], GUARD_DESC, 'value')
+}
+function d1Overloaded(q, x, y, w, h) {
+  return bgKpi('D1 overloaded（24h）', [q(D1_OVERLOADED, { root: `{ 'n': summary.count }`, columns: [N('n', '次數')] })], x, y, w, h,
+    [{ name: '次數', th: th([CALM_OK, null], [C.warn, 1], [C.bad, 5]) }],
+    '近 24 小時以 D1 overloaded（或 Requests queued for too long）結束的排程 ticket 數（scheduler_execution_tickets_v1 的 last_error／last_summary，不另外寫 D1）。'
+    + '任務內部重試後成功的不算。0＝青、≥1 琥珀、≥5 紅。', 'value')
+}
+const GATE6 = [{ type: 'value', options: Object.fromEntries(Object.entries({ STRONG_PASS: ['強通過', CALM_OK], PASS: ['通過', CALM_OK], WEAK_PASS: ['弱通過', C.warn],
+  FAIL: ['未過', C.bad], PENDING: ['待定', C.idle] }).map(([key, [text, color]], index) => [key, { text, color, index }])) }]
+const REGISTRY_STATE6 = [{ type: 'value', options: Object.fromEntries(Object.entries({ production: ['上線', C.txt], approved: ['已核准', C.txt], archived: ['已封存', C.sub],
+  shadowing: ['影子中', C.txt], approval_required: ['待核准', C.warn], rejected: ['被拒', C.bad], offline_failed: ['離線未過', C.bad],
+  registration_failed: ['註冊失敗', C.bad] }).map(([key, [text, color]], index) => [key, { text, color, index }])) }]
+const IC_TIER6 = toneMappings([['ok', CALM_OK], ['warn', C.warn], ['bad', C.bad], ['none', C.idle]])
+
+/** ④ v6: model5 moved down one strip; the strip answers is OPB learning, is today's plan sealed, is the serving guard
+ * holding; the bottom row is each model's serving days and the latest monthly retrain. */
+function model6(q) {
+  const panels = model5(q).flat()
+  for (const panel of panels) panel.gridPos = { ...panel.gridPos, y: panel.gridPos.y + 4 }
+  const ledger = bgKpi('OPB reward 帳本落後', [q(LEDGER, { root: `{ 'lag': ${orNone('summary.lag_trading_days')}, 'ctx': summary.current_context_rows }`,
+    columns: [N('lag', '落後交易日'), N('ctx', '目前 context 樣本')] })], 0, 0, 6, 4,
+  [{ name: '落後交易日', th: th([CALM_OK, null], [C.warn, 2]), mappings: noneMapping('帳本無資料', C.warn) },
+    { name: '目前 context 樣本', th: th([C.warn, null], [CALM_OK, 1]) }],
+  'OPB v2 只從 arm replay 帳本（l4_opb_arm_replay_v1）學。落後交易日＝帳本最新的 known_date 距「最近一次盤後收尾能補到的日期」（收尾日的前一個交易日）幾個交易日：'
+    + '0＝即時、≥2 琥珀（最多算到 20；落後不是失敗，所以不轉紅）；帳本沒有任何 replay 或算不出參考日＝「帳本無資料」（琥珀）。目前 context 樣本＝最新計畫的 context 已有幾筆 replay；0＝這個 context 還沒學到東西（換 L3 版本或風控設定會換 context，要等 5 個交易日後才有第一筆）。')
+  const seal = bgKpi('今日正式政策', [q(SEAL, { root: `{ 'today': ($s := summary.today_status; $s = 'sealed' ? 'ok|已封存' : $s = 'waiting' ? 'wait|等待中'
+      : $s = 'missing' ? 'bad|未封存' : 'na|休市'), 'at': summary.today_sealed_at ? $fromMillis($toMillis(summary.today_sealed_at), '[H01]:[m01]', '+0800') : '—',
+      'miss': summary.missing_days }`, columns: [S('today', '今日'), S('at', '封存時間'), N('miss', '14 日未封存')] })], 6, 0, 6, 4,
+  [{ name: '今日', mappings: TONE6 }, { name: '封存時間', th: NEUTRAL }, { name: '14 日未封存', th: th([CALM_OK, null], [C.warn, 1], [C.bad, 3]) }],
+  '今天的正式計畫（paper_daily_plan_heads_v1）有沒有在盤前 08:45 cutoff 前封存：已封存＝青、cutoff 前還沒有＝灰（等待中）、過了 cutoff 還沒有＝紅；休市日不算。'
+    + '14 日未封存＝近 14 天的交易日裡沒封存的天數。')
+  const guard = bgKpi('serving guard（T+5）', [q(GUARD, { root: `{ 'g': ${GUARD_CELL}, 'd': ${orNone('summary.degraded_streak')},
+      'r': ${orNone('summary.recovery_streak')}, 'n': ${orNone('summary.evaluable_date_count')} }`, columns: [S('g', '狀態'), N('d', '連續惡化'), N('r', '連續恢復'), N('n', '可評估日')] })], 12, 0, 6, 4,
+  [{ name: '狀態', mappings: TONE6 }, ...[['連續惡化', th([CALM_OK, null], [C.warn, 1], [C.bad, 3])], ['連續恢復', NEUTRAL], ['可評估日', NEUTRAL]]
+    .map(([name, steps]) => ({ name, th: steps, mappings: noneMapping('—', C.idle) }))],
+  `${GUARD_DESC}連續惡化／恢復＝最近連續幾個預測日。`)
+  const sealDays = states('status-history', '封存紀錄（14 日）', q(SEAL, { root: `rows.{ 'time': ${DAY_TIME('date')}, 'row': '封存',
+      'cell': status = 'sealed' ? 'ok|' & $fromMillis($toMillis(sealed_at), '[H01]:[m01]', '+0800') & ' 封存' : status = 'waiting' ? 'wait|等待中' : 'bad|未封存' }`,
+  columns: [T('time', 'time'), S('row', 'row'), S('cell', 'cell')] }), 'row', 18, 0, 6, 4,
+  { mappings: TONE6, timeFrom: '14d', empty: '14 天內沒有交易日', desc: '每個交易日一格：青＝盤前已封存（滑鼠停在格子上看封存時間）、紅＝過了 cutoff 沒有封存、灰＝今天還在 cutoff 前。' })
+  const serving = states('state-timeline', '模型服務狀態（14 日）', q(SERVING, { root: `rows.{ 'time': ${DAY_TIME('date')}, 'model': model_name,
+      'cell': (state = 'serving' ? 'ok|' : state = 'switched' ? 'info|換版 ' : state = 'pending' ? 'wait|待今晚 ' : 'bad|缺 ') & (version ? version : '') }`,
+  columns: [T('time', 'time'), S('model', 'model'), S('cell', 'cell')] }), 'model', 0, 29, 14, 7,
+  { mappings: TONE6, timeFrom: '14d', opts: { mergeValues: true, rowHeight: 0.8 }, empty: '沒有已發布的模型',
+    desc: '上線 roster 的每個模型一列、每個交易日一段：青＝當天有預測（predictions 有該模型該日的列）、藍＝當天換了 champion 版本（model_champion_history）、'
+      + '紅＝那天的夜間流程已結束卻沒有預測、灰＝今晚的流程還沒跑完。滑鼠停在色帶上看版本。' })
+  const retrain = table('最近一次月訓結果', q(ROSTER, { root: `($run := latest_monthly_run; $run.models.{ 'model': model_name, 'gate': gate_decision, 'ic': ${IC_CELL},
+      'failed': $type(failed_gates) = 'array' and $count(failed_gates) > 0 ? $join(failed_gates, '、') : '—', 'state': state, 'live': $run.is_live ? '上線中' : '未上線',
+      'run': '訓練 ' & $run.training_run_id & '（' & $run.source_run_date & '）', 'version': '版本 ' & version })`,
+  columns: [S('model', '模型'), S('gate', '閘門'), S('ic', 'OOS IC'), S('failed', '未過的閘門'), S('state', '狀態'), S('live', '上線'), S('run', '訓練'), S('version', '版本')] }),
+  14, 29, 10, 7, { wd: { 閘門: 64, 'OOS IC': 72, 上線: 64 }, hidden: ['訓練', '版本'], details: { 模型: ['訓練', '版本'] }, empty: '近 62 天沒有月訓 run',
+    desc: '最近一次月訓（model_artifact_registry 近 62 天最新的 oof_full_fit_release run）每個模型的離線閘門：閘門 青＝通過、琥珀＝弱通過、紅＝未過；'
+      + 'OOS IC 照該模型自己的門檻上色；未過的閘門＝被拒原因（offline_gate_failed_gates）；狀態＝registry 狀態；上線＝這個 run 是不是目前 ensemble 的 run。點模型名稱看訓練 run 與版本。' })
+  retrain.fieldConfig.overrides.push(
+    { matcher: { id: 'byName', options: '閘門' }, properties: [{ id: 'custom.cellOptions', value: { type: 'color-background', mode: 'basic' } }, { id: 'mappings', value: GATE6 }] },
+    { matcher: { id: 'byName', options: 'OOS IC' }, properties: [{ id: 'custom.cellOptions', value: { type: 'color-background', mode: 'basic' } }, { id: 'mappings', value: IC_TIER6 }] },
+    { matcher: { id: 'byName', options: '狀態' }, properties: [{ id: 'custom.cellOptions', value: { type: 'color-text' } }, { id: 'mappings', value: REGISTRY_STATE6 }] })
+  return [ledger, seal, guard, sealDays, ...panels, serving, retrain]
+}
+
 const V5 = { 'sv-today': today5, 'sv-health': health5, 'sv-resources': resources5, 'sv-model': model5 }
 
 /** Header buttons on every desktop page: the four pages, then the phone page. */
@@ -774,16 +963,58 @@ function previewSource(fixtures) {
  * Header links go to the preview uids: ② ④ here, ① ③ their v5 previews (preview5). */
 const LIVE_PREVIEW = { version: 'v5live', pages: ['sv-health', 'sv-model'],
   links: { 'sv-today': 'sv-today-v5', 'sv-health': 'sv-health-v5live', 'sv-resources': 'sv-resources-v5', 'sv-model': 'sv-model-v5live' } }
-function buildLivePreview() {
+/** preview6live: v6 ① ② ④ (today6, health6, model6) over the live monitoring Worker; routes not deployed yet (NOT_DEPLOYED) over mock.mjs. */
+/** CALM_OK's hue lifted for text and borders (Wei 11/26): 6.58:1 on the canvas card #1e2228, 7.1:1 on the page #181b1f
+ * (CALM_OK itself is 2.59:1 there, below the 4.5:1 text minimum). Fills keep CALM_OK. */
+const CALM_OK_LINE = '#5fb3bb'
+/** v6 palette over the v5 panels the v6 pages reuse (Wei 11/26): done / normal is CALM_OK as a fill (stat background,
+ * gauge, mark disc, readiness dot), CALM_OK_LINE as text or a border (canvas edge and value, table text), DONE_DARK as a
+ * large done area (state timeline, status history cells); amber and red stay for warnings and failures, and 綠 in the
+ * words becomes 青. The v5 builders and the live pages keep C.ok: this rewrites only the v6 output. */
+const V5_OK = C.ok.toLowerCase()
+function recolor6(panel) {
+  const large = ['state-timeline', 'status-history'].includes(panel.type)
+  // `line`: the colour in this subtree is drawn as text or a border.
+  const walk = (value, key, line) => {
+    if (typeof value === 'string') {
+      const lower = value.toLowerCase()
+      if (lower === V5_OK || lower === CALM_OK) return large ? DONE_DARK : line ? CALM_OK_LINE : CALM_OK
+      return key === 'description' || key === 'title' ? value.replaceAll('綠', '青') : value
+    }
+    if (Array.isArray(value)) return value.map((item) => walk(item, undefined, line))
+    if (!value || typeof value !== 'object') return value
+    // A table's field (defaults or one override) draws its mapped colours as text unless its cells are colour-background.
+    const cell = (props) => props?.find?.((p) => p.id === 'custom.cellOptions')?.value?.type
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => {
+      let next = line
+      if (panel.type === 'canvas') {
+        // Canvas value mappings: mk_* (state disc) and m_* (readiness dot) are fills; every other key colours a border or text.
+        if (key === 'options' && typeof v === 'object' && v && 'color' in v) next = !(k.startsWith('mk_') || k.startsWith('m_'))
+        else if (k === 'background') next = false
+        else if (k === 'config' || k === 'border') next = true
+      }
+      if (panel.type === 'table') {
+        if (k === 'properties' && Array.isArray(v)) next = cell(v) !== 'color-background'
+        if (k === 'defaults' && v?.custom) next = v.custom.cellOptions?.type !== 'color-background'
+      }
+      return [k, walk(v, k, next)]
+    }))
+  }
+  return walk(panel)
+}
+const V6_PREVIEW = { version: 'v6live', recolor: recolor6, pages: ['sv-today', 'sv-health', 'sv-model'], builders: { 'sv-today': today6, 'sv-health': health6, 'sv-model': model6 },
+  links: { 'sv-today': 'sv-today-v6live', 'sv-health': 'sv-health-v6live', 'sv-resources': 'sv-resources-v5', 'sv-model': 'sv-model-v6live' } }
+function buildLivePreview(preview = LIVE_PREVIEW) {
   const mock = mockResponses(new Date().toISOString())
   const live = querySource('live', null, { liveRoutes: LIVE_ROUTES })
   const inline = querySource('fixture', mock, { liveRoutes: LIVE_ROUTES, demo: new Set(Object.keys(mock)) })
-  const q = (path, o) => (path.startsWith('/v1/') && LIVE_ROUTES.has(path.split('?')[0]) ? live(path, o) : inline(path, o))
-  return PAGES.filter((page) => LIVE_PREVIEW.pages.includes(page.uid)).map((page) => {
-    const panels = V5[page.uid](q, 'preview').flat().map((panel) => (isDemo(panel)
+  const deployed = (route) => LIVE_ROUTES.has(route) && !NOT_DEPLOYED.has(route)
+  const q = (path, o) => (path.startsWith('/v1/') && deployed(path.split('?')[0]) ? live(path, o) : inline(path, o))
+  return PAGES.filter((page) => preview.pages.includes(page.uid)).map((page) => {
+    const panels = (preview.builders ?? V5)[page.uid](q, 'preview').flat().map((panel) => (preview.recolor ? preview.recolor(panel) : panel)).map((panel) => (isDemo(panel)
       ? Object.assign(panel, { title: panel.title && `${panel.title}（示範資料）`, description: `${DEMO}${panel.description ?? ''}` }) : panel))
-    return dashboard({ uid: `${page.uid}-${LIVE_PREVIEW.version}`, title: `${page.title}（預覽・真資料）`, panels, tag: 'stockvision-preview',
-      time: page.live, refresh: page.refresh, links: page.links.map(([title, uid]) => [title, LIVE_PREVIEW.links[uid] ?? uid]) })
+    return dashboard({ uid: `${page.uid}-${preview.version}`, title: `${page.title}（預覽・真資料）`, panels, tag: 'stockvision-preview',
+      time: page.live, refresh: page.refresh, links: page.links.map(([title, uid]) => [title, preview.links[uid] ?? uid]) })
   })
 }
 
@@ -795,6 +1026,7 @@ const isDemo = (panel) => Boolean(panel.targets?.some((target) => target.demo))
  * panel on relative time, the ones not over live data titled 示範資料. */
 function build(mode) {
   if (mode === 'preview5live') return buildLivePreview()
+  if (mode === 'preview6live') return buildLivePreview(V6_PREVIEW)
   if (mode in PREVIEWS) return buildPreview(PREVIEWS[mode])
   const fixtures = mode === 'fixture' ? loadFixtures() : null
   const q = querySource(mode, fixtures?.responses, { liveRoutes: LIVE_ROUTES, demo: fixtures?.demo })
@@ -846,9 +1078,9 @@ if (args.includes('--check')) {
   console.log(`${live.length} dashboards: live and fixture differ only in the query source (planned panels, fixture only: ${planned})`)
 } else {
   const mode = args[args.indexOf('--mode') + 1]
-  const preview = mode in PREVIEWS || mode === 'preview5live'
+  const preview = mode in PREVIEWS || mode === 'preview5live' || mode === 'preview6live'
   if (!(['live', 'fixture'].includes(mode) || preview) || (preview && !args.includes('--out'))) {
-    console.error('usage: build.mjs --mode live|fixture | --mode preview|preview5|preview5live --out <dir> | --check'); process.exit(2)
+    console.error('usage: build.mjs --mode live|fixture | --mode preview|preview5|preview5live|preview6live --out <dir> | --check'); process.exit(2)
   }
   const out = preview ? args[args.indexOf('--out') + 1] : join(here, '..', 'dashboards', mode === 'fixture' ? 'fixture' : '')
   mkdirSync(out, { recursive: true })

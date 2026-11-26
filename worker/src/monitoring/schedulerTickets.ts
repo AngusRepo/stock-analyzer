@@ -177,3 +177,53 @@ export async function kvDriftReport(env: MonitoringEnv, nowMs: number) {
   })
   return { job_id: KV_DRIFT_JOB_ID, since, days: KV_DRIFT_DAYS, latest: rows[0] ?? null, rows }
 }
+
+/** /v1/d1/overloaded (v6 ①): scheduled tasks that ended on a D1 overload in the last 24 h. The error is already on
+ * the ticket (last_error / last_summary), so nothing is written per request. One seek per (status, business_date) on
+ * idx_scheduler_execution_tickets_status with updated_at as the range: only tickets updated in the 24 h are read. The
+ * business dates run a week back (a watchdog may re-run an old date) to a weekend ahead (evening tickets carry the next
+ * trading day). The match is instr() over the full columns in SQL (the text served is cut to 200 characters), with the
+ * same marker strings as D1_OVERLOAD_MARKERS. Retries inside a task that later succeeded are not seen. */
+export const D1_OVERLOAD_HOURS = 24
+export const D1_OVERLOAD_DAYS_BACK = 7
+export const D1_OVERLOAD_DAYS_AHEAD = 3
+/** Cap on tickets read per request (error and blocked tickets updated in 24 h: ~50 on 11/26). */
+export const D1_OVERLOAD_TICKET_LIMIT = 500
+export const D1_OVERLOAD_MARKERS = ['D1 DB is overloaded', 'Requests queued for too long'] as const
+const overloadMatch = (column: string) => D1_OVERLOAD_MARKERS.map(() => `instr(IFNULL(${column}, ''), ?) > 0`).join(' OR ')
+const d1OverloadSql = (dates: number) => `SELECT ticket_id, scheduler_job_id, task, business_date, status,
+       substr(COALESCE(NULLIF(last_error, ''), last_summary), 1, 200) AS error, updated_at,
+       (${overloadMatch('last_error')} OR ${overloadMatch('last_summary')}) AS overloaded
+  FROM scheduler_execution_tickets_v1
+ WHERE status IN ('error', 'blocked') AND business_date IN (${Array(dates).fill('?').join(', ')}) AND updated_at >= ?
+ LIMIT ${D1_OVERLOAD_TICKET_LIMIT}`
+
+export async function d1OverloadReport(env: MonitoringEnv, nowMs: number) {
+  const sinceMs = nowMs - D1_OVERLOAD_HOURS * 3600_000
+  const today = twDate(nowMs)
+  const dates = Array.from({ length: D1_OVERLOAD_DAYS_BACK + D1_OVERLOAD_DAYS_AHEAD + 1 }, (_, i) => addDays(today, i - D1_OVERLOAD_DAYS_BACK))
+  // updated_at is SQLite CURRENT_TIMESTAMP ('YYYY-MM-DD HH:MM:SS', UTC).
+  const since = new Date(sinceMs).toISOString().slice(0, 19).replace('T', ' ')
+  const tickets = (await env.OPS_DB.prepare(d1OverloadSql(dates.length))
+    .bind(...D1_OVERLOAD_MARKERS, ...D1_OVERLOAD_MARKERS, ...dates, since)
+    .all<{ ticket_id: string; scheduler_job_id: string | null; task: string; business_date: string; status: string; error: string | null
+      updated_at: string; overloaded: number }>()).results ?? []
+  const rows = tickets.filter((ticket) => ticket.overloaded === 1)
+    .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+    .map((ticket) => ({ ticket_id: ticket.ticket_id, job_id: ticket.scheduler_job_id, task: ticket.task, business_date: ticket.business_date,
+      status: ticket.status, error: ticket.error ?? '', updated_at: ticket.updated_at }))
+  const byTask = new Map<string, { task: string; count: number; last_at: string }>()
+  for (const row of rows) {
+    const held = byTask.get(row.task) ?? { task: row.task, count: 0, last_at: row.updated_at }
+    held.count += 1
+    if (row.updated_at > held.last_at) held.last_at = row.updated_at
+    byTask.set(row.task, held)
+  }
+  return {
+    hours: D1_OVERLOAD_HOURS, since: new Date(sinceMs).toISOString(), tickets_read: tickets.length,
+    truncated: tickets.length >= D1_OVERLOAD_TICKET_LIMIT,
+    summary: { count: rows.length, tasks: byTask.size, last_at: rows[0]?.updated_at ?? null },
+    by_task: [...byTask.values()].sort((a, b) => b.count - a.count || a.task.localeCompare(b.task)),
+    rows,
+  }
+}

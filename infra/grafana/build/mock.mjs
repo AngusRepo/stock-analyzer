@@ -1,6 +1,7 @@
 /** Authored responses for the fixture build where no Worker fixture exists (panel descriptions say 示範資料):
  * - Worker routes not deployed yet, in the shapes of worker/src/monitoring/{paperNav,modelRoster,opb,schedulerTickets}.ts
- *   (branch feat/monitoring-model-health-endpoints): /v1/paper/nav, /v1/models/roster, /v1/opb, /v1/chain/failure-classes, /v1/kv-drift.
+ *   (branch feat/monitoring-model-health-endpoints): /v1/paper/nav, /v1/models/roster, /v1/opb, /v1/chain/failure-classes, /v1/kv-drift;
+ *   the v6 routes (modelOps.ts, d1OverloadReport): /v1/policy/seal, /v1/opb/ledger, /v1/models/serving, /v1/serving-guard, /v1/d1/overloaded.
  * - mock:billing-* — rows as the BigQuery billing queries return them (build.mjs costPanels).
  * - plan:cloudflare-* — Cloudflare usage, no source wired yet (fixture only).
  * Deterministic and dated back from the fixture evening, so the page reads like that evening. */
@@ -168,7 +169,7 @@ export function mockResponses(nowIso) {
         live_gate_status: 'pending', promotion_decision: 'promoted' })),
       latest_monthly_run: { training_run_id: 'run-nov', source_run_date: '2026-11-05', is_live: true, models: [] },
       next_monthly_run: { job_id: 'active8-oof-monthly', schedule: 'first sun of month 02:00', time_zone: 'Asia/Taipei', repo_desired_state: 'ENABLED',
-        next_run_at: '2026-12-06T02:00+08:00' } },
+        next_run_at: '2026-12-05T18:00:00.000Z' } },
     '/v1/opb?days=60': { ...head(900), account_id: 1, since: opbDays[0], days: 60, definitions: {},
       summary: { plan_days: opbRows.length, latest_signal_date: opbRows.at(-1).signal_date, latest_arm_id: opbRows.at(-1).arm_id, latest_status: opbRows.at(-1).status,
         arm_inert_days: inertDays, clip_rate: round(inertDays / opbRows.length, 4), receipts: opbRows.length - 2, complete_receipts: opbRows.length - 6,
@@ -181,5 +182,48 @@ export function mockResponses(nowIso) {
     '/v1/chain/failure-classes?days=14': { ...head(300), since: date(-13), days: 14, tickets_read: failureRows.length, truncated: false,
       final_lookups: failureRows.length, final_lookups_truncated: false, classes, rows: failureRows, by_job: [] },
     '/v1/kv-drift': { ...head(1800), job_id: 'kv-config-drift', since: date(-6), days: 7, latest: kvRows[0], rows: kvRows },
+    ...v6Responses({ now, today, date, weekday, head }),
+  }
+}
+
+/** v6 routes (worker/src/monitoring/modelOps.ts, schedulerTickets.ts d1OverloadReport), not deployed yet. One weekday of
+ * the window has no sealed plan and no TabM predictions; the ledger stalls six trading days behind; no Fusion guard row. */
+function v6Responses({ now, today, date, weekday, head }) {
+  const tradingDays = Array.from({ length: 14 }, (_, i) => date(i - 13)).filter(weekday)
+  const gap = tradingDays.at(-5)
+  const utcStamp = (d, hhmm) => new Date(Date.parse(`${d}T${hhmm}:00+08:00`)).toISOString()
+  const sealRows = tradingDays.map((d) => d === gap
+    ? { date: d, status: 'missing', plan_id: null, sealed_at: null, revised_at: null, revision: null, cutoff_at: utcStamp(d, '08:45'), minutes_before_cutoff: null }
+    : { date: d, status: 'sealed', plan_id: `plan-${d}`, sealed_at: utcStamp(d, '07:29'), revised_at: null, revision: 0, cutoff_at: utcStamp(d, '08:45'), minutes_before_cutoff: 76 })
+  const todaySeal = sealRows.find((row) => row.date === today)
+  const versions = (d) => d < tradingDays[5] ? 'v20260921071259' : 'v20261109102955'
+  const servingRows = tradingDays.flatMap((d, i) => ['LightGBM', 'ExtraTrees', 'TabM', 'GNN'].map((model) => {
+    const state = d === today ? 'pending' : model === 'TabM' && d === gap ? 'missing' : i === 5 ? 'switched' : 'serving'
+    return { date: d, model_name: model, state, version: versions(d), cell: `${state}|${versions(d)}` }
+  }))
+  const lastKnown = tradingDays.at(-7)
+  const overloads = [[2, 'daily-snapshot'], [5, 'daily-snapshot'], [9, 'strategy-learning-watchdog']].map(([hoursAgo, task], i) => ({ ticket_id: `t-${i}`,
+    job_id: task, task, business_date: today, status: 'error', error: 'Error: D1_ERROR: D1 DB is overloaded. Too many resources consumed within a 10 second window.',
+    updated_at: new Date(now - hoursAgo * 3600_000).toISOString() }))
+  return {
+    '/v1/policy/seal': { ...head(300), account_id: 1, today, since: date(-13), days: 14, definitions: {},
+      summary: { today_trading: Boolean(todaySeal), today_status: todaySeal?.status ?? 'not_trading', today_sealed_at: todaySeal?.sealed_at ?? null,
+        today_cutoff_at: todaySeal?.cutoff_at ?? null, trading_days: sealRows.length, sealed_days: sealRows.length - 1, missing_days: 1, latest_missing_date: gap },
+      rows: sealRows },
+    '/v1/opb/ledger': { ...head(900), today, expected_known_date: tradingDays.at(-2), last_closure_date: today, definitions: {},
+      summary: { ledger_last_known_date: lastKnown, ledger_last_signal_date: tradingDays.at(-12), lag_trading_days: 6, lag_capped: false,
+        current_context_identity: 'ctx-current', current_context_since: tradingDays.at(-3), current_context_rows: 0, current_context_last_known_date: null,
+        current_context_lag_trading_days: null, current_context_lag_capped: false, latest_plan_signal_date: tradingDays.at(-2) },
+      rows: [{ ledger: 'all_contexts', last_known_date: lastKnown, lag_trading_days: 6 }, { ledger: 'current_context', last_known_date: null, lag_trading_days: null }] },
+    '/v1/models/serving': { ...head(900), today, since: date(-13), days: 14, models: ['LightGBM', 'ExtraTrees', 'TabM', 'GNN'], definitions: {},
+      summary: { model_count: 4, trading_days: tradingDays.length, latest_finished_date: tradingDays.at(-2), missing_cells: 1, latest_missing_models: [] },
+      rows: servingRows },
+    '/v1/serving-guard': { ...head(900), thresholds: { degraded_streak_to_bypass: 3, pass_streak_to_recover: 3, min_evaluable_dates: 5 }, definitions: {},
+      summary: { status: 'not_applicable', state: null, degraded_streak: null, recovery_streak: null, evaluable_date_count: null, last_prediction_date: null,
+        model_version: null, reason: null, updated_at: null }, rows: [] },
+    '/v1/d1/overloaded': { ...head(300), hours: 24, since: new Date(now - 24 * 3600_000).toISOString(), tickets_read: 40,
+      summary: { count: overloads.length, tasks: 2, last_at: overloads[0].updated_at },
+      by_task: [{ task: 'daily-snapshot', count: 2, last_at: overloads[0].updated_at }, { task: 'strategy-learning-watchdog', count: 1, last_at: overloads[2].updated_at }],
+      rows: overloads },
   }
 }

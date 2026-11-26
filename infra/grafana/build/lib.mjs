@@ -54,6 +54,10 @@ export const STATUS = {
   skipped: ['略過', 'skip'],
   at_risk: ['趕不上截止', 'warn'], attention: ['應跑未跑', 'warn'], overdue: ['逾時', 'warn'],
   stuck: ['卡住', 'bad'], missed: ['漏跑', 'bad'], failed: ['失敗', 'bad'], error: ['失敗', 'bad'], blocked: ['中止', 'bad'],
+  // A watcher (intraday-check) held back: the alert kind `blocked` and a watcher's display_status `blocked` (Wei 11/26:
+  // a warning, not overdue). Panels translate both into this key (ALERT_KIND, canvas $ds, build.mjs RESULT); a chain stage's
+  // blocked (aborted there) stays 中止.
+  watcher_blocked: ['被擋住', 'warn'],
   ready: ['就緒', 'ok'], ok: ['正常', 'ok'], warn: ['注意', 'warn'], fail: ['未過', 'bad'], critical: ['重大', 'bad'], warning: ['注意', 'warn'],
   healthy: ['正常', 'ok'], pending_maturity: ['等待成熟', 'idle'], pass: ['通過', 'ok'], collecting: ['收集中', 'run'],
   not_applicable_no_real_intents: ['不適用（沒有真實下單）', 'idle'], owner_read_unavailable: ['讀不到來源', 'warn'],
@@ -63,6 +67,8 @@ export const STATUS = {
  * (ready / waiting / blocked / pending / running, from the quality ok / warn / fail), the freshness checks use ok / warn / fail. */
 export const READINESS_VOCAB = { ready: ['正常', 'ok'], ok: ['正常', 'ok'], waiting: ['遲到', 'warn'], warn: ['遲到', 'warn'],
   blocked: ['缺漏', 'bad'], fail: ['缺漏', 'bad'], pending: ['未到', 'idle'], running: ['未到', 'idle'] }
+/** JSONata: an alert's kind as a STATUS key (the alert kind `blocked` is only ever a watcher's). */
+export const ALERT_KIND = (kind = 'kind') => `(${kind} = 'blocked' ? 'watcher_blocked' : ${kind})`
 export const STATUS_COLOR = (status, use = 'text') => TONE[STATUS[status][1]][use]
 /** JSONata object literal: status → label, for text the Worker's status vocabulary is turned into. */
 export const STATUS_LABELS_JSONATA = JSON.stringify(Object.fromEntries(Object.entries(STATUS).map(([key, [label]]) => [key, label])))

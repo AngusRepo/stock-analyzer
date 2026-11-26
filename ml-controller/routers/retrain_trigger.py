@@ -1535,6 +1535,12 @@ async def trigger_universal_retrain(
                 "status": "idempotent_ready",
                 "receipt_path": f"{prep_output_gcs_prefix}/prep/immutable_receipt.json",
             }
+    if req.prep_only and req.inference_only:
+        # Telemetry only: no sealed receipt, so this call builds the inference batches; that
+        # time belongs to the feature-batch stage card. A resumed input-event run never reaches
+        # the report in produce_inference_snapshot, and the consuming run returns above.
+        from services.pipeline_progress import report
+        await report('feature_preparation')
     # R33 training prep: per-field latest sealed auxiliary captures and a 252-session feature warmup.
     r33_prep = req.prep_only and not req.inference_only and req.model_profile_schema_version == R33_PROFILE
     if req.prep_only:

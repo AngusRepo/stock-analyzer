@@ -1,12 +1,18 @@
 /** Chain state endpoints over the P2 tables (p2p3_contract.md). Every read is a primary-key prefix seek:
  * business_date first, chain_id second. Judgments (failed / overdue / stuck / missed, the active business date,
  * the status a node is coloured by) are computed here; Grafana only compares counts to thresholds.
- * /v1/chain/state also carries the FinLab and pipeline sub-stage cards (chainSubStages.ts). */
+ * /v1/chain/state also carries the FinLab and pipeline sub-stage cards (chainSubStages.ts).
+ * Chains (contract "P2b 擴充"): daily_readiness (default) and intraday_guard are judged per trading day;
+ * weekly_research / monthly_artifact per period key (periodKeyFor), ignoring the trading calendar. History and
+ * timeline read exact (business_date, chain_id) keys (IN lists): a business_date range would also walk every
+ * other chain's rows of those dates (measured with all four chains seeded: daily timeline 893 → 1,202 rows_read). */
 import { currentStage, scopeById, scopeDisplayStageIds, statusLabel, visualStatus, STAGES } from './judgment/executionChainDag'
 import { dailyPhaseForStage } from './judgment/dailyReadinessPhases'
+import { CHAIN_IDS, CHAIN_SPECS, periodKeyFor, periodKeys, previousPeriodKey, REPEAT_STALL_AFTER_MS, type ChainId, type ChainSpec } from './judgment/chainCatalog'
+import { chainPhaseForStage, chainStageIds } from './judgment/chainPhases'
 import type { SchedulerJob } from './judgment/schedulerJob'
 import { readStageProgress, subStageCards, type SubStageCard } from './chainSubStages'
-import { addDays, memoized, TW_OFFSET_MS, type MonitoringEnv } from './env'
+import { addDays, memoized, twDate, TW_OFFSET_MS, type MonitoringEnv } from './env'
 import { isTradingDay, resolveBusinessDates, type BusinessDates } from './tradingDay'
 
 export const CHAIN_ID = 'daily_readiness'
@@ -25,6 +31,9 @@ export const TIMELINE_HISTORY_TTL_S = 3600
 export const HISTORY_ROW_LIMIT = 600
 /** Fewer finished days than this give no typical finishing time (no ETA). */
 export const ETA_MIN_SAMPLES = 3
+/** A week / month period has ended once the next one starts (a later re-run belongs to the current period):
+ * its rows and transitions are read once per 6 hours. */
+export const PERIOD_ENDED_TTL_S = 6 * 3600
 
 export type ChainStatus = 'pending' | 'running' | 'success' | 'error' | 'skipped' | 'blocked'
 
@@ -54,21 +63,24 @@ export const STATE_SQL = `SELECT business_date, chain_id, stage_id, status, opti
  WHERE business_date IN (?, ?) AND chain_id = ?
  LIMIT ${STATE_ROW_LIMIT}`
 
-export const TIMELINE_SQL = `SELECT business_date, stage_id, transition_at, to_status, from_status, attempt, ticket_id, run_id, summary
-  FROM ops_chain_stage_transitions_v1
- WHERE business_date >= ? AND business_date <= ? AND chain_id = ?
- ORDER BY business_date DESC
- LIMIT ${TIMELINE_ROW_LIMIT + 1}`
-// ORDER BY business_date alone is a reverse primary-key walk (no temp B-tree), so a truncation drops the
-// oldest dates, never X. A full ORDER BY adds a temp B-tree that D1 bills as a second read of every row
-// (measured: 300 rows → rows_read 601); the finer order is applied in JS.
-export const HISTORY_SQL = `SELECT business_date, stage_id, status, optional, attempt, error, started_at, completed_at
+export type ChainHistoryRow = Pick<ChainStateRow, 'business_date' | 'stage_id' | 'status' | 'optional' | 'attempt' | 'error' | 'started_at' | 'completed_at'>
+
+const placeholders = (count: number) => Array.from({ length: count }, () => '?').join(', ')
+/** History and timeline: one primary-key seek per (business_date, chain_id), each billed as its rows plus about
+ * two. The IN list on the leading key column is walked in key order, so ORDER BY business_date alone is a reverse
+ * primary-key walk (no temp B-tree) and a truncation drops the oldest dates, never X. A full ORDER BY adds a temp
+ * B-tree that D1 bills as a second read of every row (measured: 300 rows → rows_read 601); the finer order is
+ * applied in JS. */
+export const keyedHistorySql = (dates: number) => `SELECT business_date, stage_id, status, optional, attempt, error, started_at, completed_at
   FROM ops_chain_stage_state_v1
- WHERE business_date >= ? AND business_date <= ? AND chain_id = ?
+ WHERE business_date IN (${placeholders(dates)}) AND chain_id = ?
  ORDER BY business_date DESC
  LIMIT ${HISTORY_ROW_LIMIT + 1}`
-
-export type ChainHistoryRow = Pick<ChainStateRow, 'business_date' | 'stage_id' | 'status' | 'optional' | 'attempt' | 'error' | 'started_at' | 'completed_at'>
+export const keyedTimelineSql = (dates: number) => `SELECT business_date, stage_id, transition_at, to_status, from_status, attempt, ticket_id, run_id, summary
+  FROM ops_chain_stage_transitions_v1
+ WHERE business_date IN (${placeholders(dates)}) AND chain_id = ?
+ ORDER BY business_date DESC
+ LIMIT ${TIMELINE_ROW_LIMIT + 1}`
 
 const byTransition = (a: Record<string, unknown>, b: Record<string, unknown>) =>
   String(a.business_date).localeCompare(String(b.business_date)) || String(a.stage_id).localeCompare(String(b.stage_id))
@@ -95,13 +107,24 @@ export type ChainAlert = {
 }
 
 const parse = (value: string | null | undefined) => (value ? Date.parse(value) : Number.NaN)
+/** One timestamp shape for every reader: Python writers store microseconds and `+00:00`, and Grafana's
+ * JSONata reads those as the date's midnight. A stamp with no zone is UTC (SQLite datetime()); a date alone stays as is. */
+export function isoStamp(value: unknown): unknown {
+  if (typeof value !== 'string' || !/\d{2}:\d{2}/.test(value)) return value
+  const ms = Date.parse(/[zZ]|[+-]\d{2}:?\d{2}$/.test(value) ? value : `${value.replace(' ', 'T')}Z`)
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : value
+}
+const STAMP_FIELDS = ['started_at', 'completed_at', 'heartbeat_at', 'updated_at', 'transition_at'] as const
+const withIsoStamps = <T extends Record<string, unknown>>(row: T): T =>
+  Object.fromEntries(Object.entries(row).map(([key, value]) => [key, (STAMP_FIELDS as readonly string[]).includes(key) ? isoStamp(value) : value])) as T
 const minutesSince = (fromMs: number, nowMs: number) => (Number.isFinite(fromMs) ? Math.floor((nowMs - fromMs) / 60_000) : null)
 
 function alert(row: ChainStateRow, kind: AlertKind, since: string | null, nowMs: number): ChainAlert {
   return {
     business_date: row.business_date, stage_id: row.stage_id, kind,
     severity: kind === 'failed' || kind === 'missed' ? 'critical' : 'warning',
-    status: row.status, attempt: Number(row.attempt ?? 0), expected_by: row.expected_by, since,
+    status: row.status, attempt: Number(row.attempt ?? 0),
+    expected_by: isoStamp(row.expected_by) as string | null, since: isoStamp(since) as string | null,
     minutes: minutesSince(parse(since), nowMs), summary: row.summary, error: row.error,
     root_ticket_id: row.root_ticket_id, ticket_id: row.ticket_id, run_id: row.run_id, execution_name: row.execution_name,
   }
@@ -110,10 +133,13 @@ function alert(row: ChainStateRow, kind: AlertKind, since: string | null, nowMs:
 /** Taiwan calendar date of an ISO instant. */
 const twDateOf = (iso: string | null) => (iso && Number.isFinite(Date.parse(iso)) ? new Date(Date.parse(iso) + TW_OFFSET_MS).toISOString().slice(0, 10) : null)
 
-/** The contract's four rules for one trading day's rows. Callers pass only trading days (holidays: none).
+/** The contract's four rules for one trading day's (or period's) rows. Callers pass only judged dates (holidays: none).
  * `closedDeadlineDates`: Taiwan dates that are not trading days; a deadline on one is stale (T+1 closed after
- * pre-creation; P2 rewrites it when T's first premarket stage lands), so it raises no overdue. */
-export function judgeStageRows(rows: ChainStateRow[], nowMs: number, closedDeadlineDates: Set<string> = new Set()): ChainAlert[] {
+ * pre-creation; P2 rewrites it when T's first premarket stage lands), so it raises no overdue. Daily only.
+ * `rootStage`: a pre-created root still pending after its deadline is missed (daily); the other chains create
+ * their rows on the period's first write, so for them missed is "no row at all" (chainAlerts) and null here. */
+export function judgeStageRows(rows: ChainStateRow[], nowMs: number, closedDeadlineDates: Set<string> = new Set(),
+  rootStage: string | null = CHAIN_ROOT_STAGE): ChainAlert[] {
   const out: ChainAlert[] = []
   for (const row of rows) {
     // Failed: any error, optional stages included.
@@ -122,7 +148,9 @@ export function judgeStageRows(rows: ChainStateRow[], nowMs: number, closedDeadl
     if (Number(row.optional) === 1) continue
     const expected = parse(row.expected_by)
     const staleDeadline = closedDeadlineDates.has(twDateOf(row.expected_by) ?? '')
-    if (Number.isFinite(expected) && expected < nowMs && !staleDeadline && row.status !== 'success' && row.status !== 'skipped') {
+    // Overdue excludes error: failed already covers it, so one failure raises one alert (contract 11/25). A retry
+    // that turns it back to running and then passes the deadline is overdue again.
+    if (Number.isFinite(expected) && expected < nowMs && !staleDeadline && row.status !== 'success' && row.status !== 'skipped' && row.status !== 'error') {
       out.push(alert(row, 'overdue', row.expected_by, nowMs))
     }
     // Stuck (contract 11/25): a stage that did heartbeat and then stopped for 15 minutes. Most stages write
@@ -131,7 +159,7 @@ export function judgeStageRows(rows: ChainStateRow[], nowMs: number, closedDeadl
       out.push(alert(row, 'stuck', row.heartbeat_at, nowMs))
     }
     // Missed: the chain root never started after its deadline.
-    if (row.stage_id === CHAIN_ROOT_STAGE && row.status === 'pending' && Number.isFinite(expected) && expected < nowMs) {
+    if (row.stage_id === rootStage && row.status === 'pending' && Number.isFinite(expected) && expected < nowMs) {
       out.push(alert(row, 'missed', row.expected_by, nowMs))
     }
   }
@@ -145,13 +173,47 @@ export function twTimeOn(date: string, hhmm: string | undefined): number | null 
   return Date.parse(`${date}T${match[1]}:${match[2]}:00Z`) - TW_OFFSET_MS
 }
 
-export async function readChainState(env: MonitoringEnv, dates: BusinessDates): Promise<ChainStateRow[]> {
-  const result = await env.OPS_DB.prepare(STATE_SQL).bind(dates.x, dates.xPrev ?? dates.x, CHAIN_ID).all<ChainStateRow>()
+export async function readChainState(env: MonitoringEnv, dates: BusinessDates, chainId: ChainId = CHAIN_ID): Promise<ChainStateRow[]> {
+  const result = await env.OPS_DB.prepare(STATE_SQL).bind(dates.x, dates.xPrev ?? dates.x, chainId).all<ChainStateRow>()
   return result.results ?? []
+}
+
+/** Business dates of one chain. `judged`: the dates whose rows raise alerts — trading days among X and X−1
+ * (daily, intraday); the current period only (week, month: the previous one has ended, shown for comparison). */
+export type ChainDates = BusinessDates & { chain: ChainSpec; judged: Set<string> }
+
+export async function resolveChainDates(env: MonitoringEnv, nowMs: number, chainId: ChainId, requested?: string | null): Promise<ChainDates> {
+  const chain = CHAIN_SPECS[chainId]
+  if (chain.period === 'trading_day') {
+    const dates = await resolveBusinessDates(env, nowMs, requested)
+    return { ...dates, chain, judged: tradingDateSet(dates) }
+  }
+  const today = twDate(nowMs)
+  const x = periodKeyFor(chainId, requested ?? today)!
+  return { x, xTrading: false, xPrev: previousPeriodKey(chainId, x), today, chain, judged: new Set([x]) }
+}
+
+const isDaily = (dates: ChainDates) => dates.chain.chainId === CHAIN_ID
+/** Trading-day flag of a date in the responses; null for week / month chains (no calendar). */
+const tradingFlag = (dates: ChainDates, date: string) => (dates.chain.period === 'trading_day' ? dates.judged.has(date) : null)
+
+/** The current period live, the ended previous one from the memo (week / month); X and X−1 in one seek otherwise. */
+async function readStateRows(env: MonitoringEnv, dates: ChainDates): Promise<ChainStateRow[]> {
+  const { chainId, period } = dates.chain
+  if (period === 'trading_day') return readChainState(env, dates, chainId)
+  const read = async (date: string) => (await env.OPS_DB.prepare(STATE_SQL).bind(date, date, chainId).all<ChainStateRow>()).results ?? []
+  const previous = dates.xPrev
+    ? await memoized(env.MEMO, `chain-state|${chainId}|${dates.xPrev}`, PERIOD_ENDED_TTL_S, () => read(dates.xPrev!))
+    : []
+  return [...await read(dates.x), ...previous]
 }
 
 const DAILY = scopeById('daily_readiness')
 const DAILY_ORDER = new Map(scopeDisplayStageIds(DAILY).map((id, index) => [id, index]))
+/** Display order per chain: the daily panel order (cards in place of their parents), else chainStageIds. */
+const ORDERS = new Map<ChainId, Map<string, number>>(CHAIN_IDS.map((id) => [id,
+  id === CHAIN_ID ? DAILY_ORDER : new Map(chainStageIds(id).map((stage, index) => [stage, index]))]))
+const orderOf = (chainId: ChainId) => ORDERS.get(chainId)!
 
 const JOB_STATUS: Record<ChainStatus, SchedulerJob['lastStatus']> = {
   success: 'success', error: 'failed', running: 'running', pending: 'waiting', skipped: 'skip', blocked: 'blocked',
@@ -171,11 +233,9 @@ export function stateRowJob(row: ChainStateRow): SchedulerJob {
 
 type StageKey = Pick<ChainStateRow, 'business_date' | 'stage_id'>
 
-function stageOrder(a: StageKey, b: StageKey): number {
-  return b.business_date.localeCompare(a.business_date)
-    || (DAILY_ORDER.get(a.stage_id) ?? 9999) - (DAILY_ORDER.get(b.stage_id) ?? 9999)
-    || a.stage_id.localeCompare(b.stage_id)
-}
+const stageOrderFor = (order: Map<string, number>) => (a: StageKey, b: StageKey): number => b.business_date.localeCompare(a.business_date)
+  || (order.get(a.stage_id) ?? 9999) - (order.get(b.stage_id) ?? 9999)
+  || a.stage_id.localeCompare(b.stage_id)
 
 /** Deadline dates that are not trading days (a handful of KV reads: the distinct Taiwan dates of expected_by). */
 async function closedDeadlineDates(env: MonitoringEnv, rows: ChainStateRow[], tradingDates: Set<string>): Promise<Set<string>> {
@@ -185,27 +245,49 @@ async function closedDeadlineDates(env: MonitoringEnv, rows: ChainStateRow[], tr
   return closed
 }
 
-export async function chainAlerts(env: MonitoringEnv, dates: BusinessDates, rows: ChainStateRow[], nowMs: number, tradingDates: Set<string>,
-  closedDates?: Set<string>): Promise<ChainAlert[]> {
+/** Evidence that the chain was being written before, from rows the caller already read: trading-day chains, any
+ * row in the 14-day history (X−1..X live plus the memoized ended days); week / month, a row of X or of the
+ * previous period (the state read). Without it, a date with no row is a chain not started yet (go-live, a new
+ * chain), never missed. Limit: a chain silent for longer than the lookback stops raising missed. */
+export function chainHistoryAvailable(dates: ChainDates, rows: ChainStateRow[], history: ChainHistoryRow[]): boolean {
+  return dates.chain.period === 'trading_day' ? history.length > 0 : rows.length > 0
+}
+
+export async function chainAlerts(env: MonitoringEnv, dates: ChainDates, rows: ChainStateRow[], nowMs: number,
+  historyAvailable: boolean, closedDates?: Set<string>): Promise<ChainAlert[]> {
   const out: ChainAlert[] = []
-  const closed = closedDates ?? await closedDeadlineDates(env, rows, tradingDates)
+  const { chain } = dates
+  const daily = isDaily(dates)
+  // The stale-deadline rule is the daily chain's T+1 anchor only (contract: never for the week / month chains).
+  const closed = closedDates ?? (daily ? await closedDeadlineDates(env, rows, dates.judged) : new Set<string>())
   for (const date of [dates.x, dates.xPrev]) {
-    if (!date || !tradingDates.has(date)) continue
+    if (!date || !dates.judged.has(date)) continue
     const dayRows = rows.filter((row) => row.business_date === date)
-    out.push(...judgeStageRows(dayRows, nowMs, closed))
-    // A trading day without any chain row: market-close-refresh (which pre-creates the rows) never ran.
-    const deadline = twTimeOn(date, env.CHAIN_ROOT_EXPECTED_BY_TW ?? CHAIN_ROOT_DEADLINE_TW)
-    if (!dayRows.length && deadline != null && deadline < nowMs) {
+    out.push(...judgeStageRows(dayRows, nowMs, closed, daily ? CHAIN_ROOT_STAGE : null))
+    // No chain row at all after the first stage's deadline: daily, market-close-refresh (which pre-creates the
+    // rows) never ran; the other chains, no stage of the trading day / period ever wrote (rows come with the first write).
+    const deadline = twTimeOn(date, daily ? env.CHAIN_ROOT_EXPECTED_BY_TW ?? CHAIN_ROOT_DEADLINE_TW : chain.firstDeadlineTw)
+    // Stalled repeating stage (intraday-check): it never runs or heartbeats, but its row is refreshed at least every
+    // REPEAT_REFRESH_MIN_MS while results arrive; inside its schedule window an older updated_at is a stopped guard.
+    const repeat = chain.repeat && dayRows.find((row) => row.stage_id === chain.repeat!.stageId)
+    const windowEnd = chain.repeat ? twTimeOn(date, chain.repeat.windowEndTw) : null
+    if (repeat && repeat.status !== 'pending' && deadline != null && windowEnd != null && nowMs >= deadline && nowMs < windowEnd
+      && parse(repeat.updated_at) < nowMs - REPEAT_STALL_AFTER_MS) {
+      out.push(alert(repeat, 'stuck', repeat.updated_at, nowMs))
+    }
+    if (!dayRows.length && historyAvailable && deadline != null && deadline < nowMs) {
       const since = new Date(deadline).toISOString()
       out.push({
-        business_date: date, stage_id: CHAIN_ROOT_STAGE, kind: 'missed', severity: 'critical', status: 'absent', attempt: 0,
-        expected_by: since, since, minutes: minutesSince(deadline, nowMs), summary: 'no chain rows for this trading day',
+        business_date: date, stage_id: chain.firstStage, kind: 'missed', severity: 'critical', status: 'absent', attempt: 0,
+        expected_by: since, since, minutes: minutesSince(deadline, nowMs),
+        summary: chain.period === 'trading_day' ? 'no chain rows for this trading day' : 'no chain rows for this period',
         error: null, root_ticket_id: null, ticket_id: null, run_id: null, execution_name: null,
       })
     }
   }
+  const order = orderOf(chain.chainId)
   return out.sort((a, b) => b.business_date.localeCompare(a.business_date)
-    || (DAILY_ORDER.get(a.stage_id) ?? 9999) - (DAILY_ORDER.get(b.stage_id) ?? 9999) || a.kind.localeCompare(b.kind))
+    || (order.get(a.stage_id) ?? 9999) - (order.get(b.stage_id) ?? 9999) || a.kind.localeCompare(b.kind))
 }
 
 function tradingDateSet(dates: BusinessDates): Set<string> {
@@ -222,22 +304,43 @@ function historyWindow(dates: BusinessDates, days: number) {
   return { span, from, liveFrom: dates.xPrev && dates.xPrev > from ? dates.xPrev : from }
 }
 
-const byDateThenStage = (a: ChainHistoryRow, b: ChainHistoryRow) => a.business_date.localeCompare(b.business_date)
-  || (DAILY_ORDER.get(a.stage_id) ?? 9999) - (DAILY_ORDER.get(b.stage_id) ?? 9999) || a.stage_id.localeCompare(b.stage_id)
+const byDateThenStageFor = (order: Map<string, number>) => (a: ChainHistoryRow, b: ChainHistoryRow) => a.business_date.localeCompare(b.business_date)
+  || (order.get(a.stage_id) ?? 9999) - (order.get(b.stage_id) ?? 9999) || a.stage_id.localeCompare(b.stage_id)
 
-/** Final stage states of [X − days + 1, X], oldest first. Dates before X−1 come from the hourly memo; X−1..X are
- * `live` when the caller already read them (state / alerts), else one more primary-key range. */
-export async function readChainHistory(env: MonitoringEnv, dates: BusinessDates, days: number, live?: ChainStateRow[]) {
-  const { span, from, liveFrom } = historyWindow(dates, days)
-  const read = async (first: string, last: string) =>
-    (await env.OPS_DB.prepare(HISTORY_SQL).bind(first, last, CHAIN_ID).all<ChainHistoryRow>()).results ?? []
-  const ended = liveFrom > from
-    ? await memoized(env.MEMO, `chain-history|${from}|${liveFrom}`, TIMELINE_HISTORY_TTL_S, () => read(from, addDays(liveFrom, -1)))
+/** The exact business dates a chain's history covers, ascending. Trading-day chains: the weekdays of
+ * [X − days + 1, X] (no row is ever created on a weekend), X−1..X moving, the rest ended (hourly memo).
+ * Week / month: the last N period keys, X moving, the rest ended (PERIOD_ENDED_TTL_S memo). */
+function keyedHistoryPlan(dates: ChainDates, days: number) {
+  const { chain } = dates
+  if (chain.period === 'trading_day') {
+    const { span, from, liveFrom } = historyWindow(dates, days)
+    const all = Array.from({ length: span }, (_, index) => addDays(from, index))
+      .filter((date) => { const dow = new Date(`${date}T00:00:00Z`).getUTCDay(); return dow !== 0 && dow !== 6 })
+    return { span, periods: null, from, ended: all.filter((date) => date < liveFrom), moving: all.filter((date) => date >= liveFrom), ttl: TIMELINE_HISTORY_TTL_S }
+  }
+  const keys = periodKeys(chain.chainId, dates.x, chain.historyPeriods).reverse()
+  return { span: null, periods: keys.length, from: keys[0], ended: keys.slice(0, -1), moving: keys.slice(-1), ttl: PERIOD_ENDED_TTL_S }
+}
+
+async function readKeyed<T>(env: MonitoringEnv, sql: (count: number) => string, chainId: ChainId, keys: string[]): Promise<T[]> {
+  if (!keys.length) return []
+  return (await env.OPS_DB.prepare(sql(keys.length)).bind(...keys, chainId).all<T>()).results ?? []
+}
+
+/** Final stage states of [X − days + 1, X] (daily, intraday) or the last N periods (week, month), oldest first.
+ * Ended dates come from the memo; the moving ones are `live` when the caller already read them (state / alerts),
+ * else one more primary-key read. */
+export async function readChainHistory(env: MonitoringEnv, dates: ChainDates, days: number, live?: ChainStateRow[]) {
+  const { chainId } = dates.chain
+  const plan = keyedHistoryPlan(dates, days)
+  const ended = plan.ended.length
+    ? await memoized(env.MEMO, `chain-history|${chainId}|${plan.ended[0]}|${plan.ended.at(-1)}|${plan.ended.length}`, plan.ttl,
+      () => readKeyed<ChainHistoryRow>(env, keyedHistorySql, chainId, plan.ended))
     : []
-  const moving = live ? live.filter((row) => row.business_date >= liveFrom && row.business_date <= dates.x) : await read(liveFrom, dates.x)
-  const rows = [...ended, ...moving].sort(byDateThenStage)
+  const moving = live ? live.filter((row) => plan.moving.includes(row.business_date)) : await readKeyed<ChainHistoryRow>(env, keyedHistorySql, chainId, plan.moving)
+  const rows = [...ended, ...moving].sort(byDateThenStageFor(orderOf(chainId)))
   // Truncation drops the oldest dates, never X.
-  return { span, from, truncated: rows.length > HISTORY_ROW_LIMIT, rows: rows.slice(-HISTORY_ROW_LIMIT) }
+  return { span: plan.span, periods: plan.periods, from: plan.from, truncated: rows.length > HISTORY_ROW_LIMIT, rows: rows.slice(-HISTORY_ROW_LIMIT) }
 }
 
 /** Business dates (ascending) on which each stage ended in error. */
@@ -255,10 +358,23 @@ function median(values: number[]): number {
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
 }
 
-/** Per stage: the median minutes from a day's chain-root start to the stage's success, over the other days. */
-function typicalDoneOffsets(history: ChainHistoryRow[], exceptDate: string): Map<string, number> {
-  const rootStart = new Map<string, number>()
-  for (const row of history) if (row.stage_id === CHAIN_ROOT_STAGE && Number.isFinite(parse(row.started_at))) rootStart.set(row.business_date, parse(row.started_at))
+/** Taiwan midnight of a business date, epoch ms. */
+const twMidnightMs = (date: string) => Date.parse(`${date}T00:00:00Z`) - TW_OFFSET_MS
+
+/** What a date's ETA counts from. Daily: the chain-root start (the stages are event-chained after it). The other
+ * chains' stages are each triggered by their own schedule: Taiwan midnight of the business date / period key. */
+function etaAnchors(dates: ChainDates, history: ChainHistoryRow[]): Map<string, number> {
+  const out = new Map<string, number>()
+  if (!isDaily(dates)) {
+    for (const row of history) out.set(row.business_date, twMidnightMs(row.business_date))
+    return out
+  }
+  for (const row of history) if (row.stage_id === CHAIN_ROOT_STAGE && Number.isFinite(parse(row.started_at))) out.set(row.business_date, parse(row.started_at))
+  return out
+}
+
+/** Per stage: the median minutes from a day's ETA anchor to the stage's success, over the other days. */
+function typicalDoneOffsets(history: ChainHistoryRow[], exceptDate: string, rootStart: Map<string, number>): Map<string, number> {
   const samples = new Map<string, number[]>()
   for (const row of history) {
     const start = rootStart.get(row.business_date)
@@ -299,15 +415,24 @@ function displayStatus(alerts: AlertKind[], atRisk: boolean, visual: string): st
   return (['failed', 'overdue', 'stuck'] as const).find((kind) => alerts.includes(kind)) ?? (atRisk ? 'at_risk' : visual)
 }
 
-export async function chainStateReport(env: MonitoringEnv, nowMs: number, requested?: string | null) {
-  const dates = await resolveBusinessDates(env, nowMs, requested)
-  const rows = (await readChainState(env, dates)).sort(stageOrder)
-  const trading = tradingDateSet(dates)
-  const closed = await closedDeadlineDates(env, rows, trading)
-  const alerts = await chainAlerts(env, dates, rows, nowMs, trading, closed)
+/** The period chains' response fields; the daily chain's responses stay as they were. */
+const periodFields = (dates: ChainDates) => (isDaily(dates) ? {} : { period: dates.chain.period })
+const xTradingField = (dates: ChainDates) => (dates.chain.period === 'trading_day' ? dates.xTrading : null)
+
+export async function chainStateReport(env: MonitoringEnv, nowMs: number, requested?: string | null, chainId: ChainId = CHAIN_ID) {
+  const dates = await resolveChainDates(env, nowMs, chainId, requested)
+  const daily = isDaily(dates)
+  const order = orderOf(chainId)
+  const scope = scopeById(dates.chain.scope)
+  const stageOrder = stageOrderFor(order)
+  const rows = (await readStateRows(env, dates)).sort(stageOrder)
+  const closed = daily ? await closedDeadlineDates(env, rows, dates.judged) : new Set<string>()
   const history = (await readChainHistory(env, dates, TIMELINE_MAX_DAYS, rows)).rows
-  // Sub-stage cards hang off a parent state row: without any row there is nothing to read progress for.
-  const progress = rows.length ? await readStageProgress(env, dates) : new Map()
+  const historyAvailable = chainHistoryAvailable(dates, rows, history)
+  const alerts = await chainAlerts(env, dates, rows, nowMs, historyAvailable, closed)
+  const anchors = etaAnchors(dates, history)
+  // Sub-stage cards (daily only) hang off a parent state row: without any row there is nothing to read progress for.
+  const progress = daily && rows.length ? await readStageProgress(env, dates) : new Map()
   const etas = new Map<string, StageEta>()
   const rootStarts = new Map<string, number>()
   const cards = new Map<string, SubStageCard[]>()
@@ -315,12 +440,15 @@ export async function chainStateReport(env: MonitoringEnv, nowMs: number, reques
   const shown = [dates.x, dates.xPrev].filter((date): date is string => Boolean(date))
   for (const date of shown) {
     const dayRows = rows.filter((row) => row.business_date === date)
-    const typical = typicalDoneOffsets(history, date)
-    const rootStart = parse(dayRows.find((row) => row.stage_id === CHAIN_ROOT_STAGE)?.started_at)
-    rootStarts.set(date, rootStart)
-    for (const row of dayRows) etas.set(`${date}|${row.stage_id}`, stageEta(row, rootStart, typical.get(row.stage_id), nowMs, closed, trading.has(date)))
+    const typical = typicalDoneOffsets(history, date, anchors)
+    // The chain's start: the daily root; for the other chains the earliest stage start of the date / period.
+    const rootStart = daily ? parse(dayRows.find((row) => row.stage_id === CHAIN_ROOT_STAGE)?.started_at)
+      : Math.min(...dayRows.map((row) => parse(row.started_at)).filter(Number.isFinite), Number.POSITIVE_INFINITY)
+    rootStarts.set(date, Number.isFinite(rootStart) ? rootStart : Number.NaN)
+    const anchor = daily ? rootStart : twMidnightMs(date)
+    for (const row of dayRows) etas.set(`${date}|${row.stage_id}`, stageEta(row, anchor, typical.get(row.stage_id), nowMs, closed, dates.judged.has(date)))
     const jobs = new Map(dayRows.map((row) => [row.stage_id, stateRowJob(row)]))
-    cards.set(date, subStageCards(jobs, progress.get(date), nowMs))
+    cards.set(date, daily ? subStageCards(jobs, progress.get(date), nowMs) : [])
     jobsByDate.set(date, jobs)
   }
   const kinds = new Map<string, AlertKind[]>()
@@ -336,7 +464,7 @@ export async function chainStateReport(env: MonitoringEnv, nowMs: number, reques
     // The panel's current stage is picked among the displayed nodes, cards included.
     const jobs = new Map(jobsByDate.get(date))
     for (const card of cards.get(date) ?? []) jobs.set(card.job.id, card.job)
-    const stage = jobs.size ? currentStage(jobs, DAILY) : null
+    const stage = jobs.size ? currentStage(jobs, scope) : null
     // Counts, elapsed time and margins are over the catalog stages only, never the cards.
     const required = dayRows.filter((row) => Number(row.optional) !== 1)
     const rootStart = rootStarts.get(date) ?? Number.NaN
@@ -349,7 +477,7 @@ export async function chainStateReport(env: MonitoringEnv, nowMs: number, reques
       .filter((item): item is { stage: string; margin: number } => item.margin != null)
       .sort((a, b) => a.margin - b.margin)[0]
     return {
-      business_date: date, active: date === active, trading_day: trading.has(date), stage_id: stage?.id ?? null, visual_status: stage?.status ?? null, cue: stage?.cue ?? null,
+      business_date: date, active: date === active, trading_day: tradingFlag(dates, date), stage_id: stage?.id ?? null, visual_status: stage?.status ?? null, cue: stage?.cue ?? null,
       required_total: required.length, required_done: required.filter((row) => row.status === 'success' || row.status === 'skipped').length,
       failed: dayRows.filter((row) => row.status === 'error').length,
       root_started_at: Number.isFinite(rootStart) ? new Date(rootStart).toISOString() : null,
@@ -363,14 +491,15 @@ export async function chainStateReport(env: MonitoringEnv, nowMs: number, reques
     const eta = etas.get(key)
     const visual = visualStatus(job)
     return {
-      ...row, optional: Number(row.optional) === 1, trading_day: trading.has(row.business_date),
-      label: STAGES[row.stage_id]?.label ?? row.stage_id, phase: dailyPhaseForStage(row.stage_id) ?? null,
-      position: DAILY_ORDER.get(row.stage_id) ?? null, visual_status: visual, status_label: statusLabel(job),
+      ...row, optional: Number(row.optional) === 1, trading_day: tradingFlag(dates, row.business_date),
+      label: STAGES[row.stage_id]?.label ?? row.stage_id,
+      phase: (daily ? dailyPhaseForStage(row.stage_id) : chainPhaseForStage(chainId as Exclude<ChainId, 'daily_readiness'>, row.stage_id)) ?? null,
+      position: order.get(row.stage_id) ?? null, visual_status: visual, status_label: statusLabel(job),
       alerts: kinds.get(key) ?? [],
       ...eta,
       sub_stage: false, parent_stage_id: null as string | null,
       // The panel shows the cards in place of their parent, and ml-predict not at all.
-      display_position: DAILY_ORDER.get(row.stage_id) ?? null, active: row.business_date === active,
+      display_position: order.get(row.stage_id) ?? null, active: row.business_date === active,
       display_status: displayStatus(kinds.get(key) ?? [], Boolean(eta?.at_risk), visual),
     }
   })
@@ -384,7 +513,7 @@ export async function chainStateReport(env: MonitoringEnv, nowMs: number, reques
       optional: Number(parent.optional) === 1, expected_by: null, attempt: Number(parent.attempt ?? 0),
       root_ticket_id: parent.root_ticket_id, ticket_id: parent.ticket_id, run_id: card.run_id, execution_name: null,
       summary: job.summary, error: job.lastError ?? null, started_at: job.lastRunAt ?? null, completed_at: card.completed_at,
-      heartbeat_at: null, updated_at: card.observed_at, trading_day: trading.has(date),
+      heartbeat_at: null, updated_at: card.observed_at, trading_day: tradingFlag(dates, date),
       label: job.name, phase: dailyPhaseForStage(job.id) ?? null, position: DAILY_ORDER.get(job.id) ?? null,
       visual_status: visual, status_label: statusLabel(job), alerts: [] as AlertKind[],
       typical_done_offset_min: null, eta: null, eta_margin_min: null, at_risk: false,
@@ -395,37 +524,76 @@ export async function chainStateReport(env: MonitoringEnv, nowMs: number, reques
     }
   }))
   return {
-    business_date: dates.x, previous_business_date: dates.xPrev, x_trading_day: dates.xTrading, chain_id: CHAIN_ID,
+    business_date: dates.x, previous_business_date: dates.xPrev, x_trading_day: xTradingField(dates), chain_id: chainId, ...periodFields(dates),
+    // false: no row in the lookback (a chain not started yet); a date without rows is then not missed.
+    history_available: historyAvailable,
     active_business_date: active,
     current,
-    rows: [...stageRows, ...cardRows].sort(stageOrder),
+    rows: [...stageRows, ...cardRows].sort(stageOrder).map(withIsoStamps),
   }
 }
 
-export async function chainAlertsReport(env: MonitoringEnv, nowMs: number, requested?: string | null) {
-  const dates = await resolveBusinessDates(env, nowMs, requested)
-  const rows = await readChainState(env, dates)
-  const alerts = await chainAlerts(env, dates, rows, nowMs, tradingDateSet(dates))
-  const failed = failedDates((await readChainHistory(env, dates, TIMELINE_MAX_DAYS, rows)).rows)
+type AlertCounts = { total: number; failed: number; overdue: number; stuck: number; missed: number }
+const countAlerts = (alerts: ChainAlert[]): AlertCounts => {
   const count = (kind: AlertKind) => alerts.filter((item) => item.kind === kind).length
+  return { total: alerts.length, failed: count('failed'), overdue: count('overdue'), stuck: count('stuck'), missed: count('missed') }
+}
+
+/** One chain's alerts. failures_14d: business dates in the 14 days ending at X on which the stage ended in error —
+ * for the week / month chains the periods keyed in those 14 days (X and X−7; X), all inside the state read. */
+async function oneChainAlerts(env: MonitoringEnv, nowMs: number, requested: string | null | undefined, chainId: ChainId) {
+  const dates = await resolveChainDates(env, nowMs, chainId, requested)
+  const rows = await readStateRows(env, dates)
+  const trading = dates.chain.period === 'trading_day'
+  const history = trading ? (await readChainHistory(env, dates, TIMELINE_MAX_DAYS, rows)).rows : []
+  const historyAvailable = chainHistoryAvailable(dates, rows, history)
+  const alerts = await chainAlerts(env, dates, rows, nowMs, historyAvailable)
+  const failed = failedDates(trading ? history
+    : rows.filter((row) => row.business_date >= addDays(dates.x, -(TIMELINE_MAX_DAYS - 1)) && row.business_date <= dates.x))
+  return { dates, alerts, historyAvailable, rows: alerts.map((item) => ({ ...item, failures_14d: failed.get(item.stage_id)?.length ?? 0 })) }
+}
+
+/** `chain` = one chain: that chain's alerts (daily_readiness: the original response). `chain` = 'all' (the default):
+ * every chain in one response — `counts` totals all chains so the Grafana alert rules cover them unchanged,
+ * `counts_by_chain` splits them, rows carry their chain_id; the business-date fields are the daily chain's. */
+export async function chainAlertsReport(env: MonitoringEnv, nowMs: number, requested?: string | null, chain: ChainId | 'all' = CHAIN_ID) {
+  if (chain !== 'all') {
+    const { dates, alerts, rows, historyAvailable } = await oneChainAlerts(env, nowMs, requested, chain)
+    return {
+      business_date: dates.x, previous_business_date: dates.xPrev, x_trading_day: xTradingField(dates), chain_id: chain, ...periodFields(dates),
+      history_available: historyAvailable,
+      counts: countAlerts(alerts),
+      rows,
+    }
+  }
+  const each = []
+  for (const id of CHAIN_IDS) each.push({ id, ...await oneChainAlerts(env, nowMs, requested, id) })
+  const daily = each[0].dates
   return {
-    business_date: dates.x, previous_business_date: dates.xPrev, x_trading_day: dates.xTrading, chain_id: CHAIN_ID,
-    counts: { total: alerts.length, failed: count('failed'), overdue: count('overdue'), stuck: count('stuck'), missed: count('missed') },
-    // failures_14d: business dates in the 14 days ending at X on which the stage ended in error.
-    rows: alerts.map((item) => ({ ...item, failures_14d: failed.get(item.stage_id)?.length ?? 0 })),
+    business_date: daily.x, previous_business_date: daily.xPrev, x_trading_day: daily.xTrading, chain_id: 'all',
+    counts: countAlerts(each.flatMap((item) => item.alerts)),
+    counts_by_chain: Object.fromEntries(each.map((item) => [item.id, countAlerts(item.alerts)])),
+    chains: each.map(({ id, dates, historyAvailable }) => ({ chain_id: id, period: dates.chain.period, business_date: dates.x,
+      previous_business_date: dates.xPrev, history_available: historyAvailable })),
+    rows: each.flatMap((item) => item.rows.map((row) => ({ chain_id: item.id, ...row }))),
   }
 }
 
 /** Taiwan midnight of a business date, for Grafana's time axis. */
-const twMidnight = (date: string) => new Date(Date.parse(`${date}T00:00:00Z`) - TW_OFFSET_MS).toISOString()
+const twMidnight = (date: string) => new Date(twMidnightMs(date)).toISOString()
 
-export async function chainHistoryReport(env: MonitoringEnv, nowMs: number, days: number, requested?: string | null) {
-  const dates = await resolveBusinessDates(env, nowMs, requested)
-  const { span, from, truncated, rows } = await readChainHistory(env, dates, days)
+/** The window fields of history / timeline: days for the trading-day chains, periods for the week / month chains. */
+const windowFields = (dates: ChainDates, span: number | null, periods: number | null) =>
+  (isDaily(dates) ? { days: span } : { days: span, period: dates.chain.period, periods })
+
+export async function chainHistoryReport(env: MonitoringEnv, nowMs: number, days: number, requested?: string | null, chainId: ChainId = CHAIN_ID) {
+  const dates = await resolveChainDates(env, nowMs, chainId, requested)
+  const { span, periods, from, truncated, rows } = await readChainHistory(env, dates, days)
+  const order = orderOf(chainId)
   const label = (stage: string) => STAGES[stage]?.label ?? stage
-  const position = (stage: string) => DAILY_ORDER.get(stage) ?? null
+  const position = (stage: string) => order.get(stage) ?? null
   return {
-    business_date: dates.x, from, to: dates.x, days: span, chain_id: CHAIN_ID, truncated,
+    business_date: dates.x, from, to: dates.x, ...windowFields(dates, span, periods), chain_id: chainId, truncated,
     rows: rows.map((row) => ({
       time: twMidnight(row.business_date), business_date: row.business_date, stage_id: row.stage_id, label: label(row.stage_id),
       position: position(row.stage_id), optional: Number(row.optional) === 1, status: row.status, attempt: Number(row.attempt ?? 0),
@@ -440,19 +608,19 @@ export async function chainHistoryReport(env: MonitoringEnv, nowMs: number, days
   }
 }
 
-export async function chainTimelineReport(env: MonitoringEnv, nowMs: number, days: number, requested?: string | null) {
-  const dates = await resolveBusinessDates(env, nowMs, requested)
-  const { span, from, liveFrom } = historyWindow(dates, days)
-  const read = async (first: string, last: string) =>
-    (await env.OPS_DB.prepare(TIMELINE_SQL).bind(first, last, CHAIN_ID).all<Record<string, unknown>>()).results ?? []
-  const history = liveFrom > from
-    ? await memoized(env.MEMO, `timeline-history|${from}|${liveFrom}`, TIMELINE_HISTORY_TTL_S, () => read(from, addDays(liveFrom, -1)))
+export async function chainTimelineReport(env: MonitoringEnv, nowMs: number, days: number, requested?: string | null, chainId: ChainId = CHAIN_ID) {
+  const dates = await resolveChainDates(env, nowMs, chainId, requested)
+  // Same exact keys as the history: ended dates / periods from the memo, the moving ones read again.
+  const plan = keyedHistoryPlan(dates, days)
+  const history = plan.ended.length
+    ? await memoized(env.MEMO, `timeline-history|${chainId}|${plan.ended[0]}|${plan.ended.at(-1)}|${plan.ended.length}`, plan.ttl,
+      () => readKeyed<Record<string, unknown>>(env, keyedTimelineSql, chainId, plan.ended))
     : []
-  const rows = [...history, ...await read(liveFrom, dates.x)].sort(byTransition)
-  const truncated = rows.length > TIMELINE_ROW_LIMIT
+  const rows = [...history, ...await readKeyed<Record<string, unknown>>(env, keyedTimelineSql, chainId, plan.moving)].sort(byTransition)
   return {
-    business_date: dates.x, from, to: dates.x, days: span, chain_id: CHAIN_ID, truncated,
+    business_date: dates.x, from: plan.from, to: dates.x, ...windowFields(dates, plan.span, plan.periods), chain_id: chainId,
+    truncated: rows.length > TIMELINE_ROW_LIMIT,
     // Truncation drops the oldest dates, never X.
-    rows: rows.slice(-TIMELINE_ROW_LIMIT).map((row) => ({ time: row.transition_at, ...row })),
+    rows: rows.slice(-TIMELINE_ROW_LIMIT).map(withIsoStamps).map((row) => ({ time: row.transition_at, ...row })),
   }
 }

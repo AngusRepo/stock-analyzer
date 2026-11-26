@@ -63,6 +63,6 @@ assert.match(recommendations, /symbolsForHydration\.length && view !== 'card'/)
 assert.equal((recommendations.match(/resultSymbols\.length > 0 && view !== 'card'/g) ?? []).length, 2)
 assert.match(recommendations, /const evidenceLinksBySymbol = view === 'card'/)
 assert.match(recommendations, /if \(view !== 'card'\) \{\s*try \{\s*pipelineSummaries = await buildDailyPipelineSummaries/)
-assert.match(recommendations, /market:indices:finlab-clean:v17-taifex-controller-live-night/)
+assert.match(recommendations, /market:indices:finlab-clean:v18-futures-settlement-change/)
 
 console.log('aug25 operations closure tests passed')

@@ -51,6 +51,8 @@ type IndexTile = {
   status: string
   history: number[]
   available: boolean
+  // Each tile carries its own data date: TWSE publishes TWII after the close, FinLab tiles update in the evening.
+  date: string | null
 }
 
 type RiskFactor = {
@@ -242,6 +244,13 @@ function shortDate(value: unknown) {
   return raw ? raw.slice(0, 10).replace(/-/g, '/') : 'latest'
 }
 
+function isoDate(value: unknown): string | null {
+  const raw = String(value ?? '').trim()
+  const compact = raw.match(/^(\d{4})(\d{2})(\d{2})$/)
+  if (compact) return `${compact[1]}-${compact[2]}-${compact[3]}`
+  return /^\d{4}-\d{2}-\d{2}/.test(raw) ? raw.slice(0, 10) : null
+}
+
 function parseHistory(raw: any): number[] {
   return asArray<MarketPoint>(raw?.history)
     .map((point) => asNumber(point.close ?? point.value))
@@ -266,6 +275,7 @@ function toIndexTile(raw: any, label: string, source: string): IndexTile {
     status: raw?.status ?? (current == null ? 'missing' : 'ok'),
     history,
     available: current != null,
+    date: current == null ? null : isoDate(raw?.date),
   }
 }
 
@@ -280,6 +290,7 @@ function pendingIndexTile(label: string, source: string): IndexTile {
     status: 'missing',
     history: [],
     available: false,
+    date: null,
   }
 }
 
@@ -330,7 +341,9 @@ function Sparkline({ values, tone }: { values: number[]; tone: Tone }) {
   )
 }
 
-function IndexTileCard({ tile }: { tile: IndexTile }) {
+function IndexTileCard({ tile, panelDate }: { tile: IndexTile; panelDate: string | null }) {
+  // The night session always trades ahead of the day-session panel date, so it is not compared.
+  const dateDiffers = tile.label !== '台指期貨夜盤' && tile.date != null && panelDate != null && tile.date !== panelDate
   return (
     <div className={cx(
       'relative min-h-[122px] overflow-hidden border-white/[0.045] px-5 py-4 md:border-r',
@@ -355,7 +368,12 @@ function IndexTileCard({ tile }: { tile: IndexTile }) {
           </span>
         )}
       </div>
-      <p className="mt-3 truncate text-[11px] text-slate-500" title={tile.source}>
+      {tile.date && (
+        <p className={cx('mt-3 text-[11px] tabular-nums', dateDiffers ? 'font-semibold text-amber-200' : 'text-slate-400')}>
+          資料日 {shortDate(tile.date)}{dateDiffers ? '（與上方日期不同）' : ''}
+        </p>
+      )}
+      <p className={cx('truncate text-[11px] text-slate-500', tile.date ? 'mt-1' : 'mt-3')} title={tile.source}>
         {tile.status === 'missing' ? 'source missing' : tile.status === 'finlab_not_materialized' ? 'FinLab 尚未 materialize' : tile.source}
       </p>
     </div>
@@ -943,6 +961,8 @@ function MarketOverviewBlock() {
     indices?.txfDay ? toIndexTile(indices.txfDay, '台指期貨', indices.txfDay.source ?? 'FinLab futures_price') : pendingIndexTile('台指期貨', 'FinLab futures_price'),
     indices?.txfNight ? toIndexTile(indices.txfNight, '台指期貨夜盤', indices.txfNight.source ?? 'TAIFEX MIS') : pendingIndexTile('台指期貨夜盤', 'TAIFEX MIS'),
   ], [indices])
+  // Only the risk packet's business date is a trading date; updatedAt is a UTC cache timestamp.
+  const panelDate = isoDate(risk?.date)
 
   return (
     <section className="space-y-4" aria-label="市場概況與風險">
@@ -954,7 +974,7 @@ function MarketOverviewBlock() {
         />
         <div className="border-t border-white/[0.055] bg-white/[0.045]">
           <div className="grid bg-[#101116] md:grid-cols-2 xl:grid-cols-4">
-            {indexTiles.map((tile) => <IndexTileCard key={tile.label} tile={tile} />)}
+            {indexTiles.map((tile) => <IndexTileCard key={tile.label} tile={tile} panelDate={panelDate} />)}
           </div>
           <div className="border-t border-white/[0.055] bg-[#101116] p-4">
             <MarketStatsRibbonClean risk={risk} />

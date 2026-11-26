@@ -10,7 +10,7 @@ function resolveBuildId() {
   if (envBuildId) return envBuildId.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 16)
   try {
     return execSync('git rev-parse --short HEAD', {
-      cwd: path.resolve(__dirname, '..'),
+      cwd: path.resolve(import.meta.dirname, '..'),
       stdio: ['ignore', 'pipe', 'ignore'],
     }).toString().trim().replace(/[^a-zA-Z0-9_-]/g, '')
   } catch {
@@ -133,7 +133,7 @@ export default defineConfig({
     }),
   ],
   resolve: {
-    alias: { '@': path.resolve(__dirname, './src') },
+    alias: { '@': path.resolve(import.meta.dirname, './src') },
   },
   build: {
     outDir: 'dist',

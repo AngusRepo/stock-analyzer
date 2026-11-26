@@ -246,7 +246,7 @@ try {
   const env = { ...fx.env, ACCESS_TEAM_DOMAIN: TEST_TEAM, ACCESS_AUD: TEST_AUD, MONITORING_READ_TOKEN: TEST_TOKEN }
   mkdirSync(out, { recursive: true })
   // The paths the dashboards query, parameters included.
-  const paths = [...Object.keys(ROUTES).map((path) => (path === '/v1/chain/timeline' ? `${path}?days=2` : path === '/v1/chain/history' ? `${path}?days=14` : path)),
+  const paths = [...Object.keys(ROUTES).map((path) => (path === '/v1/chain/timeline' ? `${path}?days=14` : path === '/v1/chain/history' ? `${path}?days=14` : path)),
     ...(CHAIN_IDS as string[]).filter((id) => id !== CHAIN_ID).flatMap((id) => [`/v1/chain/state?chain=${id}`, `/v1/chain/history?days=14&chain=${id}`])]
   const index: Record<string, string> = {}
   for (const path of paths) {

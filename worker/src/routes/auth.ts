@@ -1,7 +1,7 @@
 import { databaseForDataDomain } from '../lib/dataDomainRegistry'
 import { Hono } from 'hono'
 import type { Bindings, Variables } from '../types'
-import { signJWT, verifyJWT, revokeJWT, authMiddleware, adminMiddleware } from '../lib/auth'
+import { signJWT, verifyJWT, revokeJWT, authMiddleware, adminMiddleware, isPrimaryAdmin } from '../lib/auth'
 
 const auth = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -268,15 +268,16 @@ auth.get('/me', authMiddleware, async (c) => {
       name: 'Local Dev',
       avatar: null,
       role: 'admin',
+      is_primary_admin: true,
       approval_status: 'approved',
       created_at: new Date().toISOString(),
     })
   }
   const user = await databaseForDataDomain(c.env, 'core').prepare(
     'SELECT id, email, name, avatar, role, approval_status, created_at FROM users WHERE id = ?'
-  ).bind(c.get('userId')).first()
+  ).bind(c.get('userId')).first<Record<string, unknown> & { email: string; role: string }>()
   if (!user) return c.json({ error: '使用者不存在' }, 404)
-  return c.json(user)
+  return c.json({ ...user, is_primary_admin: isPrimaryAdmin(user, c.env.ADMIN_EMAIL) })
 })
 
 // ─── POST /api/auth/logout — 撤銷 JWT（加入 KV blacklist）─────────────────────

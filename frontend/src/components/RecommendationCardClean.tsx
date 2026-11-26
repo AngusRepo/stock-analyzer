@@ -42,6 +42,7 @@ import {
 import { buildAtrBandSeries, buildTradingPlanLevels, normalizeOhlcvRows, type TradingPlanLevels } from '@/lib/tradingPlanLevels'
 import { buildTradePlanStructureZones } from '@/lib/tradePlanStructureZones'
 import { cn } from '@/lib/utils'
+import { safeExternalUrl } from '@/lib/safeUrl'
 
 type AlphaContext = {
   bucket?: string
@@ -3372,9 +3373,9 @@ export function RecommendationCardClean({ rec, rank, context = 'full' }: Recomme
           {evidenceLinks.map((link) => (
             <a
               key={`${link.source}:${link.url}`}
-              href={link.url}
+              href={safeExternalUrl(link.url)}
               target="_blank"
-              rel="noreferrer"
+              rel="noopener noreferrer"
               onClick={(event) => event.stopPropagation()}
               className="inline-flex max-w-full items-center gap-1 rounded-md border border-sky-300/20 bg-sky-400/[0.075] px-2 py-1 text-[11px] leading-tight text-sky-200 hover:border-sky-300/40"
             >

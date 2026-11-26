@@ -63,6 +63,8 @@ function dateOnly(value: unknown): string | null {
 }
 
 function numberOrNull(value: unknown): number | null {
+  // Number(null) and Number('') are 0; a missing snapshot value must stay missing, not plot as -100%.
+  if (value == null || value === '') return null
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : null
 }
@@ -73,12 +75,15 @@ function pct(value: number, base: number): number {
 }
 
 function benchmarkRawValue(row: any, key: BenchmarkKey): number | null {
-  if (key === '0050') return numberOrNull(row?.benchmark_value)
-  if (key === 'TWII') return numberOrNull(row?.twii_value)
   const map = row?.etf_benchmarks && typeof row.etf_benchmarks === 'object'
     ? row.etf_benchmarks as Record<string, unknown>
     : {}
-  return numberOrNull(map[key] ?? row?.[`${key}_value`] ?? row?.[key])
+  const raw = key === '0050' ? row?.benchmark_value
+    : key === 'TWII' ? row?.twii_value
+      : map[key] ?? row?.[`${key}_value`] ?? row?.[key]
+  // A benchmark price is never zero or negative; treat one as a gap in the series.
+  const value = numberOrNull(raw)
+  return value != null && value > 0 ? value : null
 }
 
 function firstPositiveValue(rows: any[], getter: (row: any) => unknown, fallback: number) {

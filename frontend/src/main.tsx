@@ -17,7 +17,13 @@ function recoverStaleAssetGraph() {
 }
 
 if ('serviceWorker' in navigator) {
+  // A first install claims a page that had no controller; that page already runs the current
+  // build, so only a replacement worker should reload it.
+  let previousController = navigator.serviceWorker.controller
   navigator.serviceWorker.addEventListener('controllerchange', () => {
+    const replacedController = previousController
+    previousController = navigator.serviceWorker.controller
+    if (!replacedController) return
     if (serviceWorkerReloadScheduled) return
     serviceWorkerReloadScheduled = true
     window.location.reload()

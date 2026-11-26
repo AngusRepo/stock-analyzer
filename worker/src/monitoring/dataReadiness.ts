@@ -7,6 +7,7 @@ import {
   buildFreshnessCheck, buildMarketDashboardMaterializationCheck, resolveExpectedCompletedDataDate,
   type DataQualityCheck,
 } from '../lib/dataQualityMonitor'
+import { DAILY_READINESS_STAGE_CATALOG } from '../lib/opsChainStageCatalog'
 import { buildReadinessGates } from './judgment/obsJudgment'
 import { addDays, memoized, twDate, TW_OFFSET_MS, type Memo, type MonitoringEnv } from './env'
 
@@ -113,9 +114,24 @@ async function gdeltStats(db: D1Database, targetDate: string) {
 
 const settle = <T>(promise: Promise<T>, fallback: T) => promise.catch(() => fallback)
 
+/** Chip data and technical indicators are written by the evening chain (Market update, Indicator queue), not by the
+ * close refresh, so today becomes their target only at the writing stage's deadline, read from the stage catalog. */
+function writerDeadlineMinuteTw(stageId: string): number {
+  const expectedBy = DAILY_READINESS_STAGE_CATALOG.find((stage) => stage.stageId === stageId)?.expectedBy
+  if (!expectedBy || expectedBy.dayOffset !== 0 || expectedBy.anchor !== 'business_date') throw new Error(`no same-day deadline for ${stageId}`)
+  const [hours, minutes] = expectedBy.tw.split(':').map(Number)
+  return hours * 60 + minutes
+}
+export const CHIP_READY_MINUTE_TW = writerDeadlineMinuteTw('update')
+export const TECHNICAL_READY_MINUTE_TW = writerDeadlineMinuteTw('indicator-queue')
+
 /** Lag thresholds are buildDataQualityReport's (pinned by dataReadiness.test.ts against its source). */
 export async function dataReadinessReport(env: MonitoringEnv, nowMs: number, requested?: string | null) {
-  const targetDate = requested ?? await resolveExpectedCompletedDataDate(env.KV, twDate(nowMs), new Date(nowMs + TW_OFFSET_MS))
+  const expectedAt = (readyMinuteTw?: number) =>
+    requested ?? resolveExpectedCompletedDataDate(env.KV, twDate(nowMs), new Date(nowMs + TW_OFFSET_MS), readyMinuteTw)
+  const [targetDate, chipTargetDate, technicalTargetDate] = await Promise.all([
+    expectedAt(), expectedAt(CHIP_READY_MINUTE_TW), expectedAt(TECHNICAL_READY_MINUTE_TW),
+  ])
   const db = env.MARKET_DB
   const empty = { latest_date: null, rows_on_latest: 0 }
   // Sequential groups keep at most a few seeks in flight; all of them are single-date or LIMIT 1 reads.
@@ -137,9 +153,9 @@ export async function dataReadinessReport(env: MonitoringEnv, nowMs: number, req
   const checks: DataQualityCheck[] = [
     buildFreshnessCheck({ id: 'price_freshness', label: 'Price data', latestDate: price.latest_date, targetDate,
       rowsOnLatest: price.rows_on_latest, warnLagDays: 0, failLagDays: 0, minRows: 1000 }),
-    buildFreshnessCheck({ id: 'chip_freshness', label: 'Chip data', latestDate: chip.latest_date, targetDate,
+    buildFreshnessCheck({ id: 'chip_freshness', label: 'Chip data', latestDate: chip.latest_date, targetDate: chipTargetDate,
       rowsOnLatest: chip.rows_on_latest, warnLagDays: 0, failLagDays: 0, minRows: 1000 }),
-    buildFreshnessCheck({ id: 'technical_indicator_freshness', label: 'Technical indicators', latestDate: technical.latest_date, targetDate,
+    buildFreshnessCheck({ id: 'technical_indicator_freshness', label: 'Technical indicators', latestDate: technical.latest_date, targetDate: technicalTargetDate,
       rowsOnLatest: technical.rows_on_latest, warnLagDays: 0, failLagDays: 0, minRows: 1000 }),
     buildMarketDashboardMaterializationCheck({ targetDate, sources: MATERIALIZATION_SOURCES.map((source) => {
       const stats = ({

@@ -63,7 +63,8 @@ export const STATE_SQL = `SELECT business_date, chain_id, stage_id, status, opti
  WHERE business_date IN (?, ?) AND chain_id = ?
  LIMIT ${STATE_ROW_LIMIT}`
 
-export type ChainHistoryRow = Pick<ChainStateRow, 'business_date' | 'stage_id' | 'status' | 'optional' | 'attempt' | 'error' | 'started_at' | 'completed_at'>
+export type ChainHistoryRow = Pick<ChainStateRow, 'business_date' | 'stage_id' | 'status' | 'optional' | 'expected_by' | 'attempt' | 'error'
+  | 'started_at' | 'completed_at'>
 
 const placeholders = (count: number) => Array.from({ length: count }, () => '?').join(', ')
 /** History and timeline: one primary-key seek per (business_date, chain_id), each billed as its rows plus about
@@ -71,7 +72,7 @@ const placeholders = (count: number) => Array.from({ length: count }, () => '?')
  * primary-key walk (no temp B-tree) and a truncation drops the oldest dates, never X. A full ORDER BY adds a temp
  * B-tree that D1 bills as a second read of every row (measured: 300 rows → rows_read 601); the finer order is
  * applied in JS. */
-export const keyedHistorySql = (dates: number) => `SELECT business_date, stage_id, status, optional, attempt, error, started_at, completed_at
+export const keyedHistorySql = (dates: number) => `SELECT business_date, stage_id, status, optional, expected_by, attempt, error, started_at, completed_at
   FROM ops_chain_stage_state_v1
  WHERE business_date IN (${placeholders(dates)}) AND chain_id = ?
  ORDER BY business_date DESC
@@ -333,8 +334,9 @@ async function readKeyed<T>(env: MonitoringEnv, sql: (count: number) => string, 
 export async function readChainHistory(env: MonitoringEnv, dates: ChainDates, days: number, live?: ChainStateRow[]) {
   const { chainId } = dates.chain
   const plan = keyedHistoryPlan(dates, days)
+  // v2: memo entries written before keyedHistorySql selected expected_by lack it.
   const ended = plan.ended.length
-    ? await memoized(env.MEMO, `chain-history|${chainId}|${plan.ended[0]}|${plan.ended.at(-1)}|${plan.ended.length}`, plan.ttl,
+    ? await memoized(env.MEMO, `chain-history-v2|${chainId}|${plan.ended[0]}|${plan.ended.at(-1)}|${plan.ended.length}`, plan.ttl,
       () => readKeyed<ChainHistoryRow>(env, keyedHistorySql, chainId, plan.ended))
     : []
   const moving = live ? live.filter((row) => plan.moving.includes(row.business_date)) : await readKeyed<ChainHistoryRow>(env, keyedHistorySql, chainId, plan.moving)
@@ -599,6 +601,8 @@ export async function chainHistoryReport(env: MonitoringEnv, nowMs: number, days
       position: position(row.stage_id), optional: Number(row.optional) === 1, status: row.status, attempt: Number(row.attempt ?? 0),
       // A success that needed more than one attempt is shown apart from a first-attempt success.
       result: row.status === 'success' && Number(row.attempt ?? 0) > 1 ? 'retry_success' : row.status,
+      // Deadline margin (expected_by − completed_at) and finishing time on ② page; isoStamp for Grafana's JSONata.
+      started_at: isoStamp(row.started_at ?? null), completed_at: isoStamp(row.completed_at ?? null), expected_by: isoStamp(row.expected_by ?? null),
     })),
     repeat_failures: [...failedDates(rows)].map(([stage, failures]) => ({
       stage_id: stage, label: label(stage), failures: failures.length, repeat: failures.length >= 2,

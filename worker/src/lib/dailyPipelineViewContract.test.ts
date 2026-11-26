@@ -23,7 +23,7 @@ test('daily pipeline view exits before full recommendation hydration', () => {
   const fullHydration = route.indexOf('const coreResult = await')
   assert(earlyReturn >= 0, 'daily recommendations must expose pipeline view')
   assert(fullHydration > earlyReturn, 'pipeline view must return before full recommendation hydration')
-  assert(route.includes("requestedView === 'card' || requestedView === 'pipeline'"))
+  assert(route.includes("const view = resolveDailyRecommendationView(c.req.query('view'))"))
   assert(route.includes('...pipelinePayload'))
 })
 

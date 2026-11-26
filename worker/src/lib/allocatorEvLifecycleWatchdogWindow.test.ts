@@ -143,7 +143,7 @@ test('(a) a 09-23 post-verify waiting for two months no longer blocks 11-23: sam
   assert.equal(f.lifecycleRow('2026-09-23').state, 'verify_triggered')
 
   const second = await f.tick()
-  assert.match(second, /outside_window_new=0 outside_window_known=1;/)
+  assert.match(second, /outside_window_new=0 outside_window_known=1 gap_scan=done_today swept=2026-11-17;/)
   assert.doesNotMatch(second, /outside_window_unowned/)
   assert.match(second, /2026-11-23=ok:.*recovery_observation=post_pipeline_current.*downstream_status:queued/)
   // 11-20 waiting_stale still reports red every tick.
@@ -252,6 +252,7 @@ test('(e) every SQL the window tick issues is an index SEARCH, never a SCAN', as
   const f = fixture()
   f.lifecycle('2026-09-23', 'verify_triggered', '2026-09-25 10:00:00')
   f.stage('2026-11-23', 'post_pipeline_chain', 'error', { last_error: 'x' })
+  f.stage('2026-10-27', 'pipeline_execution', 'success')
   for (const db of [f.ops, f.learning, f.paper, f.core]) db.statements.length = 0
   await f.tick()
   const plans: Array<{ line: string; sql: string }> = []
@@ -267,8 +268,8 @@ test('(e) every SQL the window tick issues is an index SEARCH, never a SCAN', as
     }
   }
   if (process.env.PRINT_EXPLAIN) console.log(plans.map(p => p.line).join('\n'))
-  const window = plans.filter(({ sql }) => /stage = 'pipeline_execution' AND status = 'success'|stage = 'post_pipeline_chain' AND status = 'waiting'|FROM allocator_ev_daily_lifecycle WHERE business_date >= \?|WHERE state IN|stage = 'post_pipeline_chain' AND status IN/.test(sql))
-  assert.equal(window.length, 5)
+  const window = plans.filter(({ sql }) => /stage = 'pipeline_execution' AND status = 'success'|stage = 'post_pipeline_chain' AND status = 'waiting'|FROM allocator_ev_daily_lifecycle WHERE business_date >= \?|WHERE state IN|stage = 'post_pipeline_chain' AND status IN|FROM allocator_ev_daily_lifecycle WHERE business_date IN|NOT EXISTS/.test(sql))
+  assert.equal(window.length, 7)
   for (const { line } of window) assert.match(line, /SEARCH .* USING (?:COVERING )?INDEX/)
 })
 
@@ -328,4 +329,124 @@ test('(i) legacy L4: the oldest replay cohort outside the window stays owned (fi
   assert.match(summary, /2026-07-08=/)
   assert.match(summary, /outside_window_unowned=2026-09-10:replay_pending_maturity /)
   assert.doesNotMatch(summary, /outside_window_unowned=[^ ]*2026-07-08/)
+})
+
+test('(j) a date that left the window with a successful pipeline and no post-pipeline or lifecycle row is reported once', async () => {
+  const f = fixture()
+  // 10-27 and 11-12 (prod shape): pipeline_execution success, no post_pipeline_chain row, no lifecycle row.
+  f.stage('2026-10-27', 'pipeline_execution', 'success')
+  f.stage('2026-11-12', 'pipeline_execution', 'success')
+  // 11-05 has a lifecycle row (its closure is owned there); 07-22 predates the post-pipeline stage.
+  f.stage('2026-11-05', 'pipeline_execution', 'success'); f.lifecycle('2026-11-05', 'replay_complete')
+  f.stage('2026-07-22', 'pipeline_execution', 'success')
+  // 11-13 failed its pipeline execution: there is nothing for a post-pipeline to follow.
+  f.stage('2026-11-13', 'pipeline_execution', 'error')
+  const first = await f.tick()
+  // The first scan sweeps the whole history once, from the stage's first date to the window.
+  assert.match(first, /^status=failed .*outside_window_new=2 outside_window_known=0 gap_scan=2026-07-23\.\.2026-11-17 /)
+  assert.match(first, /outside_window_unowned=2026-11-12:post_pipeline_missing,2026-10-27:post_pipeline_missing recovery_dispatch=not_queued manual_review_required/)
+  assert.doesNotMatch(first, /2026-11-05:|2026-07-22:|2026-11-13:/)
+  // 11-23 is inside the window: it is dispatched there, not reported as outside.
+  assert.match(first, /2026-11-23=ok:.*recovery_dispatch=post_pipeline_queued/)
+  assert.ok(f.kv.has('allocator-ev-lifecycle:outside-window-reported:2026-10-27:none:post_pipeline_missing'))
+  assert.deepEqual({ ...f.ops.sqlite.prepare(`SELECT status, cursor_date, cursor_key FROM legacy_migration_cursors
+    WHERE task_name='allocator_ev_lifecycle_post_pipeline_gap_scan'`).get() as any },
+  { status: 'complete', cursor_date: '2026-11-17', cursor_key: '2026-11-24' })
+  // Later ticks of the same TW day read only the cursor row.
+  f.ops.statements.length = 0
+  const second = await f.tick()
+  assert.match(second, /^status=success .*outside_window_new=0 outside_window_known=0 gap_scan=done_today swept=2026-11-17;/)
+  assert.doesNotMatch(second, /outside_window_unowned/)
+  assert.ok(!f.ops.statements.some(sql => /NOT EXISTS/.test(sql)), 'no gap scan after the day is caught up')
+  // Nothing is created or queued for an outside date.
+  assert.equal(f.stageRow('2026-10-27', 'post_pipeline_chain'), undefined)
+  assert.deepEqual(f.enqueued.map(m => m.triggerTime), ['2026-11-23'])
+})
+
+test('(k) the next day rescans only the last 30 days before the window; a late pipeline success inside them is reported', async () => {
+  const f = fixture()
+  await f.tick()
+  // Rows that appear after the first sweep: 11-05 (inside the rescan span) and 08-10 (swept long ago).
+  f.stage('2026-11-05', 'pipeline_execution', 'success')
+  f.stage('2026-08-10', 'pipeline_execution', 'success')
+  // 11-12 had no rows at the first sweep; its pipeline success and its post-pipeline both arrive later.
+  f.stage('2026-11-12', 'pipeline_execution', 'success'); f.stage('2026-11-12', 'post_pipeline_chain', 'success')
+  f.ops.statements.length = 0
+  // 2026-11-25 (Wed) 22:00 TW: the window is 11-19..11-25, the rescan span 10-20..11-18.
+  const next = await runAllocatorEvLifecycleWatchdog(f.env, undefined, { nowMs: NOW + 86_400_000 })
+  assert.match(next, /gap_scan=2026-10-20\.\.2026-11-18 /)
+  assert.match(next, /outside_window_unowned=2026-11-05:post_pipeline_missing /)
+  assert.doesNotMatch(next, /2026-08-10:|2026-11-12:post_pipeline/)
+  const scan = f.ops.statements.find(sql => /NOT EXISTS/.test(sql))!
+  const plan = (f.ops.sqlite.prepare(`EXPLAIN QUERY PLAN ${scan}`).all('2026-10-20', '2026-11-19') as Array<{ detail: string }>).map(row => row.detail)
+  assert.ok(plan.some(detail => /SEARCH p USING COVERING INDEX idx_pipeline_stage_runs_status/.test(detail)), plan.join(' | '))
+  assert.equal((f.ops.sqlite.prepare(`SELECT cursor_key FROM legacy_migration_cursors WHERE task_name='allocator_ev_lifecycle_post_pipeline_gap_scan'`).get() as any).cursor_key, '2026-11-25')
+})
+
+test('(l) a long unswept history is swept at most 120 days per tick until the cursor catches up', async () => {
+  const f = fixture()
+  // 2027-01-20 (Wed) 22:00 TW: 11-23 (pipeline success, no post-pipeline, no lifecycle) is far outside the window.
+  const later = Date.parse('2027-01-20T14:00:00Z')
+  const first = await runAllocatorEvLifecycleWatchdog(f.env, undefined, { nowMs: later })
+  assert.match(first, /gap_scan=2026-07-23\.\.2026-11-19;/)
+  assert.doesNotMatch(first, /2026-11-23:post_pipeline_missing/)
+  const cursor = () => ({ ...f.ops.sqlite.prepare(`SELECT status, cursor_date, cursor_key FROM legacy_migration_cursors
+    WHERE task_name='allocator_ev_lifecycle_post_pipeline_gap_scan'`).get() as any })
+  assert.deepEqual(cursor(), { status: 'running', cursor_date: '2026-11-19', cursor_key: null })
+  const second = await runAllocatorEvLifecycleWatchdog(f.env, undefined, { nowMs: later })
+  assert.match(second, /gap_scan=2026-11-20\.\.2027-01-13 .*outside_window_unowned=2026-11-23:post_pipeline_missing /)
+  assert.deepEqual(cursor(), { status: 'complete', cursor_date: '2027-01-13', cursor_key: '2027-01-20' })
+  assert.match(await runAllocatorEvLifecycleWatchdog(f.env, undefined, { nowMs: later }), /gap_scan=done_today/)
+})
+
+test('(m) a failed gap scan or cursor write fails the tick but the window recovery still runs', async () => {
+  const f = fixture()
+  const prepare = f.ops.db.prepare
+  f.ops.db.prepare = (sql: string) => {
+    if (/FROM legacy_migration_cursors/.test(sql)) throw new Error('D1_ERROR: overloaded')
+    return prepare(sql)
+  }
+  const failed = await f.tick()
+  assert.match(failed, /^status=failed .*gap_scan=failed:D1_ERROR:_overloaded/)
+  assert.match(failed, /2026-11-23=ok:.*recovery_dispatch=post_pipeline_queued/)
+  f.ops.db.prepare = (sql: string) => {
+    if (/INSERT INTO legacy_migration_cursors/.test(sql)) throw new Error('D1_ERROR: write')
+    return prepare(sql)
+  }
+  const unsaved = await f.tick()
+  assert.match(unsaved, /^status=failed .*gap_scan=2026-07-23\.\.2026-11-17 gap_scan_cursor=unavailable/)
+})
+
+test('(n) more gaps than the report lists: the cursor rewinds to the oldest unlisted gap, on the same or the next day', async () => {
+  const build = () => {
+    const f = fixture()
+    const days: string[] = []
+    for (let day = Date.parse('2026-08-03T00:00:00Z'); days.length < 45; day += 86_400_000) {
+      if ([0, 6].includes(new Date(day).getUTCDay())) continue
+      const date = new Date(day).toISOString().slice(0, 10)
+      days.push(date); f.stage(date, 'pipeline_execution', 'success')
+    }
+    return { f, days }
+  }
+  const { f, days } = build()
+  const fenced = (g = f) => [...g.kv.keys()].filter(key => key.endsWith(':none:post_pipeline_missing')).length
+  const cursor = (g = f) => ({ ...g.ops.sqlite.prepare(`SELECT status, cursor_date, cursor_key FROM legacy_migration_cursors
+    WHERE task_name='allocator_ev_lifecycle_post_pipeline_gap_scan'`).get() as any })
+  const first = await f.tick()
+  assert.match(first, /outside_window_new=45 .*gap_scan=2026-07-23\.\.2026-11-17 gap_scan_cursor=held_report_truncated.*,\+5_next_tick /)
+  assert.equal(fenced(), 40)
+  // The five oldest (newest-first listing) are unlisted: the cursor stops just before the oldest of them.
+  assert.deepEqual(cursor(), { status: 'running', cursor_date: '2026-08-02', cursor_key: null })
+  const second = await f.tick()
+  assert.match(second, /^status=failed .*outside_window_new=5 outside_window_known=40 gap_scan=2026-08-03\.\.2026-11-17[ ;]/)
+  assert.equal(fenced(), 45)
+  assert.deepEqual(cursor(), { status: 'complete', cursor_date: '2026-11-17', cursor_key: '2026-11-24' })
+  assert.match(await f.tick(), /gap_scan=done_today/)
+  // Held over to the next TW day, the rest is still reached (the rescan span alone would start at 10-20).
+  const { f: g } = build()
+  await g.tick()
+  const nextDay = await runAllocatorEvLifecycleWatchdog(g.env, undefined, { nowMs: NOW + 86_400_000 })
+  assert.match(nextDay, /outside_window_new=5 .*gap_scan=2026-08-03\.\.2026-11-18[ ;]/)
+  assert.equal(fenced(g), 45)
+  assert.equal(days.length, 45)
 })

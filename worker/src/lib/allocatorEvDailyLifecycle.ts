@@ -714,6 +714,8 @@ const NON_TERMINAL_LIFECYCLE_STATES: readonly AllocatorEvLifecycleState[] = [
 // re-selected every tick and blocked every newer date (09-23 from 11/23 23:50); it is now reported
 // once per (date, run, state) and skipped.
 const OUTSIDE_WINDOW_REPORT_TTL_SECONDS = 365 * 86_400
+// Outside-window facts listed per tick; the rest stay unfenced and are listed by the next ticks.
+const OUTSIDE_WINDOW_LISTED_MAX = 40
 // Same per-run cap as post-verify: a date whose post-pipeline chain keeps failing must not be
 // redispatched every tick, now that every date in the window is inspected each tick.
 const POST_PIPELINE_WATCHDOG_MAX_REDISPATCHES = 6
@@ -721,6 +723,82 @@ const POST_PIPELINE_WATCHDOG_MAX_REDISPATCHES = 6
 const SOURCE_ERROR_PREFIX = 'terminal market-data source error:'
 const SOURCE_ERROR_RETRY_HOURS = 12
 const POST_PIPELINE_INCOMPLETE_STATUSES = ['queued', 'running', 'waiting', 'error'] as const
+// First business date with a post_pipeline_chain row; older pipeline executions predate the stage.
+const POST_PIPELINE_STAGE_FIRST_DATE = '2026-07-23'
+// Bound on bind parameters per lifecycle lookup (D1 caps a statement at 100).
+const LIFECYCLE_LOOKUP_CHUNK = 50
+// The post-pipeline gap scan (pipeline succeeded, no post-pipeline row, no lifecycle row; 10-27, 11-12) is
+// bounded so its reads do not grow with history. An OPS cursor row (legacy_migration_cursors, the existing
+// generic task cursor; no KV key) holds cursor_date = last date swept and cursor_key = TW day of the last
+// caught-up scan. The scan runs once per TW day over the dates that left the window in the last
+// GAP_SCAN_RESCAN_DAYS: a row that appears late for such a date (a late pipeline success, or a post-pipeline
+// or lifecycle row that closes it) is seen on that day's scan. Older dates are swept once, at most
+// GAP_SCAN_MAX_SPAN_DAYS per tick, until the cursor catches up (the first deploy sweeps 07-23 onward).
+const GAP_SCAN_CURSOR_TASK = 'allocator_ev_lifecycle_post_pipeline_gap_scan'
+const GAP_SCAN_RESCAN_DAYS = 30
+const GAP_SCAN_MAX_SPAN_DAYS = 120
+
+function shiftDate(date: string, days: number): string {
+  return new Date(Date.parse(`${date}T00:00:00Z`) + days * 86_400_000).toISOString().slice(0, 10)
+}
+
+type PostPipelineGapScan = {
+  gaps: string[]
+  text: string
+  failed?: boolean
+  checkpoint: { cursorDate: string; scannedOn: string | null; scannedRows: number } | null
+}
+
+async function scanPostPipelineGaps(
+  opsDb: D1Database,
+  learningDb: D1Database,
+  windowStart: string,
+  today: string,
+): Promise<PostPipelineGapScan> {
+  const { loadLegacyMigrationCursor } = await import('./legacyMigrationCursor')
+  const cursor = await loadLegacyMigrationCursor(opsDb, GAP_SCAN_CURSOR_TASK)
+  const floorSwept = shiftDate(POST_PIPELINE_STAGE_FIRST_DATE, -1)
+  const cursorDate = String(cursor?.cursor_date ?? '')
+  const swept = validDate(cursorDate) && cursorDate > floorSwept ? cursorDate : floorSwept
+  const caughtUp = swept >= shiftDate(windowStart, -1)
+  if (caughtUp && cursor?.cursor_key === today) {
+    return { gaps: [], text: `gap_scan=done_today swept=${swept}`, checkpoint: null }
+  }
+  const rescanFrom = shiftDate(windowStart, -GAP_SCAN_RESCAN_DAYS)
+  const unswept = shiftDate(swept, 1)
+  const from = [unswept < rescanFrom ? unswept : rescanFrom, POST_PIPELINE_STAGE_FIRST_DATE].sort().at(-1)!
+  const spanEnd = shiftDate(from, GAP_SCAN_MAX_SPAN_DAYS)
+  const until = spanEnd < windowStart ? spanEnd : windowStart
+  if (from >= until) return { gaps: [], text: `gap_scan=empty swept=${swept}`, checkpoint: null }
+  const candidates = ((await opsDb.prepare(`
+    SELECT p.business_date
+      FROM pipeline_stage_runs p
+     WHERE p.stage = 'pipeline_execution' AND p.status = 'success'
+       AND p.business_date >= ? AND p.business_date < ?
+       AND NOT EXISTS (
+         SELECT 1 FROM pipeline_stage_runs c
+          WHERE c.business_date = p.business_date AND c.stage = 'post_pipeline_chain'
+       )
+  `).bind(from, until).all<{ business_date: string }>()).results ?? [])
+    .map(row => String(row.business_date).slice(0, 10)).filter(validDate)
+  const withLifecycle = new Set<string>()
+  for (let index = 0; index < candidates.length; index += LIFECYCLE_LOOKUP_CHUNK) {
+    const chunk = candidates.slice(index, index + LIFECYCLE_LOOKUP_CHUNK)
+    const found = await learningDb.prepare(`
+      SELECT business_date
+        FROM allocator_ev_daily_lifecycle
+       WHERE business_date IN (${chunk.map(() => '?').join(',')})
+    `).bind(...chunk).all<{ business_date: string }>()
+    for (const row of found.results ?? []) withLifecycle.add(String(row.business_date))
+  }
+  const last = shiftDate(until, -1)
+  return {
+    gaps: candidates.filter(date => !withLifecycle.has(date)),
+    text: `gap_scan=${from}..${last}`,
+    // A span that stops short of the window leaves the day open: the next tick continues the sweep.
+    checkpoint: { cursorDate: last > swept ? last : swept, scannedOn: until === windowStart ? today : null, scannedRows: candidates.length },
+  }
+}
 
 type LifecycleTickContext = {
   // Same owner selection as runPostPipelineCallbackChain: the new L4 distribution owns closure.
@@ -735,12 +813,13 @@ async function lifecycleTickContext(env: Bindings, nowMs: number): Promise<Lifec
   return { newL4Distribution: config?.l4Distribution != null, dispatchedDate: null, nowMs }
 }
 
-/** Reports a fact once per key; a KV failure reports it again next tick instead of losing the tick. */
-async function reportOnce(kv: KVNamespace, keys: string[], nowMs: number): Promise<{ fresh: boolean[]; fenceFailed: boolean }> {
+/** Reports a fact once per key; a KV failure reports it again next tick instead of losing the tick.
+ *  Only the first `maxFenced` fresh keys are fenced: a fact the report text cannot list is reported next tick. */
+async function reportOnce(kv: KVNamespace, keys: string[], nowMs: number, maxFenced = Infinity): Promise<{ fresh: boolean[]; fenceFailed: boolean }> {
   try {
     const seen = await Promise.all(keys.map(async key => Boolean(await kv.get(key))))
     const fresh = seen.map(value => !value)
-    await Promise.all(keys.filter((_, index) => fresh[index]).map(key =>
+    await Promise.all(keys.filter((_, index) => fresh[index]).slice(0, maxFenced).map(key =>
       kv.put(key, new Date(nowMs).toISOString(), { expirationTtl: OUTSIDE_WINDOW_REPORT_TTL_SECONDS })))
     return { fresh, fenceFailed: false }
   } catch (error) {
@@ -797,7 +876,7 @@ async function runAllocatorEvLifecycleWindow(
   const windowStart = await strategyLearningRecoveryWindowStart(env, today)
   const nonTerminal = NON_TERMINAL_LIFECYCLE_STATES.map(() => '?').join(',')
   const incompleteStages = POST_PIPELINE_INCOMPLETE_STATUSES.map(() => '?').join(',')
-  const [pipelineRows, waitingPostPipelineRows, windowLifecycleRows, outsideRows, outsideStageRows] = await Promise.all([
+  const [pipelineRows, waitingPostPipelineRows, windowLifecycleRows, outsideRows, outsideStageRows, gapScan] = await Promise.all([
     opsDb.prepare(`
       SELECT business_date
         FROM pipeline_stage_runs
@@ -830,6 +909,12 @@ async function runAllocatorEvLifecycleWindow(
          AND business_date < ?
     `).bind(...POST_PIPELINE_INCOMPLETE_STATUSES, windowStart)
       .all<{ business_date: string; status: string; canonical_run_id: string | null }>(),
+    // A date that left the window with a successful pipeline execution but no post-pipeline or lifecycle row.
+    // A failed scan fails the tick but never stops the window recovery below.
+    scanPostPipelineGaps(opsDb, learningDb, windowStart, today).catch((error): PostPipelineGapScan => ({
+      gaps: [], checkpoint: null, failed: true,
+      text: `gap_scan=failed:${summaryDetail(error instanceof Error ? error.message : String(error), 200)}`,
+    })),
   ])
   const outside = (outsideRows.results ?? [])
     .filter(row => validDate(String(row.business_date).slice(0, 10)))
@@ -882,20 +967,54 @@ async function runAllocatorEvLifecycleWindow(
       .map(row => ({ date: row.business_date, run: row.upstream_run_id, state: String(row.state) })),
     ...(outsideStageRows.results ?? []).filter(row => validDate(String(row.business_date).slice(0, 10)))
       .map(row => ({ date: row.business_date, run: row.canonical_run_id, state: `post_pipeline_${row.status}` })),
+    // Keyed by date alone: the date is reported once whatever pipeline run it carries.
+    ...gapScan.gaps.map(date => ({ date, run: null, state: 'post_pipeline_missing' })),
   ].sort((a, b) => b.date.localeCompare(a.date) || a.state.localeCompare(b.state))
   // Fence only after the report text exists: a tick that dies before returning reports it again.
   const { fresh, fenceFailed } = await reportOnce(env.KV, unowned.map(row =>
-    `allocator-ev-lifecycle:outside-window-reported:${row.date}:${row.run || 'none'}:${row.state}`), nowMs)
+    `allocator-ev-lifecycle:outside-window-reported:${row.date}:${row.run || 'none'}:${row.state}`), nowMs, OUTSIDE_WINDOW_LISTED_MAX)
   const newlyOutside = unowned.filter((_, index) => fresh[index])
   const failed = incomplete > 0 || newlyOutside.length > 0
-  const listed = newlyOutside.slice(0, 40).map(row => `${row.date}:${row.state}`).join(',')
+  const listed = newlyOutside.slice(0, OUTSIDE_WINDOW_LISTED_MAX).map(row => `${row.date}:${row.state}`).join(',')
   const outsideText = newlyOutside.length
-    ? ` outside_window_unowned=${listed}${newlyOutside.length > 40 ? `,+${newlyOutside.length - 40}` : ''} `
+    ? ` outside_window_unowned=${listed}${newlyOutside.length > OUTSIDE_WINDOW_LISTED_MAX ? `,+${newlyOutside.length - OUTSIDE_WINDOW_LISTED_MAX}_next_tick` : ''} `
       + 'recovery_dispatch=not_queued manual_review_required'
     : ''
-  return `status=${failed ? 'failed' : 'success'} allocator EV lifecycle window=${windowStart}..${today} `
+  // The cursor moves only after the gaps it covered are in this tick's report (a tick that dies first rescans).
+  let gapScanText = gapScan.text
+  let gapScanFailed = gapScan.failed === true
+  // A report that could not list every new gap rewinds the cursor to just before the oldest unlisted gap
+  // (gaps are listed newest first), so the next tick, on any TW day, rescans from it and lists the rest.
+  // A rewind only causes a rescan, never a skipped date.
+  let checkpoint = gapScan.checkpoint
+  if (checkpoint && newlyOutside.length > OUTSIDE_WINDOW_LISTED_MAX) {
+    const oldestUnlisted = newlyOutside.slice(OUTSIDE_WINDOW_LISTED_MAX)
+      .filter(row => row.state === 'post_pipeline_missing').map(row => row.date).sort()[0]
+    gapScanText += ' gap_scan_cursor=held_report_truncated'
+    checkpoint = oldestUnlisted
+      ? { ...checkpoint, cursorDate: shiftDate(oldestUnlisted, -1), scannedOn: null }
+      : null
+  }
+  if (checkpoint) {
+    try {
+      const { checkpointLegacyMigration } = await import('./legacyMigrationCursor')
+      await checkpointLegacyMigration(opsDb, {
+        taskName: GAP_SCAN_CURSOR_TASK,
+        status: checkpoint.scannedOn ? 'complete' : 'running',
+        cursorDate: checkpoint.cursorDate,
+        cursorKey: checkpoint.scannedOn,
+        scannedRows: checkpoint.scannedRows,
+      })
+    } catch (error) {
+      console.warn('[allocatorEvDailyLifecycle] gap scan cursor not advanced:', error)
+      // Without the cursor every tick rescans: visible as a failed tick, not only as text.
+      gapScanText += ' gap_scan_cursor=unavailable'
+      gapScanFailed = true
+    }
+  }
+  return `status=${failed || gapScanFailed ? 'failed' : 'success'} allocator EV lifecycle window=${windowStart}..${today} `
     + `dates=${dates.length} incomplete=${incomplete} dispatched=${ctx.dispatchedDate ?? 'none'} `
-    + `outside_window_new=${newlyOutside.length} outside_window_known=${unowned.length - newlyOutside.length}`
+    + `outside_window_new=${newlyOutside.length} outside_window_known=${unowned.length - newlyOutside.length} ${gapScanText}`
     + `${fenceFailed ? ' outside_window_fence=unavailable' : ''}${outsideText}; ${[...failedLines, ...lines].join('; ')}`
 }
 

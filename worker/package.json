@@ -6,7 +6,6 @@
     "dev": "wrangler dev",
     "deploy": "node ../tools/deploy_worker_with_provenance.mjs",
     "type-check": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.tests.json",
-    "test:strategy-discovery": "node ../tools/run_strategy_discovery_tests.mjs",
     "db:init": "wrangler d1 execute stockvision-db --file=./schema.sql",
     "db:init:remote": "wrangler d1 execute stockvision-db --remote --file=./schema.sql",
     "db:migrations:ops:apply:local": "wrangler d1 migrations apply stockvision-ops-db --local",

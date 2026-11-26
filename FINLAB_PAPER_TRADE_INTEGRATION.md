@@ -53,8 +53,6 @@ This prevents the POC from producing two records for the same D1 trade.
 Implemented in:
 
 ```text
-worker/src/lib/finlabPaperPreviewContract.ts
-worker/src/lib/finlabPaperPreviewContract.test.ts
 worker/src/lib/paperActiveAttributionWiring.ts
 worker/src/lib/paperActiveAttributionWiring.test.ts
 ```

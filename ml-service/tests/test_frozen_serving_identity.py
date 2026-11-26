@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import inspect
 import io
 import json
 import sys
@@ -13,7 +12,6 @@ from app import batch_prediction
 from app import dlinear_universal
 from app import gnn_batch_runtime
 from app import neuralforecast_sequence_runtime
-from app import prediction_runtime
 from app import serving_resolver
 from app import tabm_batch_runtime
 
@@ -395,68 +393,6 @@ def test_torch_runtime_registry_checksum_mismatch_stops_before_deserialization(
 
 
 
-def _retired_frozen_ic_policy_and_four_scope_weights_match_controller_snapshot(monkeypatch) -> None:
-    manifest = _manifest()
-    source_pool = {"models": {}}
-    for index, row in enumerate(manifest["models"]):
-        evidence = {
-            field: None for field in serving_resolver.FROZEN_ENSEMBLE_FIELDS
-        }
-        evidence.update({
-            "rolling_ic": 0.02 + index * 0.001,
-            "ic_4w_avg": 0.019 + index * 0.001,
-            "weekly_ic": [0.018 + index * 0.001, 0.02 + index * 0.001],
-            "last_ic_status": "computed",
-            "last_ic_root_cause": "ok",
-            "last_ic_sample_count": 80,
-            "last_ic_by_segment": {
-                "LISTED": {"ic": 0.03 + index * 0.001, "sample_count": 70},
-                "OTC": {"ic": 0.025 + index * 0.001, "sample_count": 60},
-                "EMERGING": {"ic": 0.015 + index * 0.001, "sample_count": 50},
-            },
-            "last_ic_evaluation_contract": {
-                "artifact_version": row["version"],
-                "target_semantic_version": serving_resolver.LABEL_SCHEMA_VERSION,
-            },
-            "last_ic_semantic_version": ensemble.IC_EVALUATION_SEMANTIC_VERSION,
-            "last_ic_target_semantic_version": serving_resolver.LABEL_SCHEMA_VERSION,
-            "last_ic_artifact_version": row["version"],
-        })
-        row["ensemble"] = evidence
-        source_pool["models"][row["model"]] = {
-            "status": row["effective_status"],
-            "version": row["version"],
-            "target_semantic_version": serving_resolver.LABEL_SCHEMA_VERSION,
-            **json.loads(json.dumps(evidence)),
-        }
-
-    monkeypatch.setenv("IC_WEIGHT_PRIOR", "0.015")
-    monkeypatch.setenv("IC_WEIGHT_PRIOR_STRENGTH", "20")
-    monkeypatch.setenv("IC_WEIGHT_MIN_SAMPLES_FOR_HARD_ZERO", "40")
-    expected = {
-        scope: ensemble._extract_model_pool_ic(source_pool, market_segment=scope)
-        for scope in (None, "LISTED", "OTC", "EMERGING")
-    }
-    frozen_pool = serving_resolver.build_pool_from_frozen_manifest(
-        manifest,
-        expected_digest=serving_resolver.serving_manifest_digest(manifest),
-    )
-    monkeypatch.setenv("IC_WEIGHT_PRIOR", "0.9")
-    monkeypatch.setenv("IC_WEIGHT_PRIOR_STRENGTH", "999999")
-    monkeypatch.setenv("IC_WEIGHT_MIN_SAMPLES_FOR_HARD_ZERO", "0")
-
-    for scope in (None, "LISTED", "OTC", "EMERGING"):
-        assert ensemble._extract_model_pool_ic(
-            frozen_pool,
-            market_segment=scope,
-        ) == pytest.approx(expected[scope])
-    assert {
-        name: entry["status"] for name, entry in frozen_pool["models"].items()
-    } == {
-        row["model"]: row["effective_status"] for row in manifest["models"]
-    }
-
-
 def test_shadow_and_formal_slots_remain_audit_only() -> None:
     manifest = _manifest()
     manifest["shadow_models"] = [{
@@ -550,21 +486,6 @@ def test_exclusion_reason_missing_and_manifest_total_size_fail_closed() -> None:
         match="frozen_serving_manifest_total_bytes",
     ):
         serving_resolver.serving_manifest_digest(oversized)
-
-
-def _retired_rank_stacker_has_no_implicit_loader_in_direct_or_frozen_paths() -> None:
-    assert "load_meta_learner" not in inspect.getsource(prediction_runtime)
-    bundle, audit = batch_prediction._resolve_rank_stacker_runtime({})
-    assert bundle is None
-    assert audit["effective_status"] == "excluded"
-    manifest = _manifest()
-    pool = serving_resolver.build_pool_from_frozen_manifest(
-        manifest,
-        expected_digest=serving_resolver.serving_manifest_digest(manifest),
-    )
-    bundle, audit = batch_prediction._resolve_rank_stacker_runtime(pool)
-    assert bundle is None
-    assert audit["effective_status"] == "excluded"
 
 
 def test_dlinear_prod_shape_uses_exact_identity_and_checksum_before_load(monkeypatch) -> None:

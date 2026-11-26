@@ -1,7 +1,7 @@
 """
 backtest.py — Weekly backtest + Monte Carlo + PBO + Sprint 6 replay endpoints
 
-POST /backtest/run         → FIFO backtest pipeline (backtest_service, fixed config)
+POST /backtest/run         → canonical weekly backtest (run_canonical_weekly_backtest)
 POST /backtest/monte-carlo → Monte Carlo MDD simulation
 POST /backtest/pbo         → Probability of Backtest Overfitting (CPCV)
 POST /backtest/replay      → Sprint 6 parameterized Mode A replay (Optuna objective)

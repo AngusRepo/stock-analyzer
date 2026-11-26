@@ -1,7 +1,7 @@
 """GCS model artifact storage helpers for StockVision.
 
-Active alpha model artifacts are managed through ``model_pool.py`` and the
-universal GCS layout. CatBoost, FT-Transformer/FTTransformer, Chronos, and
+Active alpha model artifacts are resolved through ``model_serving_contract.py``
+and the universal GCS layout. CatBoost, FT-Transformer/FTTransformer, Chronos, and
 Chronos2 aliases are retired from the production alpha path.
 """
 import os

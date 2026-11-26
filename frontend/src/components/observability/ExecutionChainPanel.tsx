@@ -129,7 +129,6 @@ const STAGES: Record<string, StageDefinition> = {
   'd1-evidence-scrub': { id: 'd1-evidence-scrub', label: 'D1 scrub', icon: Wrench, optional: true },
   'r2-retention-sweep': { id: 'r2-retention-sweep', label: 'R2 retention', icon: Archive, optional: true },
   'orphan-reachability-gc': { id: 'orphan-reachability-gc', label: 'Reachability GC', icon: Wrench, optional: true },
-  'cleanup-dlq-replay': { id: 'cleanup-dlq-replay', label: 'DLQ replay', icon: RefreshCw, optional: true },
   'storage-health-check': { id: 'storage-health-check', label: 'Storage health', icon: ShieldCheck },
   'weekly-backtest': { id: 'weekly-backtest', label: 'Validation / MC', icon: BarChart3 },
   'alpha-quality': { id: 'alpha-quality', label: 'Alpha quality', icon: Activity },

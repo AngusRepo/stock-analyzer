@@ -129,12 +129,6 @@ export type Bindings = {
   FRED_API_KEY?: string
   // Cloudflare Workers AI binding
   AI?: any
-  // Research-only Strategy Discovery Workflow. Never owns production/trading flows.
-  STRATEGY_DISCOVERY_WORKFLOW?: WorkflowBinding<{ run_id: string; attempt: number }>
-  STRATEGY_DISCOVERY_ENABLED?: string
-  STRATEGY_DISCOVERY_FIXTURE_MODE?: string
-  STRATEGY_DISCOVERY_REQUIRE_EXTERNAL_USAGE_RESERVATION?: string
-  STRATEGY_DISCOVERY_EXTERNAL_RESERVED_NEURONS?: string
 }
 
 export type Variables = {

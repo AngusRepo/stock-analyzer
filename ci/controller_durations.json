@@ -26,7 +26,6 @@
 "tests/test_active8_suppression_bound.py": 0.0,
 "tests/test_active_candidate_cohort_continuity.py": 0.0,
 "tests/test_active_model_policy.py": 0.0,
-"tests/test_active_strategy_attack_audit.py": 0.0,
 "tests/test_allocator_contract_guard.py": 0.0,
 "tests/test_allocator_direction_authority.py": 0.0,
 "tests/test_allocator_ev_fusion_artifact_builder.py": 9.4,

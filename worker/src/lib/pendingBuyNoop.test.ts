@@ -2,7 +2,6 @@ import assert from 'node:assert/strict'
 import { DatabaseSync } from 'node:sqlite'
 import { readFileSync } from 'node:fs'
 import { replacePendingBuyState, type PendingBuy } from './pendingBuyStore'
-import { hasPendingBuyDebateChanges } from './pendingBuyDebateChange'
 
 async function main() {
   const sqlite = new DatabaseSync(':memory:')
@@ -48,12 +47,6 @@ async function main() {
   assert.equal(JSON.parse(kv.get('paper:pending_buys_meta:2026-10-02')!).run_id, second)
   assert.notEqual(await replacePendingBuyState(env, { ...changed,
     pendingBuys: [{ ...changed.pendingBuys[0], debate_verdict: 'DOWNGRADE', debate_status: 'completed' }] }), second)
-  assert.equal(hasPendingBuyDebateChanges([item], [{ ...item, execution_status: 'checked_waiting',
-    watch_points: [...item.watch_points, 'execution:checked_waiting:or15_signal_expired:newtime'] }]), false)
-  assert.equal(hasPendingBuyDebateChanges([item], [{ ...item, debate_verdict: 'DOWNGRADE' }]), true)
-  assert.equal(hasPendingBuyDebateChanges([item], [{ ...item,
-    watch_points: [...item.watch_points, 'execution:pending:debate_retry:budget_exceeded'] }]), true)
-  assert.equal(hasPendingBuyDebateChanges([item], []), true, 'REJECT/removal is a real revision')
   sqlite.close()
   console.log('Pending no-op: 100 identical updates -> 1 run; KV recovery and real changes PASS')
 }

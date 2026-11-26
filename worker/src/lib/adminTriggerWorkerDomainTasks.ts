@@ -33,7 +33,7 @@ const D1_HEAVY_MAINTENANCE_TASKS = new Set([
   'audit-json-retention', 'retention-archive-only', 'retention-hot-window-drain', 'artifact-reconcile',
   'legacy-evidence-migration', 'legacy-strategy-evidence-migration',
   'legacy-hot-data-retirement', 'd1-evidence-scrub', 'r2-retention-sweep',
-  'orphan-reachability-gc', 'cleanup-dlq-replay', 'weekly-cleanup',
+  'orphan-reachability-gc', 'weekly-cleanup',
   'price-horizon-projection',
   'canonical-selection-labels-rebuild',
   'strategy-evidence-owner-calibration',
@@ -1232,14 +1232,6 @@ export function buildAdminWorkerDomainTaskMap(
       })
       return `orphan_reachability_gc scanned=${result.scanned} deleted=${result.deleted} referenced=${result.referenced}`
     },
-    'cleanup-dlq-replay': async () => {
-      const { runCleanupDlqReplay } = await import('./artifactLifecycle')
-      const result = await runCleanupDlqReplay(c.env, {
-        limit: parseBoundedPositiveInt(c.req.query('limit'), 100, 500),
-      })
-      if (result.blocked) throw new Error(`cleanup dlq remains blocked ${JSON.stringify(result)}`)
-      return `cleanup_dlq_replay candidates=${result.candidates} resolved=${result.resolved}`
-    },
     'price-horizon-projection': async () => {
       const {
         materializePriceHorizonLabels,
@@ -1677,10 +1669,6 @@ export function buildAdminWorkerDomainTaskMap(
       )
       return `legacy_learning_deletion_readiness ${JSON.stringify(result)}`
     },
-    'timeverse-sync': async () => {
-      const { syncTimeverse } = await import('./timeverse')
-      return syncTimeverse(c.env)
-    },
     'us-leading': async () => {
       const { fetchAndStoreUSLeading } = await import('./usLeading')
       const signal = await fetchAndStoreUSLeading(c.env)
@@ -1712,10 +1700,6 @@ export function buildAdminWorkerDomainTaskMap(
     'factor-ic': async () => {
       const { calcFactorIC } = await import('./marketScreener')
       return calcFactorIC(c.env)
-    },
-    'mae-analysis': async () => {
-      const { analyzeMAE } = await import('./marketScreener')
-      return analyzeMAE(c.env)
     },
     pipeline: () => deps.runMLAndRiskV2(requestedRunDate()),
     'weekly-readiness': () => runCadenceReadiness(c.env, 'weekly', requestedRunDate()),

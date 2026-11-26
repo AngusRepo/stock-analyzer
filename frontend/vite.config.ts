@@ -24,12 +24,7 @@ const BUILD_STAMP = new Date().toISOString().replace('T', ' ').slice(0, 16) + ' 
 const MANUAL_CHUNK_GROUPS: Record<string, string[]> = {
   'vendor-react': ['react', 'react-dom', 'react-router-dom'],
   'vendor-query': ['@tanstack/react-query'],
-  'vendor-ui': [
-    '@radix-ui/react-tabs',
-    '@radix-ui/react-dialog',
-    '@radix-ui/react-dropdown-menu',
-    '@radix-ui/react-tooltip',
-  ],
+  'vendor-ui': ['@radix-ui/react-dialog'],
 }
 
 function resolveManualChunk(id: string) {

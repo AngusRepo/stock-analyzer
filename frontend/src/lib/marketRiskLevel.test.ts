@@ -50,15 +50,10 @@ test('every level including black has a style; stored legacy vocabulary maps lik
 test('pages show the API level without frontend score cuts or fabricated fallbacks', () => {
   const bot = read('../pages/BotDashboard.tsx')
   const home = read('../pages/MarketHomePage.tsx')
-  const panel = read('../components/MarketRiskPanel.tsx')
-  const trades = read('../components/TradePerformancePanel.tsx')
   assert.ok(bot.includes('tradingMarketRisk(risk)'))
   assert.ok(!/riskScore\s*>\s*(70|40)/.test(bot), 'BotDashboard must not cut scores into levels')
   assert.ok(!bot.includes("?? 'medium'") && !bot.includes('riskScore ?? 50') && !bot.includes('market_risk_score ?? 50'))
   assert.ok(!home.includes("raw.includes('red')"), 'MarketHomePage must not map market risk levels itself')
-  assert.ok(panel.includes('tradingMarketRisk(risk)') && !panel.includes('const LEVEL_CONFIG'))
-  assert.ok(!panel.includes('LEVEL_CONFIG.yellow'), 'unknown level must not fall back to yellow')
-  assert.ok(trades.includes('marketRiskLevelStyle(h.market_risk_level)'))
 })
 
 test('shield icon: unknown or awaiting is neutral, never the safe check', () => {

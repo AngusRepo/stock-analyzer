@@ -133,7 +133,7 @@ def test_cli_exit_codes(tmp_path, capsys):
 
 def test_deployed_names_come_from_the_repo():
     assert lint.deployed_apps()['modal_app'] == 'stockvision-ml'
-    assert {'stockvision-ml', 'stockvision-strategy-mining', 'quantaalpha-poc'} <= set(lint.deployed_apps().values())
+    assert {'stockvision-ml', 'stockvision-strategy-mining'} <= set(lint.deployed_apps().values())
 
 
 def test_aliases_annotated_names_and_reversed_main_guard_pass(tmp_path):

@@ -5565,7 +5565,6 @@ export async function runBottomUpScreener(env: Bindings, runDate?: string | null
 
 // ????????????????????????????????????????????????????????????????????????????????
 // P2-7: IC嚗nformation Coefficient嚗?霅???
-// P3-8: MAE ????
 // P3-6: Z-score 撌亙
 // ????????????????????????????????????????????????????????????????????????????????
 
@@ -5699,73 +5698,4 @@ export async function calcFactorIC(env: Bindings): Promise<{
   }
 
   return { factors: results }
-}
-
-/**
- * P3-8: MAE ???? ????predictions 銵函? max_adverse_pct ???雿喳???
- */
-export async function analyzeMAE(env: Bindings): Promise<{
-  summary: {
-    total_trades: number
-    winning_trades: number
-    losing_trades: number
-    winning_mae_p75: number   // ?脣鈭斗???75 ?曉?雿?MAE
-    losing_mae_p25: number    // ?扳?鈭斗???25 ?曉?雿?MAE
-    suggested_stop: number    // 撱箄降?? %
-  }
-  distribution: { bucket: string; winning: number; losing: number }[]
-}> {
-  const { results: trades } = await databaseForDataDomain(env, 'learning').prepare(`
-    SELECT max_adverse_pct, actual_return_pct, trade_outcome
-    FROM predictions
-    WHERE max_adverse_pct IS NOT NULL AND actual_return_pct IS NOT NULL
-    ORDER BY generated_at DESC LIMIT 500
-  `).all<{ max_adverse_pct: number; actual_return_pct: number; trade_outcome: string | null }>()
-
-  if (!trades?.length) return {
-    summary: { total_trades: 0, winning_trades: 0, losing_trades: 0, winning_mae_p75: 0, losing_mae_p25: 0, suggested_stop: -0.10 },
-    distribution: [],
-  }
-
-  const winning = trades.filter(t => t.actual_return_pct > 0)
-  const losing = trades.filter(t => t.actual_return_pct <= 0)
-
-  // MAE ??嚗? 2% 銝??bucket嚗?
-  const buckets = ['-2%', '-4%', '-6%', '-8%', '-10%', '-12%', '-15%', '-20%', '>-20%']
-  const thresholds = [-0.02, -0.04, -0.06, -0.08, -0.10, -0.12, -0.15, -0.20, -1]
-  const distribution = buckets.map((bucket, i) => {
-    const lo = i === 0 ? 0 : thresholds[i - 1]
-    const hi = thresholds[i]
-    return {
-      bucket,
-      winning: winning.filter(t => t.max_adverse_pct >= hi && t.max_adverse_pct < lo).length,
-      losing: losing.filter(t => t.max_adverse_pct >= hi && t.max_adverse_pct < lo).length,
-    }
-  })
-
-  // ?曉?雿?蝞?
-  const percentile = (arr: number[], p: number) => {
-    const sorted = [...arr].sort((a, b) => a - b)
-    const idx = Math.floor(sorted.length * p)
-    return sorted[Math.min(idx, sorted.length - 1)] ?? 0
-  }
-
-  const winMAEs = winning.map(t => t.max_adverse_pct)
-  const loseMAEs = losing.map(t => t.max_adverse_pct)
-
-  // 撱箄降??嚗?拐漱??75 ?曉?雿?MAE嚗??之?典??脣鈭斗?嚗?
-  const winP75 = winMAEs.length ? percentile(winMAEs, 0.25) : -0.05  // 25th percentile of MAE (most negative)
-  const suggestedStop = Math.min(winP75 * 1.2, -0.03)  // 憭? 20% buffer嚗?撠?-3%
-
-  return {
-    summary: {
-      total_trades: trades.length,
-      winning_trades: winning.length,
-      losing_trades: losing.length,
-      winning_mae_p75: +(winP75 * 100).toFixed(2),
-      losing_mae_p25: loseMAEs.length ? +(percentile(loseMAEs, 0.25) * 100).toFixed(2) : 0,
-      suggested_stop: +suggestedStop.toFixed(4),
-    },
-    distribution,
-  }
 }

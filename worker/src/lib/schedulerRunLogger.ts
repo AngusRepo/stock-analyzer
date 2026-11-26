@@ -87,7 +87,6 @@ const TASK_NAMES: Record<string, string> = {
   'd1-evidence-scrub': 'D1 Evidence Scrub',
   'r2-retention-sweep': 'R2 Retention Sweep',
   'orphan-reachability-gc': 'Orphan Reachability GC',
-  'cleanup-dlq-replay': 'Cleanup DLQ Replay',
   'storage-health-check': 'Storage Health Check',
   'storage-health-gate': 'Storage Health Check (Legacy Alias)',
   'storage-integrity-audit': 'Storage Integrity Audit',

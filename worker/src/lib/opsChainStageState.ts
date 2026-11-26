@@ -5,6 +5,10 @@
  * - Heartbeat: running, non-Cloud-Run stages only, at most once per 5 minutes, state table only.
  * - Repeating stages (catalog `repeat`): worst result of the day, last result refreshed at most once
  *   per 5 minutes (state table only), never running, never a heartbeat.
+ * - Waiting: the status column has no waiting value (0027 CHECK), so a run that waits by design (run
+ *   status waiting, or running with a future wait_until) is stored as running with a summary that
+ *   starts with `status=waiting [wait_until=<ISO>]` (chainStageWaitSummary). A running row whose
+ *   waiting changes (parked → dispatched) gets its summary rewritten; readers derive the wait from it.
  * - Chains other than daily_readiness are created on their period's first write (rows all pending).
  * - Every failure is caught and warned: a write failure never breaks the business flow.
  * - Rollback: wrangler var OPS_CHAIN_STAGE_STATE_WRITES = "0" stops every write.
@@ -47,7 +51,7 @@ const carry = (column: string) => `CASE WHEN excluded.status='running' AND ${STA
 
 /** Statements, exported so the EXPLAIN QUERY PLAN test checks exactly what runs. */
 export const CHAIN_STAGE_SQL = {
-  read: `SELECT status, attempt, run_id, execution_name, started_at, heartbeat_at, updated_at
+  read: `SELECT status, attempt, run_id, execution_name, summary, started_at, heartbeat_at, updated_at
     FROM ${STATE} WHERE business_date=? AND chain_id=? AND stage_id=?`,
   // Insert only into a chain that was pre-created (trading day); otherwise update with a
   // compare-and-set on the status/attempt read just before, plus the no-regression rule.
@@ -83,6 +87,10 @@ export const CHAIN_STAGE_SQL = {
   heartbeat: `UPDATE ${STATE} SET heartbeat_at=?4
     WHERE business_date=?1 AND chain_id=?2 AND stage_id=?3 AND status='running' AND execution_name IS NULL
       AND COALESCE(heartbeat_at, started_at, '')<?5`,
+  // A running row whose wait changed (parked on a dispatch → running, or a new wait_until): compare-and-set on
+  // the summary read just before; the heartbeat restarts with the new phase.
+  waitChange: `UPDATE ${STATE} SET summary=?4, heartbeat_at=NULL, updated_at=?5
+    WHERE business_date=?1 AND chain_id=?2 AND stage_id=?3 AND status='running' AND COALESCE(summary, '')=?6`,
   executionName: `UPDATE ${STATE} SET execution_name=?4, updated_at=?5
     WHERE business_date=?1 AND chain_id=?2 AND stage_id=?3 AND status='running'
       AND COALESCE(execution_name, '')<>?4`,
@@ -111,11 +119,41 @@ export function chainStageWritesEnabled(env: { OPS_CHAIN_STAGE_STATE_WRITES?: st
   return !['0', 'false', 'off', 'no'].includes(flag)
 }
 
-/** Scheduler run status → chain stage status. */
+/** Scheduler run status → chain stage status. waiting is stored as running (no waiting value in the 0027
+ * CHECK); chainStageWaitSummary keeps the wait in the summary. */
 export function chainStageStatusFromRun(status: string): ChainStageStatus | null {
   if (status === 'success' || status === 'error' || status === 'skipped' || status === 'blocked') return status
   if (status === 'running' || status === 'triggered' || status === 'waiting') return 'running'
   return null
+}
+
+/** The summary prefix of a stage that waits by design; the monitoring Worker reads it (judgment/stageWait.ts). */
+export const CHAIN_STAGE_WAIT_PREFIX = 'status=waiting'
+const WAIT_PREFIX = /^status=waiting(?: wait_until=\S+)?(?:\s+|$)/
+
+/**
+ * The summary a run is stored with: a run that waits by design (status waiting, or running / triggered with a
+ * wait_until still ahead) gets `status=waiting [wait_until=<ISO Z>] ` in front of its own summary (which may
+ * already start with status=waiting); any other run keeps its summary. A wait_until is kept even once it has
+ * passed: the reader decides whether it is still ahead, so a stale wait cannot hold off stuck forever.
+ */
+export function chainStageWaitSummary(
+  run: { status: string; summary?: string | null; wait_until?: string | null },
+  nowMs = Date.now(),
+): string | undefined {
+  const own = run.summary ?? undefined
+  const untilMs = run.wait_until ? Date.parse(run.wait_until) : Number.NaN
+  const known = Number.isFinite(untilMs)
+  const waiting = run.status === 'waiting' || ((run.status === 'running' || run.status === 'triggered') && known && untilMs > nowMs)
+  if (!waiting) return own
+  const rest = String(own ?? '').replace(WAIT_PREFIX, '').trim()
+  return [CHAIN_STAGE_WAIT_PREFIX, ...(known ? [`wait_until=${new Date(untilMs).toISOString()}`] : []), ...(rest ? [rest] : [])].join(' ')
+}
+
+/** The wait a stored summary names: null when it does not wait, else its wait_until token ('' without one). */
+function waitKey(summary: string | null | undefined): string | null {
+  const match = /^status=waiting(?: wait_until=(\S+))?(?:\s|$)/.exec(String(summary ?? ''))
+  return match ? match[1] ?? '' : null
 }
 
 type PriorRow = { status: ChainStageStatus; attempt: number; run_id: string | null }
@@ -158,7 +196,8 @@ export interface ChainStageWrite {
 }
 
 export type ChainStageWriteOutcome =
-  | 'written' | 'unchanged' | 'heartbeat' | 'refreshed' | 'execution_name' | 'rejected' | 'not_precreated' | 'conflict' | 'invalid'
+  | 'written' | 'unchanged' | 'heartbeat' | 'refreshed' | 'execution_name' | 'wait_changed' | 'rejected' | 'not_precreated'
+  | 'conflict' | 'invalid'
 
 const clip = (value: string | null | undefined): string | null => {
   const text = String(value ?? '').trim()
@@ -187,7 +226,7 @@ async function writeChainStageStateOnce(db: D1Database, input: ChainStageWrite):
   const attempt = Number.isSafeInteger(input.attempt) && input.attempt! > 0 ? input.attempt! : 0
   const key = [input.businessDate, chain.chainId, input.stageId] as const
   const prior = await db.prepare(CHAIN_STAGE_SQL.read).bind(...key).first<PriorRow & {
-    execution_name: string | null; started_at: string | null; heartbeat_at: string | null; updated_at: string }>()
+    execution_name: string | null; summary: string | null; started_at: string | null; heartbeat_at: string | null; updated_at: string }>()
   const upsert = (write: ChainStageWrite) => upsertChainStage(db, chain, key, entry, write, attempt, now, prior)
 
   if (entry.repeat) {
@@ -207,6 +246,12 @@ async function writeChainStageStateOnce(db: D1Database, input: ChainStageWrite):
     if (input.status !== 'running') {
       if (!chainStageTransitionAllowed(prior, { status: input.status, attempt, runId: input.runId })) return 'unchanged'
       return upsert(input)
+    }
+    // Still running, but parked on a dispatch (or released from one): the summary says which, so it is rewritten.
+    const summary = clip(input.summary)
+    if (input.summary !== undefined && waitKey(summary) !== waitKey(prior.summary)) {
+      const result = await db.prepare(CHAIN_STAGE_SQL.waitChange).bind(...key, summary, now, prior.summary ?? '').run()
+      return Number(result.meta?.changes ?? 0) > 0 ? 'wait_changed' : 'conflict'
     }
     const executionName = clip(input.executionName)
     if (executionName && executionName !== prior.execution_name) {
@@ -385,6 +430,8 @@ export interface SchedulerRunForChain {
   run_scope?: string
   timestamp?: string
   duration_ms?: number
+  /** A running run parked on a scheduled dispatch (schedulerStatus resolveSchedulerLogStatus reads it the same way). */
+  wait_until?: string
 }
 
 /**
@@ -399,7 +446,7 @@ export async function recordSchedulerRunChainStage(task: string, entry: Schedule
     for (const chainId of status ? chainsOfStage(task) : []) {
       if (!chainStage(chainId, task)!.sources.includes('scheduler_run_log')) continue
       await recordChainStage({ chainId, stageId: task, businessDate: entry.run_date, dateKind: 'run_date', status: status!,
-        attempt: attemptFromId(entry.attempt_id), runId: entry.run_id, summary: entry.summary, error: entry.error }, env)
+        attempt: attemptFromId(entry.attempt_id), runId: entry.run_id, summary: chainStageWaitSummary(entry), error: entry.error }, env)
     }
     if (task === 'pipeline') await recordPipelineChildren(entry, env)
   } catch (error) {
@@ -419,7 +466,7 @@ async function recordPipelineChildren(entry: SchedulerRunForChain, env?: Binding
     const status = derived ? chainStageStatusFromRun(derived.status) : null
     if (!status) continue
     await recordChainStage({ stageId: child, businessDate: entry.run_date!, status, runId: entry.run_id,
-      summary: derived!.summary }, env)
+      summary: chainStageWaitSummary(derived!) }, env)
   }
 }
 

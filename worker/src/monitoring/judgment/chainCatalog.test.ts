@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { existsSync, readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { twTimeOn } from '../chain'
-import { CHAIN_IDS, CHAIN_SPECS, periodKeyFor, periodKeys, previousPeriodKey, REPEAT_REFRESH_MIN_MS, REPEAT_STALL_AFTER_MS, type ChainId } from './chainCatalog'
+import { CHAIN_IDS, CHAIN_SPECS, isWatcherStage, periodKeyFor, periodKeys, previousPeriodKey, REPEAT_REFRESH_MIN_MS, REPEAT_STALL_AFTER_MS, type ChainId } from './chainCatalog'
 import { chainStageIds, OTHER_CHAIN_PHASES } from './chainPhases'
 import { STAGES } from './executionChainDag'
 
@@ -116,6 +116,9 @@ test('stall judgment: the writer\'s refresh throttle, the repeating stage, and t
   const schedules = JSON.stringify(jobs).match(/"schedule":"[^"]*","task":"intraday-check"/g) ?? []
   assert.deepEqual(schedules, ['"schedule":"* 1-4 * * 1-5","task":"intraday-check"', '"schedule":"0-30 5 * * 1-5","task":"intraday-check"'])
   assert.equal(CHAIN_SPECS.intraday_guard.repeat!.windowEndTw, '13:30')
+  // The repeating stage is a watcher: its completed_at is the last result, so its 09:10 deadline is the first result's.
+  assert.deepEqual(CHAIN_SPECS.intraday_guard.watchers, [WRITER_REPEAT.stageId])
+  assert.deepEqual([isWatcherStage('intraday_guard', 'intraday-check'), isWatcherStage('intraday_guard', 'eod-exit'), isWatcherStage('nope', 'intraday-check')], [true, false, false])
 })
 
 test('once the writer\'s catalog is in this tree, the copy matches it directly', async (t) => {
@@ -127,6 +130,11 @@ test('once the writer\'s catalog is in this tree, the copy matches it directly',
   assert.equal(REPEAT_REFRESH_MIN_MS, state.CHAIN_STAGE_HEARTBEAT_MIN_MS)
   const repeating = writer.CHAIN_DEFINITIONS.flatMap((definition: any) => definition.stages.filter((entry: any) => entry.repeat).map((entry: any) => [definition.chainId, entry.stageId]))
   assert.deepEqual(repeating, [[WRITER_REPEAT.chain, WRITER_REPEAT.stageId]])
+  // Watchers (no ETA margin, overdue only without a result): the copy's per-chain lists are the writer's `watcher` entries.
+  for (const definition of writer.CHAIN_DEFINITIONS) {
+    assert.deepEqual([...(CHAIN_SPECS[definition.chainId as ChainId].watchers ?? [])],
+      definition.stages.filter((entry: any) => entry.watcher).map((entry: any) => entry.stageId), `${definition.chainId} watchers`)
+  }
   for (const [date] of PERIOD_KEYS) for (const chain of CHAIN_IDS) assert.equal(periodKeyFor(chain, date), writer.periodKeyFor(chain, date), `${chain} ${date}`)
   for (const definition of writer.CHAIN_DEFINITIONS) {
     const spec = CHAIN_SPECS[definition.chainId as ChainId]

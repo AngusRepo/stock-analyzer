@@ -23,6 +23,9 @@ export type ChainSpec = {
   /** The catalog's repeating stage (`repeat: true`) and the Taiwan time its schedule ends: between the first
    * deadline and then, a row whose updated_at stops moving is a stalled guard (chainAlerts). */
   repeat?: { stageId: string; windowEndTw: string }
+  /** The catalog's watcher stages (`watcher: true`): expected_by is the first result's deadline and completed_at the
+   * last result, so they get no ETA margin and are overdue only while they have no result (chain.ts). */
+  watchers?: readonly string[]
 }
 
 /** The writer refreshes a repeating stage's row at most this often while its status is unchanged
@@ -35,9 +38,14 @@ export const CHAIN_SPECS: Record<ChainId, ChainSpec> = {
   daily_readiness: { chainId: 'daily_readiness', scope: 'daily_readiness', period: 'trading_day', firstStage: 'market-close-refresh', firstDeadlineTw: '18:30', historyPeriods: 0 },
   // intraday-check runs every minute until 13:30 (infra/gcp-scheduler-jobs.json intraday-check-close-window, 0-30 5 UTC).
   intraday_guard: { chainId: 'intraday_guard', scope: 'intraday', period: 'trading_day', firstStage: 'intraday-check', firstDeadlineTw: '09:10', historyPeriods: 0,
-    repeat: { stageId: 'intraday-check', windowEndTw: '13:30' } },
+    repeat: { stageId: 'intraday-check', windowEndTw: '13:30' }, watchers: ['intraday-check'] },
   weekly_research: { chainId: 'weekly_research', scope: 'weekly', period: 'week', firstStage: 'weekly-audit', firstDeadlineTw: '19:00', historyPeriods: 5 },
   monthly_artifact: { chainId: 'monthly_artifact', scope: 'monthly', period: 'month', firstStage: 'monthly-strategy-mining', firstDeadlineTw: '13:00', historyPeriods: 3 },
+}
+
+/** Whether a stage of a chain is a watcher (see ChainSpec.watchers). */
+export function isWatcherStage(chainId: string, stageId: string): boolean {
+  return isChainId(chainId) && (CHAIN_SPECS[chainId].watchers ?? []).includes(stageId)
 }
 
 export function isChainId(value: string): value is ChainId {

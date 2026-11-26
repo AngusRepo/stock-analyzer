@@ -4,7 +4,7 @@ import { after, before, test } from 'node:test'
 import { STRATEGY_ROUTE_CHALLENGER_VERSION } from '../lib/strategyRouteCalibration'
 import { CHAIN_ID, CHAIN_ROOT_STAGE, keyedHistorySql, keyedTimelineSql } from './chain'
 import { PROGRESS_SQL, PROGRESS_STAGES } from './chainSubStages'
-import { CHIP_READY_MINUTE_TW, MATERIALIZATION_SOURCES, TECHNICAL_READY_MINUTE_TW } from './dataReadiness'
+import { CHIP_READY_MINUTE_TW, MARKET_DASHBOARD_READY_MINUTE_TW, MATERIALIZATION_SOURCES, TECHNICAL_READY_MINUTE_TW } from './dataReadiness'
 import { periodKeys } from './judgment/chainCatalog'
 import { chainStageIds } from './judgment/chainPhases'
 import { STAGES as STAGES_DAG } from './judgment/executionChainDag'
@@ -206,7 +206,7 @@ test('/v1/chain/alerts: failed / overdue / stuck / missed per the contract', asy
     'regime-compute:overdue', // pending past expected_by
     'update:stuck', // heartbeat 20 min old; verify-v2 runs 3 h without a heartbeat: not stuck
   ].sort())
-  assert.deepEqual(body.counts, { total: 4, failed: 2, overdue: 1, stuck: 1, missed: 0 })
+  assert.deepEqual(body.counts, { total: 4, failed: 2, overdue: 1, stuck: 1, missed: 0, blocked: 0 })
   // indicator-queue runs on Cloud Run (execution_name): GCP alerting owns its liveness.
   assert.ok(!got.some((item: string) => item.startsWith('indicator-queue')))
   // Grafana's JSONata reads anything but millisecond `Z` stamps as the date's midnight.
@@ -536,18 +536,20 @@ test('/v1/data-readiness: index seeks only, ≤ 20k rows on 2,346-stock sessions
   for (const q of gdelt) assert.ok(q.rowsRead <= gdelt14d, `GDELT read crossed sources: rows_read=${q.rowsRead} :: ${q.sql}`)
 })
 
-test('/v1/data-readiness: chip and technical data are due at their writing stage\'s deadline, not at the close refresh', async () => {
+test('/v1/data-readiness: chip, technical and market dashboard data are due at their writing stage\'s deadline, not at the close refresh', async () => {
   // The market fixture ends at X (Tuesday 11/24); on X+1 the close refresh makes X+1 the price target at 18:30.
   const next = day(X, 1)
   const at = async (tw: string) => {
     const body = await stateAt(Date.parse(`${next}T${tw}:00+08:00`), null, '/v1/data-readiness')
     const status = (id: string) => body.checks.find((check: any) => check.id === id).status
-    return [body.target_date, status('price_freshness'), status('chip_freshness'), status('technical_indicator_freshness')]
+    return [body.target_date, status('price_freshness'), status('chip_freshness'), status('technical_indicator_freshness'),
+      status('market_dashboard_materialization')]
   }
   assert.deepEqual([CHIP_READY_MINUTE_TW, TECHNICAL_READY_MINUTE_TW], [22 * 60 + 50, 23 * 60], 'Market update and Indicator queue deadlines')
-  assert.deepEqual(await at('20:50'), [next, 'fail', 'ok', 'ok'], 'between the close refresh and the evening chain')
-  assert.deepEqual(await at('22:55'), [next, 'fail', 'fail', 'ok'])
-  assert.deepEqual(await at('23:10'), [next, 'fail', 'fail', 'fail'])
+  assert.equal(MARKET_DASHBOARD_READY_MINUTE_TW, 22 * 60 + 50, 'the main Worker report\'s dashboard deadline (FinLab canonical, then Market update)')
+  assert.deepEqual(await at('20:50'), [next, 'fail', 'ok', 'ok', 'ok'], 'between the close refresh and the evening chain')
+  assert.deepEqual(await at('22:55'), [next, 'fail', 'fail', 'ok', 'warn'])
+  assert.deepEqual(await at('23:10'), [next, 'fail', 'fail', 'fail', 'warn'])
 })
 
 test('/v1/capacity: SELECT 1 per binding plus 45 days of history', async () => {
@@ -867,7 +869,7 @@ test('/v1/chain/alerts?chain=intraday_guard: missed after 09:10 on a trading day
   const kinds = async (now: number, date: string) => alertKeys((await callAt(now, `/v1/chain/alerts?chain=intraday_guard&date=${date}`)).body)
   const body = (await callAt(INTRADAY_NOW, '/v1/chain/alerts?chain=intraday_guard')).body
   assert.deepEqual(alertKeys(body), [`${X}:daily-snapshot:stuck`, `${X}:intraday-check:failed`, `${X}:post-close-price-refresh:overdue`])
-  assert.deepEqual(body.counts, { total: 3, failed: 1, overdue: 1, stuck: 1, missed: 0 })
+  assert.deepEqual(body.counts, { total: 3, failed: 1, overdue: 1, stuck: 1, missed: 0, blocked: 0 })
   assert.equal(body.rows.find((row: any) => row.kind === 'failed').failures_14d, 1)
   // 10/01 (Thu) and 09/30 have no intraday rows, nor the 14 days before: not started yet, not missed.
   const fresh = (await callAt(Date.parse('2026-10-01T01:11:00Z'), '/v1/chain/alerts?chain=intraday_guard&date=2026-10-01')).body
@@ -927,7 +929,7 @@ test('/v1/chain/state?chain=weekly_research: the period over the weekend, an err
 
 test('/v1/chain/alerts?chain=weekly_research: counts, repeat failures, missed once Friday 19:00 passes without rows', async () => {
   const body = (await callAt(NOW, '/v1/chain/alerts?chain=weekly_research')).body
-  assert.deepEqual(body.counts, { total: 3, failed: 2, overdue: 1, stuck: 0, missed: 0 })
+  assert.deepEqual(body.counts, { total: 3, failed: 2, overdue: 1, stuck: 0, missed: 0, blocked: 0 })
   assert.deepEqual(Object.fromEntries(body.rows.map((row: any) => [`${row.stage_id}:${row.kind}`, row.failures_14d])), {
     'weekly-backtest:failed': 2, 's12-smcvwap-calibration:failed': 1, 'weekly-readiness:overdue': 0 })
   // 10/09 (Fri) has no weekly row, nor its previous period 10/02: not started yet, never missed.
@@ -959,7 +961,7 @@ test('/v1/chain/state?chain=monthly_artifact: first-Saturday key, the root ran o
   assert.ok(PAUSED.has('monthly-optuna') && PAUSED.has('active8-oof-monthly'))
   assert.equal(body.current[0].root_started_at, rows.find((row: any) => row.stage_id === 'monthly-readiness').started_at, 'the earliest start: the root on Sunday 11/01')
   assert.ok(body.current[0].root_started_at < '2026-11-07', 'before the key')
-  assert.deepEqual((await callAt(NOW, '/v1/chain/alerts?chain=monthly_artifact')).body.counts, { total: 0, failed: 0, overdue: 0, stuck: 0, missed: 0 })
+  assert.deepEqual((await callAt(NOW, '/v1/chain/alerts?chain=monthly_artifact')).body.counts, { total: 0, failed: 0, overdue: 0, stuck: 0, missed: 0, blocked: 0 })
   // 12/02: the December period (key 12/05) has not begun; the ended November period is the one in flight on the panel.
   const december = (await callAt(Date.parse('2026-12-02T04:00:00Z'), '/v1/chain/state?chain=monthly_artifact')).body
   assert.deepEqual([december.business_date, december.previous_business_date, december.active_business_date], ['2026-12-05', '2026-11-07', '2026-11-07'])
@@ -1069,6 +1071,104 @@ test('/v1/chain/alerts?chain=intraday_guard: a stalled intraday-check (row not r
   }
 })
 
+test('/v1/chain/state|alerts?chain=intraday_guard: intraday-check is a watcher — overdue only before its first result, no ETA margin', async () => {
+  const set = (status: string, completedAt: string | null) => fx.raw.OPS_DB.prepare(`UPDATE ops_chain_stage_state_v1 SET status = ?, completed_at = ?, error = NULL
+    WHERE business_date = ? AND chain_id = 'intraday_guard' AND stage_id = 'intraday-check'`).bind(status, completedAt, X).run()
+  const judged = async () => {
+    const [state, alerts] = [(await callAt(INTRADAY_NOW, '/v1/chain/state?chain=intraday_guard')).body, (await callAt(INTRADAY_NOW, '/v1/chain/alerts?chain=intraday_guard')).body]
+    const row = state.rows.find((item: any) => item.business_date === X && item.stage_id === 'intraday-check')
+    return [row.watcher, row.alerts, row.display_status, row.typical_done_offset_min, row.eta, row.eta_margin_min, row.at_risk,
+      alerts.rows.filter((item: any) => item.stage_id === 'intraday-check').map((item: any) => item.kind)]
+  }
+  try {
+    // 14:00: the day's guard ran 09:00–13:30. completed_at (13:30) is the last result, expected_by (09:10) the first's.
+    await set('success', twAt(X, '13:30'))
+    assert.deepEqual(await judged(), [true, [], 'completed', null, null, null, false, []], 'a guarded day is never late')
+    // A blocked minute is the day's worst result, not an unfinished stage: past 09:10 it is its own warning,
+    // `blocked` (被擋住), never overdue (Wei 11/26; before: overdue since 09:10).
+    await set('blocked', twAt(X, '13:30'))
+    assert.deepEqual(await judged(), [true, ['blocked'], 'blocked', null, null, null, false, ['blocked']])
+    const blocked = (await callAt(INTRADAY_NOW, '/v1/chain/alerts?chain=intraday_guard')).body
+    const item = blocked.rows.find((row: any) => row.stage_id === 'intraday-check')
+    assert.deepEqual([item.kind, item.severity, item.status, item.since, blocked.counts.blocked, blocked.counts.overdue],
+      ['blocked', 'warning', 'blocked', twAt(X, '09:10'), 1, 1], 'the one overdue is post-close-price-refresh, not intraday-check')
+    assert.equal((await callAt(INTRADAY_NOW, '/v1/chain/alerts')).body.counts_by_chain.intraday_guard.blocked, 1, 'chain=all counts it too')
+    // Before 09:10 a blocked first result raises nothing yet.
+    const early = (await callAt(Date.parse(twAt(X, '09:05')), '/v1/chain/alerts?chain=intraday_guard')).body
+    assert.deepEqual(early.rows.filter((row: any) => row.business_date === X && row.stage_id === 'intraday-check'), [], 'blocked before 09:10')
+    // A closed day (typhoon) is not judged at all: no alert.
+    await fx.kv.put(`holiday:${X}`, JSON.stringify({ source: 'twse_adhoc', title: '颱風停止上班上課', feed: 'twse.openapi.newsList' }))
+    try {
+      const closed = (await callAt(INTRADAY_NOW, '/v1/chain/alerts?chain=intraday_guard')).body
+      assert.deepEqual([closed.rows.filter((row: any) => row.business_date === X), closed.counts.blocked], [[], 0], 'holiday: nothing')
+    } finally {
+      await fx.kv.delete(`holiday:${X}`)
+    }
+    // A non-watcher in blocked keeps its old judgment: past its deadline it is overdue, never `blocked`.
+    await fx.raw.OPS_DB.prepare(`UPDATE ops_chain_stage_state_v1 SET status = 'blocked' WHERE business_date = ? AND chain_id = 'intraday_guard' AND stage_id = 'eod-exit'`).bind(X).run()
+    try {
+      const other = (await callAt(INTRADAY_NOW, '/v1/chain/alerts?chain=intraday_guard')).body.rows.filter((row: any) => row.stage_id === 'eod-exit').map((row: any) => row.kind)
+      assert.deepEqual(other, ['overdue'])
+    } finally {
+      await fx.raw.OPS_DB.prepare(`UPDATE ops_chain_stage_state_v1 SET status = 'success' WHERE business_date = ? AND chain_id = 'intraday_guard' AND stage_id = 'eod-exit'`).bind(X).run()
+    }
+    // Rows created by another stage's first write, but no intraday-check result at all: overdue after 09:10, still no ETA.
+    await set('pending', null)
+    assert.deepEqual(await judged(), [true, ['overdue'], 'overdue', null, null, null, false, ['overdue']])
+    const before = (await callAt(Date.parse(twAt(X, '09:05')), '/v1/chain/alerts?chain=intraday_guard')).body
+    assert.deepEqual(before.rows.filter((item: any) => item.business_date === X && item.stage_id === 'intraday-check'), [], 'before 09:10')
+    const state = (await callAt(INTRADAY_NOW, '/v1/chain/state?chain=intraday_guard')).body
+    assert.deepEqual(state.rows.filter((row: any) => row.watcher).map((row: any) => row.stage_id), ['intraday-check', 'intraday-check'], 'X and X−1, nothing else')
+    const history = (await callAt(NOW, '/v1/chain/history?chain=intraday_guard&days=2')).body
+    assert.deepEqual([...new Set(history.rows.filter((row: any) => row.watcher).map((row: any) => row.stage_id))], ['intraday-check'])
+    assert.ok(history.rows.some((row: any) => row.watcher === false), 'the other stages are not watchers')
+  } finally {
+    await fx.raw.OPS_DB.prepare(`UPDATE ops_chain_stage_state_v1 SET status = 'error', completed_at = ?, error = 'broker quotes stale at 10:31'
+      WHERE business_date = ? AND chain_id = 'intraday_guard' AND stage_id = 'intraday-check'`).bind(twAt(X, '13:30'), X).run()
+  }
+})
+
+test('/v1/chain/state|alerts: a stage parked on a scheduled dispatch is waiting (display_status, wait_until), never stuck', async () => {
+  // X−1's Pipeline callback, seen at 09:00 on X: serving was published at 08:00, research waits for the 14:20 dispatch.
+  const original = await fx.raw.OPS_DB.prepare(`SELECT status, summary, started_at, heartbeat_at, execution_name, expected_by FROM ops_chain_stage_state_v1
+    WHERE business_date = ? AND chain_id = 'daily_readiness' AND stage_id = 'post-pipeline-chain'`).bind(XPREV).first<Record<string, unknown>>()
+  assert.ok(original, 'fixture row')
+  // Its catalog deadline: T+1 14:45 (ntd).
+  const set = (summary: string) => fx.raw.OPS_DB.prepare(`UPDATE ops_chain_stage_state_v1 SET status = 'running', summary = ?, started_at = ?, heartbeat_at = ?,
+    execution_name = NULL, expected_by = ? WHERE business_date = ? AND chain_id = 'daily_readiness' AND stage_id = 'post-pipeline-chain'`)
+    .bind(summary, twAt(X, '08:00'), twAt(X, '08:05'), twAt(X, '14:45'), XPREV).run()
+  const at = async (tw: string) => {
+    const now = Date.parse(twAt(X, tw))
+    const state = (await callAt(now, `/v1/chain/state?date=${X}`)).body
+    const row = state.rows.find((item: any) => item.business_date === XPREV && item.stage_id === 'post-pipeline-chain')
+    const alerts = (await callAt(now, `/v1/chain/alerts?date=${X}`)).body.rows.filter((item: any) => item.business_date === XPREV && item.stage_id === 'post-pipeline-chain')
+    return [row.status, row.waiting, row.wait_until, row.display_status, row.alerts, alerts.map((item: any) => item.kind)]
+  }
+  const dispatch = twAt(X, '14:20')
+  try {
+    // The writer's form (opsChainStageState chainStageWaitSummary).
+    await set(`status=waiting wait_until=${dispatch} Serving published; research and verification wait for the after-close dispatch at ${X} 14:20 run_id=r`)
+    assert.deepEqual(await at('09:00'), ['running', true, dispatch, 'waiting', [], []], 'heartbeat 55 minutes old: waiting, not stuck')
+    // Past the dispatch it should have been released; stuck counts from the later of the last beat and the dispatch
+    // (the KV run log's stall SLA): not at 14:30, at 14:40.
+    assert.deepEqual(await at('14:30'), ['running', false, dispatch, 'running', [], []])
+    assert.deepEqual(await at('14:40'), ['running', false, dispatch, 'stuck', ['stuck'], ['stuck']])
+    const since = (await callAt(Date.parse(twAt(X, '14:40')), `/v1/chain/alerts?date=${X}`)).body.rows
+      .find((item: any) => item.business_date === XPREV && item.stage_id === 'post-pipeline-chain').since
+    assert.equal(since, dispatch)
+    // Rows written before the prefix: the English summary with the dispatch time (Taiwan) reads the same.
+    await set(`Serving published; research and verification wait for the after-close dispatch at ${X} 14:20 run_id=r`)
+    assert.deepEqual(await at('09:00'), ['running', true, dispatch, 'waiting', [], []])
+    // An ordinary running stage with the same stopped heartbeat stays stuck.
+    await set('post-pipeline continuation running')
+    assert.deepEqual(await at('09:00'), ['running', false, null, 'stuck', ['stuck'], ['stuck']])
+  } finally {
+    await fx.raw.OPS_DB.prepare(`UPDATE ops_chain_stage_state_v1 SET status = ?, summary = ?, started_at = ?, heartbeat_at = ?, execution_name = ?, expected_by = ?
+      WHERE business_date = ? AND chain_id = 'daily_readiness' AND stage_id = 'post-pipeline-chain'`)
+      .bind(original!.status, original!.summary, original!.started_at, original!.heartbeat_at, original!.execution_name, original!.expected_by, XPREV).run()
+  }
+})
+
 test('fresh table (go-live): no chain has history, nothing is missed, history_available false everywhere', async () => {
   const fresh = await startFixture()
   try {
@@ -1080,7 +1180,7 @@ test('fresh table (go-live): no chain has history, nothing is missed, history_av
     }
     // 11/24 23:00 TW: every first-stage deadline of X (and the current week / month) has passed.
     const all = await get('/v1/chain/alerts')
-    assert.deepEqual(all.counts, { total: 0, failed: 0, overdue: 0, stuck: 0, missed: 0 })
+    assert.deepEqual(all.counts, { total: 0, failed: 0, overdue: 0, stuck: 0, missed: 0, blocked: 0 })
     assert.deepEqual(all.chains.map((item: any) => [item.chain_id, item.history_available]),
       [['daily_readiness', false], ['intraday_guard', false], ['weekly_research', false], ['monthly_artifact', false]])
     measured['/v1/chain/alerts (fresh table)'] = all.rows_read

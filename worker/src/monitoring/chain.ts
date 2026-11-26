@@ -8,7 +8,8 @@
  * other chain's rows of those dates (measured with all four chains seeded: daily timeline 893 → 1,202 rows_read). */
 import { currentStage, scopeById, scopeDisplayStageIds, statusLabel, visualStatus, STAGES } from './judgment/executionChainDag'
 import { dailyPhaseForStage } from './judgment/dailyReadinessPhases'
-import { CHAIN_IDS, CHAIN_SPECS, periodKeyFor, periodKeys, previousPeriodKey, REPEAT_STALL_AFTER_MS, type ChainId, type ChainSpec } from './judgment/chainCatalog'
+import { CHAIN_IDS, CHAIN_SPECS, isWatcherStage, periodKeyFor, periodKeys, previousPeriodKey, REPEAT_STALL_AFTER_MS, type ChainId, type ChainSpec } from './judgment/chainCatalog'
+import { stageWait } from './judgment/stageWait'
 import { chainPhaseForStage, chainStageIds } from './judgment/chainPhases'
 import type { SchedulerJob } from './judgment/schedulerJob'
 import { readStageProgress, subStageCards, type SubStageCard } from './chainSubStages'
@@ -87,7 +88,9 @@ const byTransition = (a: Record<string, unknown>, b: Record<string, unknown>) =>
   String(a.business_date).localeCompare(String(b.business_date)) || String(a.stage_id).localeCompare(String(b.stage_id))
   || String(a.transition_at).localeCompare(String(b.transition_at))
 
-export type AlertKind = 'failed' | 'overdue' | 'stuck' | 'missed'
+/** blocked: a watcher (intraday-check) whose day's worst result is blocked once its first-result deadline has passed —
+ * a warning of its own ("被擋住"), never overdue (Wei 11/26). A non-watcher's blocked status raises nothing, as before. */
+export type AlertKind = 'failed' | 'overdue' | 'stuck' | 'missed' | 'blocked'
 
 export type ChainAlert = {
   business_date: string
@@ -150,14 +153,25 @@ export function judgeStageRows(rows: ChainStateRow[], nowMs: number, closedDeadl
     const expected = parse(row.expected_by)
     const staleDeadline = closedDeadlineDates.has(twDateOf(row.expected_by) ?? '')
     // Overdue excludes error: failed already covers it, so one failure raises one alert (contract 11/25). A retry
-    // that turns it back to running and then passes the deadline is overdue again.
-    if (Number.isFinite(expected) && expected < nowMs && !staleDeadline && row.status !== 'success' && row.status !== 'skipped' && row.status !== 'error') {
+    // that turns it back to running and then passes the deadline is overdue again. A watcher's expected_by is its
+    // first result's deadline (its completed_at is the last result): overdue only while it has no result at all.
+    const unfinished = isWatcherStage(row.chain_id, row.stage_id) ? row.status === 'pending'
+      : row.status !== 'success' && row.status !== 'skipped' && row.status !== 'error'
+    if (Number.isFinite(expected) && expected < nowMs && !staleDeadline && unfinished) {
       out.push(alert(row, 'overdue', row.expected_by, nowMs))
     }
+    // A watcher blocked past its first-result deadline: the guard is being held back, not late.
+    if (isWatcherStage(row.chain_id, row.stage_id) && row.status === 'blocked' && Number.isFinite(expected) && expected < nowMs && !staleDeadline) {
+      out.push(alert(row, 'blocked', row.expected_by, nowMs))
+    }
     // Stuck (contract 11/25): a stage that did heartbeat and then stopped for 15 minutes. Most stages write
-    // running once and never heartbeat (overdue covers them); Cloud Run stages are GCP alerting's.
-    if (row.status === 'running' && !row.execution_name && row.heartbeat_at && parse(row.heartbeat_at) < nowMs - STUCK_AFTER_MS) {
-      out.push(alert(row, 'stuck', row.heartbeat_at, nowMs))
+    // running once and never heartbeat (overdue covers them); Cloud Run stages are GCP alerting's. A stage parked
+    // on a scheduled dispatch (stageWait) is waiting by design, not stuck; once released, the 15 minutes count from
+    // the later of its last beat and its wait_until (the KV run log's stall SLA, schedulerStatus resolveSchedulerLogStatus).
+    const wait = stageWait(row, nowMs)
+    const quietSince = Math.max(parse(row.heartbeat_at), Number.isFinite(parse(wait.wait_until)) ? parse(wait.wait_until) : Number.NEGATIVE_INFINITY)
+    if (row.status === 'running' && !row.execution_name && row.heartbeat_at && !wait.waiting && quietSince < nowMs - STUCK_AFTER_MS) {
+      out.push(alert(row, 'stuck', quietSince > parse(row.heartbeat_at) ? wait.wait_until : row.heartbeat_at, nowMs))
     }
     // Missed: the chain root never started after its deadline.
     if (row.stage_id === rootStage && row.status === 'pending' && Number.isFinite(expected) && expected < nowMs) {
@@ -392,13 +406,16 @@ function typicalDoneOffsets(history: ChainHistoryRow[], exceptDate: string, root
 type StageEta = { typical_done_offset_min: number | null; eta: string | null; eta_margin_min: number | null; at_risk: boolean }
 
 /** When a stage that has not ended should finish: its day's root start plus the typical offset, never earlier
- * than now. At risk = that is past expected_by (a deadline on a closed date is stale and gives no margin). */
+ * than now nor than the dispatch it waits for. At risk = that is past expected_by (a deadline on a closed date is
+ * stale and gives no margin). A watcher has no finishing time (its completed_at is its last result): no ETA. */
 function stageEta(row: ChainStateRow, rootStartMs: number, typical: number | undefined, nowMs: number, closed: Set<string>, trading: boolean): StageEta {
+  if (isWatcherStage(row.chain_id, row.stage_id)) return { typical_done_offset_min: null, eta: null, eta_margin_min: null, at_risk: false }
   const offset = typical ?? null
   if (offset == null || !Number.isFinite(rootStartMs) || TERMINAL.has(row.status)) {
     return { typical_done_offset_min: offset, eta: null, eta_margin_min: null, at_risk: false }
   }
-  const etaMs = Math.max(rootStartMs + offset * 60_000, nowMs)
+  const waitUntil = parse(stageWait(row, nowMs).wait_until)
+  const etaMs = Math.max(rootStartMs + offset * 60_000, nowMs, Number.isFinite(waitUntil) ? waitUntil : nowMs)
   const expected = parse(row.expected_by)
   const margin = Number.isFinite(expected) && !closed.has(twDateOf(row.expected_by) ?? '') ? Math.round((expected - etaMs) / 60_000) : null
   return {
@@ -412,9 +429,10 @@ const CARD_STATUS: Record<SchedulerJob['lastStatus'], ChainStatus> = {
   success: 'success', failed: 'error', blocked: 'blocked', running: 'running', skip: 'skipped', waiting: 'pending', sleep: 'pending',
 }
 
-/** The one value a node is coloured by: failed > overdue > stuck > at risk, else the DAG's visual status. */
-function displayStatus(alerts: AlertKind[], atRisk: boolean, visual: string): string {
-  return (['failed', 'overdue', 'stuck'] as const).find((kind) => alerts.includes(kind)) ?? (atRisk ? 'at_risk' : visual)
+/** The one value a node is coloured by: failed > overdue > stuck > blocked > at risk > waiting (parked on a scheduled
+ * dispatch by design), else the DAG's visual status. */
+function displayStatus(alerts: AlertKind[], atRisk: boolean, visual: string, waiting = false): string {
+  return (['failed', 'overdue', 'stuck', 'blocked'] as const).find((kind) => alerts.includes(kind)) ?? (atRisk ? 'at_risk' : waiting ? 'waiting' : visual)
 }
 
 /** The period chains' response fields; the daily chain's responses stay as they were. */
@@ -492,8 +510,11 @@ export async function chainStateReport(env: MonitoringEnv, nowMs: number, reques
     const key = `${row.business_date}|${row.stage_id}`
     const eta = etas.get(key)
     const visual = visualStatus(job)
+    const wait = stageWait(row, nowMs)
     return {
       ...row, optional: Number(row.optional) === 1, trading_day: tradingFlag(dates, row.business_date),
+      // watcher: expected_by is the first result's deadline, completed_at the last result (no deadline margin).
+      watcher: isWatcherStage(row.chain_id, row.stage_id), waiting: wait.waiting, wait_until: wait.wait_until,
       label: STAGES[row.stage_id]?.label ?? row.stage_id,
       phase: (daily ? dailyPhaseForStage(row.stage_id) : chainPhaseForStage(chainId as Exclude<ChainId, 'daily_readiness'>, row.stage_id)) ?? null,
       position: order.get(row.stage_id) ?? null, visual_status: visual, status_label: statusLabel(job),
@@ -502,7 +523,7 @@ export async function chainStateReport(env: MonitoringEnv, nowMs: number, reques
       sub_stage: false, parent_stage_id: null as string | null,
       // The panel shows the cards in place of their parent, and ml-predict not at all.
       display_position: order.get(row.stage_id) ?? null, active: row.business_date === active,
-      display_status: displayStatus(kinds.get(key) ?? [], Boolean(eta?.at_risk), visual),
+      display_status: displayStatus(kinds.get(key) ?? [], Boolean(eta?.at_risk), visual, wait.waiting),
     }
   })
   // One row per card, in the stage rows' shape. A card has no deadline, alert or ETA of its own.
@@ -516,6 +537,7 @@ export async function chainStateReport(env: MonitoringEnv, nowMs: number, reques
       root_ticket_id: parent.root_ticket_id, ticket_id: parent.ticket_id, run_id: card.run_id, execution_name: null,
       summary: job.summary, error: job.lastError ?? null, started_at: job.lastRunAt ?? null, completed_at: card.completed_at,
       heartbeat_at: null, updated_at: card.observed_at, trading_day: tradingFlag(dates, date),
+      watcher: false, waiting: false, wait_until: null as string | null,
       label: job.name, phase: dailyPhaseForStage(job.id) ?? null, position: DAILY_ORDER.get(job.id) ?? null,
       visual_status: visual, status_label: statusLabel(job), alerts: [] as AlertKind[],
       typical_done_offset_min: null, eta: null, eta_margin_min: null, at_risk: false,
@@ -535,10 +557,10 @@ export async function chainStateReport(env: MonitoringEnv, nowMs: number, reques
   }
 }
 
-type AlertCounts = { total: number; failed: number; overdue: number; stuck: number; missed: number }
+type AlertCounts = { total: number; failed: number; overdue: number; stuck: number; missed: number; blocked: number }
 const countAlerts = (alerts: ChainAlert[]): AlertCounts => {
   const count = (kind: AlertKind) => alerts.filter((item) => item.kind === kind).length
-  return { total: alerts.length, failed: count('failed'), overdue: count('overdue'), stuck: count('stuck'), missed: count('missed') }
+  return { total: alerts.length, failed: count('failed'), overdue: count('overdue'), stuck: count('stuck'), missed: count('missed'), blocked: count('blocked') }
 }
 
 /** One chain's alerts. failures_14d: business dates in the 14 days ending at X on which the stage ended in error —
@@ -599,6 +621,8 @@ export async function chainHistoryReport(env: MonitoringEnv, nowMs: number, days
     rows: rows.map((row) => ({
       time: twMidnight(row.business_date), business_date: row.business_date, stage_id: row.stage_id, label: label(row.stage_id),
       position: position(row.stage_id), optional: Number(row.optional) === 1, status: row.status, attempt: Number(row.attempt ?? 0),
+      // A watcher's expected_by is its first result's deadline and completed_at its last result: no margin between them.
+      watcher: isWatcherStage(chainId, row.stage_id),
       // A success that needed more than one attempt is shown apart from a first-attempt success.
       result: row.status === 'success' && Number(row.attempt ?? 0) > 1 ? 'retry_success' : row.status,
       // Deadline margin (expected_by − completed_at) and finishing time on ② page; isoStamp for Grafana's JSONata.

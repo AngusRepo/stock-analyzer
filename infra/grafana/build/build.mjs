@@ -5,6 +5,7 @@
  *   node build.mjs --check         → fails unless both modes differ only in where a query reads from
  *   node build.mjs --mode preview --out <dir>  → <dir>/<uid>-v4.json (the four desktop pages for the preview folder)
  *   node build.mjs --mode preview5 --out <dir> → <dir>/<uid>-v5.json (the v5 redesign, dashboard_rethink_v5.md)
+ *   node build.mjs --mode preview5live --out <dir> → <dir>/<uid>-v5live.json (v5 ② ④ over the live monitoring Worker)
  * Fixtures and dag.json come from dump-fixtures.mts and export-dag.mts. A panel reading a Worker route this checkout
  * does not serve (or a source not wired yet) is planned: the fixture build draws it over mock.mjs, the live build leaves it out. */
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -28,7 +29,7 @@ function loadFixtures(at) {
   const index = json('fixtures/index.json')
   const days = at ? Math.max(0, Math.floor((at - Date.parse(index.now)) / DAY_MS)) : 0
   const now = new Date(Date.parse(index.now) + days * DAY_MS).toISOString()
-  const mock = mockResponses(now, { slackStages: slackStageList() })
+  const mock = mockResponses(now)
   return { now: Date.parse(now), demo: new Set(Object.keys(mock)),
     responses: { ...Object.fromEntries(Object.entries(index.files).map(([path, file]) => [path, shiftDates(json(`fixtures/${file}`), days)])), ...mock } }
 }
@@ -413,8 +414,15 @@ const ARM_COLORS = { base: COOL.cat[0], diversified_alpha: COOL.cat[1], diversif
   conservative_diversified: COOL.other, high_score_conservative: COOL.other, arm_inert: C.skip }
 const ARM_MAPPINGS = [{ type: 'value', options: Object.fromEntries(Object.entries(ARM_COLORS).map(([arm, color], index) =>
   [arm, { text: arm === 'arm_inert' ? '被風控壓成一組' : arm, color, index }])) }]
-/** A Taiwan date as the start of that day. */
-const DAY_TIME = (field) => `${field} & 'T00:00:00+08:00'`
+/** A Taiwan date as the start of that day, as a millisecond `Z` stamp: Infinity's JSONata reads any other stamp shape
+ * (an offset such as +08:00 included) as the date's UTC midnight, 08:00 in Taiwan. */
+const DAY_TIME = (field) => `$fromMillis($toMillis(${field} & 'T00:00:00.000Z') - ${8 * 3600_000})`
+/** offline_gate_decision (ml-controller model_artifact_registry): STRONG_PASS and PASS serve; WEAK_PASS is evidence only. */
+const SERVING_GATES = `['STRONG_PASS', 'PASS']`
+const GATE_VOCAB = { STRONG_PASS: ['強通過', 'ok'], PASS: ['通過', 'ok'], WEAK_PASS: ['弱通過', 'warn'], FAIL: ['未過', 'bad'], PENDING: ['待定', 'idle'] }
+/** The next monthly run in Taiwan time; the repo manifest's PAUSED reads 暫停 (the Worker then serves no date). */
+const NEXT_MONTHLY = `next_monthly_run.repo_desired_state = 'PAUSED' ? '暫停'
+  : next_monthly_run.next_run_at ? $fromMillis($toMillis(next_monthly_run.next_run_at), '[M01]/[D01]', '+0800') : '—'`
 
 /** Page ④: is the strategy earning, which model is weak, is the allocator learning, and how long training runs. */
 function model(q) {
@@ -427,8 +435,8 @@ function model(q) {
     kpi('OPB', [q(OPB, { root: `{ 'clip': summary.clip_rate, 'reward': summary.complete_receipts, 'days': summary.plan_days }`,
       columns: [N('clip', '被壓成一組'), N('reward', '可學 reward'), N('days', '計畫天數')] })], 15, 0, 5, 4, [
       { name: '被壓成一組', unit: 'percentunit', th: th([C.txt, null], [C.warn, 0.5]) }, { name: '可學 reward' }, { name: '計畫天數' }]),
-    kpi('模型', [q(ROSTER, { root: `{ 'pass': $string($count(rows[gate_decision = 'PASS'])) & '／' & $string(model_count),
-      'next': next_monthly_run.next_run_at ? $replace($substring(next_monthly_run.next_run_at, 5, 5), '-', '/') : '—' }`,
+    kpi('模型', [q(ROSTER, { root: `{ 'pass': $string($count(rows[gate_decision in ${SERVING_GATES}])) & '／' & $string(model_count),
+      'next': ${NEXT_MONTHLY} }`,
       columns: [S('pass', '閘門通過'), S('next', '下次月訓')] })], 20, 0, 4, 4, [{ name: '閘門通過' }, { name: '下次月訓' }]),
     { type: 'timeseries', title: 'Paper NAV 與加權指數', gridPos: gp(0, 4, 14, 9),
       description: '兩條線都以 90 天窗口第一天為 0%。加權指數收盤晚於 paper 快照，最後一天可能還沒有指數。',
@@ -441,13 +449,13 @@ function model(q) {
     states('state-timeline', '每天選到的 OPB arm', q(OPB, { root: `rows.{ 'time': ${DAY_TIME('signal_date')}, 'row': '選到的 arm', 'arm': arm_inert ? 'arm_inert' : arm_id }`,
       columns: [T('time', 'time'), S('row', 'row'), S('arm', 'arm')] }), 'row', 14, 4, 10, 4,
     { mappings: ARM_MAPPINGS, legend: true, desc: '每個 signal date 的計畫用了哪個 arm；灰＝風控把所有 arm 壓成同一組（arm_inert），那天學不到差別。' }),
-    stackedBars('各 arm 累積樣本（最新一天）', [q(OPB, { root: `latest_arm_statistics.{ 'arm': arm_id, 'samples': samples }`,
+    stackedBars('各 arm 累積樣本（最新有統計的計畫）', [q(OPB, { root: `latest_arm_statistics.{ 'arm': arm_id, 'samples': samples }`,
       columns: [S('arm', 'arm'), N('samples', '樣本數')] })], 'arm', 14, 8, 10, 5, [['樣本數', COOL.cat[0]]],
-    { horizontal: true, desc: '最新計畫的 arm_statistics：每個 arm 累積多少樣本（v2 從 replay 學）。' }),
+    { horizontal: true, desc: '最新一筆有 arm_statistics 的計畫：每個 arm 累積多少樣本（v2 從 replay 學）。arm_inert／固定 arm 那天的計畫統計是空的，往前取；統計按 context 算，可能早於目前的 context。' }),
     table('模型名冊', q(ROSTER, { root: `rows.{ 'model': model_name, 'gate': gate_decision, 'ic': oos_ic, 'min': min_oos_ic_mean, 'state': state,
       'version': '版本 ' & champion_version, 'run': '訓練 ' & gate_training_run_id & '（' & source_run_date & '）' }`,
       columns: [S('model', '模型'), S('gate', '閘門'), N('ic', 'OOS IC'), N('min', 'IC 門檻'), S('state', '狀態'), S('version', '版本'), S('run', '訓練')] }),
-    0, 13, 14, 7, { status: ['閘門'], wd: { 閘門: 64, 'OOS IC': 84, 'IC 門檻': 84 }, hidden: ['版本', '訓練'], details: { 模型: ['版本', '訓練'] },
+    0, 13, 14, 7, { status: ['閘門'], vocabulary: GATE_VOCAB, wd: { 閘門: 64, 'OOS IC': 84, 'IC 門檻': 84 }, hidden: ['版本', '訓練'], details: { 模型: ['版本', '訓練'] },
       desc: '上線中的 alpha roster 與各模型最近一次月訓的離線閘門。點模型名稱看版本與訓練 run。' }),
     at(gcp.jobMinutes, 14, 13, 10, 7),
     states('status-history', 'KV 設定漂移（7 天）', q(KV_DRIFT, {
@@ -516,27 +524,22 @@ function mobile(q) {
 
 /* ---- v5 preview pages (dashboard_rethink_v5.md §2–3): each question gets the chart its data shape asks for. ---- */
 
-/** Heatmap row names: the Canvas's short names, and the two parents the Canvas draws as their sub-stages. */
+/** Grid row names: the Canvas's short names, and the two parents the Canvas draws as their sub-stages. */
 const SLACK_LABELS = { ...SHORT_LABELS, pipeline: 'L3 Pipeline', 'ml-predict': 'ML Predict', 'finlab-v4-backfill': 'FinLab canonical' }
-/** The daily chain's required stages that have a deadline, in Canvas order, from the fixture evening: deadline and typical
- * completion in minutes after the business date's Taiwan midnight (the demo margins are drawn around them). */
-let slackStages = null
-function slackStageList() {
-  if (slackStages) return slackStages
-  const state = json('fixtures/chain-state.json')
-  const midnight = Date.parse(`${state.business_date}T00:00:00+08:00`)
-  const root = state.current.find((row) => row.business_date === state.business_date)?.root_started_at
-  const rootMin = root ? (Date.parse(root) - midnight) / 60_000 : 0
-  const position = new Map(CANVAS_ORDER.map(({ id }, i) => [id, i]))
-  slackStages = state.rows.filter((row) => row.business_date === state.business_date && !row.optional && !row.sub_stage && row.expected_by)
-    .sort((a, b) => (position.get(a.stage_id) ?? 999) - (position.get(b.stage_id) ?? 999))
-    .map((row) => ({ id: row.stage_id, label: SLACK_LABELS[row.stage_id] ?? row.label, deadline: Math.round((Date.parse(row.expected_by) - midnight) / 60_000),
-      typical: row.typical_done_offset_min == null ? null : rootMin + row.typical_done_offset_min }))
-  return slackStages
-}
-/** Clock times are drawn on one reference day so the axis reads HH:mm (mock.mjs uses the same base). */
+const SLACK_NAMES = JSON.stringify(SLACK_LABELS)
+/** The L3 Pipeline deadline from the Worker's stage catalog, in minutes after the business date's Taiwan midnight:
+ * ntd('HH:MM') is that time on the next trading day, drawn as the next morning (a weekday's next trading day). */
+const PIPELINE_DEADLINE = (() => {
+  const match = /stageId: 'pipeline',.*expectedBy: ntd\('(\d\d):(\d\d)'\)/.exec(readFileSync(join(here, '../../../worker/src/lib/opsChainStageCatalog.ts'), 'utf8'))
+  if (!match) throw new Error('pipeline deadline not found in opsChainStageCatalog.ts')
+  return 24 * 60 + Number(match[1]) * 60 + Number(match[2])
+})()
+/** Clock times are drawn on one reference day so the axis reads HH:mm: the value is this base plus the time since the
+ * business date's Taiwan midnight (the history row's `time`). */
 const CLOCK_BASE = Date.parse('2000-01-01T00:00:00+08:00')
 const MIN_MS = 60_000
+/** A history row that finished: completed_at is set only for a final status, and only a success is measured. */
+const SLACK_ROWS = `rows[optional = false and status = 'success' and completed_at and expected_by]`
 /** A spark (number + line) moved to another column. */
 const moveSpark = (panels, x, w) => [panels].flat().map((panel) => Object.assign(panel, { gridPos: { ...panel.gridPos, x, w } }))
 /** State timeline over Cloud Monitoring series, one row per series: grey when nothing runs, blue when something does. */
@@ -565,34 +568,44 @@ function today5(q) {
 function health5(q) {
   const v4 = health(q)
   const [daily, intraday] = HISTORIES
-  const stages = slackStageList()
-  const deadline = stages.find((stage) => stage.id === 'pipeline').deadline
+  const deadline = PIPELINE_DEADLINE
   const clock = (minutes) => CLOCK_BASE + minutes * MIN_MS
   const repeat = v4.find((panel) => panel.title === '重複失敗')
   // 「每週」needs 50px with padding; at 48 the grid overflows by 2px and draws a horizontal scrollbar.
   repeat.fieldConfig.overrides.find((o) => o.matcher.options === '鏈').properties.find((p) => p.id === 'custom.width').value = 52
   const lane = (id) => v4.find((panel) => panel.title === OTHER_TITLES[id])
   const troubled = ([path, name], refId, order) => q(path, { refId, columns: [T('time', 'time'), S('stage', 'stage'), S('result', 'result')],
-    root: `($bad := $distinct(rows[result in ['error', 'blocked', 'retry_success']].stage_id); ${order('rows[stage_id in $bad]')}.{ 'time': time,
-      'stage': '${name}｜' & label, 'result': result })` })
+    // Infinity serves an empty match as a frame without fields, which the state timeline reports as "Data does not have a
+    // time field" instead of its noValue; a quiet window is one 正常 row over the whole window.
+    root: `($bad := $distinct(rows[result in ['error', 'blocked', 'retry_success']].stage_id); $bad ? ${order('rows[stage_id in $bad]')}.{ 'time': time,
+      'stage': '${name}｜' & label, 'result': result } : { 'time': ${DAY_TIME('from')}, 'stage': '${name}｜14 天內沒有站出狀況', 'result': 'ok' })` })
   // A count of past failures is not an alert by itself (they are listed below); amber only from about one a business day.
   Object.assign(v4[2][0].fieldConfig.defaults, { thresholds: th([C.txt, null], [C.warn, 10]) })
   v4[2][0].description = '近 14 個業務日失敗或中止的站次合計（10 次以上標琥珀）；折線＝每天幾站。'
+  // Long rows (time, stage, margin) split into one row per stage, in order of first appearance (Canvas order), as the state panels do.
+  const byStage = (panel) => Object.assign(panel, { transformations: [...panel.transformations,
+    { id: 'partitionByValues', options: { fields: ['stage'], keepFields: false, naming: { asLabels: true } } }],
+  fieldConfig: { ...panel.fieldConfig, defaults: { ...panel.fieldConfig.defaults, displayName: '${__field.labels.stage}' } } })
   return [
     ...v4.slice(0, 4),
     // A status-history grid (one row per stage, one cell per business day) so each band is a flat colour, not a gradient.
-    grid('距截止的餘裕（必要階段 × 業務日）', q('plan:chain-slack', { root: 'rows', columns: [T('time', 'time'), ...stages.map((stage) => N(stage.id, stage.label))] }),
+    byStage(grid('距截止的餘裕（必要階段 × 業務日）', q(HISTORY, { root: `${byChainOrder(SLACK_ROWS, 'time')}.{ 'time': time,
+      'stage': ($n := $lookup(${SLACK_NAMES}, stage_id); $n ? $n : label), 'margin': $round(($toMillis(expected_by) - $toMillis(completed_at)) / ${MIN_MS}) }`,
+    columns: [T('time', 'time'), S('stage', 'stage'), N('margin', '餘裕')] }),
       0, 4, 16, 12, { unit: 'm', th: th([C.bad, null], [C.warn, 0], [COOL.margin[0], 10], [COOL.margin[1], 30], [COOL.margin[2], 60]),
         desc: '一格＝一個必要階段一個業務日，顏色＝完成時離截止還剩幾分鐘：深藍＝60 分以上，青＝30–60 分，灰藍＝10–30 分，'
-          + '琥珀＝不到 10 分（快趕不上），紅＝超過截止（與今天頁流程鏈的底色同一組門檻）。同一列由左往右變淺、變琥珀＝這一站越跑越慢。列順序＝今天頁的流程鏈。' }),
+          + '琥珀＝不到 10 分（快趕不上），紅＝超過截止（與今天頁流程鏈的底色同一組門檻）。同一列由左往右變淺、變琥珀＝這一站越跑越慢。列順序＝今天頁的流程鏈。'
+          + '只算成功完成的必要階段（截止－完成時間）；失敗、略過、還沒完成的格子是空的。截止是下一個交易日的站，週五的餘裕會多出週末。' })),
     donut('失敗分類（14 天）', q(FAILURE_CLASSES, { root: `{ '最終失敗': classes.final_failure, '上游擋下': classes.upstream_blocked,
       '重試後成功': classes.recovered, '進行中': classes.in_progress, '其他': classes.orphan_running + classes.unsettled_triggered + classes.designed_retry }`,
     columns: FAILURE_CLASS_SERIES.map(([name]) => N(name, name)) }), 16, 4, 8, 12, { colors: FAILURE_CLASS_SERIES.map(([name, , color]) => [name, color]),
       desc: `14 天內非成功的 scheduler ticket 各類占比，${FAILURE_CLASS_NOTE}` }),
     { type: 'timeseries', title: 'L3 Pipeline 收尾時間', gridPos: gp(0, 16, 10, 8),
       description: `每個業務日夜間 L3 Pipeline 全部完成的時間（隔天早上），虛線＝截止 ${new Date(clock(deadline) + 8 * 3600_000).toISOString().slice(11, 16)}；`
-        + '紅區＝超過截止、琥珀＝截止前 15 分內。點越來越往上＝夜鏈越跑越晚。',
-      targets: [q('plan:chain-slack', { root: `rows.{ 'time': time, 'tail': tail }`, columns: [T('time', 'time'), N('tail', '完成時間')] })],
+        + '紅區＝超過截止、琥珀＝截止前 15 分內。點越來越往上＝夜鏈越跑越晚。只畫成功完成的業務日。',
+      // The clock time is the time since the business date's Taiwan midnight (`time`) on CLOCK_BASE's day.
+      targets: [q(HISTORY, { root: `rows[stage_id = 'pipeline' and status = 'success' and completed_at].{ 'time': time,
+        'tail': ${CLOCK_BASE} + $toMillis(completed_at) - $toMillis(time) }`, columns: [T('time', 'time'), N('tail', '完成時間')] })],
       options: { legend: { showLegend: false, displayMode: 'list', placement: 'bottom', calcs: [] }, tooltip: { mode: 'single' } },
       // Only the last 15 minutes before the deadline (amber) and past it (red) are shaded; before that nothing.
       fieldConfig: { defaults: { noValue: NO_SOURCE, color: { mode: 'fixed', fixedColor: COOL.cat[0] },
@@ -604,7 +617,7 @@ function health5(q) {
     states('state-timeline', '出過狀況的站（14 天）', [troubled(daily, 'A', (rows) => byChainOrder(rows, 'time')),
       troubled(intraday, 'B', (rows) => `$sort(${rows}, function($a, $b) { $a.position > $b.position or ($a.position = $b.position and $a.time > $b.time) })`)],
     'stage', 10, 16, 14, 8, { empty: '14 天內沒有', opts: { mergeValues: true },
-      desc: '只列 14 天內失敗、中止或重試後才完成過的站（每日＋盤中），一列＝一站每個業務日的最終結果；全部正常時只顯示「14 天內沒有」。' }),
+      desc: '只列 14 天內失敗、中止或重試後才完成過的站（每日＋盤中），一列＝一站每個業務日的最終結果；一條鏈全部正常時只顯示一列「14 天內沒有站出狀況」。' }),
     ...['weekly_research', 'monthly_artifact'].map((id, i) => Object.assign(lane(id), { gridPos: gp(i ? 16 : 0, 24, i ? 8 : 16, 6) })),
     Object.assign(lane('intraday_guard'), { gridPos: gp(0, 30, 11, 8) }),
     Object.assign(repeat, { gridPos: gp(11, 30, 13, 8) }),
@@ -659,12 +672,29 @@ const JOB_DAY_MAPPINGS = [['ok', C.ok], ['fail', C.bad]].map(([key, color], inde
   ({ type: 'regex', options: { pattern: `^${key}\\|(.*)$`, result: { text: '$1', color, index } } }))
 /** OPB arms in the bubble chart, one query (frame) each so each keeps its colour. */
 const ARMS = Object.keys(ARM_COLORS).filter((arm) => arm !== 'arm_inert')
+/** A model's OOS IC against its own gate thresholds (ml-controller offline gate: FAIL at or below min_oos_ic_mean,
+ * WEAK_PASS below weak_oos_ic_mean), as '<tier>|<IC to 3 places>'. Thresholds are read per row, never assumed. */
+const IC_CELL = `($ic := oos_ic; $lo := min_oos_ic_mean; $weak := weak_oos_ic_mean;
+  $tier := $type($ic) != 'number' ? '' : $type($lo) = 'number' and $type($weak) = 'number' ? ($ic <= $lo ? 'bad' : $ic < $weak ? 'warn' : 'ok') : 'none';
+  $tier ? $tier & '|' & $string($round($ic, 3)) : null)`
+const IC_TIER_MAPPINGS = [['ok', C.ok], ['warn', C.warn], ['bad', C.bad], ['none', C.idle]].map(([key, color], index) =>
+  ({ type: 'regex', options: { pattern: `^${key}\\|(.*)$`, result: { text: '$1', color, index } } }))
 const CLOCK_NAMES = JSON.stringify({ shadow_a: 'Shadow A', rfs_allocator: 'RFS allocator', execution_parity: 'Execution parity' })
 
 function model5(q) {
   const v4 = model(q)
   const [ret, excess, drawdown, opb, models, nav, armDays] = v4
   const kv = v4.find((panel) => panel.title === 'KV 設定漂移（7 天）')
+  const roster = table('模型名冊', q(ROSTER, { root: `rows.{ 'model': model_name, 'gate': gate_decision, 'ic': ${IC_CELL}, 'state': state,
+      'min': 'IC 門檻 ' & $string(min_oos_ic_mean) & '（弱 ' & $string(weak_oos_ic_mean) & '，強 ' & $string(strong_oos_ic_mean) & '）', 'version': '版本 ' & champion_version,
+      'run': '訓練 ' & gate_training_run_id & '（' & source_run_date & '）' }`,
+    columns: [S('model', '模型'), S('gate', '閘門'), S('ic', 'OOS IC'), S('state', '狀態'), S('min', 'IC 門檻'), S('version', '版本'), S('run', '訓練')] }),
+    0, 14, 14, 7, { status: ['閘門'], vocabulary: GATE_VOCAB, wd: { 閘門: 64, 狀態: 96 }, hidden: ['IC 門檻', '版本', '訓練'], details: { 模型: ['IC 門檻', '版本', '訓練'] },
+      desc: '上線中的 alpha roster 與各模型最近一次月訓的離線閘門。OOS IC 的格子照該模型自己的閘門門檻上色：紅＝不高於 min 門檻（未過），'
+        + '琥珀＝低於弱門檻（弱通過），綠＝達弱門檻以上；灰＝沒有門檻。點模型名稱看門檻、版本與訓練 run。' })
+  // A cell filled with its tier's colour (the number is the magnitude), as the solid cells are.
+  roster.fieldConfig.overrides.push({ matcher: { id: 'byName', options: 'OOS IC' }, properties: [
+    { id: 'custom.cellOptions', value: { type: 'color-background', mode: 'basic' } }, { id: 'mappings', value: IC_TIER_MAPPINGS }] })
   const arm = (id, refId) => q(OPB, { refId, columns: [N('samples', '樣本數'), N('reward', '平均 reward'), N('share', '選用比例')],
     root: `($s := arm_share[arm_id = '${id}'][0].share; latest_arm_statistics[arm_id = '${id}'].{ 'samples': samples, 'reward': mean, 'share': $s ? $s : 0 })` })
   // 一致 is not an event, so it is a calm cool tone; 漂移 (amber) and 缺少／無效 (red) are what to look at.
@@ -684,7 +714,8 @@ function model5(q) {
       description: `${armDays.description}顏色與右下泡泡圖的 arm 圖例相同。` }),
     { type: 'xychart', title: 'OPB arm：樣本數 × 平均 reward', gridPos: gp(14, 8, 10, 6), targets: ARMS.map((id, i) => arm(id, 'ABCDEF'[i])),
       description: '一個泡泡＝一個 arm：橫軸＝累積樣本數，縱軸＝平均 reward，泡泡大小＝近 60 天被選用的比例。'
-        + '有在學的話，大泡泡會落在右上（樣本多、reward 高）；泡泡都擠在一起或大小一樣＝沒有在分辨 arm。',
+        + '有在學的話，大泡泡會落在右上（樣本多、reward 高）；泡泡都擠在一起或大小一樣＝沒有在分辨 arm。'
+        + '樣本與 reward 取最新一筆有 arm_statistics 的計畫（arm_inert 那天不存統計）。',
       options: { mapping: 'manual', series: ARMS.map((id, i) => ({ name: { fixed: id }, frame: { matcher: { id: 'byIndex', options: i } },
         x: { matcher: { id: 'byName', options: '樣本數' } }, y: { matcher: { id: 'byName', options: '平均 reward' } }, size: { matcher: { id: 'byName', options: '選用比例' } } })),
       legend: { showLegend: true, displayMode: 'list', placement: 'right', calcs: [] }, tooltip: { mode: 'single' } },
@@ -694,23 +725,19 @@ function model5(q) {
       overrides: [...ARMS.map((id, i) => ({ matcher: { id: 'byFrameRefID', options: 'ABCDEF'[i] }, properties: [{ id: 'color', value: { mode: 'fixed', fixedColor: ARM_COLORS[id] } }] })),
         { matcher: { id: 'byName', options: '平均 reward' }, properties: [{ id: 'unit', value: 'percentunit' }, { id: 'decimals', value: 2 }] },
         { matcher: { id: 'byName', options: '選用比例' }, properties: [{ id: 'unit', value: 'percentunit' }] }] } },
-    table('模型名冊', q(ROSTER, { root: `rows.{ 'model': model_name, 'gate': gate_decision, 'ic': oos_ic, 'state': state,
-      'min': 'IC 門檻 ' & $string(min_oos_ic_mean) & '（弱 ' & $string(weak_oos_ic_mean) & '）', 'version': '版本 ' & champion_version,
-      'run': '訓練 ' & gate_training_run_id & '（' & source_run_date & '）' }`,
-    columns: [S('model', '模型'), S('gate', '閘門'), N('ic', 'OOS IC'), S('state', '狀態'), S('min', 'IC 門檻'), S('version', '版本'), S('run', '訓練')] }),
-    0, 14, 14, 7, { status: ['閘門'], solid: { 'OOS IC': { dec: 3, th: th([C.bad, null], [C.warn, 0.015], [C.ok, 0.02]) } },
-      wd: { 閘門: 64, 狀態: 96 }, hidden: ['IC 門檻', '版本', '訓練'], details: { 模型: ['IC 門檻', '版本', '訓練'] },
-      desc: '上線中的 alpha roster 與各模型最近一次月訓的離線閘門。OOS IC 的格子：紅＝低於弱門檻 0.015、琥珀＝0.015–0.02、綠＝達 min 門檻 0.02。點模型名稱看門檻、版本與訓練 run。' }),
+    roster,
     // One cell per job and day (status-history): a run of minutes is invisible as a state-timeline segment over 14 days.
     states('status-history', '訓練與研究 Job（每天）', q('plan:cloud-run-job-days', { root: `rows.{ 'time': time, 'job': job, 'cell': cell }`,
       columns: [T('time', 'time'), S('job', 'job'), S('cell', 'cell')] }), 'job', 14, 14, 10, 7,
     { timeFrom: '14d', empty: '14 天內沒有執行', mappings: JOB_DAY_MAPPINGS,
-      desc: '每個 Cloud Run Job 一列、每天一格：綠＝當天的執行都成功，紅＝當天有失敗，空白＝當天沒跑。滑鼠停在格子上看當天跑了幾次、共幾分鐘。' }),
+      desc: '每個 Cloud Run Job 一列、每天一格：綠＝當天的執行都成功，紅＝當天有失敗，空白＝當天沒跑。滑鼠停在格子上看當天跑了幾次、共幾分鐘。'
+        + '尚未接資料：每個 Job 每天的成敗要監控 Worker 新增一條 route（資料來源待查），目前畫的是示範資料。' }),
     Object.assign(kv, { gridPos: gp(0, 21, 12, 4) }),
     gauges('證據累積（距 20 日門檻）', q(CLOCKS, { root: `rows.{ 'name': $lookup(${CLOCK_NAMES}, mechanism), 'days': distinct_dates }`,
       columns: [S('name', 'name'), N('days', 'days')] }), 'name', 'days', 12, 21, 12, 4,
     { unit: 'suffix: 日', max: 20, th: th([C.run, null], [C.ok, 20]),
-      desc: '各影子機制已累積的證據日數，滿 20 日轉綠（可以下判斷）。Execution parity 要有真實下單才會開始累積。' }),
+      desc: '各影子機制已累積的證據日數，滿 20 日轉綠（可以下判斷）。Execution parity 要有真實下單才會開始累積。'
+        + 'RFS allocator 的證據日數、被擋的收據與滿 20 日的日數要等 rfs_sparse_comparisons_v1(policy_identity) 加上 D1 索引後 Worker 才提供（目前固定回 0／null），所以這一格先停在 0。' }),
   ]
 }
 const V5 = { 'sv-today': today5, 'sv-health': health5, 'sv-resources': resources5, 'sv-model': model5 }
@@ -742,6 +769,24 @@ function previewSource(fixtures) {
   return (path, o) => (PREVIEW_LIVE.has(path) ? live(path, o) : inline(path, o))
 }
 
+/** preview5live: the v5 pages whose Worker routes are all deployed (② ④, main 7aebf20f), every Worker route the checkout
+ * serves read live (datasource sv-monitoring); only what has no source yet ('plan:', 'mock:') stays over mock.mjs.
+ * Header links go to the preview uids: ② ④ here, ① ③ their v5 previews (preview5). */
+const LIVE_PREVIEW = { version: 'v5live', pages: ['sv-health', 'sv-model'],
+  links: { 'sv-today': 'sv-today-v5', 'sv-health': 'sv-health-v5live', 'sv-resources': 'sv-resources-v5', 'sv-model': 'sv-model-v5live' } }
+function buildLivePreview() {
+  const mock = mockResponses(new Date().toISOString())
+  const live = querySource('live', null, { liveRoutes: LIVE_ROUTES })
+  const inline = querySource('fixture', mock, { liveRoutes: LIVE_ROUTES, demo: new Set(Object.keys(mock)) })
+  const q = (path, o) => (path.startsWith('/v1/') && LIVE_ROUTES.has(path.split('?')[0]) ? live(path, o) : inline(path, o))
+  return PAGES.filter((page) => LIVE_PREVIEW.pages.includes(page.uid)).map((page) => {
+    const panels = V5[page.uid](q, 'preview').flat().map((panel) => (isDemo(panel)
+      ? Object.assign(panel, { title: panel.title && `${panel.title}（示範資料）`, description: `${DEMO}${panel.description ?? ''}` }) : panel))
+    return dashboard({ uid: `${page.uid}-${LIVE_PREVIEW.version}`, title: `${page.title}（預覽・真資料）`, panels, tag: 'stockvision-preview',
+      time: page.live, refresh: page.refresh, links: page.links.map(([title, uid]) => [title, LIVE_PREVIEW.links[uid] ?? uid]) })
+  })
+}
+
 const DEMO = '示範資料。'
 const isPlanned = (panel) => Boolean(panel.targets?.some((target) => target.planned))
 const isDemo = (panel) => Boolean(panel.targets?.some((target) => target.demo))
@@ -749,6 +794,7 @@ const isDemo = (panel) => Boolean(panel.targets?.some((target) => target.demo))
 /** Live: planned panels left out. Fixture: every panel, the ones over authored data marked 示範資料. Preview: every
  * panel on relative time, the ones not over live data titled 示範資料. */
 function build(mode) {
+  if (mode === 'preview5live') return buildLivePreview()
   if (mode in PREVIEWS) return buildPreview(PREVIEWS[mode])
   const fixtures = mode === 'fixture' ? loadFixtures() : null
   const q = querySource(mode, fixtures?.responses, { liveRoutes: LIVE_ROUTES, demo: fixtures?.demo })
@@ -779,10 +825,11 @@ function buildPreview({ version, pages }) {
 }
 
 /** Panels with everything that may differ between the two modes removed: where a query reads from (a billing query is
- * BigQuery live and authored rows in the fixture, so only its refId is compared), ids, the 示範資料 note, planned panels. */
+ * BigQuery live and authored rows in the fixture, so only its refId is compared), ids, the 示範資料 note, planned panels.
+ * A Worker route over mock.mjs in the fixture is the live query over other data: compared in full. */
 function comparable(board) {
   const strip = (target) => {
-    if (target.datasource?.type === BIGQUERY_DS.type || target.demo) return { refId: target.refId }
+    if (target.datasource?.type === BIGQUERY_DS.type || target.standIn) return { refId: target.refId }
     const { datasource, source, url, url_options, data, ...rest } = target
     return rest
   }
@@ -799,9 +846,9 @@ if (args.includes('--check')) {
   console.log(`${live.length} dashboards: live and fixture differ only in the query source (planned panels, fixture only: ${planned})`)
 } else {
   const mode = args[args.indexOf('--mode') + 1]
-  const preview = mode in PREVIEWS
+  const preview = mode in PREVIEWS || mode === 'preview5live'
   if (!(['live', 'fixture'].includes(mode) || preview) || (preview && !args.includes('--out'))) {
-    console.error('usage: build.mjs --mode live|fixture | --mode preview|preview5 --out <dir> | --check'); process.exit(2)
+    console.error('usage: build.mjs --mode live|fixture | --mode preview|preview5|preview5live --out <dir> | --check'); process.exit(2)
   }
   const out = preview ? args[args.indexOf('--out') + 1] : join(here, '..', 'dashboards', mode === 'fixture' ? 'fixture' : '')
   mkdirSync(out, { recursive: true })

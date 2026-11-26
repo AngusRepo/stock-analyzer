@@ -11,9 +11,7 @@ const MODELS = ['LightGBM', 'ExtraTrees', 'TabM', 'GNN']
 /** TWD per day before noise; Cloud Run is most of it, weekends run less. */
 const SERVICES = [['Cloud Run', 38], ['Cloud Storage', 9], ['Artifact Registry', 5], ['Cloud Build', 3], ['Secret Manager', 1.2], ['Cloud Scheduler', 0.6], ['BigQuery', 0.4]]
 
-/** `slackStages` (v5 preview): the daily chain's required stages in Canvas order, each { id, label, deadline, typical } in
- * minutes after the business date's Taiwan midnight. */
-export function mockResponses(nowIso, { slackStages = [] } = {}) {
+export function mockResponses(nowIso) {
   const now = Date.parse(nowIso)
   const today = new Date(now + TW).toISOString().slice(0, 10)
   let seed = 20261124
@@ -80,27 +78,6 @@ export function mockResponses(nowIso, { slackStages = [] } = {}) {
     stored_risk_v2: 'match', stored_risk_v2_failed: 0, summary: `kv_config_drift trading:config=${i === 0 ? 'drift' : 'match'} trading:risk_config=match` }))
 
 
-  // v5 preview. Margin to the deadline per required stage and business day: the night pipeline and everything after it
-  // drift later by about 3.5 minutes a day; one Market update ran an hour late.
-  const NIGHT = new Set(['pipeline', 'ml-predict', 'post-pipeline-chain', 'allocator-ev-feature-snapshot-backfill', 'verify-v2', 'post-verify-chain',
-    'recommendation', 'morning-setup', 'pre-market-warmup'])
-  const businessDays = days(14).filter(weekday)
-  const CLOCK_BASE = Date.parse('2000-01-01T00:00:00+08:00')
-  const slackRows = businessDays.map((d, i) => {
-    const row = { time: midnight(d) }
-    let tail = null
-    for (const stage of slackStages) {
-      const typical = stage.typical ?? stage.deadline - 30
-      const done = typical + (NIGHT.has(stage.id) ? 3.5 * i : 0) + (stage.id === 'update' && i === 6 ? 60 : 0) + (rand() - 0.5) * 16
-      row[stage.id] = round(stage.deadline - done, 0)
-      if (stage.id === 'pipeline') tail = done
-    }
-    // Clock time on a fixed reference day, so the axis reads HH:mm in Taiwan time.
-    row.tail = round(CLOCK_BASE + tail * 60_000, 0)
-    return row
-  })
-  const pipelineDeadline = slackStages.find((stage) => stage.id === 'pipeline')?.deadline
-
   // Daily rows per hour as a day × hour grid (Taiwan time), reads and writes, shaped like the evening chain's timeline
   // (audits/evening-chain-overload-20261106): the heavy readers run 21:45–23:30, the post-close refresh and screener
   // 14:00–18:00, the small hours are nearly idle. Share of the 22:00 peak per Taiwan hour; on weekends the chains do not run.
@@ -159,7 +136,6 @@ export function mockResponses(nowIso, { slackStages = [] } = {}) {
     .map(([job], j) => ({ time: new Date(Date.parse(`${d}T00:00:00+08:00`) + (18 + j) * 3600_000).toISOString(), job,
       result: (i * 7 + j * 3) % 17 === 0 ? 'failed' : 'success' })))
   return {
-    'plan:chain-slack': { deadline_ms: pipelineDeadline == null ? null : CLOCK_BASE + pipelineDeadline * 60_000, rows: slackRows },
     'plan:cloudflare-d1-grid': { rows: d1Grid },
     'mock:billing-month-by-service': { rows: monthByService },
     'mock:billing-month-cumulative': { rows: cumulative },

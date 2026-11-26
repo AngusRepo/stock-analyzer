@@ -107,8 +107,33 @@ def test_daily_native_capture_keeps_wire_bytes_aliases_and_date_owners(monkeypat
         result[next(iter(result))].error = 'permission denied'
         return result
     monkeypatch.setattr(auth, 'fetch_metadata_batch', denied)
-    with pytest.raises(ValueError, match='update_status_unavailable'):
-        module.DailyVendorCapture(tmp_path/'denied', roster=['2330'],bucket=bucket,baseline=baseline)
+    # An errored .recent status is not proof of "unchanged": that field alone goes
+    # back to the original full-wire capture, like the pinned SDK does.
+    denied_capture = module.DailyVendorCapture(tmp_path/'denied', roster=['2330'],bucket=bucket,baseline=baseline)
+    first = next(iter(module.DATASETS))
+    assert calls == [module.DATASETS[first]]
+    assert denied_capture.receipt['datasets'][first]['source_status'] == 'downloaded_full_native'
+    assert all(denied_capture.receipt['datasets'][field]['source_status'] == 'vendor_confirmed_unchanged'
+               for field in module.DATASETS if field != first)
+
+    calls.clear()
+    def missing(items):
+        result = unchanged(items)
+        del result[module.DATASETS['disclosure']+'.recent']
+        return result
+    monkeypatch.setattr(auth, 'fetch_metadata_batch', missing)
+    missing_capture = module.DailyVendorCapture(tmp_path/'missing', roster=['2330'],bucket=bucket,baseline=baseline)
+    assert calls == [module.DATASETS['disclosure']]
+    assert missing_capture.receipt['datasets']['disclosure']['source_status'] == 'downloaded_full_native'
+
+    calls.clear()
+    def downgraded(items):
+        result = denied(items)
+        result[next(iter(result))].role = 'free'
+        return result
+    monkeypatch.setattr(auth, 'fetch_metadata_batch', downgraded)
+    with pytest.raises(ValueError, match='vendor_role_free'):
+        module.DailyVendorCapture(tmp_path/'downgraded', roster=['2330'],bucket=bucket,baseline=baseline)
     assert not calls
 
 

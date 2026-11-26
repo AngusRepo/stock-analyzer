@@ -71,6 +71,13 @@ export async function verifyJWT(token: string, secret: string): Promise<Record<s
   } catch { return null }
 }
 
+/** The primary admin is the admin whose email matches the ADMIN_EMAIL secret; the frontend reads this flag instead of shipping the address. */
+export function isPrimaryAdmin(user: { email?: unknown; role?: unknown } | null | undefined, adminEmail?: string | null): boolean {
+  const expected = adminEmail?.trim().toLowerCase()
+  if (!expected || !user || user.role !== 'admin') return false
+  return String(user.email ?? '').trim().toLowerCase() === expected
+}
+
 export function getBearerToken(authHeader?: string | null): string | null {
   if (!authHeader) return null
   const raw = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader

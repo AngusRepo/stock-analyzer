@@ -51,7 +51,8 @@ export async function apiRequest<T>(
   requestOptions: ApiRequestOptions = {},
 ): Promise<T> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-  if (token) headers.Authorization = `Bearer ${token}`
+  const sentToken = token
+  if (sentToken) headers.Authorization = `Bearer ${sentToken}`
   Object.assign(headers, extraHeaders)
 
   const timeoutMs = Number(requestOptions.timeoutMs)
@@ -81,7 +82,9 @@ export async function apiRequest<T>(
       signal: controller?.signal ?? requestOptions.signal,
     })
     if (response.status === 401) {
-      clearToken()
+      // Only a rejection of the session token this request carried, and that is still current,
+      // signs the user out; a tokenless call or a stale request must not wipe a fresh login.
+      if (sentToken && sentToken === token && headers.Authorization === `Bearer ${sentToken}`) clearToken()
       throw new Error('Unauthorized')
     }
     if (!response.ok) {

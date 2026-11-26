@@ -21,6 +21,7 @@ import { GroupFactorTrajectoryPanel } from '@/components/PitFactorTrajectoryPane
 import { MarketRiskDetailBreakdown } from '@/components/MarketRiskDetailBreakdown'
 import { marketApi, recommendationsApi } from '@/lib/api'
 import { splitRecommendationLanes } from '@/lib/recommendationLanes'
+import { safeExternalUrl } from '@/lib/safeUrl'
 import {
   CONFIDENCE_SORT_OPTIONS,
   DEFAULT_CONFIDENCE_SORT,
@@ -533,7 +534,7 @@ function MarketStatsRibbonClean({ risk }: { risk: any }) {
         title="融資融券"
         date={credit.date ?? risk?.date}
         scope={creditScope}
-        bar={<SplitBar values={[marginBalanceUnits ?? 0, shortBalanceUnits ?? 0]} colors={['#22c55e', '#8b5cf6']} />}
+        bar={<SplitBar values={[marginBalanceUnits ?? 0, shortBalanceUnits ?? 0]} colors={['#3b82f6', '#8b5cf6']} />}
       >
         <div className="grid grid-cols-2 gap-x-4 gap-y-3">
           <div>
@@ -585,7 +586,8 @@ function InstitutionFlowStatTrack({ risk }: { risk: any }) {
       title="主要法人資金動向"
       date={flow.date ?? risk?.date}
       scope={flow.scope ?? risk?.marketDataScope}
-      bar={<SplitBar values={rows.map((row) => Math.abs(row.value ?? 0))} colors={['#22c55e', '#ef4444', '#14b8a6']} />}
+      // Segment size only; red/green stay reserved for the signed buy/sell figures below.
+      bar={<SplitBar values={rows.map((row) => Math.abs(row.value ?? 0))} colors={['#8b5cf6', '#06b6d4', '#f59e0b']} />}
     >
       <div>
         <div className="flex items-end justify-between gap-3">
@@ -941,8 +943,9 @@ function InstitutionFlowCardClean({ risk }: { risk: any }) {
 }
 
 function MarketOverviewBlock() {
+  // Shares the route-prefetch key so a prefetched snapshot is reused instead of fetched again.
   const { data: indices } = useQuery({
-    queryKey: ['market', 'indices', 'home'],
+    queryKey: ['market', 'indices'],
     queryFn: marketApi.indices,
     staleTime: 3 * 60 * 1000,
     refetchInterval: 5 * 60 * 1000,
@@ -1083,9 +1086,9 @@ function NewsBlock({ embedded = false }: { embedded?: boolean }) {
           {rows.map((item: any, index: number) => (
             <a
               key={`${item.url ?? item.title}-${index}`}
-              href={item.url ?? '#'}
-              target={item.url ? '_blank' : undefined}
-              rel="noreferrer"
+              href={safeExternalUrl(item.url)}
+              target={safeExternalUrl(item.url) ? '_blank' : undefined}
+              rel="noopener noreferrer"
               className={cx(
                 embedded
                   ? 'relative min-h-0 border-b border-white/[0.055] px-4 py-2.5 before:absolute before:inset-y-2 before:left-0 before:w-[2px] before:rounded-full last:border-b-0'
@@ -1150,9 +1153,9 @@ function GlobalEventContextCard({ risk }: { risk: any }) {
         {events.length ? events.slice(0, 2).map((event, index) => (
           <a
             key={`${event.url ?? event.title}-${index}`}
-            href={event.url || undefined}
-            target={event.url ? '_blank' : undefined}
-            rel="noreferrer"
+            href={safeExternalUrl(event.url)}
+            target={safeExternalUrl(event.url) ? '_blank' : undefined}
+            rel="noopener noreferrer"
             className="block rounded-[14px] border border-white/[0.055] bg-black/15 px-3 py-2 transition-colors hover:border-cyan-300/20 hover:bg-cyan-400/[0.04]"
           >
             <div className="flex items-center justify-between gap-3">

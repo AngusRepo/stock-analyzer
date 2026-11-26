@@ -77,10 +77,11 @@ function realOrPreview<T>(value: T | null | undefined, preview: T): { value: T; 
   return value == null ? { value: preview, preview: true } : { value, preview: false }
 }
 
+// Net positions follow the index tiles' Taiwan convention: net long red, net short green.
 function participantTone(value: number | null | undefined): Tone {
   const n = asNumber(value)
-  if (n == null) return 'slate'
-  return n >= 0 ? 'emerald' : 'rose'
+  if (n == null || n === 0) return 'slate'
+  return n > 0 ? 'rose' : 'emerald'
 }
 
 function participantLabel(row: FuturesInstitutionalRow) {

@@ -129,7 +129,7 @@ const EVIDENCE_MATRIX_COLUMNS = [
   { label: 'W-1', description: '上週 weekly IC；反映最近一次已驗證週期。' },
   { label: 'FULL OOF IC', description: '單一模型完整 immutable CPCV／OOF 窗口的平均 rank IC；不可直接和 ensemble 尾端 validation IC 比較。' },
   { label: 'LIVE IC', description: 'daily verify 後的 rolling live rank IC；看上線後近期真實命中。' },
-  { label: 'BASE CPCV', description: '各模型自己的 5-fold purged OOF 證據；bundle selection validation 另由 V5 ensemble owner 持有。' },
+  { label: 'BASE CPCV', description: '各模型自己的 purged OOF 證據（契約至少 5 folds，各格顯示實際折數）；bundle selection validation 另由 V5 ensemble owner 持有。' },
   { label: 'COMPARE', description: 'candidate vs current champion 的最終比較；dry-run 不切 pointer。' },
 ] as const
 

@@ -11,6 +11,7 @@ import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tool
 import NewsKeywordCloud from './NewsKeywordCloud'
 import { toast } from 'sonner'
 import { useAuth } from '@/_core/hooks/useAuth'
+import { safeExternalUrl } from '@/lib/safeUrl'
 
 const SENTIMENT_STYLE = {
   positive: { className: 'border-red-400/50 text-red-400 bg-red-400/10',   label: '正面', icon: TrendingUp },
@@ -123,7 +124,7 @@ export default function NewsPanel({ stockId }: { stockId: number }) {
               const style = SENTIMENT_STYLE[item.sentiment as keyof typeof SENTIMENT_STYLE] ?? SENTIMENT_STYLE.neutral
               const Icon  = style.icon
               return (
-                <a key={item.id} href={item.url ?? '#'} target="_blank" rel="noopener noreferrer"
+                <a key={item.id} href={safeExternalUrl(item.url)} target="_blank" rel="noopener noreferrer"
                   className="flex gap-3 p-3 rounded-lg border border-border/40 hover:border-border hover:bg-muted/30 transition-colors group">
                   <Icon className={`w-4 h-4 shrink-0 mt-0.5 ${item.sentiment === 'positive' ? 'text-red-400' : item.sentiment === 'negative' ? 'text-emerald-400' : 'text-muted-foreground'}`} />
                   <div className="flex-1 min-w-0">

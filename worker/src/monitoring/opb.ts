@@ -43,6 +43,16 @@ function armStatistics(text: string | null): ArmStatistics {
   try { return text ? JSON.parse(text) as ArmStatistics : {} } catch { return {} }
 }
 
+/** arm_inert / fixed_policy / forced plans store `$.opb.arm_statistics = {}`: the statistics are the newest plan's that
+ * has any, with its date and context (statistics are per context, so they may predate the current one). */
+export function latestArmStatistics(daily: Pick<PlanRow, 'signal_date' | 'context_identity' | 'arm_statistics_json'>[]) {
+  for (let i = daily.length - 1; i >= 0; i -= 1) {
+    const stats = armStatistics(daily[i].arm_statistics_json)
+    if (Object.keys(stats).length) return { signal_date: daily[i].signal_date, context_identity: daily[i].context_identity, stats }
+  }
+  return { signal_date: null, context_identity: null, stats: {} as ArmStatistics }
+}
+
 export async function opbReport(env: MonitoringEnv, nowMs: number, days: number) {
   const since = addDays(twDate(nowMs), -(days - 1))
   const [plans, receipts, ledger] = await Promise.all([
@@ -85,7 +95,7 @@ export async function opbReport(env: MonitoringEnv, nowMs: number, days: number)
     if (row.updated_at > arm.updated_at) arm.updated_at = row.updated_at
     ledgerByArm.set(row.arm_id, arm)
   }
-  const latestStats = armStatistics(latest?.arm_statistics_json ?? null)
+  const { signal_date: statsDate, context_identity: statsContext, stats: latestStats } = latestArmStatistics(daily)
   return {
     account_id: PAPER_ACCOUNT_ID, since, days,
     definitions: {
@@ -98,6 +108,7 @@ export async function opbReport(env: MonitoringEnv, nowMs: number, days: number)
       latest_status: latest?.status ?? null, arm_inert_days: inertDays, clip_rate: ratio(inertDays, rows.length),
       receipts: windowReceipts.length, complete_receipts: completeReceipts, receipt_coverage: ratio(windowReceipts.length, rows.length),
       replay_rows_current_context: replay.length, current_context_identity: latest?.context_identity ?? null,
+      latest_arm_statistics_signal_date: statsDate, latest_arm_statistics_context_identity: statsContext,
       latest_arm_samples_total: Object.values(latestStats).reduce((sum, arm) => sum + Number(arm.samples ?? 0), 0),
       linucb_ledger_rows: ledger.results?.length ?? 0,
       linucb_last_reward_at: [...ledgerByArm.values()].reduce<string | null>((max, arm) => arm.last_reward_at && (!max || arm.last_reward_at > max) ? arm.last_reward_at : max, null),

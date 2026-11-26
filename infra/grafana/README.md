@@ -56,12 +56,13 @@ node --import tsx ../infra/grafana/build/dump-fixtures.mts ../infra/grafana/buil
 node build.mjs --check          # live 與 fixture 兩份除了查詢來源以外必須逐欄相同
 node build.mjs --mode live      # → dashboards/*.json
 node build.mjs --mode fixture   # → dashboards/fixture/*.json
+node build.mjs --mode preview5live --out ../preview-live   # → v5 ②④ 預覽（uid *-v5live，全部 /v1 查詢讀 sv-monitoring）
 node alerts.mjs                 # → alerts/sv-chain-rules.json
 ```
 
 - `dag.json`：流程鏈的 phase、主線、站名，來自監控 Worker 的 `judgment/`（和 OBS ExecutionChainPanel 同一份定義）；盤中、每週、每月三條鏈在 `other_chains`（`judgment/chainPhases.ts`）。站有增減時重跑 `export-dag.mts`，Canvas 位置與連線會跟著重排；三條鏈的面板寬度不夠放下所有站時 `build.mjs` 直接報錯。
 - `fixtures/`：監控 Worker handler 在 Miniflare 測試夾具上的真實回應（產生物，不進 repo；`--mode live` 不需要它）。端點欄位有變動時重跑 `dump-fixtures.mts`（要在有四條鏈 `judgment/chainCatalog.ts` 的 worker checkout 下跑），再跑 `--check`。
-- `mock.mjs`：fixture 版的示範資料（進 repo）：還沒部署的 Worker 端點（`/v1/paper/nav`、`/v1/models/roster`、`/v1/opb`、`/v1/chain/failure-classes`、`/v1/kv-drift`，欄位照 `feat/monitoring-model-health-endpoints` 的實作）、BigQuery 帳單查詢的回傳列、Cloudflare 用量（`plan:`，還沒有來源）。讀它的面板說明開頭是「示範資料。」
+- `mock.mjs`：fixture 版的示範資料（進 repo）：fixture 沒有 seed 的 p4 端點（`/v1/paper/nav`、`/v1/models/roster`、`/v1/opb`、`/v1/chain/failure-classes`、`/v1/kv-drift`，欄位照 `worker/src/monitoring/` 的實作；`dump-fixtures.mts` 跳過這五條）、BigQuery 帳單查詢的回傳列、Cloudflare 用量與 Job 每日成敗（`plan:`，還沒有來源）。讀它的面板說明開頭是「示範資料。」
 - 規劃中的面板：讀的 Worker 路由不在這個 checkout 的 `worker/src/monitoring/index.ts`，或來源是 `plan:`。fixture 版畫出來，live 版不放；端點 merge 進來後重跑 `--mode live` 就會出現。`--check` 只比兩版都有的面板。
 
 ## 版面規則
@@ -92,12 +93,13 @@ node alerts.mjs                 # → alerts/sv-chain-rules.json
 
 ## 還沒有來源的面板
 規劃中的面板（fixture 版有、live 版沒有）：
-- ② 14 天失敗分類（`/v1/chain/failure-classes`）。
 - ③ D1 讀取／寫入列數（每小時）、Cloudflare 免費額度（Cloudflare GraphQL＋Billing，資料源 `sv-cloudflare-api` 等 token）。
-- ④ Paper 報酬／相對加權指數／回撤、OPB KPI、模型 KPI、Paper NAV 與加權指數、每天選到的 OPB arm、各 arm 累積樣本、模型名冊、KV 設定漂移（`/v1/paper/nav`、`/v1/opb`、`/v1/models/roster`、`/v1/kv-drift`，分支 `feat/monitoring-model-health-endpoints`）。
+- v5 ③ Cloud Run Job 成敗、v5 ④ 訓練與研究 Job（每天）：要監控 Worker 新增 Job 每日成敗 route（資料來源待查）。
+- v5 ④ 證據累積的 RFS allocator 日數與被擋的收據：Worker 等 `rfs_sparse_comparisons_v1(policy_identity)` 的 D1 索引（目前回 0／null）。
+
+p4 端點（`/v1/paper/nav`、`/v1/models/roster`、`/v1/opb`、`/v1/chain/failure-classes`、`/v1/kv-drift`）已在 main（PR #311）；`/v1/chain/history` 每列帶 `started_at`／`completed_at`／`expected_by`，v5 ② 的餘裕格與 L3 收尾時間讀它。
 
 連 fixture 版都沒有（缺端點或欄位）：
-- ② 「完成時間比截止早或晚」的站 × 14 天格子：`/v1/chain/history` 的 `HISTORY_SQL` 有選 `started_at`／`completed_at`，但回應沒帶；也沒有每天的截止時間。
 - ② 資料就緒歷史（資料集 × 14 天新鮮度）：`/v1/data-readiness` 只回當天。
 - ③ Worker 請求量／延遲／5xx（Cloudflare Workers Analytics，同 `sv-cloudflare-api`）；Modal 成本（只有 CLI／SDK）；D1 容量成長歷史（`/v1/capacity` 只回最新一筆與估算）。
 - ④ rolling 20d IC、每日訊號檔數、訊號強度分段 T+5 報酬（沒有每日表）；訓練耗時只有 Cloud Run Job 的執行分鐘，沒有每次訓練的紀錄。

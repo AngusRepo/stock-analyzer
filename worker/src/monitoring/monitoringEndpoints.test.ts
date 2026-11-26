@@ -277,6 +277,29 @@ test('/v1/chain/history?days=14: final state per stage per day, repeat failures;
   }
 })
 
+test('/v1/chain/history: every row carries started_at, completed_at and expected_by as millisecond UTC stamps', async () => {
+  // Writers store three shapes: ISO without milliseconds (the fixture), Python microseconds with +00:00, SQLite datetime().
+  const set = (sql: string, ...binds: unknown[]) => fx.raw.OPS_DB.prepare(sql).bind(...binds).run()
+  const stamps = "UPDATE ops_chain_stage_state_v1 SET started_at = ?, completed_at = ?, expected_by = ? WHERE business_date = ? AND stage_id = ?"
+  await set(stamps, '2026-11-20T06:00:00.123456+00:00', '2026-11-20 06:15:00', '2026-11-20T23:00:00+08:00', '2026-11-20', 'update')
+  try {
+    const body = await endpoint('/v1/chain/history?days=14', HISTORY_MAX_ROWS_READ)
+    for (const row of body.rows) for (const field of ['started_at', 'completed_at', 'expected_by']) {
+      assert.ok(field in row, `${row.business_date} ${row.stage_id}: ${field}`)
+      if (row[field] != null) assert.match(row[field], /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/, `${row.business_date} ${row.stage_id}: ${field}`)
+    }
+    const cell = (date: string, stage: string) => body.rows.find((row: any) => row.business_date === date && row.stage_id === stage)
+    const mixed = cell('2026-11-20', 'update')
+    assert.deepEqual([mixed.started_at, mixed.completed_at, mixed.expected_by], ['2026-11-20T06:00:00.123Z', '2026-11-20T06:15:00.000Z', '2026-11-20T15:00:00.000Z'])
+    // X: a stage that has not finished keeps completed_at null next to its deadline.
+    assert.deepEqual([cell(X, 'regime-compute').completed_at, cell(X, 'regime-compute').expected_by], [null, '2026-11-24T14:30:00.000Z'])
+    assert.deepEqual([cell(X, 'finlab-v4-backfill').completed_at, cell(X, 'finlab-v4-backfill').expected_by], ['2026-11-24T07:00:00.000Z', '2026-11-24T16:00:00.000Z'])
+  } finally {
+    const at = `2026-11-20T${String(6 + Math.floor(STAGES.indexOf('update') / 4)).padStart(2, '0')}:${String((STAGES.indexOf('update') % 4) * 15).padStart(2, '0')}:00Z`
+    await set(stamps, at, at, '2026-11-20T23:00:00Z', '2026-11-20', 'update')
+  }
+})
+
 test('/v1/chain/state: ETA from the typical finishing offset, at risk before the deadline passes, chain summary', async () => {
   const set = (sql: string, ...binds: unknown[]) => fx.raw.OPS_DB.prepare(sql).bind(...binds).run()
   // The seeded history finishes stage i at root start + floor(i / 4) h + (i % 4) × 15 min; verify-v2 (i = 13) at +195 min.

@@ -1341,13 +1341,14 @@ function PerformanceChart() {
     queryFn: paperApi.pnl,
     staleTime: 5 * 60_000,
   })
+  // Same keys as the order list and SignalTable, so one page visit fetches each payload once.
   const { data: ordersData } = useQuery({
-    queryKey: ['paper', 'orders', 'performance-chart'],
+    queryKey: ['paper', 'orders'],
     queryFn: () => paperApi.orders(200),
     staleTime: 60_000,
   })
   const { data: pendingData } = useQuery({
-    queryKey: ['paper', 'pending-buys', 'performance-chart'],
+    queryKey: ['paper', 'pending-buys'],
     queryFn: () => paperApi.pendingBuys(),
     staleTime: 60_000,
   })

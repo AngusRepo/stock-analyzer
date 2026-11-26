@@ -9,7 +9,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 const src = (file: string) => pathToFileURL(join(process.cwd(), 'src/monitoring', file)).href
-const { createMonitoringHandler, ROUTES } = await import(src('index.ts'))
+const { createMonitoringHandler, ROUTES, P4_ROUTES } = await import(src('index.ts'))
 const { CHAIN_ID } = await import(src('chain.ts'))
 const { CHAIN_IDS, periodKeyFor, periodKeys } = await import(src('judgment/chainCatalog.ts'))
 const { startFixture, insertRows, weekdays, day, seedStageProgress, PIPELINE_RUN_PHASES } = await import(src('monitoringFixture.testSupport.ts'))
@@ -245,8 +245,9 @@ try {
   const handler = createMonitoringHandler({ now: () => NOW, fetch: keys.fetcher, cache: null })
   const env = { ...fx.env, ACCESS_TEAM_DOMAIN: TEST_TEAM, ACCESS_AUD: TEST_AUD, MONITORING_READ_TOKEN: TEST_TOKEN }
   mkdirSync(out, { recursive: true })
-  // The paths the dashboards query, parameters included.
-  const paths = [...Object.keys(ROUTES).map((path) => (path === '/v1/chain/timeline' ? `${path}?days=14` : path === '/v1/chain/history' ? `${path}?days=14` : path)),
+  // The paths the dashboards query, parameters included. The p4 routes read tables this fixture does not seed:
+  // the fixture build draws them over mock.mjs.
+  const paths = [...Object.keys(ROUTES).filter((path) => !(path in P4_ROUTES)).map((path) => (path === '/v1/chain/timeline' ? `${path}?days=14` : path === '/v1/chain/history' ? `${path}?days=14` : path)),
     ...(CHAIN_IDS as string[]).filter((id) => id !== CHAIN_ID).flatMap((id) => [`/v1/chain/state?chain=${id}`, `/v1/chain/history?days=14&chain=${id}`])]
   const index: Record<string, string> = {}
   for (const path of paths) {

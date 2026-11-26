@@ -12,6 +12,7 @@ import {
 } from 'lucide-react'
 import { marketApi } from '@/lib/api'
 import { formatTwDateTimeShort } from '@/lib/twTime'
+import { safeExternalUrl } from '@/lib/safeUrl'
 import { marketRiskLevelStyle, normalizeMarketRiskLevel, tradingMarketRisk, type MarketRiskLevel } from '@/lib/marketRiskLevel'
 
 type FactorStatus = 'ok' | 'info' | 'warn' | 'error' | 'missing'
@@ -260,7 +261,7 @@ function MarketFearGauge({ score, cfg }: { score: number | null; cfg: { label: s
 
 function FactorCard({ group }: { group: FactorGroup }) {
   const Icon = group.Icon
-  const isUrl = /^https?:\/\//i.test(group.source)
+  const sourceUrl = safeExternalUrl(group.source)
   return (
     <div className={`rounded-lg border p-3 ${STATUS_STYLE[group.status]}`}>
       <div className="flex items-start justify-between gap-3">
@@ -277,8 +278,8 @@ function FactorCard({ group }: { group: FactorGroup }) {
         {group.missingReason ? `缺資料：${group.missingReason}` : group.detail}
       </div>
       <div className="mt-2 flex items-center justify-between gap-2 sv-num text-[10px] text-muted-foreground/80">
-        {isUrl ? (
-          <a className="truncate text-sky-300 hover:text-sky-200" href={group.source} target="_blank" rel="noreferrer">
+        {sourceUrl ? (
+          <a className="truncate text-sky-300 hover:text-sky-200" href={sourceUrl} target="_blank" rel="noopener noreferrer">
             source link
           </a>
         ) : (

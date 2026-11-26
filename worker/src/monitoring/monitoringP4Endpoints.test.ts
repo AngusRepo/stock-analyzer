@@ -3,6 +3,7 @@ import { after, before, test } from 'node:test'
 import { createMonitoringHandler, KV_DRIFT_TTL_S, OPB_TTL_S, P4_ROUTES, ROSTER_TTL_S, SLOW_TTL_S, TIMELINE_TTL_S } from './index'
 import { day, domainDdl, insertRows, startFixture, tableScans, tempSorts, weekdays, type Fixture } from './monitoringFixture.testSupport'
 import { nextFirstWeekdayRun } from './modelRoster'
+import { latestArmStatistics } from './opb'
 import { parseKvDriftSummary } from './schedulerTickets'
 import type { ExecutedQuery } from './readOnlyD1'
 import { accessHeaders, accessKeys, TEST_AUD, TEST_TEAM, TEST_TOKEN } from './monitoringAuth.testSupport'
@@ -103,7 +104,8 @@ async function seedOpb(paper: D1Database, learning: D1Database) {
   const opb = (i: number) => ({ enabled: true, schema_version: 'l4-opb-relative-arms-v2', context_identity: contextOf(i),
     status: inertOf(i) ? 'arm_inert' : i === 0 ? 'cold_start_base' : 'learned_policy', arm_id: inertOf(i) ? 'base' : armOf(i), arm_inert: inertOf(i),
     effective_groups: inertOf(i) ? [hex('f')] : ARMS.map((arm) => hex(String.fromCharCode(97 + ARMS.indexOf(arm)))),
-    arm_statistics: Object.fromEntries(ARMS.map((arm) => [arm, { samples: i === 0 ? 0 : 10, effective_samples: 5, mean: null, lower_bound: null }])) })
+    // Prod arm_inert plans store empty arm_statistics (l4_opb_selection.py: `statistics or {}`).
+    arm_statistics: inertOf(i) ? {} : Object.fromEntries(ARMS.map((arm) => [arm, { samples: i === 0 ? 0 : 10, effective_samples: 5, mean: null, lower_bound: null }])) })
   await insertRows(paper, 'l4_portfolio_plans_v1', PLAN_DATES.flatMap((date, i) => [
     { plan_id: `plan-${date}`, account_id: 1, signal_date: date, policy_identity: 'p', activated: 1, allocation_snapshot_id: 's',
       payload_json: JSON.stringify({ opb: opb(i), padding: 'x'.repeat(5_000) }), created_at: `${date} 23:28:00` },
@@ -287,9 +289,19 @@ test('/v1/opb: arm share, clip rate, receipts by rowid tail, current-context rep
   assert.ok(body.summary.complete_receipts < body.summary.receipts)
   assert.equal(body.summary.replay_rows_current_context, ARMS.length)
   assert.equal(body.summary.latest_arm_samples_total, 0)
+  assert.deepEqual([body.summary.latest_arm_statistics_signal_date, body.summary.latest_arm_statistics_context_identity], [PLAN_DATES[0], contextOf(0)])
   assert.equal(body.summary.linucb_ledger_rows, 80)
   assert.deepEqual(body.linucb_ledger.map((row: any) => [row.arm_id, row.contexts]), [['lane:0', 20], ['lane:1', 20], ['lane:2', 20], ['lane:3', 20]])
   assert.equal(body.summary.linucb_last_reward_at, day(X, -8))
+})
+
+test('latestArmStatistics: an arm_inert newest plan falls back to the newest plan with statistics', () => {
+  const stats = JSON.stringify({ base: { samples: 12, mean: 0.01 } })
+  // The inert newest plan stores `{}` (prod), an older one may lack the key (NULL).
+  assert.deepEqual(latestArmStatistics([{ signal_date: '2026-11-21', context_identity: 'c0', arm_statistics_json: null },
+    { signal_date: '2026-11-24', context_identity: 'c1', arm_statistics_json: stats }, { signal_date: '2026-11-25', context_identity: 'c2', arm_statistics_json: '{}' }]),
+  { signal_date: '2026-11-24', context_identity: 'c1', stats: { base: { samples: 12, mean: 0.01 } } })
+  assert.deepEqual(latestArmStatistics([{ signal_date: '2026-11-25', context_identity: 'c2', arm_statistics_json: '{}' }]), { signal_date: null, context_identity: null, stats: {} })
 })
 
 test('/v1/chain/failure-classes?days=14: status-index seek, final ticket per (job, date), one class each', async () => {

@@ -88,12 +88,13 @@ export const T = (selector, text) => col(selector, text, 'timestamp')
 export function querySource(mode, fixtures, { liveRoutes, demo = new Set() } = {}) {
   return (path, { root, columns = [], refId = 'A' } = {}) => {
     const base = { refId, type: 'json', parser: 'backend', format: 'table', root_selector: `([${root}])`, columns, filters: [] }
-    // planned: no live source yet ('plan:' paths, or a Worker route not in this checkout); demo: the fixture is authored.
+    // planned: no live source yet ('plan:' paths, or a Worker route not in this checkout); demo: the fixture is authored;
+    // standIn: authored rows standing in for a query of another datasource ('mock:', the BigQuery billing queries).
     const planned = path.startsWith('plan:') || Boolean(liveRoutes && path.startsWith('/v1/') && !liveRoutes.has(path.split('?')[0]))
     const target = mode === 'live' ? { ...base, datasource: LIVE_DS, source: 'url', url: path, url_options: { method: 'GET', data: '' } } : null
     if (!target && !(path in fixtures)) throw new Error(`no fixture for ${path}`)
     return marked(target ?? { ...base, datasource: INLINE_DS, source: 'inline', data: JSON.stringify(fixtures[path]) },
-      { planned, demo: mode !== 'live' && demo.has(path) })
+      { planned, demo: mode !== 'live' && demo.has(path), standIn: path.startsWith('mock:') })
   }
 }
 /** Build-time flags on a target, kept out of the JSON (not enumerable). */
@@ -263,7 +264,7 @@ export function spark(title, target, x, y, w, h, o = {}) {
     fieldConfig: { defaults: { unit: o.unit ?? 'none', decimals: o.dec ?? 0, noValue: o.empty ?? NO_SOURCE, color: { mode: 'thresholds' },
       thresholds: o.th ?? th([C.txt, null]) }, overrides: [] } }
   if (alone) return number
-  const series = marked(structuredClone(target), { planned: target.planned, demo: target.demo })
+  const series = marked(structuredClone(target), { planned: target.planned, demo: target.demo, standIn: target.standIn })
   const line = { type: 'timeseries', title: '', description: o.desc ?? '', transparent: true, gridPos: gp(x, y + SPARK_NUMBER_H, w, h - SPARK_NUMBER_H),
     datasource: target.datasource, targets: [series], timeFrom: o.timeFrom, hideTimeOverride: true,
     options: { legend: { showLegend: false, displayMode: 'list', placement: 'bottom', calcs: [] }, tooltip: { mode: 'single' } },

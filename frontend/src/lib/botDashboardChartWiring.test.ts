@@ -23,6 +23,8 @@ assert(chart.includes('buildPaperTradePerformancePoints('), 'PaperTradePerforman
 assert(chart.includes('buildExecutionMarkers('), 'PaperTradePerformanceChart should build markers from orders and pending buys')
 assert(chart.includes('00981A') && chart.includes('00631L') && chart.includes('00403A'), 'PaperTradePerformanceChart should render the approved ETF comparison set')
 assert(chart.includes('firstPositiveValue('), 'PaperTradePerformanceChart should normalize each benchmark from its first valid value, not the first snapshot row')
+assert(chart.includes("if (value == null || value === '') return null"), 'Missing snapshot values must not coerce to 0 (Number(null) === 0 plotted TWII at -100%)')
+assert(chart.includes('return value != null && value > 0 ? value : null'), 'Non-positive benchmark prices must be gaps, not -100% returns')
 assert(!chart.includes('orderText('), 'PaperTradePerformanceChart markers should not print stock-code buy/sell labels on the curve')
 assert(chart.includes('paperOrdersFromPayload(orders)'), 'PaperTradePerformanceChart should defensively normalize order props')
 assert(chart.includes('paperPendingBuysFromPayload(pendingBuys)'), 'PaperTradePerformanceChart should defensively normalize pending-buy props')
@@ -30,8 +32,10 @@ assert(chart.includes('paperPnlSnapshotsFromPayload(pnl)'), 'PaperTradePerforman
 
 const page = fs.readFileSync(pagePath, 'utf8')
 assert(page.includes('PaperTradePerformanceChart'), 'BotDashboard should render PaperTradePerformanceChart')
-assert(page.includes("queryKey: ['paper', 'orders', 'performance-chart']"), 'BotDashboard performance chart should fetch execution orders for markers')
-assert(page.includes("queryKey: ['paper', 'pending-buys', 'performance-chart']"), 'BotDashboard performance chart should fetch pending buys for markers')
+// The chart shares the order-list and SignalTable query keys; a chart-only key fetched the same payload twice per visit.
+assert(!page.includes("'performance-chart']"), 'BotDashboard performance chart must reuse the shared paper query keys instead of refetching')
+assert((page.match(/queryKey: \['paper', 'orders'\],/g) ?? []).length === 2, 'BotDashboard performance chart should share the order-list query for markers')
+assert((page.match(/queryKey: \['paper', 'pending-buys'\],/g) ?? []).length === 2, 'BotDashboard performance chart should share the SignalTable pending-buys query for markers')
 assert(page.includes('pnl={data}'), 'BotDashboard should pass paper PnL data into the performance chart')
 assert(page.includes('paperOrdersFromPayload(ordersData)'), 'BotDashboard should normalize Worker order payloads before charting')
 assert(page.includes('orders={orders}'), 'BotDashboard should pass normalized orders into the performance chart')

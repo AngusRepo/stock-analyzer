@@ -31,8 +31,11 @@ assert(!page.includes("'backdrop-blur-xl',"), 'Desktop homepage panels should no
 assert(css.includes('-webkit-backdrop-filter: none !important;') && css.includes('backdrop-filter: none !important;'), 'Homepage panels should explicitly disable backdrop filters')
 assert(!page.includes('sv-home-keyword-cloud') && !page.includes('new IntersectionObserver('), 'Removed keyword animation should not return to the homepage')
 
+assert(page.includes("queryKey: ['market', 'indices'],") && !page.includes("'indices', 'home'"), 'Homepage indices must share the route-prefetch query key so one visit fetches once')
+
 assert(main.includes("navigator.serviceWorker.addEventListener('controllerchange'"), 'PWA should detect an activated replacement worker')
 assert(main.includes('if (serviceWorkerReloadScheduled) return') && main.includes('window.location.reload()'), 'PWA should reload an existing document exactly once when a replacement worker claims it')
+assert(main.includes('if (!replacedController) return'), 'PWA first install must not reload a page that never had a controlling worker')
 assert(!main.includes('sessionStorage.getItem(serviceWorkerReloadKey)'), 'PWA reload suppression must not survive across deployments and strand an old lazy-chunk graph')
 assert(main.includes("window.addEventListener('vite:preloadError'") && main.includes('recoverStaleAssetGraph()'), 'stale lazy chunks must self-recover after a deployment')
 assert(main.includes("window.addEventListener('unhandledrejection'") && main.includes('Failed to fetch dynamically imported module'), 'dynamic-import failures must self-recover when browsers do not emit vite:preloadError')

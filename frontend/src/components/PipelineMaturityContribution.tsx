@@ -195,7 +195,7 @@ function blockerText(blocker: string): string {
 
 function signedValueTone(value: number | null | undefined): string {
   if (value == null || !Number.isFinite(value) || value === 0) return 'text-[#dfe7f5]'
-  return value > 0 ? 'text-emerald-300' : 'text-rose-300'
+  return value > 0 ? 'text-rose-300' : 'text-emerald-300'
 }
 
 function MetricCell({ metric }: { metric: PipelineMaturityMetric }) {
@@ -496,7 +496,7 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
               <div>
                 <p className="text-xs font-semibold text-slate-100">責任邊界與決策用途</p>
                 <p className="mt-1 text-xs leading-5 text-slate-400">{stage.contribution}</p>
-                <p className="mt-1 text-[11px] leading-4 text-slate-500">數值正綠、負紅，零與缺值中性；是否通過門檻請看圖示。</p>
+                <p className="mt-1 text-[11px] leading-4 text-slate-500">數值正紅、負綠（台股慣例），零與缺值中性；是否通過門檻請看圖示。</p>
               </div>
             </div>
             <div className="space-y-4">

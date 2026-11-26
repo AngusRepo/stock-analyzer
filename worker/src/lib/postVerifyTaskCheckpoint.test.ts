@@ -12,6 +12,8 @@ import { capturePostVerifyOwnerEvidence, verifyPostVerifyOwnerEvidence } from '.
 import { recordPaperActivePostmarketReport } from './paperActiveChallenger'
 import { verifyPostVerifyLabelEvidence } from './postVerifyLabelEvidence'
 import { reconcileStatements } from '../../scripts/postVerifyReceiptReconcile'
+import { summarizeRollingIc } from './controllerDailyWorkflows'
+import { classifySchedulerSummary } from './schedulerRunLogger'
 
 const date = '2026-10-16', run = 'canonical-A', source = 'a'.repeat(40)
 const tasks = ['price-horizon-projection','strategy-multi-horizon-outcomes','strategy-evidence-current',
@@ -72,6 +74,26 @@ test('actual post-verify owner preserves order and reuses successful phases afte
   const before=calls.length
   await runPostVerifyCallbackChain(f.env,f.ctx,{productionAuthority:f.authority,taskRunner})
   assert.equal(calls.length,before)
+  f.sqlite.close()
+})
+
+test('model-ic-rolling with no computed IC stays success with the attention summary and never stops the chain',async()=>{
+  const f=fixture(), calls:string[]=[]
+  const summary=summarizeRollingIc({n_rows_total:1,per_model_ic:{LightGBM:{status:'insufficient_samples',root_cause:'artifact_version_mismatch'}}},date)
+  const taskRunner=async(task:string)=>{calls.push(task)
+    return task==='model-ic-rolling'?{...success(task),status:classifySchedulerSummary(summary),summary}:success(task)}
+  assert.equal(await runPostVerifyCallbackChain(f.env,f.ctx,{productionAuthority:f.authority,taskRunner}),'success')
+  assert.deepEqual(calls,tasks)
+  const receipt=f.sqlite.prepare(`SELECT state,receipt_json FROM post_verify_task_receipts_v1 WHERE json_extract(receipt_json,'$.task')=? LIMIT 1`).get('model-ic-rolling') as any
+  assert.equal(receipt.state,'post_verify_task_v1:success')
+  const result=JSON.parse(receipt.receipt_json).result
+  assert.equal(result.status,'success')
+  assert.match(result.summary,/computed=0\/1 attention=no_model_ic_computed root_causes=artifact_version_mismatch=1/)
+  const chainLog=await f.env.KV.get(`scheduler:run:post-verify-chain:${date}`,'json')
+  assert.equal(chainLog.status,'success')
+  assert.match(chainLog.summary,/model-ic-rolling:success/)
+  await runPostVerifyCallbackChain(f.env,f.ctx,{productionAuthority:f.authority,taskRunner})
+  assert.deepEqual(calls,tasks,'the settled receipt is terminal: the rerun does not call the producer again')
   f.sqlite.close()
 })
 

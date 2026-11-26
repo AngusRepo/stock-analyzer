@@ -4,6 +4,7 @@ import { nextTwTradingDate } from './schedulerPolicy'
 import { reusableHmmState } from './hmmLifecycle'
 import { controllerFetch, controllerJson } from './controllerClient'
 import { opsCorrelationHeaders } from './opsRuntimeScope'
+import { classifySchedulerSummary, SCHEDULER_RUN_SUMMARY_MAX_CHARS } from './schedulerRunLogger'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import {
   readCurrentLegacyRegimeLabel,
@@ -215,11 +216,74 @@ export async function runModelIcRollingRefresh(env: Bindings, runDate?: string, 
     },
     timeoutMs: modelIcFetchTimeoutMs(budget.deadlineAt),
   })
-  const computed = Object.entries(icData.per_model_ic || {})
-    .filter(([_, value]: any) => value.status === 'computed')
-    .map(([name, value]: any) => `${name}:${value.ic?.toFixed(3)}(${value.n_samples})`)
-    .join(' ') || 'none'
-  return `rolling_ic owner=D1Registry run_date=${runDate ?? 'latest'} n_rows=${icData.n_rows_total} | ${computed}`
+  return summarizeRollingIc(icData, runDate)
+}
+
+/**
+ * The run itself completed, so the status stays success: model-ic-rolling is a required stage and
+ * any other terminal status reads as overdue/blocked downstream. No computed model (expected for
+ * weeks after each champion promotion, until the new version's labels mature) is carried by the
+ * summary only: `attention=no_model_ic_computed`, `computed=0/N` and the per-model root causes.
+ */
+// Per-section caps keep the summary well inside SCHEDULER_RUN_SUMMARY_MAX_CHARS; the full set is in
+// the controller response.
+const PRIOR_VERSION_IC_MAX = 24
+const MODEL_LIST_MAX = 24
+const ROOT_CAUSE_LIST_MAX = 12
+
+function cappedList(items: string[], max: number, separator: string): string {
+  return items.slice(0, max).join(separator) + (items.length > max ? `${separator}+${items.length - max}_more` : '')
+}
+
+export function summarizeRollingIc(icData: any, runDate?: string): string {
+  const entries = Object.entries(icData?.per_model_ic || {}) as [string, any][]
+  const computed = entries.filter(([, value]) => value?.status === 'computed')
+  const rootCauses: Record<string, number> = {}
+  const uncomputed: string[] = []
+  for (const [name, value] of entries) {
+    if (value?.status === 'computed') continue
+    const cause = summaryToken(value?.root_cause || value?.status || 'unknown')
+    rootCauses[cause] = (rootCauses[cause] ?? 0) + 1
+    uncomputed.push(`${summaryToken(name)}=${cause}`)
+  }
+  const causeSummary = cappedList(Object.entries(rootCauses).sort(([a], [b]) => a.localeCompare(b))
+    .map(([cause, n]) => `${cause}=${n}`), ROOT_CAUSE_LIST_MAX, ',') || 'none'
+  const fixed = (value: unknown, digits: number) =>
+    typeof value === 'number' && Number.isFinite(value) ? value.toFixed(digits) : 'na'
+  const count = (value: unknown) => Number.isSafeInteger(value) ? String(value) : 'na'
+  const computedSummary = cappedList(computed
+    .map(([name, value]) => `${summaryToken(name)}:${fixed(value.ic, 3)}(${count(value.n_samples)})`), MODEL_LIST_MAX, ' ') || 'none'
+  const attention = computed.length === 0 ? ' attention=no_model_ic_computed' : ''
+  // Diagnostics track only (controller ic_by_version): what the previously served versions scored
+  // while the serving version's labels mature. Never a gate input.
+  const prior = computed.length === 0 ? entries.flatMap(([name, value]) => {
+    const tracks = value?.ic_by_version
+    if (!tracks || typeof tracks !== 'object' || Array.isArray(tracks)) return []
+    return Object.entries(tracks)
+      .filter(([, track]: [string, any]) => track?.status === 'computed' && track?.serving_version !== true)
+      .map(([version, track]: [string, any]) =>
+        `${summaryToken(name)}@${summaryToken(version)}=${fixed(track.ic, 4)}(${count(track.n_dates)}d)`)
+  }) : []
+  const head = `rolling_ic owner=D1Registry run_date=${/^\d{4}-\d{2}-\d{2}$/.test(runDate ?? '') ? runDate : 'latest'}`
+    + ` n_rows=${count(icData?.n_rows_total)} computed=${computed.length}/${entries.length}${attention}`
+  const summary = `${head} root_causes=${causeSummary} | ${computedSummary}`
+    + (prior.length ? ` | prior_version_ic ${cappedList(prior, PRIOR_VERSION_IC_MAX, ' ')}` : '')
+    + (uncomputed.length ? ` | uncomputed ${cappedList(uncomputed, MODEL_LIST_MAX, ' ')}` : '')
+  // Each token is checked alone, but adjacent tokens joined by `=`/`:` can still form a marker
+  // (`status=blocked`, `kv=fail`, `not_sent:0.1`): the assembled string must classify as success,
+  // otherwise only our own counts are reported.
+  if (summary.length <= SCHEDULER_RUN_SUMMARY_MAX_CHARS && classifySchedulerSummary(summary) === 'success') return summary
+  return `${head} summary_tokens_redacted`
+}
+
+/**
+ * Controller-supplied names (models, versions, root causes) enter the run summary, which
+ * classifySchedulerSummary reads: keep a narrow character set, and a token that would still change
+ * the classification (e.g. `promotion_failed`) is replaced outright.
+ */
+function summaryToken(value: unknown): string {
+  const token = String(value ?? '').replace(/[^A-Za-z0-9._@-]/g, '_').slice(0, 80) || 'unknown'
+  return classifySchedulerSummary(`rolling_ic ${token}`) === 'success' ? token : 'unsafe_token'
 }
 
 export async function runArtifactAutoPromotion(env: Bindings) {

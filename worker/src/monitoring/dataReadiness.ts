@@ -114,8 +114,9 @@ async function gdeltStats(db: D1Database, targetDate: string) {
 
 const settle = <T>(promise: Promise<T>, fallback: T) => promise.catch(() => fallback)
 
-/** Chip data and technical indicators are written by the evening chain (Market update, Indicator queue), not by the
- * close refresh, so today becomes their target only at the writing stage's deadline, read from the stage catalog. */
+/** Chip data, technical indicators and the market dashboard sources are written by the evening chain (FinLab canonical
+ * backfill and Market update, Indicator queue), not by the close refresh, so today becomes their target only at the
+ * writing stage's deadline, read from the stage catalog. */
 function writerDeadlineMinuteTw(stageId: string): number {
   const expectedBy = DAILY_READINESS_STAGE_CATALOG.find((stage) => stage.stageId === stageId)?.expectedBy
   if (!expectedBy || expectedBy.dayOffset !== 0 || expectedBy.anchor !== 'business_date') throw new Error(`no same-day deadline for ${stageId}`)
@@ -157,7 +158,7 @@ export async function dataReadinessReport(env: MonitoringEnv, nowMs: number, req
       rowsOnLatest: chip.rows_on_latest, warnLagDays: 0, failLagDays: 0, minRows: 1000 }),
     buildFreshnessCheck({ id: 'technical_indicator_freshness', label: 'Technical indicators', latestDate: technical.latest_date, targetDate: technicalTargetDate,
       rowsOnLatest: technical.rows_on_latest, warnLagDays: 0, failLagDays: 0, minRows: 1000 }),
-    buildMarketDashboardMaterializationCheck({ targetDate, sources: MATERIALIZATION_SOURCES.map((source) => {
+    buildMarketDashboardMaterializationCheck({ targetDate: chipTargetDate, sources: MATERIALIZATION_SOURCES.map((source) => {
       const stats = ({
         twii_index: [twii.rows_on_latest, twii.latest_date],
         twoii_index: [twoii.rows_on_latest, twoii.latest_date],

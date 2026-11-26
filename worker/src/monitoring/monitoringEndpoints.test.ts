@@ -536,18 +536,19 @@ test('/v1/data-readiness: index seeks only, ≤ 20k rows on 2,346-stock sessions
   for (const q of gdelt) assert.ok(q.rowsRead <= gdelt14d, `GDELT read crossed sources: rows_read=${q.rowsRead} :: ${q.sql}`)
 })
 
-test('/v1/data-readiness: chip and technical data are due at their writing stage\'s deadline, not at the close refresh', async () => {
+test('/v1/data-readiness: chip, technical and market dashboard data are due at their writing stage\'s deadline, not at the close refresh', async () => {
   // The market fixture ends at X (Tuesday 11/24); on X+1 the close refresh makes X+1 the price target at 18:30.
   const next = day(X, 1)
   const at = async (tw: string) => {
     const body = await stateAt(Date.parse(`${next}T${tw}:00+08:00`), null, '/v1/data-readiness')
     const status = (id: string) => body.checks.find((check: any) => check.id === id).status
-    return [body.target_date, status('price_freshness'), status('chip_freshness'), status('technical_indicator_freshness')]
+    return [body.target_date, status('price_freshness'), status('chip_freshness'), status('technical_indicator_freshness'),
+      status('market_dashboard_materialization')]
   }
   assert.deepEqual([CHIP_READY_MINUTE_TW, TECHNICAL_READY_MINUTE_TW], [22 * 60 + 50, 23 * 60], 'Market update and Indicator queue deadlines')
-  assert.deepEqual(await at('20:50'), [next, 'fail', 'ok', 'ok'], 'between the close refresh and the evening chain')
-  assert.deepEqual(await at('22:55'), [next, 'fail', 'fail', 'ok'])
-  assert.deepEqual(await at('23:10'), [next, 'fail', 'fail', 'fail'])
+  assert.deepEqual(await at('20:50'), [next, 'fail', 'ok', 'ok', 'ok'], 'between the close refresh and the evening chain')
+  assert.deepEqual(await at('22:55'), [next, 'fail', 'fail', 'ok', 'warn'])
+  assert.deepEqual(await at('23:10'), [next, 'fail', 'fail', 'fail', 'warn'])
 })
 
 test('/v1/capacity: SELECT 1 per binding plus 45 days of history', async () => {

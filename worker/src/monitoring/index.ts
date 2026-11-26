@@ -1,5 +1,6 @@
 /** stockvision-monitoring: read-only JSON for Grafana (Infinity datasource).
- * GET only (405) → Cloudflare Access JWT (403) → Bearer (401) → route → cache (state 30 s, timeline and slow reads 300 s).
+ * GET only (405) → Cloudflare Access JWT (403) → Bearer (401) → route → cache (state 30 s, timeline and slow reads 300 s,
+ * the p4 roster, OPB and KV drift reads 900-3600 s).
  * The cache is MONITORING_CACHE (memory + KV, kvCache.ts) when bound, as on workers.dev; otherwise the Cache API.
  * Every response carries generated_at and rows_read (sum of D1 meta.rows_read of the reads behind it). */
 import { authorize } from './auth'
@@ -11,6 +12,10 @@ import { CHAIN_IDS, isChainId, type ChainId } from './judgment/chainCatalog'
 import { evidenceClocksReport } from './evidenceClocks'
 import { ReadLedger, type ExecutedQuery } from './readOnlyD1'
 import { kvCache } from './kvCache'
+import { modelRosterReport } from './modelRoster'
+import { opbReport } from './opb'
+import { paperNavReport } from './paperNav'
+import { failureClassesReport, kvDriftReport } from './schedulerTickets'
 import { isTradingDay } from './tradingDay'
 
 /** D11: state-type 30 s, timeline-type 300 s. */
@@ -19,6 +24,12 @@ export const TIMELINE_TTL_S = 300
 /** Slow-moving reads. Data readiness re-counts ~14k rows only when rows were inserted (dataReadiness.ts); this
  * bounds it to one re-count per 5 minutes should the memo be cold. */
 export const SLOW_TTL_S = 300
+/** p4 routes: the roster changes at a monthly cutover; OPB plans, receipts and the LinUCB ledger once a trading day
+ * each; kv-config-drift runs once a day (06:00 TW). Paper NAV and failure classes stay at 300 s (orders and tickets
+ * are written as they happen). */
+export const ROSTER_TTL_S = 3600
+export const OPB_TTL_S = 900
+export const KV_DRIFT_TTL_S = 1800
 
 type Query = URLSearchParams
 type Route = {
@@ -55,6 +66,33 @@ function daysParam(query: Query): number {
   return raw ? Number(raw) : 14
 }
 
+/** `days` for the longer windows: 1-max, default `fallback`. */
+function daysUpTo(query: Query, max: number, fallback: number): number {
+  const raw = query.get('days')
+  if (raw == null || raw === '') return fallback
+  const value = /^\d{1,3}$/.test(raw) ? Number(raw) : 0
+  if (value < 1 || value > max) throw new BadRequest(`days must be 1-${max}`)
+  return value
+}
+
+/** p4_sources.md items 1, 2A, 4, 5 and the KV drift part of 6 (monitoringP4Endpoints.test.ts). */
+export const P4_ROUTES: Record<string, Route> = {
+  '/v1/paper/nav': {
+    ttl: SLOW_TTL_S, params: ['days'], page: '⑤ Paper NAV vs 加權指數、回撤、持倉、今日下單',
+    run: (env, nowMs, query) => paperNavReport(env, nowMs, daysUpTo(query, 365, 60)),
+  },
+  '/v1/models/roster': { ttl: ROSTER_TTL_S, params: [], page: '⑤ 模型 roster、門檻、月訓結果、下次月訓日', run: (env, nowMs) => modelRosterReport(env, nowMs) },
+  '/v1/opb': {
+    ttl: OPB_TTL_S, params: ['days'], page: '⑤ OPB arm 佔比、reward 入帳、clip 率、LinUCB ledger',
+    run: (env, nowMs, query) => opbReport(env, nowMs, daysUpTo(query, 60, 30)),
+  },
+  '/v1/chain/failure-classes': {
+    ttl: TIMELINE_TTL_S, params: ['days'], page: '③ 14 天失敗分類（scheduler tickets）',
+    run: (env, nowMs, query) => failureClassesReport(env, nowMs, daysUpTo(query, 14, 14)),
+  },
+  '/v1/kv-drift': { ttl: KV_DRIFT_TTL_S, params: [], page: '⑥ KV config drift', run: (env, nowMs) => kvDriftReport(env, nowMs) },
+}
+
 export const ROUTES: Record<string, Route> = {
   '/v1/trading-day': {
     ttl: STATE_TTL_S, params: ['date'], page: '① ② ④ (holiday gating)',
@@ -83,6 +121,7 @@ export const ROUTES: Record<string, Route> = {
   '/v1/data-readiness': { ttl: SLOW_TTL_S, params: ['date'], page: '④ 資料就緒 (/monitoring/data-readiness)', run: (env, nowMs, query) => dataReadinessReport(env, nowMs, dateParam(query)) },
   '/v1/capacity': { ttl: SLOW_TTL_S, params: [], page: '⑥ 成本、用量 (DB capacity)', run: (env, nowMs) => capacityReport(env, nowMs) },
   '/v1/evidence-clocks': { ttl: SLOW_TTL_S, params: [], page: '⑤ 模型、決策與 Paper (evidence clocks)', run: (env, nowMs) => evidenceClocksReport(env, nowMs) },
+  ...P4_ROUTES,
 }
 
 export type MonitoringDeps = {

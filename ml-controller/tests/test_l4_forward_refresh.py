@@ -173,22 +173,31 @@ class RefreshTests(unittest.TestCase):
                 expected_identity={'id':1},cutoff='2026-10-09T10:00:00+08:00',snapshot_reader=reader,
                 price_loader=lambda *a,**k:(self.calendar,self.prices,{'verified':True}))
     def keys(self,kind):return [k for k in self.bucket.data if '/'+kind+'/' in k]
-    def test_r33_snapshot_is_excluded_not_failed(self):
+    def real_r33(self):
+        """A sealed R33 context (rank pool, ensemble views, bundle) from the real producers."""
+        from test_r33_forward_projection import r33_context
+        frozen,_=r33_context(signal_date='2026-10-02');self.r33_manifest=frozen['manifest']
+        return frozen
+    def phase0_marker(self,sha):
+        """What a Phase 0 deploy left for this snapshot (keyed by that deploy's source sha)."""
+        key=module.PREFIX+'projection_exclusions/'+digest(dict(manifest=self.r33_manifest,source_sha=sha))+'.json'
+        self.bucket.data[key]=b'{"reason":"r33_forward_projection_not_implemented"}'
+    def test_r33_snapshot_projects_beside_legacy_and_is_not_failed(self):
         legacy=self.run_refresh()['items'][0];self.bucket=Bucket()
-        r=self.run_mixed();by={i['snapshot_id']:i for i in r['items']}
-        self.assertEqual(r['status'],'refreshed_with_exclusions')
-        self.assertEqual(by['r33'],dict(snapshot_id='r33',signal_date='2026-10-02',status='excluded',
-            reason='r33_forward_projection_not_implemented',training_eligible=False))
+        r=self.run_mixed(frozen=self.real_r33());by={i['snapshot_id']:i for i in r['items']}
+        self.assertEqual(r['status'],'refreshed');self.assertNotIn('excluded_signal_dates',r)
         self.assertEqual(by['test'],legacy);self.assertEqual(r['latest_training_eligible_date'],'2026-10-01')
-        self.assertEqual((r['excluded_signal_dates'],r['excluded_counts']),(['2026-10-02'],{'r33_forward_projection_not_implemented':1}))
-        self.assertFalse(self.keys('projection_failures'));self.assertEqual(len(self.keys('projection_index')),1)
-        self.assertEqual(len(self.keys('projection_exclusions')),1)
+        # Signal 10-02 has no fifth session in the calendar yet: observed, not mature, not failed.
+        self.assertEqual((by['r33']['status'],by['r33']['training_eligible']),('calendar_not_yet_covers_maturity',False))
+        self.assertEqual(by['r33']['feature_schema'],'r33-forward-roster-invariant-v1')
+        self.assertFalse(self.keys('projection_failures'));self.assertEqual(len(self.keys('projection_index')),2)
+        self.assertFalse(self.keys('projection_exclusions'))
         summary=module.callback_summary(r)
-        self.assertEqual((summary['status'],summary['excluded_signal_dates']),('refreshed_with_exclusions',['2026-10-02']))
-        self.assertEqual(summary['status_counts'],{'ready':1,'excluded':1})
+        self.assertEqual(summary['status_counts'],{'ready':1,'calendar_not_yet_covers_maturity':1})
+        self.assertEqual(summary['coverage_blocker_counts'],{})
         from oof_materialize_job_main import _summary
         line=_summary('r',{'status':'native_l4_daily_accounted','forward_learning_data':r},mode='oof_lifecycle')
-        self.assertIn('forward_data=refreshed_with_exclusions',line);self.assertIn('forward_excluded=2026-10-02',line)
+        self.assertIn('forward_data=refreshed forward_observed=2026-10-02',line);self.assertIn('forward_excluded=none',line)
     def test_r33_marker_inconsistency_fails_closed(self):
         for frozen in (self.r33_frozen(runtime=0),self.r33_frozen(runtime=1),self.r33_frozen(pool=False)):
             self.bucket=Bucket();r=self.run_mixed(frozen=frozen);item=r['items'][1]
@@ -197,16 +206,23 @@ class RefreshTests(unittest.TestCase):
             self.assertFalse(self.keys('projection_exclusions'))
         self.assertFalse(module._is_r33_snapshot({},{'1101':dict(ensemble_v2=dict(schema_version='active8-v2'))}))
     def test_registry_reader_skips_excluded_items(self):
+        """A stored Phase 0 result (an excluded item) still reads; nothing in Phase 1 raises it."""
         from services.l4_forward_training import load_current_registry
-        self.run_mixed()
+        self.real_r33();real=module.project
+        def phase0(value):
+            if value['manifest']['snapshot_id']=='r33':raise module.R33ProjectionExcluded()
+            return real(value)
+        with patch.object(module,'project',phase0):self.run_mixed('sha0',frozen=self.r33_frozen())
         bodies,registry=load_current_registry(self.bucket,cutoff='2026-10-09T10:00:00+08:00')
         self.assertEqual([b['receipt']['snapshot_id'] for b in bodies],['test'])
         self.assertEqual(registry['excluded'],[dict(snapshot_id='r33',signal_date='2026-10-02',reason='r33_forward_projection_not_implemented')])
-    def test_exclusion_cache_retries_on_new_deploy(self):
-        self.run_mixed('sha1');r=self.run_mixed('sha1')
-        self.assertEqual(self.r33_reads,0);self.assertEqual(r['items'][1]['status'],'excluded')
-        self.run_mixed('sha2');self.assertEqual(self.r33_reads,1)  # a new deploy may carry the R33 projection
-        self.run_mixed('');self.assertEqual(self.r33_reads,1)
-        self.assertEqual(len(self.keys('projection_exclusions')),2)
+    def test_phase0_exclusion_marker_is_ignored_under_any_source_sha(self):
+        frozen=self.real_r33();self.phase0_marker('sha0')
+        # Even the sha that wrote the marker (a rollback, a reused env) projects instead of skipping.
+        r=self.run_mixed('sha0',frozen=frozen)
+        self.assertEqual((self.r33_reads,r['status']),(1,'refreshed'))
+        self.assertEqual(r['items'][1]['status'],'calendar_not_yet_covers_maturity')
+        self.run_mixed('',frozen=frozen);self.assertEqual(self.r33_reads,0)  # cached projection, no cold read
+        self.assertEqual(len(self.keys('projection_exclusions')),1)  # the old marker, nothing new
 
 if __name__=='__main__':unittest.main()

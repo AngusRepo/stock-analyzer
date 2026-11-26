@@ -21,7 +21,7 @@ def training_recipe_signature():
         'l4_tabpack_budget_protocol.py','l4_tabpack_median.py','l4_tabpack_median_dispatch.py',
         'l4_r2_monthly.py','l4_r2_dispatch.py','l4_r2_matrices.py','l4_r2_sources.py',
         'l4_r2_selection.py','l4_r2_shadow.py','l4_r2_protocol.json')
-    names+=('l4_forward_training.py','l4_forward_materialization.py','l4_forward_refresh.py',
+    names+=('l4_forward_training.py','l4_forward_materialization.py','l4_forward_refresh.py','r33_forward_projection.py',
         'l4_native_source_registry.py','l4_native_observation.py','l4_instrument_classification.py')
     sources={name:hashlib.sha256((services/name).read_bytes()).hexdigest() for name in names}
     sources['scripts/l4_distribution_refresh_job.py']=hashlib.sha256(Path(__file__).read_bytes()).hexdigest()

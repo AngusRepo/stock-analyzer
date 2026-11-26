@@ -413,10 +413,9 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
         "\n".join([
             "const L2_TIMESFM_MODELS = ['TimesFM']",
             "const L3_FORMAL_MODELS = ['LightGBM', 'XGBoost', 'ExtraTrees', 'TabM', 'GNN', 'DLinear', 'PatchTST', 'iTransformer']",
-            "const ACTIVE_8_DIRECT_ALPHA_TEACHER_MODELS = [...L3_FORMAL_MODELS]",
             "layer2_timesfm_enrichment_summary_v1 layer3_8ml_formal_summary_v1",
             "timesfm_sequence_sidecar_feature_enrichment_not_selector eight_ml_formal_family_evidence_not_topk",
-            "expected_teacher_count teacher_label_scope",
+            "admission_policy: 'eligible_for_ml_and_active_strategy_label_only' route_score_teacher_term: false",
             "layer1_strategy_labeler_summary_v1",
             "layer125_finlab_portfolio_intelligence_summary_v1",
             "layer15_multi_strategy_router_summary_v1",
@@ -838,11 +837,10 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
         "\n".join([
             "const L2_TIMESFM_MODELS = ['TimesFM']",
             "const L3_FORMAL_MODELS = ['LightGBM', 'XGBoost', 'ExtraTrees', 'TabM', 'GNN', 'DLinear', 'PatchTST', 'iTransformer']",
-            "const ACTIVE_8_DIRECT_ALPHA_TEACHER_MODELS = [...L3_FORMAL_MODELS]",
             "layer2_timesfm_enrichment_summary_v1 layer3_8ml_formal_summary_v1",
             "timesfm_sequence_sidecar_feature_enrichment_not_selector eight_ml_formal_family_evidence_not_topk",
             "formal_l2_evidence",
-            "expected_teacher_count teacher_label_scope",
+            "admission_policy: 'eligible_for_ml_and_active_strategy_label_only' route_score_teacher_term: false",
             "layer1_strategy_labeler_summary_v1",
             "layer125_finlab_portfolio_intelligence_summary_v1",
             "layer15_multi_strategy_router_summary_v1",
@@ -864,9 +862,7 @@ def test_local_prod_ready_audit_marks_done_when_local_gates_are_closed(tmp_path)
         "strategy_similarity_graph strategy_cluster_crowding_score strategy_cluster_uniqueness_score effective_strategy_count "
         "strategy_prior_weight family_prior_weight strategy_reliability strategy_crowding_score "
         "strategy_diversification_value factor_return centrality "
-        "training_teacher_labels_offline_runtime_teacher_evidence_optional "
-        "previous_trading_day_or_latest_verified_cache_no_same_day_l2_l3_dependency "
-        "missing_runtime_teacher_cache historical_verified_cache",
+        "L15_ADMISSION_RULE_VERSION L15_ROUTE_SCORE_FORMULA_VERSION l15-route-score-strategy-only-v1",
     )
     _write(
         tmp_path / "ml-controller/services/promotion_gate_contract.py",

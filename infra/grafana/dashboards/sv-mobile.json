@@ -257,7 +257,7 @@
       "mode": "absolute",
       "steps": [
        {
-        "color": "#73bf69",
+        "color": "#00c076",
         "value": null
        },
        {
@@ -280,7 +280,7 @@
        "options": {
         "0": {
          "text": "正常",
-         "color": "#73bf69",
+         "color": "#00c076",
          "index": 0
         },
         "1": {
@@ -347,7 +347,7 @@
      "type": "json",
      "parser": "backend",
      "format": "table",
-     "root_selector": "([rows.{ 'level': severity, 'item': $lookup({\"daily_readiness\":\"每日\",\"intraday_guard\":\"盤中\",\"weekly_research\":\"每週\",\"monthly_artifact\":\"每月\"}, chain_id ? chain_id : $$.chain_id) & '｜' & $lookup({\"market-close-refresh\":\"Close refresh\",\"finlab-v4-backfill\":\"FinLab canonical\",\"finlab-backfill-watchdog\":\"FinLab watchdog\",\"update\":\"Market update\",\"indicator-queue\":\"Indicator queue\",\"regime-compute\":\"HMM regime\",\"strategy-learning-mature-evidence\":\"成熟策略證據\",\"screener\":\"Screener\",\"allocator-ev-readiness\":\"Allocator EV\",\"pipeline\":\"Pipeline · 整體進度\",\"ml-predict\":\"ML Predict · L3 預測\",\"post-pipeline-chain\":\"Pipeline callback\",\"allocator-ev-feature-snapshot-backfill\":\"EV feature snapshot\",\"verify-v2\":\"Verify\",\"post-verify-chain\":\"Verify callback\",\"model-ic-rolling\":\"Model IC rolling\",\"linucb-reward-ledger\":\"Reward ledger\",\"adapt\":\"Adapt params\",\"daily-report\":\"Daily report\",\"paper-active-postmarket\":\"Paper active\",\"obsidian-sync\":\"Obsidian sync\",\"meta-learning-shadow\":\"Meta shadow\",\"strategy-learning\":\"Strategy learning\",\"evening-closure\":\"全鏈完成收據\",\"us-leading\":\"US leading\",\"news-analyst\":\"News analyst\",\"morning-setup\":\"Morning setup\",\"recommendation\":\"Recommendation · L4 推薦\",\"pre-market-warmup\":\"Pre-market\",\"premarket-evidence-watchdog\":\"盤前鏈監看\",\"dataset-snapshot-export\":\"Research snapshot\",\"active8-oof-daily\":\"Active-8 daily evidence\",\"allocator-ev-lifecycle-watchdog\":\"EV lifecycle\",\"intraday-check\":\"Intraday check\",\"eod-exit\":\"EOD exit\",\"post-close-price-refresh\":\"Close price\",\"daily-snapshot\":\"Daily snapshot\",\"rescore-10\":\"10:00 re-score\",\"rescore-11\":\"11:00 re-score\",\"rescore-12\":\"12:00 re-score\",\"rescore-1230\":\"12:30 re-score\",\"weekly-audit\":\"Weekly audit\",\"storage-integrity-audit\":\"Storage integrity\",\"model-ic-full-check\":\"Model IC full\",\"weekly-backtest\":\"Validation / MC\",\"alpha-quality\":\"Alpha quality\",\"active8-oof-weekly\":\"Active-8 weekly\",\"weekly-optuna\":\"Drift research\",\"sector-leaders\":\"Sector leaders\",\"adaptive-meta-policy-replay\":\"Meta replay\",\"s12-smcvwap-calibration\":\"S12 calibration\",\"linucb-multiplier-replay\":\"LinUCB replay\",\"weekly-cleanup\":\"Weekly cleanup\",\"weekly-readiness\":\"Weekly root\",\"monthly-strategy-mining\":\"Strategy mining\",\"monthly-optuna\":\"Monthly search\",\"active8-oof-monthly\":\"Active-8 monthly\",\"monthly-readiness\":\"Monthly root\"}, stage_id) & '｜' & $lookup({\"completed\":\"完成\",\"success\":\"完成\",\"noop\":\"無事可做\",\"retry_success\":\"重試後完成\",\"running\":\"執行中\",\"waiting\":\"等待中\",\"not_started\":\"未開始\",\"pending\":\"未開始\",\"out_of_window\":\"未到時段\",\"stale\":\"待確認\",\"skipped\":\"略過\",\"at_risk\":\"趕不上截止\",\"attention\":\"應跑未跑\",\"overdue\":\"逾時\",\"stuck\":\"卡住\",\"missed\":\"漏跑\",\"failed\":\"失敗\",\"error\":\"失敗\",\"blocked\":\"中止\",\"ready\":\"就緒\",\"ok\":\"正常\",\"warn\":\"注意\",\"fail\":\"未過\",\"critical\":\"重大\",\"warning\":\"注意\",\"healthy\":\"正常\",\"pending_maturity\":\"等待成熟\",\"pass\":\"通過\",\"collecting\":\"收集中\",\"not_applicable_no_real_intents\":\"不適用（沒有真實下單）\",\"owner_read_unavailable\":\"讀不到來源\"}, kind), 'due': expected_by }])",
+     "root_selector": "([rows.{ 'level': severity, 'item': $lookup({\"daily_readiness\":\"每日\",\"intraday_guard\":\"盤中\",\"weekly_research\":\"每週\",\"monthly_artifact\":\"每月\"}, chain_id ? chain_id : $$.chain_id) & '｜' & $lookup({\"market-close-refresh\":\"Close refresh\",\"finlab-v4-backfill\":\"FinLab canonical\",\"finlab-backfill-watchdog\":\"FinLab watchdog\",\"update\":\"Market update\",\"indicator-queue\":\"Indicator queue\",\"regime-compute\":\"HMM regime\",\"strategy-learning-mature-evidence\":\"成熟策略證據\",\"screener\":\"Screener\",\"allocator-ev-readiness\":\"Allocator EV\",\"pipeline\":\"Pipeline · 整體進度\",\"ml-predict\":\"ML Predict · L3 預測\",\"post-pipeline-chain\":\"Pipeline callback\",\"allocator-ev-feature-snapshot-backfill\":\"EV feature snapshot\",\"verify-v2\":\"Verify\",\"post-verify-chain\":\"Verify callback\",\"model-ic-rolling\":\"Model IC rolling\",\"linucb-reward-ledger\":\"Reward ledger\",\"adapt\":\"Adapt params\",\"daily-report\":\"Daily report\",\"paper-active-postmarket\":\"Paper active\",\"obsidian-sync\":\"Obsidian sync\",\"meta-learning-shadow\":\"Meta shadow\",\"strategy-learning\":\"Strategy learning\",\"evening-closure\":\"全鏈完成收據\",\"us-leading\":\"US leading\",\"news-analyst\":\"News analyst\",\"morning-setup\":\"Morning setup\",\"recommendation\":\"Recommendation · L4 推薦\",\"pre-market-warmup\":\"Pre-market\",\"premarket-evidence-watchdog\":\"盤前鏈監看\",\"dataset-snapshot-export\":\"Research snapshot\",\"active8-oof-daily\":\"Active-8 daily evidence\",\"allocator-ev-lifecycle-watchdog\":\"EV lifecycle\",\"intraday-check\":\"Intraday check\",\"eod-exit\":\"EOD exit\",\"post-close-price-refresh\":\"Close price\",\"daily-snapshot\":\"Daily snapshot\",\"rescore-10\":\"10:00 re-score\",\"rescore-11\":\"11:00 re-score\",\"rescore-12\":\"12:00 re-score\",\"rescore-1230\":\"12:30 re-score\",\"weekly-audit\":\"Weekly audit\",\"storage-integrity-audit\":\"Storage integrity\",\"model-ic-full-check\":\"Model IC full\",\"weekly-backtest\":\"Validation / MC\",\"alpha-quality\":\"Alpha quality\",\"active8-oof-weekly\":\"Active-8 weekly\",\"weekly-optuna\":\"Drift research\",\"sector-leaders\":\"Sector leaders\",\"adaptive-meta-policy-replay\":\"Meta replay\",\"s12-smcvwap-calibration\":\"S12 calibration\",\"linucb-multiplier-replay\":\"LinUCB replay\",\"weekly-cleanup\":\"Weekly cleanup\",\"weekly-readiness\":\"Weekly root\",\"monthly-strategy-mining\":\"Strategy mining\",\"monthly-optuna\":\"Monthly search\",\"active8-oof-monthly\":\"Active-8 monthly\",\"monthly-readiness\":\"Monthly root\"}, stage_id) & '｜' & $lookup({\"completed\":\"完成\",\"success\":\"完成\",\"noop\":\"無事可做\",\"retry_success\":\"重試後完成\",\"running\":\"執行中\",\"waiting\":\"等待中\",\"not_started\":\"未開始\",\"pending\":\"未開始\",\"out_of_window\":\"未到時段\",\"stale\":\"待確認\",\"skipped\":\"略過\",\"at_risk\":\"趕不上截止\",\"attention\":\"應跑未跑\",\"overdue\":\"逾時\",\"stuck\":\"卡住\",\"missed\":\"漏跑\",\"failed\":\"失敗\",\"error\":\"失敗\",\"blocked\":\"中止\",\"ready\":\"就緒\",\"ok\":\"正常\",\"warn\":\"注意\",\"fail\":\"未過\",\"critical\":\"重大\",\"warning\":\"注意\",\"healthy\":\"正常\",\"pending_maturity\":\"等待成熟\",\"pass\":\"通過\",\"collecting\":\"收集中\",\"not_applicable_no_real_intents\":\"不適用（沒有真實下單）\",\"owner_read_unavailable\":\"讀不到來源\",\"match\":\"一致\",\"drift\":\"漂移\",\"missing\":\"缺少\",\"invalid\":\"無效\",\"PASS\":\"通過\",\"FAIL\":\"未過\"}, kind), 'due': expected_by }])",
      "columns": [
       {
        "selector": "level",
@@ -440,22 +440,22 @@
           "options": {
            "completed": {
             "text": "完成",
-            "color": "#96d98d",
+            "color": "#00c076",
             "index": 0
            },
            "success": {
             "text": "完成",
-            "color": "#96d98d",
+            "color": "#00c076",
             "index": 1
            },
            "noop": {
             "text": "無事可做",
-            "color": "#96d98d",
+            "color": "#00c076",
             "index": 2
            },
            "retry_success": {
             "text": "重試後完成",
-            "color": "#96d98d",
+            "color": "#00c076",
             "index": 3
            },
            "running": {
@@ -465,7 +465,7 @@
            },
            "waiting": {
             "text": "等待中",
-            "color": "#a8caff",
+            "color": "#9a9ea8",
             "index": 5
            },
            "not_started": {
@@ -535,12 +535,12 @@
            },
            "ready": {
             "text": "就緒",
-            "color": "#96d98d",
+            "color": "#00c076",
             "index": 19
            },
            "ok": {
             "text": "正常",
-            "color": "#96d98d",
+            "color": "#00c076",
             "index": 20
            },
            "warn": {
@@ -565,7 +565,7 @@
            },
            "healthy": {
             "text": "正常",
-            "color": "#96d98d",
+            "color": "#00c076",
             "index": 25
            },
            "pending_maturity": {
@@ -575,7 +575,7 @@
            },
            "pass": {
             "text": "通過",
-            "color": "#96d98d",
+            "color": "#00c076",
             "index": 27
            },
            "collecting": {
@@ -592,6 +592,36 @@
             "text": "讀不到來源",
             "color": "#ffb357",
             "index": 30
+           },
+           "match": {
+            "text": "一致",
+            "color": "#00c076",
+            "index": 31
+           },
+           "drift": {
+            "text": "漂移",
+            "color": "#ffb357",
+            "index": 32
+           },
+           "missing": {
+            "text": "缺少",
+            "color": "#ff7a8a",
+            "index": 33
+           },
+           "invalid": {
+            "text": "無效",
+            "color": "#ff7a8a",
+            "index": 34
+           },
+           "PASS": {
+            "text": "通過",
+            "color": "#00c076",
+            "index": 35
+           },
+           "FAIL": {
+            "text": "未過",
+            "color": "#ff7a8a",
+            "index": 36
            }
           }
          }
@@ -766,7 +796,7 @@
            "value": 0
           },
           {
-           "color": "#73bf69",
+           "color": "#00c076",
            "value": 15
           }
          ]
@@ -1061,12 +1091,12 @@
           "options": {
            "ready": {
             "text": "正常",
-            "color": "#96d98d",
+            "color": "#00c076",
             "index": 0
            },
            "ok": {
             "text": "正常",
-            "color": "#96d98d",
+            "color": "#00c076",
             "index": 1
            },
            "waiting": {

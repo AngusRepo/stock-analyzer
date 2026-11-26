@@ -7,6 +7,7 @@ import { capacityReport } from './capacity'
 import { chainAlertsReport, chainHistoryReport, chainStateReport, chainTimelineReport } from './chain'
 import { dataReadinessReport } from './dataReadiness'
 import { readOnlyEnv, isIsoDate, twDate, type Memo, type MonitoringEnv } from './env'
+import { CHAIN_IDS, isChainId, type ChainId } from './judgment/chainCatalog'
 import { evidenceClocksReport } from './evidenceClocks'
 import { ReadLedger, type ExecutedQuery } from './readOnlyD1'
 import { kvCache } from './kvCache'
@@ -37,6 +38,16 @@ function dateParam(query: Query): string | null {
   return value
 }
 
+/** `chain`: one of CHAIN_IDS, default daily_readiness; /v1/chain/alerts also takes `all`, its default. */
+function chainParam(query: Query): ChainId | null
+function chainParam(query: Query, allowAll: true): ChainId | 'all' | null
+function chainParam(query: Query, allowAll = false): ChainId | 'all' | null {
+  const value = query.get('chain')
+  if (value == null || value === '') return null
+  if (isChainId(value) || (allowAll && value === 'all')) return value
+  throw new BadRequest(`chain must be one of ${[...CHAIN_IDS, ...(allowAll ? ['all'] : [])].join(', ')}`)
+}
+
 /** `days`: 1-14, default 14. */
 function daysParam(query: Query): number {
   const raw = query.get('days')
@@ -53,15 +64,21 @@ export const ROUTES: Record<string, Route> = {
       return { date, trading, rows: [{ date, trading }] }
     },
   },
-  '/v1/chain/state': { ttl: STATE_TTL_S, params: ['date'], page: '② 流程鏈（含 FinLab／Pipeline 子階段）、預估收尾與鏈耗時 (/monitoring/chain)', run: (env, nowMs, query) => chainStateReport(env, nowMs, dateParam(query)) },
-  '/v1/chain/alerts': { ttl: STATE_TTL_S, params: ['date'], page: '① 今天要我處理什麼, ② alerts (/monitoring/action-items)', run: (env, nowMs, query) => chainAlertsReport(env, nowMs, dateParam(query)) },
+  '/v1/chain/state': {
+    ttl: STATE_TTL_S, params: ['chain', 'date'], page: '② 流程鏈（含 FinLab／Pipeline 子階段）、預估收尾與鏈耗時 (/monitoring/chain)',
+    run: (env, nowMs, query) => chainStateReport(env, nowMs, dateParam(query), chainParam(query) ?? undefined),
+  },
+  '/v1/chain/alerts': {
+    ttl: STATE_TTL_S, params: ['chain', 'date'], page: '① 今天要我處理什麼, ② alerts (/monitoring/action-items)',
+    run: (env, nowMs, query) => chainAlertsReport(env, nowMs, dateParam(query), chainParam(query, true) ?? 'all'),
+  },
   '/v1/chain/timeline': {
-    ttl: TIMELINE_TTL_S, params: ['date', 'days'], page: '② swimlane, ③ 失敗與重複失敗 (/monitoring/failures)',
-    run: (env, nowMs, query) => chainTimelineReport(env, nowMs, daysParam(query), dateParam(query)),
+    ttl: TIMELINE_TTL_S, params: ['chain', 'date', 'days'], page: '② swimlane, ③ 失敗與重複失敗 (/monitoring/failures)',
+    run: (env, nowMs, query) => chainTimelineReport(env, nowMs, daysParam(query), dateParam(query), chainParam(query) ?? undefined),
   },
   '/v1/chain/history': {
-    ttl: TIMELINE_TTL_S, params: ['date', 'days'], page: '③ 每個 task 近 14 天最終結果、重複失敗 (/monitoring/failures)',
-    run: (env, nowMs, query) => chainHistoryReport(env, nowMs, daysParam(query), dateParam(query)),
+    ttl: TIMELINE_TTL_S, params: ['chain', 'date', 'days'], page: '③ 每個 task 近 14 天最終結果、重複失敗 (/monitoring/failures)',
+    run: (env, nowMs, query) => chainHistoryReport(env, nowMs, daysParam(query), dateParam(query), chainParam(query) ?? undefined),
   },
   '/v1/data-readiness': { ttl: SLOW_TTL_S, params: ['date'], page: '④ 資料就緒 (/monitoring/data-readiness)', run: (env, nowMs, query) => dataReadinessReport(env, nowMs, dateParam(query)) },
   '/v1/capacity': { ttl: SLOW_TTL_S, params: [], page: '⑥ 成本、用量 (DB capacity)', run: (env, nowMs) => capacityReport(env, nowMs) },

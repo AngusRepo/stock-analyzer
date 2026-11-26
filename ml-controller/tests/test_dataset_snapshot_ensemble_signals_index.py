@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 import sqlite3
 import threading
+import time
 from pathlib import Path
 
 from services import dataset_snapshot_exporter as exporter
@@ -104,3 +105,87 @@ def test_chunk_read_seeks_the_date_index():
                for d in plan), plan
     assert not any(d.startswith("SCAN ") for d in plan), plan
     assert not any("idx_pred_model_verified_date" in d for d in plan), plan
+
+
+def test_one_day_chunks_return_the_range_rows():
+    conn = _database()
+    client = _SqliteClient(conn)
+    total = 0
+    for start, end in exporter._date_chunks("2026-01-25", "2026-03-05", 1):
+        old = client.query(exporter.ENSEMBLE_SIGNALS_SQL, [start, end])
+        new = client.query(exporter.ENSEMBLE_SIGNALS_DAY_SQL, [start])
+        assert old == new, start
+        total += len(new)
+    assert total > 0
+
+
+def test_one_day_read_seeks_date_and_model():
+    conn = _database()
+    plan = [row[3] for row in conn.execute("EXPLAIN QUERY PLAN " + exporter.ENSEMBLE_SIGNALS_DAY_SQL, ["2026-02-03"])]
+    assert any(d.startswith("SEARCH predictions USING INDEX idx_pred_date_model_stock (prediction_date=? AND model_name=?)")
+               for d in plan), plan
+    assert not any(d.startswith("SCAN ") for d in plan), plan
+
+
+def test_equality_only_for_one_day_chunks():
+    assert exporter._ensemble_signal_read(1) == (exporter.ENSEMBLE_SIGNALS_DAY_SQL, ("start",))
+    for chunk_days in (2, 3, 30):
+        assert exporter._ensemble_signal_read(chunk_days) == (exporter.ENSEMBLE_SIGNALS_SQL, ("start", "end"))
+
+
+def test_first_prediction_date_is_one_index_seek():
+    conn = _database()
+    plan = [row[3] for row in conn.execute("EXPLAIN QUERY PLAN " + exporter.PREDICTIONS_FIRST_DATE_SQL)]
+    assert plan == ["SEARCH predictions USING COVERING INDEX idx_pred_date_model_stock"], plan
+
+
+def test_days_before_the_first_hot_prediction_are_not_read(monkeypatch):
+    conn = _database()
+    conn.execute("DELETE FROM predictions WHERE prediction_date < '2026-02-10'")
+    for chunk_days in (1, 3):
+        sql, binds = exporter._ensemble_signal_read(chunk_days)
+        every, every_count = exporter._query_date_range(sql, "2025-12-01", "2026-03-05", chunk_days,
+                                                        query_client=_SqliteClient(conn), bind_shape=binds)
+        skipping = _SqliteClient(conn)
+        hot, hot_count = exporter._query_date_range(sql, "2025-12-01", "2026-03-05", chunk_days,
+                                                    query_client=skipping, bind_shape=binds,
+                                                    first_date_sql=exporter.PREDICTIONS_FIRST_DATE_SQL)
+        assert hot.height > 0 and hot.equals(every), chunk_days
+        reads = [params for sql_text, params in skipping.calls if params]
+        assert min(params[-1] for params in reads) >= "2026-02-10"
+        chunks = exporter._date_chunks("2025-12-01", "2026-03-05", chunk_days)
+        assert every_count == len(chunks)
+        assert hot_count == 1 + sum(1 for chunk in chunks if chunk[1] >= "2026-02-10")
+    conn.execute("DELETE FROM predictions")
+    empty = _SqliteClient(conn)
+    frame, count = exporter._query_date_range(exporter.ENSEMBLE_SIGNALS_DAY_SQL, "2026-01-01", "2026-01-31", 1,
+        query_client=empty, bind_shape=("start",), first_date_sql=exporter.PREDICTIONS_FIRST_DATE_SQL)
+    assert frame.is_empty() and count == 1 and len(empty.calls) == 1
+
+
+def test_learning_reads_use_their_own_worker_cap(monkeypatch):
+    monkeypatch.delenv("DATASET_SNAPSHOT_LEARNING_QUERY_WORKERS", raising=False)
+    monkeypatch.setenv("DATASET_SNAPSHOT_QUERY_WORKERS", "4")
+    assert exporter._snapshot_learning_query_workers() == 2
+    monkeypatch.setenv("DATASET_SNAPSHOT_LEARNING_QUERY_WORKERS", "3")
+    assert exporter._snapshot_learning_query_workers() == 3
+
+    class Peak(_SqliteClient):
+        active = peak = 0
+
+        def query(self, sql, params=None, timeout=None):
+            with self.lock:
+                Peak.active += 1
+                Peak.peak = max(Peak.peak, Peak.active)
+            time.sleep(0.005)
+            with self.lock:
+                Peak.active -= 1
+            return []
+
+    # Learning cap 2 under a general 4; a sequential export stays sequential; no cap keeps the general 4.
+    for env, cap, expected in (("4", 2, {2}), ("1", 2, {1}), ("4", None, {3, 4})):
+        monkeypatch.setenv("DATASET_SNAPSHOT_QUERY_WORKERS", env)
+        Peak.active = Peak.peak = 0
+        exporter._query_date_range(exporter.ENSEMBLE_SIGNALS_DAY_SQL, "2026-01-01", "2026-01-31", 1,
+                                   query_client=Peak(_database()), bind_shape=("start",), query_workers=cap)
+        assert Peak.peak in expected, (env, cap, Peak.peak)

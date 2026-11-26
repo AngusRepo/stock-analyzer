@@ -128,3 +128,51 @@ def test_shareholding_filter_matches_former_rows_and_seeks():
     plan = _plan(db, SHAREHOLDING_SQL, ["2026-04-10", "2026-04-17"] * 3)
     assert any("idx_shareholding_date" in detail for detail in plan), plan
     assert not any(detail.startswith("SCAN shareholding") for detail in plan), plan
+
+
+class FirstDateClient(OrderedTableClient):
+    """OrderedTableClient whose table holds no row before `first`; answers the MIN query."""
+
+    def __init__(self, first):
+        super().__init__()
+        self.first = first
+
+    def query(self, sql, params, timeout=None):
+        if sql.startswith("SELECT MIN("):
+            self.calls.append([])
+            return [{"d": self.first}]
+        if self.first is None or params[1] < self.first:
+            self.calls.append(list(params))
+            return []
+        return super().query(sql, [max(params[0], self.first), params[1]])
+
+
+@pytest.mark.parametrize(("chunk_days", "read_days"), [(1, None), (1, 5), (3, 5), (10, None)])
+@pytest.mark.parametrize("workers", ["1", "4"])
+def test_reads_before_the_first_hot_date_are_skipped(monkeypatch, chunk_days, read_days, workers):
+    monkeypatch.setenv("DATASET_SNAPSHOT_QUERY_WORKERS", workers)
+    sql = "SELECT stock_id, date, close FROM t WHERE date >= ? AND date <= ? ORDER BY stock_id, date"
+    every_client, skip_client = FirstDateClient("2026-02-07"), FirstDateClient("2026-02-07")
+    every, every_queries = exporter._query_date_range(sql, "2026-01-01", "2026-03-10", chunk_days,
+        query_client=every_client, read_chunk_days=read_days)
+    hot, hot_queries = exporter._query_date_range(sql, "2026-01-01", "2026-03-10", chunk_days,
+        query_client=skip_client, read_chunk_days=read_days, first_date_sql="SELECT MIN(date) AS d FROM t")
+    assert hot.height > 0 and hot.equals(every)
+    reads = [call for call in skip_client.calls if call]
+    assert all(end >= "2026-02-07" for _, end in reads)
+    assert len(reads) < every_queries and hot_queries == len(reads) + 1
+
+
+def test_an_empty_table_reads_nothing_but_its_first_date():
+    client = FirstDateClient(None)
+    frame, count = exporter._query_date_range(
+        "SELECT stock_id, date FROM t WHERE date >= ? AND date <= ?", "2026-01-01", "2026-01-31", 1,
+        query_client=client, read_chunk_days=5, first_date_sql="SELECT MIN(date) AS d FROM t")
+    assert frame.is_empty() and count == 1 and client.calls == [[]]
+
+
+@pytest.mark.parametrize("table", ["stock_prices", "technical_indicators", "chip_data", "margin_data",
+                                   "canonical_broker_flow_daily"])
+def test_first_market_date_is_one_index_seek(table):
+    plan = _plan(_market_db(), exporter._first_date_sql(table, "date"), [])
+    assert len(plan) == 1 and plan[0].startswith(f"SEARCH {table} USING COVERING INDEX "), plan

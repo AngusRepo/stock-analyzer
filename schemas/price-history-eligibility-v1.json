@@ -1,0 +1,11 @@
+{
+  "schema_version": "price-history-eligibility-contract-v1",
+  "min_price_rows": 60,
+  "decided_by": "Wei",
+  "decided_on": "2026-11-24",
+  "rule": "A symbol with fewer than min_price_rows daily price rows up to the signal date is not selected by the screener and gets no prep row.",
+  "consumers": [
+    "worker/src/lib/priceHistoryEligibility.ts (marketScreener Step 1 universe; counts canonical_market_daily finlab.price bars with close > 0, the rows the prep counts)",
+    "ml-controller/services/price_history_contract.py (ml-service universal prep, training price capture)"
+  ]
+}

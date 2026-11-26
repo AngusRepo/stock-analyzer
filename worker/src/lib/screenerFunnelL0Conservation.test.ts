@@ -50,6 +50,10 @@ const report = buildL0DropReasonConservation({ sourceUniverseSymbols, rows })
 assert.equal(report.schema_version, L0_DROP_REASON_CONSERVATION_SCHEMA_VERSION)
 assert.equal(report.run_version, L0_DROP_REASON_CONSERVATION_RUN_VERSION)
 assert.equal(report.config_version, L0_DROP_REASON_CONFIG_VERSION)
+// v3: insufficient_price_history counts canonical finlab.price rows (min 60), not stock_prices length < 3.
+// Counts under v2 and v3 are not comparable day over day.
+assert.equal(L0_DROP_REASON_CONFIG_VERSION, 'l0-drop-reason-taxonomy-v3')
+assert.equal(L0_DROP_REASON_CONSERVATION_SCHEMA_VERSION, 'l0-drop-reason-conservation-v1', 'receipt shape is unchanged')
 assert.equal(report.source_universe, 4)
 assert.equal(report.pass, 1)
 assert.equal(report.drop, 3)
@@ -211,7 +215,7 @@ assert.ok(
 const producerSource = readFileSync(new URL('./marketScreener.ts', import.meta.url), 'utf8')
 assert.match(
   producerSource,
-  /if \(prices\.length < 3\) \{[\s\S]*?reasonCode: 'insufficient_price_history'/,
+  /if \(!historyGate\.passed\) \{[\s\S]*?reasonCode: 'insufficient_price_history'/,
   'every short-history source symbol must receive a terminal L0 drop row',
 )
 assert.match(

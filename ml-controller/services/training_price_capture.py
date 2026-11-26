@@ -32,6 +32,8 @@ def prefetched_blobs(bucket, paths):
 def load_training_price_capture(bucket, *, sequence_gcs_prefix: str, stock_rows: list[dict],
                                 prices_lookback: int, run_date: str, prior_prices: dict,
                                 prior_indicators: dict) -> tuple[dict, dict, dict]:
+    # ROSTER-PREP-60 owner (schemas/); loaded here so a missing contract fails this capture only.
+    from services.price_history_contract import MIN_PRICE_ROWS
     seq=_sealed_manifest(bucket,sequence_gcs_prefix,"sequence_manifest.json",compact=True)
     daily=[x for x in seq.get("lane_reports",[]) if x.get("lane")=="daily_price"]
     if len(daily)!=1 or not isinstance(daily[0].get("source_uri"),dict):
@@ -96,7 +98,7 @@ def load_training_price_capture(bucket, *, sequence_gcs_prefix: str, stock_rows:
             previous_count, comparison = compare_prior_scope(venue_entries[symbol], symbol=symbol,
                 market=stock_markets[symbol], previous=previous, rows=rows, sessions=sessions)
             venue_comparisons.append(comparison)
-        if previous_count>=60 and len(rows)<60:
+        if previous_count>=MIN_PRICE_ROWS and len(rows)<MIN_PRICE_ROWS:
             raise ValueError(f"root_price_capture_lost_eligible_symbol:{symbol}")
         if not rows:unavailable.append(symbol)
         prices[stock_id]=rows

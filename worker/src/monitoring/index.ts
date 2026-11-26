@@ -5,7 +5,7 @@
  * Every response carries generated_at and rows_read (sum of D1 meta.rows_read of the reads behind it). */
 import { authorize } from './auth'
 import { capacityReport } from './capacity'
-import { chainAlertsReport, chainHistoryReport, chainStateReport, chainTimelineReport } from './chain'
+import { chainAlertsReport, chainHistoryReport, chainStateReport, chainTimelineReport, isoStamp } from './chain'
 import { dataReadinessReport } from './dataReadiness'
 import { readOnlyEnv, isIsoDate, twDate, type Memo, type MonitoringEnv } from './env'
 import { CHAIN_IDS, isChainId, type ChainId } from './judgment/chainCatalog'
@@ -75,8 +75,15 @@ function daysUpTo(query: Query, max: number, fallback: number): number {
   return value
 }
 
+/** Every `*_at` value through isoStamp: the p4 sources store `YYYY-MM-DD HH:MM:SS`, microseconds and `+08:00`. */
+function withIsoStampsDeep(value: unknown, key = ''): unknown {
+  if (Array.isArray(value)) return value.map((item) => withIsoStampsDeep(item))
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, withIsoStampsDeep(v, k)]))
+  return key.endsWith('_at') ? isoStamp(value) : value
+}
+
 /** p4_sources.md items 1, 2A, 4, 5 and the KV drift part of 6 (monitoringP4Endpoints.test.ts). */
-export const P4_ROUTES: Record<string, Route> = {
+const P4_SOURCES: Record<string, Route> = {
   '/v1/paper/nav': {
     ttl: SLOW_TTL_S, params: ['days'], page: '⑤ Paper NAV vs 加權指數、回撤、持倉、今日下單',
     run: (env, nowMs, query) => paperNavReport(env, nowMs, daysUpTo(query, 365, 60)),
@@ -92,6 +99,8 @@ export const P4_ROUTES: Record<string, Route> = {
   },
   '/v1/kv-drift': { ttl: KV_DRIFT_TTL_S, params: [], page: '⑥ KV config drift', run: (env, nowMs) => kvDriftReport(env, nowMs) },
 }
+export const P4_ROUTES: Record<string, Route> = Object.fromEntries(Object.entries(P4_SOURCES).map(([path, route]) =>
+  [path, { ...route, run: async (env, nowMs, query) => withIsoStampsDeep(await route.run(env, nowMs, query)) as Record<string, unknown> }]))
 
 export const ROUTES: Record<string, Route> = {
   '/v1/trading-day': {

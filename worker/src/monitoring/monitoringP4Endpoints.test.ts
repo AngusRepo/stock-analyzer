@@ -213,6 +213,11 @@ async function endpoint(path: string, maxRowsRead: number, ttl: number) {
   assert.equal(result.body.rows_read, queries.slice(start).reduce((sum, q) => sum + q.rowsRead, 0), 'rows_read is the sum of D1 meta.rows_read')
   assert.ok(result.body.rows_read <= maxRowsRead, `${path} rows_read=${result.body.rows_read} > ${maxRowsRead}`)
   assert.ok(Array.isArray(result.body.rows), 'Infinity/JSONata root array')
+  // Grafana's JSONata reads anything but millisecond `Z` stamps as the date's midnight.
+  const stamps = (value: unknown, key = ''): string[] => Array.isArray(value) ? value.flatMap((item) => stamps(item))
+    : value && typeof value === 'object' ? Object.entries(value).flatMap(([k, v]) => stamps(v, k))
+    : key.endsWith('_at') && typeof value === 'string' && /\d{2}:\d{2}/.test(value) ? [value] : []
+  for (const stamp of stamps(result.body)) assert.match(stamp, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/, path)
   measured[path.split('?')[0]] = result.body.rows_read
   return result.body
 }
@@ -234,7 +239,7 @@ test('/v1/paper/nav?days=60: snapshot and market_risk ranges, TW-day orders, ind
   assert.equal(body.summary.max_drawdown_to_date_pct, 2, 'stored fraction served as percent')
   assert.equal(body.index_source, 'core.market_risk.twii_close')
   assert.deepEqual(body.positions.map((row: any) => row.symbol), ['2317', '2330', '2454'])
-  assert.deepEqual(body.orders_today.map((row: any) => row.created_at), [`${day(X, -1)} 16:00:00`, `${X} 01:30:00`])
+  assert.deepEqual(body.orders_today.map((row: any) => row.created_at), [`${day(X, -1)}T16:00:00.000Z`, `${X}T01:30:00.000Z`])
   assert.deepEqual([body.summary.buys_today, body.summary.sells_today], [1, 1])
   assert.equal(body.intents_today.length, 3, 'account 1 only')
   assert.equal((await call('/v1/paper/nav?days=0')).status, 400)

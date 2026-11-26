@@ -123,7 +123,8 @@ function alert(row: ChainStateRow, kind: AlertKind, since: string | null, nowMs:
   return {
     business_date: row.business_date, stage_id: row.stage_id, kind,
     severity: kind === 'failed' || kind === 'missed' ? 'critical' : 'warning',
-    status: row.status, attempt: Number(row.attempt ?? 0), expected_by: row.expected_by, since,
+    status: row.status, attempt: Number(row.attempt ?? 0),
+    expected_by: isoStamp(row.expected_by) as string | null, since: isoStamp(since) as string | null,
     minutes: minutesSince(parse(since), nowMs), summary: row.summary, error: row.error,
     root_ticket_id: row.root_ticket_id, ticket_id: row.ticket_id, run_id: row.run_id, execution_name: row.execution_name,
   }

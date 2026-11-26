@@ -209,6 +209,10 @@ test('/v1/chain/alerts: failed / overdue / stuck / missed per the contract', asy
   assert.deepEqual(body.counts, { total: 4, failed: 2, overdue: 1, stuck: 1, missed: 0 })
   // indicator-queue runs on Cloud Run (execution_name): GCP alerting owns its liveness.
   assert.ok(!got.some((item: string) => item.startsWith('indicator-queue')))
+  // Grafana's JSONata reads anything but millisecond `Z` stamps as the date's midnight.
+  for (const row of body.rows) for (const stamp of [row.since, row.expected_by]) {
+    if (stamp != null) assert.match(stamp, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
+  }
 })
 
 test('/v1/chain/alerts: a required stage in error past its expected_by is failed only, never also overdue', async () => {

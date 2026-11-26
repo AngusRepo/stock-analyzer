@@ -32,6 +32,8 @@ type ModelPoolNewFlowWorkbenchProps = {
   selection?: ModelArtifactSelectionResponse
   pointers?: ModelChampionPointersResponse
   promotionQueue?: ModelArtifactPromotionQueueResponse
+  /** Summary half is on screen; selection/promotion-queue evidence of the same snapshot is loading. */
+  evidencePending?: boolean
   statusRows?: ModelUpgradeResearchStatusRow[]
   modelUpgradeStatusReady?: boolean
   promotionResult?: ModelArtifactPromotionControllerResponse | null
@@ -975,12 +977,13 @@ function GrafanaStat({
   )
 }
 
-function GrafanaDashboardHeader({ records, pointers, promotionCount, capturedAt, stale }: {
+function GrafanaDashboardHeader({ records, pointers, promotionCount, capturedAt, stale, evidencePending }: {
   records: GrafanaModelRecord[]
   pointers?: ModelChampionPointersResponse
   promotionCount: number
   capturedAt?: number
   stale?: boolean
+  evidencePending?: boolean
 }) {
   const health = modelPoolHealth(pointers)
   const artifacts = records.filter(row => row.artifactOk).length
@@ -995,9 +998,9 @@ function GrafanaDashboardHeader({ records, pointers, promotionCount, capturedAt,
       <div className="grid grid-cols-2 gap-3 xl:grid-cols-5">
         <GrafanaStat label="正式 ensemble" value={stale ? '快照待更新' : health.label} detail={health.blockers.length ? health.blockers.join('；') : '依正式 bundle 的必要成員與 identity 判斷'} tone={stale ? 'warn' : health.tone} />
         <GrafanaStat label="必要成員" value={`${health.ready}/${health.selected.length || '—'}`} detail={`本輪未入選 ${unselected} 組 · 正常保留於觀測池`} tone={stale ? 'neutral' : health.tone} />
-        <GrafanaStat label="個別 OOF 通過" value={`${passed}/${records.length}`} detail="個別模型證據；與 ensemble held-out 驗證分開" tone={passed === records.length ? 'ok' : 'warn'} />
-        <GrafanaStat label="最新模型 artifacts" value={`${artifacts}/${records.length}`} detail="包含入選與未入選模型" tone={artifacts === records.length ? 'ok' : 'warn'} />
-        <GrafanaStat label="當前候選待辦" value={promotionCount} detail="僅計入目前選定候選的對應 queue 項目" tone={promotionCount ? 'info' : 'ok'} />
+        <GrafanaStat label="個別 OOF 通過" value={evidencePending ? '…' : `${passed}/${records.length}`} detail="個別模型證據；與 ensemble held-out 驗證分開" tone={evidencePending ? 'neutral' : passed === records.length ? 'ok' : 'warn'} />
+        <GrafanaStat label="最新模型 artifacts" value={evidencePending ? '…' : `${artifacts}/${records.length}`} detail="包含入選與未入選模型" tone={evidencePending ? 'neutral' : artifacts === records.length ? 'ok' : 'warn'} />
+        <GrafanaStat label="當前候選待辦" value={evidencePending ? '…' : promotionCount} detail="僅計入目前選定候選的對應 queue 項目" tone={evidencePending ? 'neutral' : promotionCount ? 'info' : 'ok'} />
       </div>
     </div>
   )
@@ -1043,7 +1046,7 @@ function EnsembleContext({ pointers, overview, loading }: {
   </div>
 }
 
-function ModelObservationTable({ records, overview }: { records: GrafanaModelRecord[]; overview?: ModelPoolOverview }) {
+function ModelObservationTable({ records, overview, evidencePending }: { records: GrafanaModelRecord[]; overview?: ModelPoolOverview; evidencePending?: boolean }) {
   return <GrafanaPanel title="八模型觀測池" kicker="角色、服務與證據分開判斷">
     <p className="px-3 pt-3 text-xs text-[#a7b5c8] md:hidden">表格可左右滑動，查看 OOF 與 Live 證據。</p>
     <div className="overflow-x-auto" role="region" aria-label="八模型觀測資料" tabIndex={0}><table className="!table min-w-[680px] w-full text-left text-sm text-[#c6d2e2]">
@@ -1056,7 +1059,7 @@ function ModelObservationTable({ records, overview }: { records: GrafanaModelRec
           <th scope="row" className="p-3 text-[#eef4fb]">{record.candidate.id}</th>
           <td className="p-3">{membershipLabel(record.membership)}<div className={`mt-1 text-xs ${grafanaTextClass(record.fleetTone)}`}>{record.servingStatus}</div></td>
           <td className="p-3 tabular-nums">{coefficient == null ? '未提供' : coefficient.toFixed(6)}</td>
-          <td className={`p-3 ${grafanaTextClass(oof?.tone || 'neutral')}`}>{oof?.value || '待確認'}</td>
+          <td className={`p-3 ${grafanaTextClass(evidencePending ? 'neutral' : oof?.tone || 'neutral')}`}>{evidencePending ? '…' : oof?.value || '待確認'}</td>
           <td className="p-3">{live?.value === 'N/A' ? '待累積／尚無可用數值' : `IC ${live?.value ?? '—'}`}<div className="mt-1 text-xs text-[#a7b5c8]">{record.model?.version === record.latestRetrainArtifact?.version && record.model?.last_ic_status != null && record.model?.last_ic_sample_count != null ? `最近回報樣本 ${record.model.last_ic_sample_count}` : '同版本樣本數尚未提供'}</div></td>
         </tr>
       })}</tbody>
@@ -1416,6 +1419,7 @@ export default function ModelPoolNewFlowWorkbench({
   selection,
   pointers,
   promotionQueue,
+  evidencePending = false,
   statusRows,
   modelUpgradeStatusReady = false,
   promotionResult,
@@ -1487,14 +1491,16 @@ export default function ModelPoolNewFlowWorkbench({
         capturedAt={capturedAt}
         stale={stale}
         promotionCount={promotionCount}
+        evidencePending={evidencePending}
       />
 
       <div className="grid gap-4 bg-[#0b1118] p-4">
         <EnsembleAuthority bundle={pointers?.active8_bundle} />
-        <ModelObservationTable records={grafanaRecords} overview={currentOverview} />
-        <details className="rounded-xl border border-[#2d3a49] p-3">
-          <summary className="cursor-pointer text-sm text-[#c6d2e2]">模型卡片與完整證據</summary>
-
+        <ModelObservationTable records={grafanaRecords} overview={currentOverview} evidencePending={evidencePending} />
+        {evidencePending && <p className="text-xs text-[#a7b5c8]" role="status">模型證據（candidate selection、promotion queue）載入中；以上角色與服務狀態已是同一份快照。</p>}
+        <section className="space-y-4 rounded-xl border border-[#2d3a49] p-3">
+          <h3 className="text-sm text-[#c6d2e2]">模型卡片與完整證據</h3>
+        {evidencePending ? <p className="text-xs text-[#a7b5c8]">證據載入中…</p> : <>
         <FleetStatusStrip
           records={grafanaRecords}
           selectedModelId={selectedModelId}
@@ -1512,11 +1518,12 @@ export default function ModelPoolNewFlowWorkbench({
           selectedModelId={selectedModelId}
           onSelectModel={selectModel}
         />
-        </details>
-        <details className="rounded-xl border border-[#2d3a49] p-3">
-          <summary className="cursor-pointer text-sm text-[#c6d2e2]">歷史候選與治理 · 原始 queue {promotionQueue?.count ?? 0} 筆（非當前待辦）</summary>
-          <div className="mt-3 space-y-4"><CandidateHousekeepingPanel selection={selection} promotionQueue={promotionQueue} /><MetaBoundaryPanel /></div>
-        </details>
+        </>}
+        </section>
+        <section className="rounded-xl border border-[#2d3a49] p-3">
+          <h3 className="text-sm text-[#c6d2e2]">歷史候選與治理 · 原始 queue {promotionQueue?.count ?? 0} 筆（非當前待辦）</h3>
+          <div className="mt-3 space-y-4">{evidencePending ? <p className="text-xs text-[#a7b5c8]">證據載入中…</p> : <CandidateHousekeepingPanel selection={selection} promotionQueue={promotionQueue} />}<MetaBoundaryPanel /></div>
+        </section>
       </div>
 
       <div className="border-t border-[#263247] bg-[#071018] p-4 text-[15px] leading-6 text-[#a7b5c8]">

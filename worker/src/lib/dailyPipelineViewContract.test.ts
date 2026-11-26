@@ -112,3 +112,13 @@ test('frontend requests pipeline aggregate with cancellation and independent loa
   assert(apiClientSource.includes('signal?: AbortSignal'))
   assert(apiClientSource.includes('timeoutMs?: number'))
 })
+
+test('strategy rows carry display_name from the same active-registry read (no extra query)', () => {
+  const summaries = section(routeSource, 'async function buildDailyPipelineSummaries(', 'function compactDailyPipelineStrategySummary(')
+  const registryReads = summaries.match(/FROM strategy_spec_registry/g) ?? []
+  assert.equal(registryReads.length, 1, 'one registry read feeds both active ids and names')
+  assert(summaries.includes('SELECT strategy_id, name\n      FROM strategy_spec_registry'))
+  assert(summaries.includes('display_name: strategyDisplayNames.get(strategy_id) ?? null'))
+  const compactStrategy = section(routeSource, 'function compactDailyPipelineStrategySummary(', 'async function buildDailyPipelineViewPayload(')
+  assert(compactStrategy.includes('display_name: row.display_name ?? null'))
+})

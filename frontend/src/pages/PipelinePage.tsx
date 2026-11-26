@@ -906,8 +906,10 @@ export default function PipelinePage() {
     // Maturity is a separate evidence owner and must advance independently.
     queryFn: () => dashboardV4Api.pipelineMaturity(today) as Promise<PipelineDecisionMaturityPacket>,
     enabled: isAuthenticated && Boolean(today),
-    staleTime: 30_000,
-    refetchInterval: 60_000,
+    // The Worker shares one 5-minute copy (each rebuild ~12 s / ~1.4 MB); polling faster only
+    // re-reads that copy.
+    staleTime: 120_000,
+    refetchInterval: 300_000,
     refetchOnWindowFocus: true,
   })
 

@@ -29,8 +29,9 @@ const migration = fs.readFileSync(
 )
 
 assert(page.includes('ModelPoolNewFlowWorkbench'), 'Model Pool must render the canonical V5 cockpit')
-assert(page.includes('ModelPoolWorkbenchSnapshot'), 'Model Pool must hydrate one complete evidence snapshot')
-assert(page.includes('Promise.allSettled'), 'Model Pool evidence feeds must refresh together')
+// 2026-11-26: one verified controller observation, served as summary + evidence of the same snapshot id.
+assert(page.includes('ModelPoolWorkbenchSummaryResponse') && page.includes('evidenceQuery.data?.snapshot?.id === snapshotId'), 'Model Pool must hydrate both halves of one complete evidence snapshot')
+assert(page.includes('modelPoolApi.workbenchSummary(true)') && page.includes('modelUpgradeStatus.refetch()'), 'Model Pool evidence feeds must refresh together')
 assert(!page.includes('<PromotionQueuePanelV2'), 'Legacy per-artifact promotion queue must stay retired')
 
 assert(workbench.includes('V5 serving bundle vs latest retrain'), 'Model Pool must separate serving bundle from retrain evidence')

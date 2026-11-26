@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { authApi } from '@/lib/authApi'
 import { AUTH_TOKEN_EVENT, setToken, clearToken, getToken } from '@/lib/apiClient'
 import { useEffect } from 'react'
+import { clearCachedAuthMe, readCachedAuthMe, writeCachedAuthMe } from '@/lib/authMeCache'
 
 export function useAuth() {
   const qc = useQueryClient()
@@ -30,6 +31,7 @@ export function useAuth() {
         qc.invalidateQueries({ queryKey: ['auth', 'me'] })
         return
       }
+      clearCachedAuthMe()
       qc.setQueryData(['auth', 'me'], null)
       qc.removeQueries({ queryKey: ['auth', 'me'] })
     }
@@ -38,17 +40,32 @@ export function useAuth() {
     return () => window.removeEventListener(AUTH_TOKEN_EVENT, onTokenChange)
   }, [qc])
 
+  // Seeded from the last answer for this token (survives full page loads); see authMeCache.
+  const cachedMe = readCachedAuthMe(getToken())
   const meQuery = useQuery({
     queryKey: ['auth', 'me'],
-    queryFn: () => authApi.me(),
+    queryFn: async () => {
+      const requestToken = getToken()
+      try {
+        const user = await authApi.me()
+        writeCachedAuthMe(requestToken, user)
+        return user
+      } catch (error) {
+        clearCachedAuthMe()
+        throw error
+      }
+    },
     enabled: !!getToken() || localBypass,
     retry: false,
     staleTime: 5 * 60 * 1000,
+    initialData: cachedMe?.user,
+    initialDataUpdatedAt: cachedMe?.updatedAt,
   })
 
   const logoutMutation = useMutation({
     mutationFn: () => authApi.logout(),
     onSettled: () => {
+      clearCachedAuthMe()
       clearToken()
       qc.setQueryData(['auth', 'me'], null)
       qc.clear()

@@ -17,6 +17,7 @@ import {
   type WorkstationTone,
 } from '@/components/workstation/WorkstationChrome'
 import { apiRequest } from '@/lib/apiClient'
+import { lanePage, lanePageOfIndex } from '@/lib/todoBoardPaging'
 
 type Lane = 'todo' | 'doing' | 'ready' | 'live'
 type TodoPr = { number: number; title: string; summary: string }
@@ -132,6 +133,8 @@ function changedFields(original: TodoCard | null, fields: CardPatch): CardPatch 
 
 const inputClass = 'w-full min-w-0 rounded-lg border border-[#2b3a49] bg-[#05070c] px-2.5 py-1.5 text-sm text-slate-100 outline-none focus:border-[#d6a85f]/60'
 const labelClass = 'block space-y-1 text-[11px] text-[#9badbf]'
+// Card body preview length (display only).
+const TODO_CARD_PREVIEW_CHARS = 160
 
 function TodoCardView({
   card,
@@ -144,9 +147,7 @@ function TodoCardView({
   onEdit: (card: TodoCard) => void
   onArchive: (card: TodoCard, archived: boolean) => void
 }) {
-  const [expanded, setExpanded] = useState(false)
   const content = card.content ?? ''
-  const long = content.length > 160
   const showRelease = card.lane === 'ready' || card.lane === 'live'
 
   return (
@@ -187,15 +188,12 @@ function TodoCardView({
         {card.deadline && <WorkstationPill tone="warn">deadline {card.deadline}</WorkstationPill>}
       </div>
 
+      {/* No expand toggle (site rule): up to 160 chars shown whole; longer text is cut at 160 with
+          the full text in the title tooltip and the editor panel. */}
       {content && (
-        <div className="text-xs leading-5 text-[#a8b6c5]">
-          <p className="whitespace-pre-wrap break-words">{expanded || !long ? content : `${content.slice(0, 160)}…`}</p>
-          {long && (
-            <button type="button" onClick={() => setExpanded((value) => !value)} className="mt-1 text-[11px] text-[#f1c16f]">
-              {expanded ? '收合' : '展開全文'}
-            </button>
-          )}
-        </div>
+        <p className="whitespace-pre-wrap break-words text-xs leading-5 text-[#a8b6c5]" title={content.length > TODO_CARD_PREVIEW_CHARS ? content : undefined}>
+          {content.length > TODO_CARD_PREVIEW_CHARS ? `${content.slice(0, TODO_CARD_PREVIEW_CHARS)}…` : content}
+        </p>
       )}
 
       {card.depends_on && <p className="break-words text-[11px] text-[#70809b]">依賴：{card.depends_on}</p>}
@@ -355,6 +353,7 @@ export default function TodoBoardPage() {
     open: false, creating: false, original: null, draft: draftFromCard(null), error: null,
   })
   const [dropLane, setDropLane] = useState<Lane | null>(null)
+  const [lanePages, setLanePages] = useState<Partial<Record<Lane, number>>>({})
   const queryKey = useMemo(() => ['todo', 'cards', showArchived ? 'all' : 'active'] as const, [showArchived])
 
   const cardsQuery = useQuery({
@@ -420,6 +419,8 @@ export default function TodoBoardPage() {
     }
     const lanePositions = cards.filter((item) => item.lane === lane && item.id !== card.id).map((item) => item.position)
     const position = (lanePositions.length ? Math.max(...lanePositions) : 0) + 1
+    // The card lands at the lane end; open the page that shows it.
+    setLanePages((current) => ({ ...current, [lane]: lanePageOfIndex(lanePositions.length) }))
     patchCard.mutate({ id: card.id, fields: { lane, position } })
   }
 
@@ -466,7 +467,7 @@ export default function TodoBoardPage() {
           action={
             <div className="flex flex-wrap items-center gap-2">
               <label className="inline-flex items-center gap-1.5 rounded-full border border-[#3a3125] px-2 py-1 text-[11px] text-[#b9b1a1]">
-                <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />
+                <input type="checkbox" checked={showArchived} onChange={(e) => { setShowArchived(e.target.checked); setLanePages({}) }} />
                 顯示封存
               </label>
               <button
@@ -501,7 +502,11 @@ export default function TodoBoardPage() {
 
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
           {LANES.map((lane) => {
-            const laneCards = cards.filter((card) => card.lane === lane.id)
+            // Same order as the server (position ASC; stable sort keeps its tie order), so an
+            // optimistic move shows the card at the lane end right away.
+            const laneCards = cards.filter((card) => card.lane === lane.id).sort((a, b) => a.position - b.position)
+            const visible = lanePage(laneCards, lanePages[lane.id] ?? 0)
+            const goTo = (page: number) => setLanePages((current) => ({ ...current, [lane.id]: page }))
             return (
               <WorkstationPanel
                 key={lane.id}
@@ -520,7 +525,7 @@ export default function TodoBoardPage() {
                   {!cardsQuery.isLoading && laneCards.length === 0 && (
                     <p className="text-xs text-[#70809b]">沒有卡片，可拖曳到這裡。</p>
                   )}
-                  {laneCards.map((card) => (
+                  {visible.items.map((card) => (
                     <TodoCardView
                       key={card.id}
                       card={card}
@@ -529,6 +534,27 @@ export default function TodoBoardPage() {
                       onArchive={(target, archived) => { setBoardError(null); archiveCard.mutate({ id: target.id, archived }) }}
                     />
                   ))}
+                  {visible.pageCount > 1 && (
+                    <div className="flex items-center justify-between gap-2 pt-1 text-[11px] text-[#9badbf]">
+                      <button
+                        type="button"
+                        disabled={visible.page === 0}
+                        onClick={() => goTo(visible.page - 1)}
+                        className="rounded-md border border-[#2b3a49] px-2 py-1 text-slate-300 hover:text-[#f1c16f] disabled:opacity-40"
+                      >
+                        上一頁
+                      </button>
+                      <span className="sv-num">{visible.start + 1}–{visible.end} / {visible.total}</span>
+                      <button
+                        type="button"
+                        disabled={visible.page >= visible.pageCount - 1}
+                        onClick={() => goTo(visible.page + 1)}
+                        className="rounded-md border border-[#2b3a49] px-2 py-1 text-slate-300 hover:text-[#f1c16f] disabled:opacity-40"
+                      >
+                        下一頁
+                      </button>
+                    </div>
+                  )}
                 </div>
               </WorkstationPanel>
             )

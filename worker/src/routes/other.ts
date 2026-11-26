@@ -212,8 +212,9 @@ async function buildMarketRiskFallback(env: Bindings, reason: string) {
 import type { Bindings, Variables } from '../types'
 import { databaseForDataDomain } from '../lib/dataDomainRegistry'
 import { optionalLegacyDatabase } from '../lib/legacyDatabase'
-import { loadPitFactorFlowMap } from '../lib/pitFactorFlowMap'
-import { authMiddleware, adminMiddleware } from '../lib/auth'
+import { PIT_FACTOR_MAX_SYMBOLS, loadPitFactorFlowMap } from '../lib/pitFactorFlowMap'
+import { authMiddleware, adminMiddleware, requireValidToken } from '../lib/auth'
+import { readStaleWhileRevalidate, readThroughWorkerCache, requestWaitUntil, shouldBypassWorkerReadCache, workerReadCacheHeaders, workerReadCacheKey } from '../lib/workerReadCache'
 import { rateLimitMiddleware } from '../lib/rateLimit'
 import { withCache, TTL } from '../lib/cache'
 import { fetchAndStoreStockData } from './stocks'
@@ -1922,8 +1923,17 @@ async function loadCanonicalRegimeRiskDetail(db: D1Database) {
   }
 }
 
+// Public homepage packets. A cold rebuild of indices calls TWSE/TAIFEX plus seven market-db
+// reads (2 s+ per Grok's IAD sample), so expired copies are served at once while one background
+// refresh runs; only a copy older than the stale window is rebuilt inline. Intraday freshness:
+// indices 60 s fresh / 10 min stale; the packet carries updatedAt for display.
+const MARKET_INDICES_FRESH_SECONDS = 60
+const MARKET_INDICES_STALE_SECONDS = 600
+const MARKET_NEWS_FRESH_SECONDS = TTL.NEWS
+const MARKET_NEWS_STALE_SECONDS = 3600
+
 market.get('/indices', async (c) => {
-  const data = await withCache(c.env.KV, 'market:indices:finlab-clean:v18-futures-settlement-change', async () => {
+  const cached = await readStaleWhileRevalidate(c.env.KV, workerReadCacheKey('market:indices:finlab-clean:v18-futures-settlement-change'), async () => {
     const [canonicalTwii, finlabTwoii, finlabTxfDay, finlabTxfNight, taifexDay, taifexNight, twseOfficialTwii] = await Promise.all([
       loadCanonicalTwiiSeries(databaseForDataDomain(c.env, 'market')),
       loadFinlabSeries(databaseForDataDomain(c.env, 'market'), 'TWOII', '櫃買指數', [
@@ -2026,13 +2036,16 @@ market.get('/indices', async (c) => {
       },
       updatedAt: new Date().toISOString(),
     }
-  }, TTL.MARKET)
-  return c.json(data)
+  }, { freshSeconds: MARKET_INDICES_FRESH_SECONDS, staleSeconds: MARKET_INDICES_STALE_SECONDS, waitUntil: requestWaitUntil(c) })
+  c.header('Cache-Control', `public, max-age=30, stale-while-revalidate=${MARKET_INDICES_STALE_SECONDS}`)
+  c.header('X-SV-Cache', cached.revalidating ? `${cached.status}-stale` : cached.status)
+  c.header('X-SV-Cache-Age', String(cached.ageSeconds))
+  return c.json(cached.value)
 })
 
 market.get('/news', async (c) => {
   const limitPerSource = Math.min(parsePosInt(c.req.query('perSource'), 3), 6)
-  const data = await withCache(c.env.KV, `market:news:v6:rss-expanded:${limitPerSource}`, async () => {
+  const cached = await readStaleWhileRevalidate(c.env.KV, workerReadCacheKey(`market:news:v6:rss-expanded:${limitPerSource}`), async () => {
     const feeds = [
       { source: '經濟日報', url: 'https://money.udn.com/rssfeed/news/1001/5591' },
       { source: '經濟日報', url: 'https://money.udn.com/rssfeed/news/1001/5588' },
@@ -2103,9 +2116,11 @@ market.get('/news', async (c) => {
       })
 
     return balanced
-  }, 15 * 60)
-
-  return c.json(data)
+  }, { freshSeconds: MARKET_NEWS_FRESH_SECONDS, staleSeconds: MARKET_NEWS_STALE_SECONDS, waitUntil: requestWaitUntil(c) })
+  c.header('Cache-Control', `public, max-age=300, stale-while-revalidate=${MARKET_NEWS_STALE_SECONDS}`)
+  c.header('X-SV-Cache', cached.revalidating ? `${cached.status}-stale` : cached.status)
+  c.header('X-SV-Cache-Age', String(cached.ageSeconds))
+  return c.json(cached.value)
 })
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -2537,6 +2552,8 @@ ml.get('/predict/:stockId', async (c) => {
 
 // GET /api/market/risk — 取最新大盤風險（快取30分鐘）
 market.get('/risk', async (c) => {
+  // Public; KV already holds the packet (invalidated by marketRiskMaterialization on a new row).
+  c.header('Cache-Control', 'public, max-age=60, stale-while-revalidate=300')
   const cacheKey = 'market:risk:latest:v21-runtime-level'
   const cached = await c.env.KV.get(cacheKey)
   if (cached) return c.json(JSON.parse(cached))
@@ -3024,9 +3041,25 @@ notifications.post('/read-all', async (c) => {
 // ════════════════════════════════════════════════════════════════════════════
 export const system = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
+// Ops freshness counters are not public: no page reaches this without a login (only /obs uses
+// it, as an admin), so unauthenticated callers get 401 instead of DB row counts. The packet is
+// shared across admins and cached for 2 minutes; /obs polls it every minute.
 system.get('/status', async (c) => {
-  const marketDb = databaseForDataDomain(c.env, 'market')
-  const coreDb = databaseForDataDomain(c.env, 'core')
+  const authError = await requireValidToken(c)
+  if (authError) return authError
+  const ttlSeconds = 120
+  const cached = await readThroughWorkerCache(c.env.KV, workerReadCacheKey('system:status:v1'), () => buildSystemStatusPacket(c.env), {
+    ttlSeconds,
+    bypass: shouldBypassWorkerReadCache(c.req.query('fresh')),
+    waitUntil: requestWaitUntil(c),
+  })
+  for (const [name, value] of Object.entries(workerReadCacheHeaders(cached, ttlSeconds))) c.header(name, value)
+  return c.json(cached.value)
+})
+
+async function buildSystemStatusPacket(env: Bindings) {
+  const marketDb = databaseForDataDomain(env, 'market')
+  const coreDb = databaseForDataDomain(env, 'core')
 
   // 查各資料表最新一筆的日期
   const [
@@ -3047,12 +3080,14 @@ system.get('/status', async (c) => {
     `).first<any>(),
     marketDb.prepare('SELECT MAX(date) as d FROM chip_data').first<any>(),
     marketDb.prepare('SELECT MAX(published_at) as d, COUNT(*) as cnt FROM news').first<any>(),
-    databaseForDataDomain(c.env, 'learning').prepare('SELECT MAX(generated_at) as d FROM predictions').first<any>(),
+    // MAX(generated_at) walked idx_pred_stock_generated end to end (~392K learning rows per call,
+    // 7.06M rows on 2026-11-25); prediction_date leads idx_pred_date_model_stock, so MAX is one seek.
+    databaseForDataDomain(env, 'learning').prepare('SELECT MAX(prediction_date) as d FROM predictions').first<any>(),
     coreDb.prepare('SELECT date, risk_level, risk_score, calculated_at FROM market_risk ORDER BY date DESC LIMIT 1').first<any>(),
     coreDb.prepare('SELECT COUNT(*) as cnt FROM stocks WHERE in_current_watchlist=1').first<any>(),
     marketDb.prepare('SELECT COUNT(*) as cnt FROM news').first<any>(),
     // Size of the frozen legacy DB while it is still bound; null after retirement.
-    (optionalLegacyDatabase(c.env)?.prepare("SELECT SUM(pgsize * ncell) as sz FROM dbstat").first<any>() ?? Promise.resolve(null)).catch(() => null),
+    (optionalLegacyDatabase(env)?.prepare("SELECT SUM(pgsize * ncell) as sz FROM dbstat").first<any>() ?? Promise.resolve(null)).catch(() => null),
   ])
 
   // 判斷各資料是否為今日（台灣交易日）
@@ -3080,7 +3115,7 @@ system.get('/status', async (c) => {
   const allOk    = priceOk && chipOk
   const hasWarn  = !priceOk || !chipOk
 
-  return c.json({
+  return {
     overall: allOk ? 'ok' : hasWarn ? 'warning' : 'stale',
     updatedAt: new Date().toISOString(),
     data: {
@@ -3115,8 +3150,8 @@ system.get('/status', async (c) => {
       activeStocks: totalStocks?.cnt ?? 0,
       dbSizeBytes:  dbSize?.sz ?? null,
     },
-  })
-})
+  }
+}
 
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -3454,17 +3489,29 @@ async function buildDailyPipelineSummaries(
   const candidateCount = hasCanonicalRawMatrix
     ? Number(referenceCount?.candidate_count ?? 0)
     : new Set((routerRows ?? []).map((row: any) => String(row.symbol ?? '').trim()).filter(Boolean)).size
+  // name rides on the same active-registry read (display label for the flow-tracking table).
   const registryActiveRows = await learningDb.prepare(`
-    SELECT strategy_id
+    SELECT strategy_id, name
       FROM strategy_spec_registry
      WHERE status = 'active'
-     ORDER BY strategy_id
+     ORDER BY strategy_id, updated_at DESC
   `).all<any>().catch(() => ({ results: [] as any[] }))
   const registryActiveIds = new Set(
     (registryActiveRows.results ?? [])
       .map((row: any) => String(row.strategy_id ?? '').trim())
       .filter(Boolean),
   )
+  const strategyDisplayNames = new Map<string, string>()
+  for (const spec of DEFAULT_STRATEGY_SPECS) if (spec.name) strategyDisplayNames.set(spec.id, spec.name)
+  // Registry rows win over the built-in defaults; the newest active version of an id comes first.
+  const registryNamed = new Set<string>()
+  for (const row of registryActiveRows.results ?? []) {
+    const id = String(row.strategy_id ?? '').trim()
+    const name = String(row.name ?? '').trim()
+    if (!id || !name || registryNamed.has(id)) continue
+    registryNamed.add(id)
+    strategyDisplayNames.set(id, name)
+  }
   const defaultActiveIds = DEFAULT_STRATEGY_SPECS
     .filter((spec) => spec.status === 'active')
     .map((spec) => spec.id)
@@ -3481,6 +3528,7 @@ async function buildDailyPipelineSummaries(
       const symbols = strategySymbols.get(strategy_id) ?? new Set<string>()
       return {
       strategy_id,
+      display_name: strategyDisplayNames.get(strategy_id) ?? null,
       selected_count: symbols.size,
       symbols: [...symbols].sort(),
       status: activeStrategyIds.has(strategy_id) ? 'active' : 'observed',
@@ -3605,6 +3653,7 @@ function compactDailyPipelineStrategySummary(summary: Record<string, any> | null
   const strategies = rawStrategies
     .map((row: Record<string, any>) => ({
       strategy_id: row.strategy_id,
+      display_name: row.display_name ?? null,
       selected_count: row.selected_count,
       status: row.status,
       source: row.source,
@@ -4524,16 +4573,29 @@ recommendations.get('/factor-flow-map', async (c) => {
     .map((symbol) => symbol.trim())
     .filter(Boolean)
   try {
-    const payload = await loadPitFactorFlowMap(c.env, {
+    const query = {
       requestedDate,
       days: Math.min(parsePosInt(c.req.query('days'), 10), 60),
       symbols,
       includeMovers: Math.max(0, Math.min(Number(c.req.query('include_movers') ?? 0) || 0, 12)),
       layer: requestedLayer as 'industry_theme' | 'subindustry',
-      parentLayer: parentLayer === 'industry_theme' ? 'industry_theme' : undefined,
+      parentLayer: parentLayer === 'industry_theme' ? 'industry_theme' as const : undefined,
       parent: parent || undefined,
+    }
+    // Diagnostic-only chart over completed screener runs; the inputs change at most once per
+    // evening chain, so a 10-minute shared copy is fresh enough and avoids re-reading ops/market.
+    const ttlSeconds = 600
+    const cached = await readThroughWorkerCache(c.env.KV, workerReadCacheKey('recommendations:factor-flow-map:v1', {
+      // Request order matters: the loader keeps the first PIT_FACTOR_MAX_SYMBOLS distinct symbols.
+      date: query.requestedDate, days: query.days, symbols: [...new Set(query.symbols)].slice(0, PIT_FACTOR_MAX_SYMBOLS).join(','),
+      movers: query.includeMovers, layer: query.layer, parent: query.parent,
+    }), () => loadPitFactorFlowMap(c.env, query), {
+      ttlSeconds,
+      bypass: shouldBypassWorkerReadCache(c.req.query('fresh')),
+      waitUntil: requestWaitUntil(c),
     })
-    return c.json(payload)
+    for (const [name, value] of Object.entries(workerReadCacheHeaders(cached, ttlSeconds))) c.header(name, value)
+    return c.json(cached.value)
   } catch (error) {
     console.warn('[recommendations/factor-flow-map] unavailable:', error)
     return c.json({

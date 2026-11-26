@@ -8,6 +8,7 @@ import { readMarketRegimeState } from '../lib/marketRegimeState'
 import { readV41DataRuntimeStatus } from '../lib/v41DataRuntime'
 import { databaseForDataDomain, databaseForTable } from '../lib/dataDomainRegistry'
 import { paperDomainDatabase } from '../lib/paperDomainDatabase'
+import { readThroughWorkerCache, requestWaitUntil, shouldBypassWorkerReadCache, workerReadCacheHeaders, workerReadCacheKey } from '../lib/workerReadCache'
 
 export const dashboardReadRoutes = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
@@ -195,9 +196,23 @@ dashboardReadRoutes.get('/api/dashboard/v4/pipeline/maturity', async (c) => {
   if (authError) return authError
 
   const date = c.req.query('date') ?? twToday()
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return c.json({ error: 'invalid_date' }, 400)
   const { buildPipelineDecisionMaturityPacket } = await import('../lib/pipelineDecisionMaturity')
+  // ~12 s and ~1.4 MB per build (Grok 11/25; ~20 learning/market reads, one up to 4.2 s).
+  // /pipeline polled it every minute per open tab. Maturity evidence moves with the evening
+  // chain and label jobs, so one shared 5-minute copy serves every viewer; ?fresh=1 rebuilds.
+  const ttlSeconds = 300
+  const cached = await readThroughWorkerCache(c.env.KV, workerReadCacheKey('pipeline:maturity:v1', { date }),
+    () => buildPipelineDecisionMaturityPacket(c.env, date), {
+      ttlSeconds,
+      bypass: shouldBypassWorkerReadCache(c.req.query('fresh')),
+      // A packet built while a sub-read failed is served once, never shared for 5 minutes.
+      cacheable: (packet) => !packet.source_query_error_count,
+      waitUntil: requestWaitUntil(c),
+    })
+  for (const [name, value] of Object.entries(workerReadCacheHeaders(cached, ttlSeconds))) c.header(name, value)
   c.header('Cache-Control', 'no-store, max-age=0')
-  return c.json(await buildPipelineDecisionMaturityPacket(c.env, date))
+  return c.json(cached.value)
 })
 
 dashboardReadRoutes.get('/api/backtest/latest', async (c) => {
@@ -294,11 +309,54 @@ dashboardReadRoutes.get('/api/model-pool/status', async (c) => {
   }
 })
 
+// view=summary (first paint) | evidence&snapshot=<id> (same observation) | full (legacy shape,
+// default: unchanged direct controller read, never cached, for the pre-split frontend).
+// Summary: ?fresh=1 starts a new observation (Refresh button, after a promotion);
+// ?revalidate=<stale id> is the page's background refresh of a stale snapshot (accepts a newer
+// fresh snapshot or a peer observation in this isolate before starting its own).
 dashboardReadRoutes.get('/api/model-pool/workbench', async (c) => {
   const authError = await requireValidToken(c)
   if (authError) return authError
+  c.header('Cache-Control', 'private, no-store')
+  const view = c.req.query('view') ?? 'full'
+  if (!['summary', 'evidence', 'full'].includes(view)) return c.json({ error: 'invalid_view' }, 400)
+  if (view === 'full') {
+    try {
+      return c.json(await controllerJson<any>(c.env, '/model_pool/workbench', { timeoutMs: 60_000 }))
+    } catch (e: any) {
+      return c.json({ status: 'error', error: e?.message ?? String(e) }, 502)
+    }
+  }
+  const snapshot = await import('../lib/modelPoolWorkbenchSnapshot')
   try {
-    return c.json(await controllerJson<any>(c.env, '/model_pool/workbench', { timeoutMs: 60_000 }))
+    if (view === 'evidence') {
+      const id = c.req.query('snapshot') ?? ''
+      const found = await snapshot.loadModelPoolWorkbenchSnapshotById(c.env.KV, id)
+      // The summary's snapshot expired or was replaced: the page re-reads the summary.
+      if (!found) return c.json({ status: 'error', error: 'model_pool_snapshot_expired', snapshot_id: id }, 409)
+      return c.json({ snapshot: found.meta, ...snapshot.modelPoolWorkbenchEvidence(found.payload) })
+    }
+    const revalidateParam = c.req.query('revalidate') ?? ''
+    const revalidate = /^[a-f0-9]{24}$/.test(revalidateParam) ? revalidateParam : null
+    const loaded = await snapshot.loadModelPoolWorkbenchSnapshot(
+      c.env.KV,
+      () => controllerJson<any>(c.env, '/model_pool/workbench', { timeoutMs: 120_000 }),
+      {
+        mode: shouldBypassWorkerReadCache(c.req.query('fresh')) ? 'fresh' : revalidate ? 'revalidate' : 'cached',
+        staleId: revalidate,
+        waitUntil: requestWaitUntil(c),
+      },
+    )
+    c.header('X-SV-Cache', loaded.meta.cache)
+    c.header('X-SV-Cache-Age', String(loaded.meta.age_seconds))
+    // A degraded observation is not stored, so its evidence half cannot be read by id later:
+    // it travels inline with this summary.
+    const evidence = loaded.meta.degraded ? snapshot.modelPoolWorkbenchEvidence(loaded.payload) : null
+    return c.json({
+      snapshot: loaded.meta,
+      ...snapshot.modelPoolWorkbenchSummary(loaded.payload),
+      ...(evidence ? { selection: evidence.selection, promotion_queue: evidence.promotion_queue } : {}),
+    })
   } catch (e: any) {
     return c.json({ status: 'error', error: e?.message ?? String(e) }, 502)
   }

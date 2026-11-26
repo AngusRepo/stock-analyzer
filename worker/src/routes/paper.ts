@@ -69,19 +69,14 @@ import { executeContinuousPaperBatch, isPaperContinuousSession } from '../lib/pa
 import { getRiskConfig } from '../lib/riskConfig'
 import { validateOrder } from '../lib/validateOrder'
 import { loadAverageMarketVolumeBySymbols, loadPreviousMarketCloseBySymbols } from '../lib/stockIdentityMarketBridge'
+import { buildPaperGateCalibration } from '../lib/paperGateCalibration'
+import { recordedClosure } from '../lib/twRecordedClosure'
+import { twDaysAgo, twToday } from '../lib/dateUtils'
+import { PAPER_ADJUSTED_BENCHMARK_SYMBOLS, PAPER_BENCHMARK_PRICE_BASIS, PAPER_EXTRA_BENCHMARK_SYMBOLS, loadPaperEtfBenchmarks } from '../lib/paperEtfBenchmarks'
 
 const paper = new Hono<{ Bindings: Bindings; Variables: Variables }>()
 
 const ACCOUNT_ID = 1
-const PAPER_EXTRA_BENCHMARK_SYMBOLS = ['00981A', '00631L', '00403A'] as const
-
-type BenchmarkPriceMap = Record<string, Record<string, number>>
-
-function chunkArray<T>(items: T[], size: number): T[][] {
-  const chunks: T[][] = []
-  for (let i = 0; i < items.length; i += size) chunks.push(items.slice(i, i + size))
-  return chunks
-}
 
 function finiteNumber(value: unknown): number | null {
   const n = typeof value === 'number' ? value : Number(value)
@@ -351,68 +346,6 @@ async function loadPendingBuyCardChipContext(
     }
   }
   return { institutionalRawBySymbol, brokerTopFlowsBySymbol }
-}
-
-async function loadPaperEtfBenchmarks(
-  coreDb: D1Database,
-  marketDb: D1Database,
-  dates: string[],
-): Promise<BenchmarkPriceMap> {
-  const cleanDates = Array.from(new Set(dates.filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date)))).sort()
-  const out: BenchmarkPriceMap = {}
-  if (!cleanDates.length) return out
-
-  const symbolValues = PAPER_EXTRA_BENCHMARK_SYMBOLS.map(() => '?').join(',')
-  const identities = await coreDb.prepare(`
-    SELECT id, symbol
-      FROM stocks
-     WHERE symbol IN (${symbolValues})
-  `).bind(...PAPER_EXTRA_BENCHMARK_SYMBOLS).all<{ id: number; symbol: string }>()
-  const symbolByStockId = new Map<number, string>()
-  for (const row of identities.results ?? []) {
-    const stockId = Number(row.id)
-    if (Number.isInteger(stockId) && stockId > 0) symbolByStockId.set(stockId, String(row.symbol))
-  }
-  const stockIds = Array.from(symbolByStockId.keys())
-  if (!stockIds.length) return out
-
-  // D1 permits at most 100 bound parameters. 90 dates + 3 benchmark ids stays below it.
-  for (const dateChunk of chunkArray(cleanDates, 90)) {
-    const dateValues = dateChunk.map(() => '(?)').join(',')
-    const stockIdValues = stockIds.map(() => '?').join(',')
-    const rows = await marketDb.prepare(`
-      WITH target_dates(date) AS (VALUES ${dateValues})
-      SELECT d.date AS snapshot_date,
-             sp.stock_id,
-             sp.close
-        FROM target_dates d
-        JOIN stock_prices sp
-          ON sp.stock_id IN (${stockIdValues})
-         AND sp.date = (
-           SELECT MAX(sp2.date)
-             FROM stock_prices sp2
-            WHERE sp2.stock_id = sp.stock_id
-              AND sp2.date <= d.date
-              AND sp2.close IS NOT NULL
-         )
-       WHERE sp.close IS NOT NULL
-       ORDER BY d.date ASC, sp.stock_id ASC
-    `).bind(...dateChunk, ...stockIds).all<{
-      snapshot_date: string
-      stock_id: number
-      close: number | null
-    }>()
-
-    for (const row of rows.results ?? []) {
-      const close = Number(row.close)
-      const symbol = symbolByStockId.get(Number(row.stock_id))
-      if (!symbol || !Number.isFinite(close) || close <= 0) continue
-      out[row.snapshot_date] = out[row.snapshot_date] ?? {}
-      out[row.snapshot_date][symbol] = close
-    }
-  }
-
-  return out
 }
 
 async function resolveManualExecutablePrice(
@@ -1050,10 +983,14 @@ paper.get('/pnl', async (c) => {
     'SELECT date, total_value, pnl, pnl_pct, benchmark_value, twii_value, max_drawdown_to_date, sharpe_30d, sortino_30d, calmar, cagr FROM paper_daily_snapshots WHERE account_id=? ORDER BY date ASC'
   ).bind(ACCOUNT_ID).all<any>()
   const snapshotRows = snapshots ?? []
+  const snapshotDates = snapshotRows.map((row) => String(row.date ?? '').slice(0, 10))
+  // Same valuation session as the row's 0050 benchmark_value and twii_value.
   const etfBenchmarks = await loadPaperEtfBenchmarks(
     databaseForDataDomain(c.env, 'core'),
     databaseForDataDomain(c.env, 'market'),
-    snapshotRows.map((row) => String(row.date ?? '').slice(0, 10)),
+    snapshotDates,
+    PAPER_ADJUSTED_BENCHMARK_SYMBOLS,
+    c.env.KV,
   )
 
   return c.json({
@@ -1061,6 +998,8 @@ paper.get('/pnl', async (c) => {
     initial_cash: acc.initial_cash,
     current_cash: Math.round(acc.cash),
     benchmark_symbols: PAPER_EXTRA_BENCHMARK_SYMBOLS,
+    // etf_benchmarks[*] (including '0050') are adj_close marks; benchmark_value/twii_value are raw.
+    benchmark_price_basis: PAPER_BENCHMARK_PRICE_BASIS,
     snapshots: snapshotRows.map((row) => ({
       ...row,
       etf_benchmarks: etfBenchmarks[String(row.date ?? '').slice(0, 10)] ?? {},
@@ -1306,6 +1245,10 @@ paper.get('/pending-buys', async (c) => {
     return new Map()
   })
   const displayContext = await loadPendingDisplayContext(c.env, snapshot.date, pendingBuys)
+  // Lets /bot tell a closed day apart before the open and after the close too. Same cache-only
+  // closure reader as the premarket display (weekend, holiday:YYYY-MM-DD, recorded TWSE closure);
+  // null when that lookup itself failed.
+  const tradingDay = await recordedClosure(c.env.KV, twToday).then((closed) => !closed, () => null)
   const pendingBuysForResponse = pendingBuys.map((item) => ({
     ...displayContext.get(item.symbol),
     ...removeLegacyPendingBuyScoreFields(item),
@@ -1316,6 +1259,8 @@ paper.get('/pending-buys', async (c) => {
   return c.json({
     requested_date: snapshot.requested_date,
     date: snapshot.date,
+    session_date: twToday,
+    trading_day: tradingDay,
     is_stale: snapshot.is_stale,
     resolved_from: snapshot.resolved_from,
     source: snapshot.source,
@@ -1346,45 +1291,17 @@ paper.get('/execution-events', async (c) => {
 paper.get('/gate-calibration', async (c) => {
   const rawDays = Number.parseInt(c.req.query('days') ?? '7', 10)
   const days = Math.max(1, Math.min(Number.isFinite(rawDays) ? rawDays : 7, 60))
-  const sinceModifier = `-${days} days`
-
-  const { results } = await paperDomainDatabase(c.env).prepare(`
-    SELECT
-      status,
-      reason,
-      source,
-      COUNT(*) AS count,
-      MAX(created_at) AS last_seen
-    FROM paper_execution_events
-    WHERE account_id=?
-      AND created_at >= datetime('now', ?)
-    GROUP BY status, reason, source
-    ORDER BY count DESC, last_seen DESC
-  `).bind(ACCOUNT_ID, sinceModifier).all<any>().catch(() => ({ results: [] as any[] }))
-
-  const rows = (results ?? []).map((row: any) => ({
-    status: row.status ?? 'unknown',
-    reason: row.reason ?? 'unknown',
-    source: row.source ?? null,
-    count: Number(row.count ?? 0),
-    last_seen: row.last_seen ?? null,
-  }))
-  const countByStatus = rows.reduce<Record<string, number>>((acc, row) => {
-    acc[row.status] = (acc[row.status] ?? 0) + row.count
-    return acc
-  }, {})
-  const totalEvents = rows.reduce((sum, row) => sum + row.count, 0)
-
-  return c.json({
-    status: 'success',
-    days,
-    total_events: totalEvents,
-    filled_events: countByStatus.filled ?? 0,
-    deferred_events: countByStatus.deferred ?? 0,
-    skipped_events: countByStatus.skipped ?? 0,
-    cancelled_events: countByStatus.cancelled ?? 0,
-    rows,
-  })
+  try {
+    return c.json(await buildPaperGateCalibration(paperDomainDatabase(c.env), {
+      accountId: ACCOUNT_ID,
+      days,
+      windowStart: twDaysAgo(days - 1),
+      windowEnd: twToday(),
+    }))
+  } catch (error) {
+    console.warn('[paper/gate-calibration] read failed:', error)
+    return c.json({ status: 'error', error: 'gate_calibration_unavailable' }, 503)
+  }
 })
 
 // POST /api/paper/buy — manual paper buy.

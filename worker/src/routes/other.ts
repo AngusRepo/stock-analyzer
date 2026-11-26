@@ -3897,11 +3897,15 @@ function mergeEmergingBrokerWatchPoints(points: unknown, evidence: Record<string
   return Array.from(new Set(filtered))
 }
 
-// GET /api/recommendations/daily?date=YYYY-MM-DD
+// The full view of one day exceeds the Worker's 128 MB, so it is served only when asked for by name.
+export function resolveDailyRecommendationView(requestedView: string | undefined): 'card' | 'full' | 'pipeline' {
+  return requestedView === 'full' || requestedView === 'pipeline' ? requestedView : 'card'
+}
+
+// GET /api/recommendations/daily?date=YYYY-MM-DD[&view=card|full|pipeline]（預設 card）
 // 不帶 date → 先查今天，沒資料則查上一個交易日（D1 最新有推薦的日期）
 recommendations.get('/daily', async (c) => {
-  const requestedView = c.req.query('view')
-  const view = requestedView === 'card' || requestedView === 'pipeline' ? requestedView : 'full'
+  const view = resolveDailyRecommendationView(c.req.query('view'))
   let date = c.req.query('date')
   const requestedDate = date
   let resolvedFrom: 'requested' | 'today' | 'fallback_prev' = date ? 'requested' : 'today'

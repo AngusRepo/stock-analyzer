@@ -443,6 +443,8 @@ type BrokerFlowRankRow = {
   net_shares?: number | string | null
 }
 
+// Recognised alpha model names across both published roster generations (legacy eight and TimeXer). It is
+// not the roster: how many models a date expects comes from the API (model_order / expected_models).
 const DIRECT_ALPHA_VOTE_MODEL_NAMES = [
   'LightGBM',
   'XGBoost',
@@ -450,9 +452,11 @@ const DIRECT_ALPHA_VOTE_MODEL_NAMES = [
   'TabM',
   'GNN',
   'DLinear',
+  'TimeXer',
   'PatchTST',
   'iTransformer',
 ] as const
+const ROSTER_NOT_PROVIDED = '未提供'
 
 const TIMESFM_SIDECAR_MODEL_NAMES = ['TimesFM'] as const
 
@@ -462,7 +466,6 @@ const ALPHA_PREDICTION_MODEL_NAMES = [
 ] as const
 
 const DIRECT_ALPHA_VOTE_MODEL_SET = new Set<string>(DIRECT_ALPHA_VOTE_MODEL_NAMES)
-const DIRECT_ALPHA_VOTE_MODEL_LABEL = DIRECT_ALPHA_VOTE_MODEL_NAMES.join(' / ')
 const TIMESFM_SIDECAR_LABEL = 'TimesFM L2 sidecar'
 
 function normalizeModelName(raw: unknown): string {
@@ -479,6 +482,7 @@ function normalizeModelName(raw: unknown): string {
     gnn: 'GNN',
     graphnn: 'GNN',
     dlinear: 'DLinear',
+    timexer: 'TimeXer',
     patchtst: 'PatchTST',
     itransformer: 'iTransformer',
     timesfm: 'TimesFM',
@@ -488,6 +492,22 @@ function normalizeModelName(raw: unknown): string {
 
 function isAlphaPredictionModelName(raw: unknown): boolean {
   return DIRECT_ALPHA_VOTE_MODEL_SET.has(normalizeModelName(raw))
+}
+
+/** The roster the prediction itself declares (same fields the Worker reads); null when the API gives none.
+ *  Display only: an empty or unrecognised model_order falls back to active_model_contract, where the Worker throws. */
+function forecastModelRoster(forecast: any): string[] | null {
+  for (const declared of [forecast?.ensemble_v2?.model_order, forecast?.active_model_contract]) {
+    if (!Array.isArray(declared)) continue
+    const roster = [...new Set(declared.map(normalizeModelName).filter(isAlphaPredictionModelName))]
+    if (roster.length) return roster
+  }
+  return null
+}
+
+// Same filter as the Worker: a declared roster owns which names count; without one, any recognised name does.
+function rosterModelFilter(roster: string[] | null): (raw: unknown) => boolean {
+  return roster ? (raw) => roster.includes(normalizeModelName(raw)) : isAlphaPredictionModelName
 }
 
 function fmtNumber(value: number | string | null | undefined, decimals = 1): string {
@@ -755,8 +775,8 @@ function mlStackEvidenceFromRec(rec: any): { coarse: Layer2CoarseMlSummary | nul
           schema_version: formal.schema_version ?? 'layer3_8ml_formal_summary_v1',
           decision_policy: formal.decision_policy ?? 'eight_ml_formal_family_evidence_not_topk',
           capacity_policy: formal.capacity_policy ?? 'evidence_only_no_minimum_fill',
-          expected_models: Array.isArray(formal.expected_models) ? formal.expected_models.map(String) : ['LightGBM', 'XGBoost', 'ExtraTrees', 'TabM', 'GNN', 'DLinear', 'PatchTST', 'iTransformer'],
-          expected_model_count: formal.expected_model_count ?? 8,
+          expected_models: Array.isArray(formal.expected_models) ? formal.expected_models.map(String) : [],
+          expected_model_count: formal.expected_model_count ?? (Array.isArray(formal.expected_models) ? formal.expected_models.length : null),
           decision: formal.decision ?? null,
           reason_code: formal.reason_code ?? null,
           formal_family_score: formal.formal_family_score ?? formal.score_after ?? formal.family_score ?? null,
@@ -1095,7 +1115,15 @@ function expectsFormalMlVote(rec: any): boolean {
 function mlVoteSummaryFromRec(rec: any): MlVoteSummary | null {
   if (!expectsFormalMlVote(rec)) return null
   const persisted = parseObject(rec.ml_vote_summary)
-  if (persisted && Number(persisted.total ?? 0) <= DIRECT_ALPHA_VOTE_MODEL_NAMES.length) {
+  const forecast = parseForecastData(rec.prediction_forecast_data)
+  // Without a declared roster the denominator is unknown: no total and no missing count are shown.
+  const roster = forecastModelRoster(forecast)
+  // A persisted denominator above the declared roster (or, without one, above every recognised alpha name)
+  // counted non-alpha models (StackingRank); so is one below its own reported count.
+  const totalBound = roster?.length ?? DIRECT_ALPHA_VOTE_MODEL_NAMES.length
+  const persistedTotal = Number(persisted?.total)
+  if (persisted && (persisted.total == null
+    || (persistedTotal <= totalBound && Number(persisted.reported ?? 0) <= persistedTotal))) {
     const persistedCoreFamilyVote = parseObject(persisted.coreFamilyVote ?? persisted.core_family_vote)
     const reported = Number(persisted.reported ?? 0)
     const evidence = Number(persisted.bullish ?? 0) + Number(persisted.bearish ?? 0) + Number(persisted.flat ?? 0)
@@ -1107,9 +1135,9 @@ function mlVoteSummaryFromRec(rec: any): MlVoteSummary | null {
       }
     }
   }
-  const forecast = parseForecastData(rec.prediction_forecast_data)
+  const inRoster = rosterModelFilter(roster)
   const models = Array.isArray(forecast?.models)
-    ? forecast.models.filter((model: any) => isAlphaPredictionModelName(model?.name ?? model?.model_name ?? model))
+    ? forecast.models.filter((model: any) => inRoster(model?.name ?? model?.model_name ?? model))
     : []
   const weights = forecast?.ensemble_v2?.weights && typeof forecast.ensemble_v2.weights === 'object'
     ? forecast.ensemble_v2.weights
@@ -1121,9 +1149,10 @@ function mlVoteSummaryFromRec(rec: any): MlVoteSummary | null {
     ? forecast.ensemble_v2.rank_signal_thresholds
     : null
   const coreFamilyVote = parseObject(forecast?.core_family_vote ?? forecast?.coreFamilyVote ?? forecast?.ensemble_v2?.family_vote)
-  const trackedWeightKeys = Object.keys(weights).filter(isAlphaPredictionModelName)
-  const total = Math.max(DIRECT_ALPHA_VOTE_MODEL_NAMES.length, trackedWeightKeys.length, models.length)
-  if (!forecast || total <= 0) return null
+  const trackedWeightKeys = Object.keys(weights).filter(inRoster)
+  if (!forecast) return null
+  const total = roster ? Math.max(roster.length, trackedWeightKeys.length, models.length) : undefined
+  if (total === undefined && models.length === 0) return null
   const bullish = models.filter((model: any) => String(model?.direction ?? '').toLowerCase().includes('up')).length
   const bearish = models.filter((model: any) => String(model?.direction ?? '').toLowerCase().includes('down')).length
   return {
@@ -1131,7 +1160,7 @@ function mlVoteSummaryFromRec(rec: any): MlVoteSummary | null {
     bearish,
     flat: Math.max(0, models.length - bullish - bearish),
     reported: models.length,
-    missing: Math.max(0, total - models.length),
+    missing: total === undefined ? undefined : Math.max(0, total - models.length),
     total,
     forecastPct: normalizeForecastPctForUi(forecast.ensemble_v2?.forecast_pct),
     icWeightScope: forecast.ensemble_v2?.ic_weight_scope ?? forecast.stock_meta?.market_segment ?? null,
@@ -1143,7 +1172,7 @@ function mlVoteSummaryFromRec(rec: any): MlVoteSummary | null {
         }
       : undefined,
     zeroWeightModels: Object.entries(weights)
-      .filter(([name, value]) => isAlphaPredictionModelName(name) && Number(value) <= 0)
+      .filter(([name, value]) => inRoster(name) && Number(value) <= 0)
       .map(([name]) => name),
     validationBlockedModels: Object.entries(diagnostics)
       .filter(([, detail]: [string, any]) => String(detail?.validation_status ?? '').toUpperCase() === 'FAIL')
@@ -1175,21 +1204,23 @@ function mlDiagnosticsFromRec(rec: any): MlDiagnosticsSummary | null {
   const dispersion = forecast?.dispersion_diagnostics && typeof forecast.dispersion_diagnostics === 'object'
     ? forecast.dispersion_diagnostics
     : {}
+  const roster = forecastModelRoster(forecast)
+  const inRoster = rosterModelFilter(roster)
   const zeroWeightModels = Array.isArray(dispersion.zero_weight_models)
-    ? dispersion.zero_weight_models.filter(isAlphaPredictionModelName)
+    ? dispersion.zero_weight_models.filter(inRoster)
     : Object.entries(weights)
-      .filter(([name, value]) => isAlphaPredictionModelName(name) && Number(value) <= 0)
+      .filter(([name, value]) => inRoster(name) && Number(value) <= 0)
       .map(([name]) => name)
 
   return {
-    totalAlphaModels: DIRECT_ALPHA_VOTE_MODEL_NAMES.length,
-    activeWeightCount: Object.entries(weights).filter(([name, value]) => isAlphaPredictionModelName(name) && Number(value) > 0).length,
+    totalAlphaModels: roster?.length,
+    activeWeightCount: Object.entries(weights).filter(([name, value]) => inRoster(name) && Number(value) > 0).length,
     zeroWeightModels,
-    contributingModels: Array.isArray(ev2.contributing_models) ? ev2.contributing_models.filter(isAlphaPredictionModelName) : [],
+    contributingModels: Array.isArray(ev2.contributing_models) ? ev2.contributing_models.filter(inRoster) : [],
     validationBlockedModels: Object.entries(diagnostics)
       .filter(([, detail]: [string, any]) => String(detail?.validation_status ?? '').toUpperCase() === 'FAIL')
       .map(([name]) => name)
-      .filter(isAlphaPredictionModelName),
+      .filter(inRoster),
     icWeightScope: ev2.ic_weight_scope ?? forecast.stock_meta?.market_segment ?? null,
     forecastCalibration: {
       method: ev2.forecast_calibration_method ?? null,
@@ -1269,10 +1300,21 @@ function formatMlVoteSummaryReadable(summary: MlVoteSummary | null): string | nu
   return `${bullish}/${total}原始看漲、${bearish}/${total}原始看跌${flatText}${missingText}${forecast}${weightText}${zeroWeightText}`
 }
 
+// Votes reported under a prediction that declares no roster: counts only, the denominator is not provided.
+function formatMlVoteWithoutRoster(summary: MlVoteSummary): string | null {
+  if (summary.total != null) return null
+  const bullish = Number(summary.bullish ?? 0)
+  const bearish = Number(summary.bearish ?? 0)
+  const flat = Number(summary.flat ?? 0)
+  if (bullish + bearish + flat <= 0) return null
+  const flatText = flat > 0 ? `、${flat}中性` : ''
+  return `${bullish}原始看漲、${bearish}原始看跌${flatText}（模型總數${ROSTER_NOT_PROVIDED}）`
+}
+
 function formatMlVoteSummaryForBadge(summary: MlVoteSummary | null): string | null {
   if (!summary) return null
   const total = Number(summary.total ?? 0)
-  if (!Number.isFinite(total) || total <= 0) return null
+  if (!Number.isFinite(total) || total <= 0) return formatMlVoteWithoutRoster(summary)
   const familyText = coreFamilyVoteBadgeText(summary)
   if (familyText) return familyText
   const bullish = Number(summary.bullish ?? 0)
@@ -1298,7 +1340,7 @@ function formatMlVoteSummaryForBadge(summary: MlVoteSummary | null): string | nu
 
 function MlDiagnosticsStrip({ diagnostics }: { diagnostics: MlDiagnosticsSummary | null }) {
   if (!diagnostics) return null
-  const total = Number(diagnostics.totalAlphaModels ?? DIRECT_ALPHA_VOTE_MODEL_NAMES.length)
+  const total = Number(diagnostics.totalAlphaModels ?? NaN)
   const active = Number(diagnostics.activeWeightCount ?? 0)
   const zeroWeightModels = diagnostics.zeroWeightModels ?? []
   const blockedModels = diagnostics.validationBlockedModels ?? []
@@ -1310,7 +1352,7 @@ function MlDiagnosticsStrip({ diagnostics }: { diagnostics: MlDiagnosticsSummary
   const timesFmSidecar = timesFmSidecarFromDiagnostics(diagnostics)
   const chips: string[] = []
 
-  chips.push(`權重 ${Number.isFinite(active) ? active : 0}/${Number.isFinite(total) ? total : DIRECT_ALPHA_VOTE_MODEL_NAMES.length}`)
+  chips.push(`權重 ${Number.isFinite(active) ? active : 0}/${Number.isFinite(total) && total > 0 ? total : ROSTER_NOT_PROVIDED}`)
   if (timesFmSidecar) {
     const featureCount = Number(timesFmSidecar.populatedFeatureCount ?? timesFmSidecar.featureKeys?.length ?? 0)
     const l2Eligible = boolFromValue(timesFmSidecar.eligibleForL2FeatureEnrichment)
@@ -1602,9 +1644,9 @@ function StrategyRouterEvidenceBlock({ router }: { router: StrategyRouterSummary
   const strategyCount = countText(router?.strategy_count ?? router?.strategy_ids?.length)
   const familyCount = countText(router?.family_count ?? router?.family_ids?.length)
   const researchCount = countText(router?.research_strategy_count ?? router?.research_strategy_ids?.length)
-  const teacherModelList = (router.expected_teacher_models?.length ? router.expected_teacher_models : [...DIRECT_ALPHA_VOTE_MODEL_NAMES])
+  const teacherModelList = (Array.isArray(router.expected_teacher_models) ? router.expected_teacher_models.map(String) : [])
     .filter((model) => normalizeModelName(model) !== 'TimesFM')
-  const teacherModels = teacherModelList.length ? teacherModelList.join(' / ') : DIRECT_ALPHA_VOTE_MODEL_LABEL
+  const teacherModels = teacherModelList.length ? teacherModelList.join(' / ') : ROSTER_NOT_PROVIDED
 
   return (
     <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/[0.05] p-3 text-xs">
@@ -1856,9 +1898,10 @@ function MlStackEvidenceBlock({
   const l2FeatureActive = boolFromValue(coarse?.l2_feature_input_active)
   const workerSeedOnly = boolFromValue(coarse?.worker_seed_only)
   const l2Models = coarse?.expected_models?.length ? coarse.expected_models.join(' / ') : 'TimesFM'
-  const formalModelList = (formal?.expected_models?.length ? formal.expected_models : ['LightGBM', 'XGBoost', 'ExtraTrees', 'TabM', 'GNN', 'DLinear', 'PatchTST', 'iTransformer'])
+  const formalModelList = (formal?.expected_models ?? [])
     .filter((model) => normalizeModelName(model) !== 'TimesFM')
-  const l3Models = formalModelList.length ? formalModelList.join(' / ') : 'LightGBM / XGBoost / ExtraTrees / TabM / GNN / DLinear / PatchTST / iTransformer'
+  const l3Models = formalModelList.length ? formalModelList.join(' / ') : ROSTER_NOT_PROVIDED
+  const l3Expected = formalModelList.length || finiteMetric(formal?.expected_model_count) || null
   const l3ContributorList = (formal?.contributing_models ?? []).filter((model) => normalizeModelName(model) !== 'TimesFM')
   const l3Contributors = l3ContributorList.length ? l3ContributorList.join(' / ') : 'no formal contributors reported'
 
@@ -1866,12 +1909,12 @@ function MlStackEvidenceBlock({
     <div className="rounded-lg border border-violet-500/20 bg-violet-500/[0.05] p-3 text-xs">
       <div className="mb-2 flex items-center justify-between gap-3">
         <span className="font-medium text-violet-700 dark:text-violet-300">L2 TimesFM + L3 Direct ML</span>
-        <span className="sv-num text-[11px] text-muted-foreground">L2 feature sidecar; L3 8ML formal direct alpha</span>
+        <span className="sv-num text-[11px] text-muted-foreground">L2 feature sidecar; L3 formal direct alpha</span>
       </div>
       <div className="grid gap-2 sm:grid-cols-4">
         <MetricPill label="L2 expected" value={countText(coarse?.expected_model_count ?? 1)} />
         <MetricPill label="L2 feature input" value={l2FeatureActive ? 'ACTIVE' : workerSeedOnly ? 'seed only' : 'PENDING'} />
-        <MetricPill label="L3 direct expected" value={countText(formalModelList.length || 8)} />
+        <MetricPill label="L3 direct expected" value={l3Expected == null ? ROSTER_NOT_PROVIDED : countText(l3Expected)} />
         <MetricPill label="L3 active" value={countText(formal?.active_l3_model_count ?? formal?.contributing_model_count)} />
       </div>
       <div className="mt-2 grid gap-2 sm:grid-cols-2">

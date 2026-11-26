@@ -1,16 +1,20 @@
+import type { StatusTone } from './colorTokens'
+
 // Market risk levels are decided server-side (KV trading:risk_config cuts); the UI only maps a level to style.
 export type MarketRiskLevel = 'green' | 'yellow' | 'orange' | 'red' | 'black'
 
-export const MARKET_RISK_LEVEL_STYLE: Record<MarketRiskLevel, { label: string; color: string; border: string; bg: string }> = {
-  green: { label: '貪婪', color: 'text-emerald-300', border: 'border-emerald-500/30', bg: 'bg-emerald-500/10' },
-  yellow: { label: '中性', color: 'text-yellow-300', border: 'border-yellow-500/30', bg: 'bg-yellow-500/10' },
-  orange: { label: '偏熱', color: 'text-orange-300', border: 'border-orange-500/30', bg: 'bg-orange-500/10' },
-  red: { label: '恐慌', color: 'text-red-300', border: 'border-red-500/30', bg: 'bg-red-500/10' },
-  black: { label: '極度恐慌', color: 'text-zinc-100', border: 'border-zinc-400/40', bg: 'bg-zinc-700/40' },
+// A risk level is a status, not a price move: it uses the ok/warn/fail tokens plus a shape (tone → StatusIcon),
+// never the red/green up/down palette. Level names stay the KV level ids.
+export const MARKET_RISK_LEVEL_STYLE: Record<MarketRiskLevel, { label: string; color: string; border: string; bg: string; tone: StatusTone }> = {
+  green: { label: '貪婪', color: 'text-ok', border: 'border-ok/30', bg: 'bg-ok/10', tone: 'ok' },
+  yellow: { label: '中性', color: 'text-warn', border: 'border-warn/25', bg: 'bg-warn/[0.06]', tone: 'warn' },
+  orange: { label: '偏熱', color: 'text-warn', border: 'border-warn/45', bg: 'bg-warn/15', tone: 'warn' },
+  red: { label: '恐慌', color: 'text-fail', border: 'border-fail/35', bg: 'bg-fail/10', tone: 'fail' },
+  black: { label: '極度恐慌', color: 'text-fail', border: 'border-fail/60', bg: 'bg-fail/20', tone: 'fail' },
 }
 
-export const UNKNOWN_MARKET_RISK_STYLE = {
-  label: '待接資料', color: 'text-slate-400', border: 'border-slate-500/30', bg: 'bg-slate-500/[0.06]',
+export const UNKNOWN_MARKET_RISK_STYLE: { label: string; color: string; border: string; bg: string; tone: StatusTone } = {
+  label: '待接資料', color: 'text-muted-foreground', border: 'border-slate-500/30', bg: 'bg-slate-500/[0.06]', tone: 'na',
 }
 
 // Stored history may still carry the retired low/medium/high/extreme vocabulary; regime words are not levels here.

@@ -1,11 +1,13 @@
 import { useQuery } from '@tanstack/react-query'
 import { newsApi } from '@/lib/api'
 import { Skeleton } from '@/components/ui/skeleton'
+import { TW_COLORS } from '@/lib/colorTokens'
 
 const SENTIMENT_COLOR = {
-  positive: '#f87171',   // 紅（台股漲）
-  negative: '#34d399',   // 綠（台股跌）
-  neutral:  '#94a3b8',   // 灰
+  // 新聞情緒是多空方向，走台股漲跌色（利多紅、利空綠）。
+  positive: TW_COLORS.up,
+  negative: TW_COLORS.down,
+  neutral:  TW_COLORS.neutral,
 }
 
 const SIZE_CLASS = [
@@ -38,9 +40,9 @@ export default function NewsKeywordCloud({ stockId, days = 30 }: { stockId: numb
       <p className="text-xs text-muted-foreground">
         近 {days} 日新聞關鍵字
         <span className="ml-2 gap-3 inline-flex">
-          <span className="text-[#f87171]">■ 正面</span>
-          <span className="text-[#34d399]">■ 負面</span>
-          <span className="text-[#94a3b8]">■ 中性</span>
+          <span className="text-up">▲ 正面</span>
+          <span className="text-down">▼ 負面</span>
+          <span className="text-muted-foreground">■ 中性</span>
         </span>
       </p>
       <div className="flex flex-wrap gap-2 p-3 rounded-lg bg-muted/20 border border-border/30 min-h-[80px]">

@@ -2,7 +2,9 @@ import type { IpoShadowReadModel, IpoModelMetrics } from '@/lib/ipoShadowContrac
 
 function signed(value: number | null | undefined, percent = false) {
   if (value == null || !Number.isFinite(value)) return <span className="text-slate-400">尚無</span>
-  return <span className={`font-mono tabular-nums ${value > 0 ? 'text-emerald-300' : value < 0 ? 'text-rose-300' : 'text-slate-200'}`}>
+  // 報酬正數紅、負數綠；IC 等非漲跌指標不著漲跌色。
+  const tone = !percent ? 'text-foreground' : value > 0 ? 'text-up' : value < 0 ? 'text-down' : 'text-slate-200'
+  return <span className={`font-mono tabular-nums ${tone}`}>
     {value > 0 ? '+' : ''}{(value * (percent ? 100 : 1)).toFixed(percent ? 2 : 3)}{percent ? '%' : ''}
   </span>
 }
@@ -39,7 +41,7 @@ export default function IpoShadowComparison({ data }: { data?: IpoShadowReadMode
         <p className="text-xs leading-5 text-slate-400">{label}</p><p className="mt-1 break-words text-base font-semibold tabular-nums text-slate-100">{value}</p>
       </div>)}
     </div>
-    {unavailable ? <p role="status" className="mt-4 text-sm text-rose-300">IPO 資料尚未接通；L4 現有資料不受影響。{data?.blockers.join(' · ')}</p>
+    {unavailable ? <p role="status" className="mt-4 text-sm text-fail">IPO 資料尚未接通；L4 現有資料不受影響。{data?.blockers.join(' · ')}</p>
       : collectionBlocked && data.frozen_dates > 0 ? <p role="status" className="mt-4 text-sm text-amber-200">新日期封存受阻：{data.collection?.signal_date} 的模型／PIT 輸入不完整。既有 {data.frozen_dates} 日快照仍保留並等待或接受成熟驗證；不代表每天持續新增。</p>
       : data.status === 'not_registered' ? <p className="mt-4 text-sm text-amber-200">{collectionBlocked
         ? '尚未開始累積：當日候選模型或 PIT 特徵尚未通過完整性檢查。請展開下方查看具體原因；不以補零或回放冒充前瞻樣本。'

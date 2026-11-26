@@ -40,6 +40,13 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
+  /* 價格／報酬（台股紅漲綠跌）與狀態（藍／琥珀／洋紅）分屬兩套 token，不可混用 */
+  --color-up: var(--up);
+  --color-down: var(--down);
+  --color-ok: var(--ok);
+  --color-warn: var(--warn);
+  --color-fail: var(--fail);
+  --color-na: var(--na);
 }
 
 :root {
@@ -68,15 +75,15 @@
   --muted-foreground: #8992a3;
   --accent: #202432;
   --accent-foreground: #e8ecf3;
-  --destructive: #ef4444;
+  --destructive: var(--fail); /* 錯誤／拒絕屬狀態，不用紅（紅＝上漲） */
   --destructive-foreground: #fafafa;
   --border: #292c37;
   --input: #1c1e27;
   --ring: #2f6bff;
   --chart-1: #2f6bff;
   --chart-2: #f59e0b;
-  --chart-3: #00c076;
-  --chart-4: #ef4444;
+  --chart-3: #22d3ee; /* 類別色，不用紅綠（紅綠保留給漲跌） */
+  --chart-4: #a78bfa;
   --chart-5: #7c8cff;
   --sidebar: #111218;
   --sidebar-foreground: #cfd6e3;
@@ -86,6 +93,17 @@
   --sidebar-accent-foreground: #e8ecf3;
   --sidebar-border: #292c37;
   --sidebar-ring: #2f6bff;
+
+  /* ── Price vs status tokens（2026-11-26，Wei 核准的模擬交易室 mock）──
+     --up/--down：只給價格、報酬、買賣超，固定搭配 ▲▼。
+     --ok/--warn/--fail：只給檢查結果與系統狀態，固定搭配圖示；--na＝尚未檢查（slate）。
+     ok/fail 比 mock 亮一階，讓 12px 字在 #1c1e27 上也有 ≥5.4:1 對比。 */
+  --up: #ff4d4f;
+  --down: #22c55e;
+  --ok: #5b9bff;
+  --warn: #f5a524;
+  --fail: #f05bb0;
+  --na: #2c303c;
 }
 
 /* .dark-unused removed — single dark theme only */
@@ -399,16 +417,6 @@
     background-size: 24px 24px, 24px 24px, auto;
     color: #e8ecf3;
     font-family: "Segoe UI Variable", "PingFang TC", "Microsoft JhengHei", system-ui, sans-serif;
-  }
-
-  .sv-home-glass-panel {
-    box-shadow: none !important;
-    contain: layout paint;
-  }
-
-  .sv-home-deferred-section {
-    content-visibility: auto;
-    contain-intrinsic-size: auto 760px;
   }
 
   .sv-home-glass-panel {

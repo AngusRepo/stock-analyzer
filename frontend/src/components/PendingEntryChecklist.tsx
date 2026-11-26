@@ -46,7 +46,7 @@ export function PendingEntryChecklist({preview,plannedAllocation,todayFills,live
         if(key==='allocation' && preview?.allocator) detail=`最近檢查 ${evidenceTime(preview.allocator.checked_at)} · 上限 $${preview.allocator.budget_cap?.toLocaleString('zh-TW')??'未記錄'}（送單時重查）`
         if(key==='l5' && preview?.allocator) detail=`最近檢查 ${evidenceTime(preview.allocator.checked_at)} · ${preview.allocator.l5_status??'未記錄'}（送單時重查）`
         return <div key={key} className="min-w-0">
-          <div className="flex items-start justify-between gap-3"><span className="text-foreground">{key==='atr_once' && preview?.or15?.atr_once?.policy==='atr5-sma-first-signal-v1'?'首次訊號動能 > 1.5 × ATR5（SMA）；不通過當日不買':label}</span><span className={`shrink-0 ${value===true?'text-emerald-400':value===false?'text-amber-400':'text-muted-foreground'}`}>
+          <div className="flex items-start justify-between gap-3"><span className="text-foreground">{key==='atr_once' && preview?.or15?.atr_once?.policy==='atr5-sma-first-signal-v1'?'首次訊號動能 > 1.5 × ATR5（SMA）；不通過當日不買':label}</span><span className={`shrink-0 ${value===true?'text-ok':value===false?'text-warn':'text-muted-foreground'}`}>
             {key==='ma60'?<span className="text-muted-foreground">{value===true?'高於':value===false?'未高於':'資料不足'}（僅記錄）</span>:value===true?<Check className="h-4 w-4" aria-label="通過"/>:value===false?<X className="h-4 w-4" aria-label="未通過"/>:<span>{checklistUnknownReason(key,!!signal)}</span>}
           </span></div>
           {detail&&<p className="mt-1 text-sm text-muted-foreground">{detail}</p>}

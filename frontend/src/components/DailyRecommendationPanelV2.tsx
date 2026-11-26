@@ -17,8 +17,8 @@ function ObservabilityChip({ icon: Icon, label, value, tone = 'info' }: {
 }) {
   return (
     <div className={`inline-flex items-center gap-2 rounded-full border px-2.5 py-1 sv-num text-[10px] normal-case ${
-      tone === 'ok' ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-300'
-        : tone === 'warn' ? 'border-amber-500/25 bg-amber-500/10 text-amber-300'
+      tone === 'ok' ? 'border-ok/25 bg-ok/10 text-ok'
+        : tone === 'warn' ? 'border-warn/25 bg-warn/10 text-warn'
           : 'border-sky-500/25 bg-sky-500/10 text-sky-300'
     }`}>
       <Icon className="h-3.5 w-3.5" />
@@ -50,12 +50,12 @@ export function DailyRecommendationPanelV2() {
               <Star className="h-4 w-4 text-amber-400" />
               每日選股推薦
             </h2>
-            <ObservabilityChip icon={BarChart3} label="tradable" value={`${tradable.length}`} tone="ok" />
+            <ObservabilityChip icon={BarChart3} label="可交易" value={`${tradable.length}`} tone="ok" />
           </div>
           <p className="mt-0.5 text-xs text-muted-foreground">
             {payload?.date ?? today} · ML + 籌碼 + 技術 + Alpha / Risk 綜合評分
           </p>
-          <div className="mt-2 flex w-full flex-wrap items-center gap-2 rounded-xl border border-[#263247] bg-[#070a10]/70 px-3 py-2 text-[11px] leading-5 text-muted-foreground/85">
+          <div className="mt-2 flex w-full flex-wrap items-center gap-2 rounded-xl border border-[#263247] bg-[#070a10]/70 px-3 py-2 text-[11px] leading-5 text-muted-foreground">
             <Badge variant="outline" className="shrink-0 border-sky-500/30 bg-sky-500/10 px-1.5 py-0 text-[10px] text-sky-300">
               名詞解釋
             </Badge>
@@ -107,18 +107,18 @@ export function DailyRecommendationPanelV2() {
         <div className="rounded-2xl border border-[#263247] bg-[#070a10]/80 py-10 text-center text-muted-foreground">
           <Star className="mx-auto mb-2 h-8 w-8 opacity-20" />
           <p className="text-sm">今日沒有通過上市櫃交易流的候選</p>
-          <p className="mt-1 text-xs">請檢查 evening-chain / pipeline / recommendation，或到 OBS 看 root cause。</p>
+          <p className="mt-1 text-xs">盤後名單產生後會出現在這裡。</p>
         </div>
       ) : (
-        <section className="space-y-3 rounded-2xl border border-emerald-500/15 bg-emerald-500/[0.025] p-3">
+        <section className="space-y-3 rounded-2xl border border-ok/15 bg-ok/[0.025] p-3">
           <div className="flex items-center justify-between px-1">
             <div>
-              <p className="text-xs font-semibold text-emerald-300">上市櫃交易流</p>
+              <p className="text-xs font-semibold text-ok">上市櫃交易流</p>
               <p className="text-[11px] text-muted-foreground">
                 會進 morning setup / debate / pending buys，自動交易只看這一區。
               </p>
             </div>
-            <Badge variant="outline" className="border-emerald-500/30 text-[10px] text-emerald-300">
+            <Badge variant="outline" className="border-ok/30 text-[10px] text-ok">
               {tradable.length} 檔
             </Badge>
           </div>

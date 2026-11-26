@@ -4,7 +4,6 @@ import {
   Database,
   ExternalLink,
   Loader2,
-  ShieldAlert,
   Workflow,
 } from 'lucide-react'
 import AppShell from '@/components/AppShell'
@@ -13,9 +12,12 @@ import { Button } from '@/components/ui/button'
 import {
   WorkstationPageTitle,
   WorkstationPanel,
-  WorkstationPill,
+  WorkstationStatusPill,
   type WorkstationTone,
 } from '@/components/workstation/WorkstationChrome'
+import { STATUS_CHIP, TW_COLORS } from '@/lib/colorTokens'
+import { StatusIcon } from '@/components/ui/status'
+import { humanStatus } from '@/lib/humanLabels'
 import {
   ApprovalReviewPanel,
   type ApprovalReviewGate,
@@ -52,10 +54,13 @@ function statusTone(status?: string | null): WorkstationTone {
 function schedulerStatusLabel(status?: string | null) {
   const value = String(status ?? '').toLowerCase()
   if (value === 'blocked') return '上游阻擋'
-  if (value === 'waiting') return 'WAITING'
-  if (value === 'sleep') return 'NOT TODAY'
-  if (value === 'skip' || value === 'skipped') return 'SKIPPED'
-  return status || 'unknown'
+  if (value === 'waiting') return '等待中'
+  if (value === 'sleep') return '今日不跑'
+  if (value === 'skip' || value === 'skipped') return '略過'
+  if (value === 'success') return '成功'
+  if (value === 'failed') return '失敗'
+  if (value === 'running') return '執行中'
+  return status || '未知'
 }
 
 const EXECUTION_REALISM_STATES = [
@@ -75,15 +80,17 @@ function severityTone(severity?: ObservabilitySeverity | null): WorkstationTone 
 }
 
 function toneColor(tone: WorkstationTone) {
-  if (tone === 'ok') return '#34d399'
-  if (tone === 'warn') return '#fbbf24'
-  if (tone === 'error') return '#fb7185'
+  if (tone === 'ok') return TW_COLORS.ok
+  if (tone === 'warn') return TW_COLORS.warn
+  if (tone === 'error') return TW_COLORS.fail
   if (tone === 'info') return '#38bdf8'
   return '#94a3b8'
 }
 
-function formatStatus(status?: string | null) {
-  return status ? String(status).toUpperCase() : 'N/A'
+/** 狀態碼 → 中文短名；原始碼放 title。 */
+function StatusCode({ raw, fallback = 'N/A' }: { raw?: string | null; fallback?: string }) {
+  if (!raw) return <>{fallback}</>
+  return <span title={String(raw)}>{humanStatus(String(raw), String(raw).toUpperCase())}</span>
 }
 
 function errorMessage(error: unknown) {
@@ -204,11 +211,11 @@ function readinessTone(status: ReadinessStatus): WorkstationTone {
 }
 
 function readinessLabel(status: ReadinessStatus) {
-  if (status === 'ready') return 'READY'
-  if (status === 'running') return 'RUNNING'
-  if (status === 'waiting') return 'WAITING'
-  if (status === 'blocked') return 'BLOCKED'
-  return 'PENDING'
+  if (status === 'ready') return '就緒'
+  if (status === 'running') return '執行中'
+  if (status === 'waiting') return '等待中'
+  if (status === 'blocked') return '阻擋'
+  return '待定'
 }
 
 function readinessStatusFromScheduler(status?: string | null): ReadinessStatus {
@@ -319,9 +326,9 @@ function buildReadinessGates(checks: DataQualityCheck[]): ReadinessGate[] {
 }
 
 function statusRingClass(tone: WorkstationTone) {
-  if (tone === 'ok') return 'border-emerald-400/35 bg-emerald-400/10 text-emerald-200 shadow-[0_0_28px_rgba(16,185,129,0.10)]'
-  if (tone === 'warn') return 'border-amber-400/35 bg-amber-400/10 text-amber-100 shadow-[0_0_28px_rgba(251,191,36,0.10)]'
-  if (tone === 'error') return 'border-rose-400/35 bg-rose-400/10 text-rose-100 shadow-[0_0_28px_rgba(244,63,94,0.10)]'
+  if (tone === 'ok') return 'border-ok/35 bg-ok/10 text-ok'
+  if (tone === 'warn') return 'border-warn/35 bg-warn/10 text-warn'
+  if (tone === 'error') return 'border-fail/35 bg-fail/10 text-fail'
   if (tone === 'info') return 'border-sky-400/35 bg-sky-400/10 text-sky-100 shadow-[0_0_28px_rgba(56,189,248,0.10)]'
   return 'border-slate-500/35 bg-slate-500/10 text-slate-200'
 }
@@ -377,7 +384,7 @@ function StorageCapacityPanel({
   const gcs = report?.gcs
 
   return (
-    <div className="rounded-2xl border border-[#2b3a49] bg-[radial-gradient(circle_at_18%_0%,rgba(0,210,255,0.13),transparent_32%),linear-gradient(135deg,#10141d,#0b1118_58%,#141109)] p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+    <div className="min-w-0">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <div className="flex items-center gap-2 text-sky-200">
@@ -388,19 +395,19 @@ function StorageCapacityPanel({
           <p className="mt-1 text-xs leading-5 text-[#9badbf]">D1 顯示即時 binding query metadata；R2／GCS 顯示可稽核 manifest 容量。</p>
         </div>
         <div className="flex gap-2">
-          <WorkstationPill tone={rows.length === report?.d1.expected_count ? 'ok' : 'warn'}>D1 {report?.d1.count ?? 0}/{report?.d1.expected_count ?? 8}</WorkstationPill>
-          <WorkstationPill tone={r2?.count ? 'ok' : 'warn'}>R2 {r2?.count ?? 0}</WorkstationPill>
-          <WorkstationPill tone={gcs?.count ? 'ok' : 'warn'}>GCS {gcs?.count ?? 0}</WorkstationPill>
+          <WorkstationStatusPill tone={rows.length === report?.d1.expected_count ? 'ok' : 'warn'}>D1 {report?.d1.count ?? 0}/{report?.d1.expected_count ?? 8}</WorkstationStatusPill>
+          <WorkstationStatusPill tone={r2?.count ? 'ok' : 'warn'}>R2 {r2?.count ?? 0}</WorkstationStatusPill>
+          <WorkstationStatusPill tone={gcs?.count ? 'ok' : 'warn'}>GCS {gcs?.count ?? 0}</WorkstationStatusPill>
         </div>
       </div>
       {loading && <p className="mt-4 sv-num text-xs normal-case text-sky-200">Loading current storage snapshot...</p>}
-      {error && <p className="mt-4 text-xs text-rose-200">Capacity API：{error}</p>}
+      {error && <p className="mt-4 flex items-center gap-1 text-xs text-fail"><StatusIcon tone="fail" />Capacity API：{error}</p>}
       {!loading && !error && (
         <div className="mt-4 grid gap-2 sm:grid-cols-2">
           {rows.map((row) => {
             const tone = capacityTone(row.status)
             return (
-              <div key={row.binding_name} className={`rounded-xl border p-2 ${statusRingClass(tone)}`}>
+              <div key={row.binding_name} className={`border-0 border-l-2 p-2 ${statusRingClass(tone)}`}>
                 <div className="flex items-center justify-between gap-2">
                   <p className="truncate sv-num text-xs normal-case text-[#f2ead8]">{row.domain} · {row.binding_name}</p>
                   <span className="sv-num text-xs normal-case" style={{ color: toneColor(tone) }}>{row.utilization_pct.toFixed(2)}%</span>
@@ -408,7 +415,7 @@ function StorageCapacityPanel({
                 <MiniBar value={row.utilization_pct} tone={tone} />
                 <p className="mt-1 sv-num text-xs normal-case text-[#9badbf]">{formatStorageBytes(row.used_bytes)} / {formatStorageBytes(row.max_bytes)}</p>
                 {row.daily_growth_bytes != null && row.daily_growth_bytes > 0 && (
-                  <p className={`mt-1 text-xs ${row.projected_days_to_max != null && row.projected_days_to_max < 30 ? 'text-rose-200' : 'text-slate-400'}`}>
+                  <p className={`mt-1 text-xs ${row.projected_days_to_max != null && row.projected_days_to_max < 30 ? 'text-fail' : 'text-slate-400'}`}>
                     +{formatStorageBytes(row.daily_growth_bytes)}/日 · 預估 {row.projected_days_to_max ?? 'N/A'} 日滿載
                   </p>
                 )}
@@ -420,7 +427,7 @@ function StorageCapacityPanel({
               </div>
             )
           })}
-          <div className="rounded-xl border border-violet-400/20 bg-violet-400/[0.05] p-2 text-violet-100">
+          <div className="border-l-2 border-violet-400/40 p-2 text-violet-100">
             <div className="flex items-center justify-between gap-2">
               <p className="sv-num text-xs normal-case">R2 · {r2?.binding_name ?? 'ARTIFACTS'}</p>
               <span className="sv-num text-xs normal-case">容量百分比 N/A</span>
@@ -428,12 +435,12 @@ function StorageCapacityPanel({
             <p className="mt-2 sv-num text-xs normal-case text-violet-200">{formatStorageBytes(r2?.tracked_bytes)} · {(r2?.tracked_object_count ?? 0).toLocaleString()} objects</p>
             <p className="mt-1 text-xs leading-4 text-slate-400">R2 bucket 無固定容量上限；不偽造百分比，改顯示 manifest 可稽核用量。</p>
           </div>
-          <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/[0.05] p-2 text-emerald-100">
+          <div className="border-l-2 border-sky-400/40 p-2 text-sky-100">
             <div className="flex items-center justify-between gap-2">
               <p className="sv-num text-xs normal-case">GCS · {gcs?.binding_name ?? 'GCS_BUCKET_NAME'}</p>
               <span className="sv-num text-xs normal-case">容量百分比 N/A</span>
             </div>
-            <p className="mt-2 sv-num text-xs normal-case text-emerald-200">{formatStorageBytes(gcs?.tracked_bytes)} · {(gcs?.tracked_object_count ?? 0).toLocaleString()} objects</p>
+            <p className="mt-2 sv-num text-xs normal-case text-sky-200">{formatStorageBytes(gcs?.tracked_bytes)} · {(gcs?.tracked_object_count ?? 0).toLocaleString()} objects</p>
             <p className="mt-1 text-xs leading-4 text-slate-400">GCS 顯示 snapshot component manifest 去重後的可稽核用量。</p>
           </div>
         </div>
@@ -459,7 +466,7 @@ function ReadinessFlowMap({ stages }: { stages: ReadinessStage[] }) {
               <div className={`min-h-[148px] rounded-2xl border p-3 ${statusRingClass(stage.tone)}`}>
                 <div className="flex items-start justify-between gap-3">
                   <span className="grid h-8 w-8 place-items-center rounded-xl border border-white/10 bg-black/20 sv-num text-[12px] text-[#ffd87f]">{index + 1}</span>
-                  <WorkstationPill tone={stage.tone}>{readinessLabel(stage.status)}</WorkstationPill>
+                  <WorkstationStatusPill tone={stage.tone}>{readinessLabel(stage.status)}</WorkstationStatusPill>
                 </div>
                 <p className="mt-3 text-base font-semibold text-[#f8efe0]">{stage.label}</p>
                 <p className="mt-1 sv-num text-xs normal-case text-[#9badbf]">{stage.owner}</p>
@@ -507,7 +514,7 @@ function ReadinessGateMatrix({ gates, limit = 12 }: { gates: ReadinessGate[]; li
               <p className="truncate text-sm font-semibold text-[#f2ead8]">{gate.label}</p>
               <p className="mt-1 truncate sv-num text-xs normal-case text-[#7f8ba0]">{gate.source}</p>
             </div>
-            <WorkstationPill tone={gate.tone}>{readinessLabel(gate.status)}</WorkstationPill>
+            <WorkstationStatusPill tone={gate.tone}>{readinessLabel(gate.status)}</WorkstationStatusPill>
           </div>
           <div className="mt-3 flex items-end justify-between gap-3">
             <p className="sv-num text-xl font-semibold" style={{ color: toneColor(gate.tone) }}>{gate.value}</p>
@@ -629,13 +636,13 @@ function summarizeSchedulerGroup(jobs: SchedulerJob[]) {
 }
 
 function schedulerGroupHealthLabel(summary: ReturnType<typeof summarizeSchedulerGroup>, hasRuntimeJobs: boolean, groupJobCount: number) {
-  if (!hasRuntimeJobs) return 'OFFLINE'
-  if (!groupJobCount) return 'MISSING'
-  if (summary.failed) return 'FAIL'
-  if (summary.running) return 'RUN'
-  if (summary.waiting) return 'WAIT'
-  if (summary.success || summary.inactive) return 'OK'
-  return 'IDLE'
+  if (!hasRuntimeJobs) return '離線'
+  if (!groupJobCount) return '缺資料'
+  if (summary.failed) return '失敗'
+  if (summary.running) return '執行中'
+  if (summary.waiting) return '等待中'
+  if (summary.success || summary.inactive) return '正常'
+  return '閒置'
 }
 
 function SchedulerCountChip({ label, value, tone }: { label: string; value: number; tone: WorkstationTone }) {
@@ -669,7 +676,7 @@ function SchedulerShortcutCard({
       ? summary.tone === 'neutral' ? 'neutral' : summary.tone
       : 'warn'
     : meta.tone
-  const healthLabel = schedulerApiError ? 'API ERROR' : schedulerGroupHealthLabel(summary, hasRuntimeJobs, jobs.length)
+  const healthLabel = schedulerApiError ? 'API 異常' : schedulerGroupHealthLabel(summary, hasRuntimeJobs, jobs.length)
   const focusText = summary.focus
     ? `${summary.focus.name} · ${schedulerStatusLabel(summary.focus.lastStatus)}`
     : schedulerApiError
@@ -687,13 +694,13 @@ function SchedulerShortcutCard({
           <p className="truncate text-sm font-semibold text-[#f8efe0]">{meta.label}</p>
           <p className="mt-0.5 truncate sv-num text-xs normal-case text-[#7f8ba0]">{group}</p>
         </div>
-        <WorkstationPill tone={cardTone}>{healthLabel}</WorkstationPill>
+        <WorkstationStatusPill tone={cardTone}>{healthLabel}</WorkstationStatusPill>
       </div>
       <div className="mt-3 grid grid-cols-2 gap-1">
-        <SchedulerCountChip label="OK" value={summary.success} tone="ok" />
-        <SchedulerCountChip label="RUN" value={summary.running} tone="info" />
-        <SchedulerCountChip label="WAIT" value={summary.waiting} tone="warn" />
-        <SchedulerCountChip label="FAIL" value={summary.failed} tone="error" />
+        <SchedulerCountChip label="成功" value={summary.success} tone="ok" />
+        <SchedulerCountChip label="執行" value={summary.running} tone="info" />
+        <SchedulerCountChip label="等待" value={summary.waiting} tone="warn" />
+        <SchedulerCountChip label="失敗" value={summary.failed} tone="error" />
       </div>
       <div className="mt-2 flex min-w-0 items-center justify-between gap-2">
         <p className="truncate sv-num text-xs normal-case text-[#9badbf]">{focusText}</p>
@@ -789,7 +796,7 @@ function SchedulerJobRow({ job, compact = false }: { job: SchedulerJob; compact?
           </div>
           <p className="mt-1 truncate sv-num text-xs normal-case text-[#7f8ba0]">{job.id} · {job.schedule}</p>
         </div>
-        <WorkstationPill tone={tone}>{schedulerStatusLabel(job.lastStatus)}</WorkstationPill>
+        <WorkstationStatusPill tone={tone}>{schedulerStatusLabel(job.lastStatus)}</WorkstationStatusPill>
       </div>
       <div className="mt-2 grid min-w-0 grid-cols-1 gap-1 sv-num text-xs normal-case text-[#9badbf] sm:grid-cols-3">
         <span className="min-w-0 truncate rounded-lg border border-[#253244] bg-[#111824] px-2 py-1">last {job.lastRun || '-'}</span>
@@ -797,7 +804,7 @@ function SchedulerJobRow({ job, compact = false }: { job: SchedulerJob; compact?
         <span className="min-w-0 truncate rounded-lg border border-[#253244] bg-[#111824] px-2 py-1">7d {job.rate7d || '-'}</span>
       </div>
       {(job.summary || job.lastError || job.durationConcernReason) && (
-        <p className={`mt-2 line-clamp-3 min-w-0 break-words text-xs leading-5 [overflow-wrap:anywhere] ${tone === 'error' ? 'text-rose-200' : tone === 'warn' ? 'text-amber-100' : 'text-[#9badbf]'}`}>
+        <p className={`mt-2 line-clamp-3 min-w-0 break-words text-xs leading-5 [overflow-wrap:anywhere] ${tone === 'error' ? 'text-fail' : tone === 'warn' ? 'text-warn' : 'text-[#9badbf]'}`}>
           {schedulerPlainSummary(job)}
         </p>
       )}
@@ -860,25 +867,25 @@ function SchedulerGroupCard({
           <p className="text-sm font-semibold text-[#f8efe0]">{meta.label}</p>
           <p className="mt-1 sv-num text-xs normal-case text-[#7f8ba0]">{group}</p>
         </div>
-        <WorkstationPill tone={schedulerApiError ? 'error' : hasRuntimeJobs ? summary.tone : meta.tone}>
-          {schedulerApiError ? 'API ERROR' : hasRuntimeJobs ? groupJobs.length : `${meta.expectedCount} expected`}
-        </WorkstationPill>
+        <WorkstationStatusPill tone={schedulerApiError ? 'error' : hasRuntimeJobs ? summary.tone : meta.tone}>
+          {schedulerApiError ? 'API 異常' : hasRuntimeJobs ? groupJobs.length : `預期 ${meta.expectedCount}`}
+        </WorkstationStatusPill>
       </div>
       <p className="mt-3 min-h-10 text-xs leading-5 text-[#9badbf]">{meta.purpose}</p>
       {hasRuntimeJobs ? (
         <>
           <div className="mt-3 grid grid-cols-4 gap-1 sv-num text-xs normal-case">
-            <span className="rounded-lg border border-emerald-400/15 bg-emerald-400/[0.06] px-2 py-1 text-emerald-200">ok {summary.success}</span>
-            <span className="rounded-lg border border-amber-400/15 bg-amber-400/[0.06] px-2 py-1 text-amber-200">run {summary.running}</span>
-            <span className="rounded-lg border border-amber-400/15 bg-amber-400/[0.06] px-2 py-1 text-amber-200">wait {summary.waiting}</span>
-            <span className="rounded-lg border border-rose-400/15 bg-rose-400/[0.06] px-2 py-1 text-rose-200">fail {summary.failed}</span>
+            <span className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 ${STATUS_CHIP.ok}`}><StatusIcon tone="ok" size={10} />成功 {summary.success}</span>
+            <span className="rounded-lg border border-sky-400/20 bg-sky-400/[0.06] px-2 py-1 text-sky-200">執行 {summary.running}</span>
+            <span className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 ${STATUS_CHIP.warn}`}><StatusIcon tone="warn" size={10} />等待 {summary.waiting}</span>
+            <span className={`inline-flex items-center gap-1 rounded-lg border px-2 py-1 ${STATUS_CHIP.fail}`}><StatusIcon tone="fail" size={10} />失敗 {summary.failed}</span>
           </div>
           <div className={`mt-3 grid min-w-0 gap-2 ${jobGridClass || (group === 'pipeline_chain' || group === 'daily' || group === 'weekly' ? 'lg:grid-cols-2' : '')}`}>
             {groupJobs.map((job) => <SchedulerJobRow key={job.id} job={job} compact={group !== 'pipeline_chain'} />)}
           </div>
         </>
       ) : (
-        <div className={`mt-3 rounded-xl border p-2 text-xs leading-5 ${schedulerApiError ? 'border-rose-400/20 bg-rose-400/[0.06] text-rose-100' : 'border-amber-400/15 bg-amber-400/[0.05] text-amber-100'}`}>
+        <div className={`mt-3 rounded-xl border p-2 text-xs leading-5 ${schedulerApiError ? STATUS_CHIP.fail : STATUS_CHIP.warn}`}>
           {schedulerApiError
             ? `Scheduler API 失敗：${schedulerApiError}；此卡只顯示預期 job universe，不當作執行結果。`
             : 'Runtime 狀態等待 `/api/scheduler/status`；此卡只提示預期 job universe，不當作執行結果。'}
@@ -949,20 +956,20 @@ function CriticalSchedulerErrors({ jobs }: { jobs: SchedulerJob[] }) {
   if (!failed.length) return null
 
   return (
-    <div className="mt-3 rounded-2xl border border-rose-400/25 bg-[linear-gradient(135deg,rgba(127,29,29,0.18),rgba(15,21,29,0.96)_42%,rgba(7,10,16,0.98))] p-3 shadow-[0_0_34px_rgba(244,63,94,0.08)]">
+    <div className="mt-3 rounded-2xl border border-fail/25 bg-[#0f151d] p-3">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          <ShieldAlert className="h-4 w-4 text-rose-300" />
+          <StatusIcon tone="fail" size={14} />
           <p className="text-sm font-semibold text-[#f8efe0]">Critical Scheduler Errors / 錯誤追蹤</p>
         </div>
-        <WorkstationPill tone="error">{failed.length} failed rows</WorkstationPill>
+        <WorkstationStatusPill tone="error">失敗 {failed.length} 筆</WorkstationStatusPill>
       </div>
       <div className="space-y-2">
         {failed.map((job) => (
-          <div key={job.id} className="grid gap-3 rounded-2xl border border-rose-400/20 bg-[#070a10]/90 p-3 text-xs leading-5 xl:grid-cols-[minmax(180px,0.7fr)_minmax(0,1.15fr)_minmax(0,1.25fr)_minmax(0,1fr)_88px]">
+          <div key={job.id} className="grid gap-3 rounded-2xl border border-fail/20 bg-[#070a10]/90 p-3 text-xs leading-5 xl:grid-cols-[minmax(180px,0.7fr)_minmax(0,1.15fr)_minmax(0,1.25fr)_minmax(0,1fr)_88px]">
             <div className="min-w-0">
               <div className="flex flex-wrap items-center gap-2">
-                <WorkstationPill tone="error">{schedulerStatusLabel(job.lastStatus)}</WorkstationPill>
+                <WorkstationStatusPill tone="error">{schedulerStatusLabel(job.lastStatus)}</WorkstationStatusPill>
                 <p className="truncate text-base font-semibold text-[#f8efe0]">{job.name}</p>
               </div>
               <p className="mt-1 truncate sv-num text-xs normal-case text-[#71839a]">{job.group} / {job.schedule}</p>
@@ -971,7 +978,7 @@ function CriticalSchedulerErrors({ jobs }: { jobs: SchedulerJob[] }) {
             <p className="min-w-0 text-[#a9d7ff]">
               <span className="font-semibold text-[#f8efe0]">狀態紀錄：</span>{schedulerStatusLog(job)}
             </p>
-            <p className="min-w-0 text-rose-200">
+            <p className="min-w-0 text-fail">
               <span className="font-semibold text-[#f8efe0]">Root cause：</span>{schedulerRootCause(job)}
             </p>
             <p className="min-w-0 text-[#c5d3e2]">
@@ -1015,13 +1022,13 @@ function OperationalReadinessDeck({
       <div className="grid items-stretch gap-3 xl:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
         <StorageCapacityPanel report={capacityReport} loading={capacityLoading} error={capacityError} />
 
-        <section className="flex h-full min-w-0 flex-col rounded-2xl border border-[#2b3a49] bg-[#0f151d] p-3" aria-labelledby="source-gates-title">
+        <section className="flex h-full min-w-0 flex-col border-t border-border pt-3 xl:border-l xl:border-t-0 xl:pl-3 xl:pt-0" aria-labelledby="source-gates-title">
           <div className="mb-3 flex items-center justify-between gap-3">
             <div className="flex min-w-0 items-center gap-2">
-              <Database className="h-4 w-4 shrink-0 text-emerald-300" />
+              <Database className="h-4 w-4 shrink-0 text-sky-300" />
               <p id="source-gates-title" className="truncate text-sm font-semibold text-[#f2ead8]">Source Gates / &#36039;&#26009;&#23601;&#32210;</p>
             </div>
-            <a href="/data-quality" className="inline-flex shrink-0 items-center gap-1 sv-num text-xs normal-case text-emerald-200 hover:text-emerald-100">
+            <a href="/data-quality" className="inline-flex shrink-0 items-center gap-1 sv-num text-xs normal-case text-sky-200 hover:text-sky-100">
               Data Quality <ExternalLink className="h-3 w-3" />
             </a>
           </div>
@@ -1080,26 +1087,26 @@ function EvidenceClockPanel({
           各條有效 evidence clock 獨立累積；已證偽或退役的機制不再占用成熟時鐘，也不會影響正式決策。
         </p>
         {loading ? (
-          <div className="flex items-center gap-2 rounded-xl border border-[#263247] bg-[#05070c] p-4 text-xs text-slate-400">
+          <div className="flex items-center gap-2 border-t border-border p-4 text-xs text-slate-400">
             <Loader2 className="h-4 w-4 animate-spin text-sky-300" /> Loading evidence clocks
           </div>
         ) : error ? (
-          <div className="rounded-xl border border-rose-400/25 bg-rose-400/5 p-4 text-xs text-rose-200">{error}</div>
+          <div className={`flex items-center gap-2 p-1 text-xs text-fail`}><StatusIcon tone="fail" />{error}</div>
         ) : (
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {(report?.clocks ?? []).filter(clock => clock.mechanism !== 'shadow_a').map((clock) => (
-              <article key={clock.mechanism} className="min-w-0 rounded-xl border border-[#263247] bg-[#05070c] p-3">
+              <article key={clock.mechanism} className="min-w-0 border-t border-border p-3">
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <p className="truncate text-sm font-medium text-slate-100">{clock.label}</p>
-                    <p className="mt-1 sv-num text-xs normal-case text-slate-500">{clock.governance} · auto promote OFF</p>
+                    <p className="mt-1 sv-num text-xs normal-case text-muted-foreground">{clock.governance} · auto promote OFF</p>
                   </div>
-                  <WorkstationPill tone={statusTone(clock.status)}>{formatStatus(clock.status)}</WorkstationPill>
+                  <WorkstationStatusPill tone={statusTone(clock.status)}><StatusCode raw={clock.status} /></WorkstationStatusPill>
                 </div>
                 <dl className="mt-3 grid grid-cols-2 gap-2 text-xs">
-                  <div><dt className="text-slate-500">latest</dt><dd className="sv-num mt-1 text-slate-200">{clock.latest_evidence_date ?? 'N/A'}</dd></div>
+                  <div><dt className="text-muted-foreground">latest</dt><dd className="sv-num mt-1 text-slate-200">{clock.latest_evidence_date ?? 'N/A'}</dd></div>
                   <div>
-                    <dt className="text-slate-500">{clock.mechanism === 'rfs_allocator' ? '有效配置配對' : 'samples'}</dt>
+                    <dt className="text-muted-foreground">{clock.mechanism === 'rfs_allocator' ? '有效配置配對' : 'samples'}</dt>
                     <dd className="sv-num mt-1 text-slate-200">
                       {clock.mechanism === 'execution_parity' && clock.status === 'not_applicable_no_real_intents'
                         ? 'N/A'
@@ -1107,22 +1114,22 @@ function EvidenceClockPanel({
                     </dd>
                   </div>
                   <div>
-                    <dt className="text-slate-500">{clock.mechanism === 'rfs_allocator' ? '有效配置日期' : 'dates'}</dt>
+                    <dt className="text-muted-foreground">{clock.mechanism === 'rfs_allocator' ? '有效配置日期' : 'dates'}</dt>
                     <dd className="sv-num mt-1 text-slate-200">
                       {clock.mechanism === 'execution_parity' && clock.status === 'not_applicable_no_real_intents'
                         ? 'N/A'
                         : clock.distinct_dates}
                     </dd>
                   </div>
-                  <div><dt className="text-slate-500">coverage</dt><dd className="sv-num mt-1 text-slate-200">{clock.coverage == null ? 'N/A' : (clock.coverage * 100).toFixed(1) + '%'}</dd></div>
+                  <div><dt className="text-muted-foreground">coverage</dt><dd className="sv-num mt-1 text-slate-200">{clock.coverage == null ? 'N/A' : (clock.coverage * 100).toFixed(1) + '%'}</dd></div>
                 </dl>
-                <div className="mt-3 space-y-1 border-t border-[#1c2534] pt-2 sv-num text-xs normal-case text-slate-500">
+                <div className="mt-3 space-y-1 border-t border-[#1c2534] pt-2 sv-num text-xs normal-case text-muted-foreground">
                   <p>regimes {clock.supported_regimes.length ? clock.supported_regimes.join(' / ') : 'N/A'}</p>
                   <p>delta {clock.incumbent_delta == null ? 'N/A' : clock.incumbent_delta.toFixed(4)} · LCB {clock.confidence_bound == null ? 'N/A' : clock.confidence_bound.toFixed(4)}</p>
                   <p className="truncate">receipt {clock.artifact_or_packet_checksum?.slice(0, 16) ?? 'N/A'}</p>
                 </div>
                 {clock.mechanism === 'rfs_allocator' && (
-                  <div className="mt-2 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-xs leading-5 text-slate-400">
+                  <div className="mt-2 border-l-2 border-border p-2 text-xs leading-5 text-slate-400">
                     <p>配置配對 {clock.sample_count ?? 0} · 阻擋 {String(asRecord(clock.details).blocked_receipts ?? 0)}</p>
                     <p>同池候選 {String(asRecord(clock.details).candidate_count ?? 'N/A')} · 對手 sparse allocator</p>
                     <p>5 日成熟 {String(asRecord(clock.details).mature_5_session_dates ?? 0)} · 20 日成熟 {String(asRecord(clock.details).mature_20_session_dates ?? 0)}</p>
@@ -1130,7 +1137,7 @@ function EvidenceClockPanel({
                   </div>
                 )}
                 {clock.mechanism === 'execution_parity' && (
-                  <div className="mt-2 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-xs leading-5 text-slate-400">
+                  <div className="mt-2 border-l-2 border-border p-2 text-xs leading-5 text-slate-400">
                     <p>paper intents {String(asRecord(clock.details).paper_intents ?? 0)} · real intents {String(asRecord(clock.details).real_intents ?? 0)}</p>
                     {clock.status === 'not_applicable_no_real_intents' && (
                       <p className="text-sky-200">No real-order authority is enabled; parity is not applicable, so zero is not treated as maturity evidence.</p>
@@ -1335,7 +1342,7 @@ function AdaptiveMetaPanel({
           size="sm"
           variant="outline"
           disabled={!onGaReview || gaReviewPending}
-          className="h-8 rounded-full border-amber-400/30 px-3 text-xs text-amber-200 hover:bg-amber-400/10"
+          className="h-8 rounded-full border-sky-400/30 px-3 text-xs text-sky-200 hover:bg-sky-400/10"
           onClick={() => onGaReview?.('request', nextLevel)}
         >
           {gaReviewPending ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
@@ -1348,7 +1355,7 @@ function AdaptiveMetaPanel({
             size="sm"
             variant="outline"
             disabled={!onGaReview || gaReviewPending}
-            className="h-8 rounded-full border-emerald-400/30 px-3 text-xs text-emerald-200 hover:bg-emerald-400/10"
+            className="h-8 rounded-full border-ok/30 px-3 text-xs text-ok hover:bg-ok/10"
             onClick={() => onGaReview?.('approve', pendingApprovalLevel)}
           >
             {gaReviewPending ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
@@ -1358,14 +1365,14 @@ function AdaptiveMetaPanel({
             size="sm"
             variant="outline"
             disabled={!onGaReview || gaReviewPending}
-            className="h-8 rounded-full border-rose-400/30 px-3 text-xs text-rose-200 hover:bg-rose-400/10"
+            className="h-8 rounded-full border-fail/30 px-3 text-xs text-fail hover:bg-fail/10"
             onClick={() => onGaReview?.('reject', pendingApprovalLevel)}
           >
             Reject {pendingApprovalLevel}
           </Button>
         </>
       )}
-      <a href="/strategy-lab" className="inline-flex items-center gap-1 sv-num text-xs normal-case text-amber-200 hover:text-amber-100">
+      <a href="/strategy-lab" className="inline-flex items-center gap-1 sv-num text-xs normal-case text-sky-200 hover:text-sky-100">
         Review GA candidate <ExternalLink className="h-3 w-3" />
       </a>
     </>
@@ -1375,18 +1382,18 @@ function AdaptiveMetaPanel({
     <WorkstationPanel title="Adaptive / Meta Evidence" kicker="threshold, bandit, GA">
       <div className="grid items-stretch gap-3 p-3 xl:grid-cols-[minmax(0,0.78fr)_minmax(0,1.22fr)]">
         <div className="grid h-full gap-3 xl:grid-rows-[auto_minmax(0,1fr)]">
-          <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
+          <div className="border-t border-border p-3">
             <div className="flex items-center justify-between gap-2">
               <p className="sv-num text-xs normal-case text-[#70809b]">Threshold Policy</p>
-              <WorkstationPill tone={tone}>{adaptive?.status ?? 'missing'}</WorkstationPill>
+              <WorkstationStatusPill tone={tone}><StatusCode raw={adaptive?.status} fallback="缺資料" /></WorkstationStatusPill>
             </div>
             <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
               <div>
-                <p className="text-slate-500">effective delta</p>
+                <p className="text-muted-foreground">effective delta</p>
                 <p className="sv-num text-lg text-sky-200">{fmtNumber(threshold.effective_delta ?? evidence.confidence_delta)}</p>
               </div>
               <div>
-                <p className="text-slate-500">regime</p>
+                <p className="text-muted-foreground">regime</p>
                 <p className="sv-num text-lg text-slate-100">{String(thresholdInputs.regime ?? asRecord(evidence.provenance).regime ?? '-')}</p>
               </div>
             </div>
@@ -1396,10 +1403,10 @@ function AdaptiveMetaPanel({
               <span>vol {fmtNumber(threshold.volatility_penalty)}</span>
               <span>credit {fmtNumber(Number(threshold.regime_opportunity_credit ?? 0) + Number(threshold.trend_quality_credit ?? 0))}</span>
             </div>
-            <div className="mt-3 rounded-lg border border-sky-400/15 bg-sky-400/5 p-2 text-xs leading-5 text-slate-300">
+            <div className="mt-3 border-l-2 border-border p-2 text-xs leading-5 text-slate-300">
               <div className="flex items-center justify-between gap-2">
                 <span className="sv-num text-sky-200">Runtime Active-8 signal policy</span>
-                <WorkstationPill tone={severityTone(thresholdPolicyEvent?.severity)}>{thresholdPolicyEvent?.status ?? 'missing'}</WorkstationPill>
+                <WorkstationStatusPill tone={severityTone(thresholdPolicyEvent?.severity)}><StatusCode raw={thresholdPolicyEvent?.status} fallback="缺資料" /></WorkstationStatusPill>
               </div>
               <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1">
                 <span>id {String(runtimePolicy.policy_id ?? '-')}</span>
@@ -1416,30 +1423,30 @@ function AdaptiveMetaPanel({
             </div>
           </div>
 
-          <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
+          <div className="border-t border-border p-3">
             <div className="flex items-center justify-between gap-2">
               <p className="sv-num text-xs normal-case text-[#70809b]">LinUCB Risk Guard</p>
-              <WorkstationPill tone={bandit.decision ? 'ok' : 'warn'}>{String(bandit.decision ?? 'missing')}</WorkstationPill>
+              <WorkstationStatusPill tone={bandit.decision ? 'ok' : 'warn'}><StatusCode raw={bandit.decision == null ? null : String(bandit.decision)} fallback="缺資料" /></WorkstationStatusPill>
             </div>
             <div className="mt-3 grid grid-cols-3 gap-2 text-xs">
               <div>
-                <p className="text-slate-500">max mult</p>
-                <p className="sv-num text-lg text-emerald-300">{fmtNumber(evidence.bandit_max_mult, 2)}</p>
+                <p className="text-muted-foreground">max mult</p>
+                <p className="sv-num text-lg text-foreground">{fmtNumber(evidence.bandit_max_mult, 2)}</p>
               </div>
               <div>
-                <p className="text-slate-500">loss rate</p>
-                <p className="sv-num text-lg text-amber-200">{bandit.loss_rate == null ? '-' : `${fmtNumber(bandit.loss_rate, 2)}`}</p>
+                <p className="text-muted-foreground">loss rate</p>
+                <p className="sv-num text-lg text-foreground">{bandit.loss_rate == null ? '-' : `${fmtNumber(bandit.loss_rate, 2)}`}</p>
               </div>
               <div>
-                <p className="text-slate-500">5d paper exits</p>
+                <p className="text-muted-foreground">5d paper exits</p>
                 <p className="sv-num text-lg text-slate-100">{String(bandit.total_5d ?? '-')}</p>
               </div>
             </div>
-            <div className="mt-3 rounded-lg border border-[#263247] bg-[#070a10] p-2 text-xs leading-5 text-slate-300">
+            <div className="mt-3 border-l-2 border-border p-2 text-xs leading-5 text-slate-300">
               <div className="flex flex-wrap items-center gap-2">
-                <WorkstationPill tone={linucbLedger.reward_ledger_status === 'updated' ? 'ok' : 'warn'}>
-                  ledger {String(linucbLedger.reward_ledger_status ?? 'missing')}
-                </WorkstationPill>
+                <WorkstationStatusPill tone={linucbLedger.reward_ledger_status === 'updated' ? 'ok' : 'warn'}>
+                  ledger <StatusCode raw={linucbLedger.reward_ledger_status == null ? null : String(linucbLedger.reward_ledger_status)} fallback="缺資料" />
+                </WorkstationStatusPill>
                 <span>arms {String(linucbLedger.arm_count ?? '-')}</span>
                 <span>lifetime ledger samples {String(linucbLedger.total_samples ?? linucbLedger.source_rows ?? '-')}</span>
                 <span>ledger updated {String(linucbLedger.updated_at ?? '-')}</span>
@@ -1471,19 +1478,19 @@ function AdaptiveMetaPanel({
       <div className="border-t border-[#263247] p-3">
         <div className="grid gap-2 xl:grid-cols-5">
           {metaLearners.map(([name, description, stage, evidenceNeed]) => (
-            <div key={String(name)} className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
+            <div key={String(name)} className="border-t border-border p-3">
               <div className="flex items-center justify-between gap-2">
                 <p className="sv-num text-xs normal-case text-[#70809b]">{String(name)}</p>
-                <WorkstationPill tone={stage === 'production baseline' ? 'ok' : stage === 'research only' ? 'warn' : 'info'}>
+                <WorkstationStatusPill tone={stage === 'production baseline' ? 'ok' : stage === 'research only' ? 'warn' : 'info'}>
                   {String(stage)}
-                </WorkstationPill>
+                </WorkstationStatusPill>
               </div>
               <p className="mt-2 line-clamp-2 text-xs leading-5 text-slate-300">{String(description)}</p>
-              <p className="mt-2 text-xs leading-5 text-slate-500">needs: {String(evidenceNeed)}</p>
+              <p className="mt-2 text-xs leading-5 text-muted-foreground">needs: {String(evidenceNeed)}</p>
             </div>
           ))}
           {!metaLearners.length && (
-            <div className="rounded-xl border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-5 text-amber-200 xl:col-span-5">
+            <div className="border-t border-border p-3 text-xs leading-5 text-muted-foreground xl:col-span-5">
               Meta learner research cards are owned by Strategy Lab / Model Pool. OBS only shows operational evidence: Active-8 signal policy, LinUCB ledger, and GA promotion health.
             </div>
           )}
@@ -1594,7 +1601,7 @@ export default function ObservabilityPage() {
             <div className="rounded-xl border border-[#263247] bg-[#070a10] px-5 py-4 text-center shadow-xl">
               <Loader2 className="mx-auto h-6 w-6 animate-spin text-sky-300" />
               <p className="mt-3 sv-num text-xs normal-case text-sky-200">Loading OBS evidence</p>
-              <p className="mt-1 text-xs text-slate-500">scheduler / data quality / deploy gate / model events</p>
+              <p className="mt-1 text-xs text-muted-foreground">scheduler / data quality / deploy gate / model events</p>
             </div>
           </div>
         )}
@@ -1607,10 +1614,10 @@ export default function ObservabilityPage() {
             <div className="flex flex-wrap items-center gap-3">
               <ReadinessGauge score={readinessScore} tone={readinessTone} />
               <div className="flex max-w-xs flex-wrap gap-2">
-                <WorkstationPill tone={statusTone(deployGate.data?.decision)}>Gate {formatStatus(deployGate.data?.decision)}</WorkstationPill>
-                <WorkstationPill tone={severityTone(observability.data?.overall)}>OBS {formatStatus(observability.data?.overall)}</WorkstationPill>
-                <WorkstationPill tone={system.error ? 'error' : 'ok'}>System {system.error ? 'ERROR' : 'ONLINE'}</WorkstationPill>
-                <span className="w-full sv-num text-xs normal-case text-slate-500">Readiness-gated Chain Control</span>
+                <WorkstationStatusPill tone={statusTone(deployGate.data?.decision)}>Gate <StatusCode raw={deployGate.data?.decision} /></WorkstationStatusPill>
+                <WorkstationStatusPill tone={severityTone(observability.data?.overall)}>OBS <StatusCode raw={observability.data?.overall} /></WorkstationStatusPill>
+                <WorkstationStatusPill tone={system.error ? 'error' : 'ok'}>System {system.error ? '異常' : '連線中'}</WorkstationStatusPill>
+                <span className="w-full sv-num text-xs normal-case text-muted-foreground">Readiness-gated Chain Control</span>
               </div>
             </div>
           }

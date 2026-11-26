@@ -1,15 +1,19 @@
 import { useQuery } from '@tanstack/react-query'
 import { lazy, Suspense, useEffect, useMemo } from 'react'
-import { AlertTriangle, CheckCircle2, Database, ExternalLink, RefreshCw } from 'lucide-react'
+import { Database, ExternalLink, RefreshCw } from 'lucide-react'
 import AppShell from '@/components/AppShell'
 import { dataQualityApi, type DataQualityCheck, type V41DataRuntimeStatus } from '@/lib/api'
 import { queryTtl } from '@/lib/queryPolicy'
 import {
   WorkstationPageTitle,
   WorkstationPanel,
-  WorkstationPill,
+  WorkstationStatusPill,
+  WorkstationToneIcon,
   type WorkstationTone,
 } from '@/components/workstation/WorkstationChrome'
+import { STATUS_CHIP, TW_COLORS } from '@/lib/colorTokens'
+import { StatusIcon } from '@/components/ui/status'
+import { humanStatus } from '@/lib/humanLabels'
 
 const DataQualityTrendChart = lazy(() => import('@/components/charts/DataQualityTrendChart'))
 
@@ -18,6 +22,18 @@ function statusTone(status?: string): WorkstationTone {
   if (status === 'warn' || status === 'WARN') return 'warn'
   if (status === 'fail' || status === 'BLOCK') return 'error'
   return 'neutral'
+}
+
+const DQ_STATUS_LABEL: Record<string, string> = { ok: '通過', pass: '通過', warn: '注意', fail: '未通過', block: '阻擋', missing: '缺資料' }
+
+/** 資料品質狀態碼 → 中文短名；原始碼放 title。 */
+function DqStatusPill({ tone, raw }: { tone: WorkstationTone; raw?: string | null }) {
+  const code = raw ?? 'missing'
+  return (
+    <WorkstationStatusPill tone={tone}>
+      <span title={code}>{DQ_STATUS_LABEL[code.toLowerCase()] ?? humanStatus(code)}</span>
+    </WorkstationStatusPill>
+  )
 }
 
 function scoreFromChecks(checks: DataQualityCheck[]) {
@@ -35,7 +51,7 @@ function metricSummary(check: DataQualityCheck): string {
 }
 
 function MiniBar({ tone, value }: { tone: WorkstationTone; value: number }) {
-  const color = tone === 'ok' ? '#34d399' : tone === 'warn' ? '#fbbf24' : tone === 'error' ? '#fb7185' : '#94a3b8'
+  const color = tone === 'ok' ? TW_COLORS.ok : tone === 'warn' ? TW_COLORS.warn : tone === 'error' ? TW_COLORS.fail : '#94a3b8'
   return (
     <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800">
       <div className="h-full rounded-full" style={{ width: `${Math.max(0, Math.min(100, value))}%`, backgroundColor: color }} />
@@ -47,14 +63,14 @@ function DataQualityMetric({ label, value, tone, detail }: { label: string; valu
   return (
     <div className="rounded-xl border border-[#263247] bg-[#05070c] p-3">
       <div className="flex items-center justify-between gap-2">
-        <p className="sv-num text-[10px] normal-case text-slate-500">{label}</p>
-        <WorkstationPill tone={tone}>{tone}</WorkstationPill>
+        <p className="sv-num text-[10px] normal-case text-muted-foreground">{label}</p>
+        <WorkstationToneIcon tone={tone} size={12} />
       </div>
-      <p className={`mt-2 sv-num text-2xl font-semibold ${tone === 'ok' ? 'text-emerald-300' : tone === 'warn' ? 'text-amber-300' : tone === 'error' ? 'text-rose-300' : 'text-slate-200'}`}>
+      <p className={`mt-2 sv-num text-2xl font-semibold ${tone === 'ok' ? 'text-ok' : tone === 'warn' ? 'text-warn' : tone === 'error' ? 'text-fail' : 'text-slate-200'}`}>
         {value}
       </p>
       <MiniBar tone={tone} value={tone === 'error' ? 100 : tone === 'warn' ? 62 : 92} />
-      <p className="mt-2 truncate text-xs text-slate-500">{detail}</p>
+      <p className="mt-2 truncate text-xs text-muted-foreground">{detail}</p>
     </div>
   )
 }
@@ -96,14 +112,14 @@ function DataRuntimeSourcePanel({ runtime }: { runtime?: V41DataRuntimeStatus })
               <div key={source} className="bg-[#05070c] p-3">
                 <div className="flex items-center justify-between gap-2">
                   <p className="sv-num text-[11px] normal-case text-slate-100">{source}</p>
-                  <WorkstationPill tone={tone}>{row?.freshness_status ?? 'missing'}</WorkstationPill>
+                  <DqStatusPill tone={tone} raw={row?.freshness_status} />
                 </div>
                 <MiniBar tone={tone} value={row ? Math.max(0, 100 - missing) : 0} />
-                <p className="mt-2 text-[10px] leading-4 text-slate-500">
+                <p className="mt-2 text-[10px] leading-4 text-muted-foreground">
                   rows {row?.rows ?? 0} / missing {missing}% / dup {duplicate}%
                 </p>
-                <p className="mt-1 truncate text-[10px] text-slate-600">{row?.role ?? 'not wired'} / {row?.decision_effect ?? 'no effect'}</p>
-                <p className="mt-1 truncate text-[10px] text-slate-600">{row?.latest_materialization ?? 'no materialization'}</p>
+                <p className="mt-1 truncate text-[10px] text-muted-foreground">{row?.role ?? 'not wired'} / {row?.decision_effect ?? 'no effect'}</p>
+                <p className="mt-1 truncate text-[10px] text-muted-foreground">{row?.latest_materialization ?? 'no materialization'}</p>
               </div>
             )
           })}
@@ -151,7 +167,7 @@ function MarketMaterializationPanel({ checks }: { checks: DataQualityCheck[] }) 
             <Database className="h-4 w-4 text-sky-300" />
             <p className="text-sm font-semibold text-slate-100">{check?.summary ?? '尚未取得首頁資料匯入檢查'}</p>
           </div>
-          <WorkstationPill tone={tone}>{check?.status ?? 'missing'}</WorkstationPill>
+          <DqStatusPill tone={tone} raw={check?.status} />
         </div>
       </div>
       <div className="grid gap-px bg-[#263247] md:grid-cols-2 xl:grid-cols-4">
@@ -159,32 +175,32 @@ function MarketMaterializationPanel({ checks }: { checks: DataQualityCheck[] }) 
           const itemTone = statusTone(item.status)
           const freshness = item.lag_days == null ? 'lag n/a' : `lag ${item.lag_days}d`
           const colorClass = itemTone === 'ok'
-            ? 'text-emerald-300'
+            ? 'text-ok'
             : itemTone === 'warn'
-              ? 'text-amber-300'
+              ? 'text-warn'
               : itemTone === 'error'
-                ? 'text-rose-300'
+                ? 'text-fail'
                 : 'text-slate-300'
           return (
             <div key={item.key} className="min-w-0 bg-[#05070c] p-3">
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <p className="truncate text-sm font-semibold text-slate-100">{item.label}</p>
-                  <p className="mt-1 truncate text-[11px] text-slate-500">{item.scope}</p>
+                  <p className="mt-1 truncate text-[11px] text-muted-foreground">{item.scope}</p>
                 </div>
-                <WorkstationPill tone={itemTone}>{item.status}</WorkstationPill>
+                <DqStatusPill tone={itemTone} raw={item.status} />
               </div>
               <p className={`mt-3 sv-num text-xl font-semibold ${colorClass}`}>{item.rows}</p>
               <MiniBar tone={itemTone} value={itemTone === 'ok' ? 92 : itemTone === 'warn' ? 58 : 100} />
               <p className="mt-2 truncate sv-num text-[11px] normal-case text-slate-400">{item.latest_date ?? 'no date'} / {freshness}</p>
-              <p className="mt-1 truncate text-[11px] text-slate-500">{item.source}</p>
-              {item.root_cause && <p className="mt-1 truncate text-[11px] text-amber-300">{item.root_cause}</p>}
+              <p className="mt-1 truncate text-[11px] text-muted-foreground">{item.source}</p>
+              {item.root_cause && <p className="mt-1 truncate text-[11px] text-warn" title={item.root_cause}>{item.root_cause}</p>}
             </div>
           )
         })}
         {!items.length && (
-          <div className="bg-[#05070c] p-4 text-sm text-amber-200">
-            Data Quality report 尚未包含 market_dashboard_materialization。
+          <div className="flex items-center gap-2 bg-[#05070c] p-4 text-sm text-warn">
+            <StatusIcon tone="warn" />Data Quality report 尚未包含 market_dashboard_materialization。
           </div>
         )}
       </div>
@@ -198,21 +214,21 @@ function CheckRow({ check, focused }: { check: DataQualityCheck; focused?: boole
     <div id={`dq-${check.id}`} className={`scroll-mt-24 grid gap-3 border-b p-3 text-xs last:border-0 lg:grid-cols-[0.8fr_1fr_0.8fr_auto] ${
       focused ? 'ring-1 ring-amber-300/60 ' : ''
     }${
-      check.status === 'fail' ? 'border-rose-500/25 bg-rose-950/15'
-        : check.status === 'warn' ? 'border-amber-500/25 bg-amber-950/10'
+      check.status === 'fail' ? 'border-fail/25 bg-fail/[0.06]'
+        : check.status === 'warn' ? 'border-warn/25 bg-warn/[0.05]'
           : 'border-[#263247] bg-[#05070c]'
     }`}>
       <div className="min-w-0">
         <div className="flex items-center gap-2">
-          <WorkstationPill tone={tone}>{check.status}</WorkstationPill>
+          <DqStatusPill tone={tone} raw={check.status} />
           <p className="truncate text-sm font-semibold text-slate-100">{check.label}</p>
         </div>
-        <p className="mt-1 sv-num text-[10px] normal-case text-slate-500">{check.id}</p>
+        <p className="mt-1 sv-num text-[10px] normal-case text-muted-foreground">{check.id}</p>
         <MiniBar tone={tone} value={check.status === 'ok' ? 96 : check.status === 'warn' ? 62 : 100} />
       </div>
       <p className="line-clamp-2 leading-5 text-slate-400">{check.summary}</p>
-      <p className="sv-num text-[10px] leading-5 text-slate-500">{metricSummary(check)}</p>
-      <a href={`/data-quality?focus=${check.id}`} className="inline-flex items-start justify-end gap-1 sv-num text-[10px] normal-case text-emerald-200 hover:text-emerald-100">
+      <p className="sv-num text-[10px] leading-5 text-muted-foreground">{metricSummary(check)}</p>
+      <a href={`/data-quality?focus=${check.id}`} className="inline-flex items-start justify-end gap-1 sv-num text-[10px] normal-case text-sky-300 hover:text-sky-200">
         Inspect <ExternalLink className="h-3 w-3" />
       </a>
     </div>
@@ -277,8 +293,8 @@ export default function DataQualityPage() {
         />
 
         {quality.error && (
-          <div className="border border-rose-400/30 bg-rose-400/[0.05] p-3 text-sm text-rose-200">
-            Data Quality API 載入失敗：{(quality.error as Error).message}
+          <div className={`flex items-center gap-2 border p-3 text-sm ${STATUS_CHIP.fail}`}>
+            <StatusIcon tone="fail" />Data Quality API 載入失敗：{(quality.error as Error).message}
           </div>
         )}
 
@@ -306,8 +322,8 @@ export default function DataQualityPage() {
             {gaps.length > 0 ? (
               gaps.map((check) => <CheckRow key={check.id} check={check} focused={check.id === focusId} />)
             ) : (
-              <div className="flex items-center gap-2 p-4 text-sm text-emerald-300">
-                <CheckCircle2 className="h-4 w-4" /> 沒有 fail/warn data quality 缺口。
+              <div className="flex items-center gap-2 p-4 text-sm text-ok">
+                <StatusIcon tone="ok" size={14} /> 沒有未通過或需注意的資料品質缺口。
               </div>
             )}
           </div>
@@ -317,8 +333,8 @@ export default function DataQualityPage() {
           <div className="overflow-hidden">
             {checks.map((check) => <CheckRow key={check.id} check={check} focused={check.id === focusId} />)}
             {!checks.length && (
-              <div className="flex items-center gap-2 p-4 text-sm text-amber-200">
-                <AlertTriangle className="h-4 w-4" /> 尚未取得 Data Quality checks。
+              <div className="flex items-center gap-2 p-4 text-sm text-warn">
+                <StatusIcon tone="warn" size={14} /> 尚未取得 Data Quality checks。
               </div>
             )}
           </div>

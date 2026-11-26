@@ -9,12 +9,14 @@ const panel = fs.readFileSync(path.join(root, 'components/PipelineMaturityContri
 const api = fs.readFileSync(path.join(root, 'lib/api.ts'), 'utf8')
 const contract = fs.readFileSync(path.join(root, 'lib/pipelineMaturityContract.ts'), 'utf8')
 
-test('NAV panel exposes preserved pre-outcome separately and collapses only optional diagnostics', () => {
+test('NAV panel exposes preserved pre-outcome separately and renders optional diagnostics in place (no collapse)', () => {
   assert(panel.includes('NAV 審查進度（非 pre-outcome 成熟度）'))
   assert(panel.includes('原鎖定候選 pre-outcome 持續累積'))
   assert(panel.includes('retainedEvidenceSummary ? <p'))
   assert.match(panel, /title="原鎖定候選 pre-outcome 持續累積"[^]*?metrics=\{retainedPreoutcomeMetrics\}\s*\/>/)
-  assert.match(panel, /metrics=\{monitoringMetrics\}\s*collapsible/)
+  // 2026-11-26 design review: no <details> collapse; optional diagnostics stay visible with lower visual weight.
+  assert.match(panel, /metrics=\{monitoringMetrics\}\s*secondary/)
+  assert(!panel.includes('<details'), 'maturity panel must not hide content in collapsible details')
   assert.equal(panel.match(/metrics=\{offlineDiagnosticMetrics\}/g)?.length, 1)
 })
 
@@ -25,11 +27,14 @@ test('Pipeline page renders maturity evidence after the daily flow', () => {
   assert(page.indexOf('<PipelineMaturityContribution') > page.indexOf('<ExecutionFlowColumn'))
   assert(!page.includes('RecommendationSummaryColumn'))
   assert(!page.includes('title="今日推薦股票"'))
-  assert(panel.includes('grid items-start gap-3 lg:grid-cols-[minmax(0,32fr)_minmax(0,32fr)_minmax(0,36fr)]'))
-  assert(panel.includes('grid items-start gap-3 lg:grid-cols-2'))
+  // Each stage spans the full width (metrics | blockers+lineage inside); no narrow 3-column grid with nested columns.
+  assert(!panel.includes('lg:grid-cols-[minmax(0,32fr)_minmax(0,32fr)_minmax(0,36fr)]'))
+  assert(panel.includes('lg:grid-cols-[minmax(0,1fr)_minmax(260px,320px)]'))
   assert(panel.includes('upstreamStages.map'))
   assert(page.includes('<L4DistributionPanel data={l4Distribution} />'))
-  assert(page.includes('L4 · 配置詳情</summary>'))
+  // L4 allocation renders in place as a full-width section instead of a collapsed block inside the narrow funnel column.
+  assert(page.includes('L4 · 配置詳情</h2>'))
+  assert(!page.includes('<details'))
   assert(page.includes('l4Distribution={maturityData?.l4_distribution}'))
   assert(!panel.includes('L4DistributionPanel'))
   assert(!panel.includes('NavCollectionSummary'))
@@ -71,14 +76,14 @@ test('maturity lineage labels cadence, role, availability, and comparable contra
     '目前正式服務中的產物（Production pointer）',
     '${evidenceScopes.offline_candidate.cadence} 離線候選來源（只建立／排隊 candidate）',
     'Rolling cohort 日更診斷（非升級門檻）',
-    'First comparable',
+    '首筆可比較證據',
   ]) {
     assert(panel.includes(label), `missing explicit maturity label: ${label}`)
   }
   assert(!panel.includes("return metric.note ? 'Pending' : 'Unavailable'"))
   assert(panel.includes("metric.availability === 'pending'"))
   assert(panel.includes('point.artifact_contract_version === latestHistory?.artifact_contract_version'))
-  assert(panel.includes('Current evidence unavailable or identity-blocked'))
+  assert(panel.includes('目前證據不可用或身分受阻'))
   assert(panel.includes('每日鎖定候選正式升級門檻'))
   assert(panel.includes('離線候選生成與入場門檻'))
   assert(panel.includes('Production 物化覆蓋與下一批候選 readiness'))

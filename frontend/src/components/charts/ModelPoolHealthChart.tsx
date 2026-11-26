@@ -13,6 +13,8 @@ import {
 } from 'lightweight-charts'
 import type { ModelPoolLineageModel, ModelArtifactPromotionQueueResponse } from '@/lib/api'
 import { ChartWorkbenchShell, DecisionPacketCell } from '@/components/workstation/VisualPrimitives'
+import { STATUS_CHIP, TW_COLORS } from '@/lib/colorTokens'
+import { StatusIcon } from '@/components/ui/status'
 
 type ModelEntry = [string, ModelPoolLineageModel]
 
@@ -23,7 +25,7 @@ type ModelPoolHealthChartProps = {
   sampleGaps: number
 }
 
-const COLORS = ['#7dd3fc', '#facc15', '#a7f3d0', '#fda4af', '#c4b5fd', '#f9a8d4', '#fdba74', '#93c5fd']
+const COLORS = ['#7dd3fc', '#facc15', '#cbd5e1', '#d8b4fe', '#c4b5fd', '#f9a8d4', '#fdba74', '#93c5fd']
 
 function isServingAlpha(model: ModelPoolLineageModel): boolean {
   return (model.status === 'active' || model.status === 'degraded')
@@ -67,7 +69,7 @@ function samplePoints(models: ModelEntry[]) {
   return models.slice(0, 8).map(([name, model], index) => ({
     time: timeAgo(index, Math.max(1, Math.min(models.length, 8))),
     value: Math.max(0, Number(model.last_ic_sample_count ?? 0)),
-    color: Number(model.last_ic_sample_count ?? 0) > 0 ? '#38bdf8' : '#f59e0b',
+    color: Number(model.last_ic_sample_count ?? 0) > 0 ? '#38bdf8' : TW_COLORS.warn,
     model: name,
   }))
 }
@@ -82,7 +84,7 @@ function lifecycleMarkers(models: ModelEntry[], queue?: ModelArtifactPromotionQu
       time: timeAgo(index, Math.max(1, Math.min(models.length, 8))),
       position: blocked ? 'aboveBar' : 'belowBar',
       shape: blocked ? 'circle' : 'arrowUp',
-      color: blocked ? '#f87171' : '#34d399',
+      color: blocked ? TW_COLORS.fail : TW_COLORS.ok,
       text: `${name} ${status}`,
     }]
   })
@@ -103,8 +105,8 @@ function ModelPoolSkeleton({ weakIc, sampleGaps }: { weakIc: number; sampleGaps:
         </div>
         <div className="grid grid-cols-3 gap-2 sv-num text-[11px]">
           <div className="border border-sky-400/20 bg-sky-400/10 px-3 py-2 text-sky-200">series 0</div>
-          <div className="border border-amber-400/25 bg-amber-400/10 px-3 py-2 text-amber-200">weak IC {weakIc}</div>
-          <div className="border border-rose-400/25 bg-rose-400/10 px-3 py-2 text-rose-200">sample gaps {sampleGaps}</div>
+          <div className={`inline-flex items-center gap-1 border px-3 py-2 ${STATUS_CHIP.warn}`}><StatusIcon tone="warn" size={10} />weak IC {weakIc}</div>
+          <div className={`inline-flex items-center gap-1 border px-3 py-2 ${STATUS_CHIP.fail}`}><StatusIcon tone="fail" size={10} />樣本缺口 {sampleGaps}</div>
         </div>
       </header>
       <div className="grid gap-px bg-[#263247] lg:grid-cols-[minmax(0,1.35fr)_minmax(300px,0.65fr)]">
@@ -113,7 +115,7 @@ function ModelPoolSkeleton({ weakIc, sampleGaps }: { weakIc: number; sampleGaps:
           <div className="relative flex h-[290px] items-end gap-4 border-l border-b border-[#3a4659] px-4 pb-6">
             {bars.map((height, index) => (
               <div key={index} className="flex flex-1 flex-col items-center gap-2">
-                <div className="h-1.5 w-1.5 rounded-full bg-emerald-300" />
+                <div className="h-1.5 w-1.5 rounded-full bg-slate-500" />
                 <div
                   className="w-full border border-sky-300/30 bg-sky-300/15"
                   style={{ height: `${Math.max(16, height * 210)}px` }}

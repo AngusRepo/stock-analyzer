@@ -12,6 +12,8 @@ import {
   type Time,
 } from 'lightweight-charts'
 import type { DataQualityCheck, DataQualityReport, DataQualityStatus } from '@/lib/api'
+import { STATUS_CHIP, TW_COLORS, type StatusTone } from '@/lib/colorTokens'
+import { StatusIcon, STATUS_LABEL } from '@/components/ui/status'
 
 type DataQualityTrendChartProps = {
   report?: DataQualityReport
@@ -33,10 +35,14 @@ function statusScore(status: DataQualityStatus): number {
   return 0
 }
 
+function statusTone(status: DataQualityStatus): StatusTone {
+  if (status === 'ok') return 'ok'
+  if (status === 'warn') return 'warn'
+  return 'fail'
+}
+
 function statusColor(status: DataQualityStatus): string {
-  if (status === 'ok') return '#34d399'
-  if (status === 'warn') return '#fbbf24'
-  return '#fb7185'
+  return TW_COLORS[statusTone(status)]
 }
 
 function statusSeverity(status: DataQualityStatus): number {
@@ -114,14 +120,14 @@ function EmptyWorkbench({ message }: { message: string }) {
     <section className="overflow-hidden border border-[#263247] bg-[#0f151d]/96">
       <header className="grid gap-3 border-b border-[#263247] bg-[#070a10] p-4 lg:grid-cols-[minmax(0,1fr)_300px] lg:items-center">
         <div>
-          <p className="sv-num text-[10px] normal-case text-emerald-300">Data Quality Visual Workbench</p>
+          <p className="sv-num text-[10px] normal-case text-sky-300">Data Quality Visual Workbench</p>
           <h2 className="mt-1 text-xl font-semibold text-[#f2ead8]">資料品質圖面等待 checks</h2>
           <p className="mt-2 text-xs leading-5 text-[#9badbf]">{message}</p>
         </div>
         <div className="grid grid-cols-3 gap-2 sv-num text-[11px]">
-          <div className="border border-slate-500/25 bg-slate-500/10 px-3 py-2 text-slate-300">checks 0</div>
-          <div className="border border-slate-500/25 bg-slate-500/10 px-3 py-2 text-slate-300">score N/A</div>
-          <div className="border border-rose-400/25 bg-rose-400/10 px-3 py-2 text-rose-200">api degraded</div>
+          <div className={`border px-3 py-2 ${STATUS_CHIP.na}`}>檢查 0</div>
+          <div className={`border px-3 py-2 ${STATUS_CHIP.na}`}>分數 N/A</div>
+          <div className={`inline-flex items-center gap-1 border px-3 py-2 ${STATUS_CHIP.fail}`} title="api degraded"><StatusIcon tone="fail" size={10} />API 異常</div>
         </div>
       </header>
       <div className="relative min-h-[300px] overflow-hidden bg-[#070a10] p-4">
@@ -130,10 +136,10 @@ function EmptyWorkbench({ message }: { message: string }) {
           {bars.map((height, index) => (
             <div key={index} className="flex flex-1 flex-col items-center gap-2">
               <div
-                className="w-full border border-emerald-300/25 bg-emerald-300/10"
+                className="w-full border border-slate-500/25 bg-slate-500/10"
                 style={{ height: `${Math.max(16, height * 190)}px` }}
               />
-              <div className="h-1.5 w-1.5 bg-amber-300" />
+              <div className="h-1.5 w-1.5 bg-slate-500" />
             </div>
           ))}
         </div>
@@ -168,7 +174,7 @@ export default function DataQualityTrendChart({ report, loading, error }: DataQu
     chartRef.current = chart
 
     const scoreSeries = chart.addSeries(LineSeries, {
-      color: failCount ? '#fb7185' : warnCount ? '#fbbf24' : '#34d399',
+      color: failCount ? TW_COLORS.fail : warnCount ? TW_COLORS.warn : TW_COLORS.ok,
       lineWidth: 2,
       priceLineVisible: false,
       title: 'quality score',
@@ -179,7 +185,7 @@ export default function DataQualityTrendChart({ report, loading, error }: DataQu
     const severitySeries = chart.addSeries(HistogramSeries, {
       priceFormat: { type: 'volume' },
       priceScaleId: '',
-      color: '#34d399',
+      color: TW_COLORS.ok,
     }, 1)
     severitySeries.setData(points.map((point) => ({
       time: point.time,
@@ -209,17 +215,17 @@ export default function DataQualityTrendChart({ report, loading, error }: DataQu
     <section className="overflow-hidden border border-[#263247] bg-[#0f151d]/96 shadow-[0_18px_60px_rgba(0,0,0,0.20)]">
       <header className="grid gap-3 border-b border-[#263247] bg-[#070a10] p-4 lg:grid-cols-[minmax(0,1fr)_420px] lg:items-center">
         <div>
-          <p className="sv-num text-[10px] normal-case text-emerald-300">Data Quality Visual Workbench</p>
+          <p className="sv-num text-[10px] normal-case text-sky-300">Data Quality Visual Workbench</p>
           <h2 className="mt-1 text-xl font-semibold text-[#f2ead8]">資料品質 evidence surface</h2>
           <p className="mt-2 max-w-2xl text-xs leading-5 text-[#9badbf]">
             這張圖把本次 freshness、schema、train/serve parity 與 feature coverage checks 轉成可掃描的品質曲線與缺口 marker。這不是歷史趨勢，等 V4 operations timeline contract 補齊後再接多日序列。
           </p>
         </div>
         <div className="grid grid-cols-4 gap-2 sv-num text-[11px]">
-          <div className="border border-emerald-400/25 bg-emerald-400/10 px-3 py-2 text-emerald-200">score {trustScore}%</div>
-          <div className="border border-emerald-400/25 bg-emerald-400/10 px-3 py-2 text-emerald-200">ok {okCount}</div>
-          <div className="border border-amber-400/25 bg-amber-400/10 px-3 py-2 text-amber-200">warn {warnCount}</div>
-          <div className="border border-rose-400/25 bg-rose-400/10 px-3 py-2 text-rose-200">fail {failCount}</div>
+          <div className="border border-slate-500/25 bg-slate-500/10 px-3 py-2 text-foreground">分數 {trustScore}%</div>
+          <div className={`inline-flex items-center gap-1 border px-3 py-2 ${STATUS_CHIP.ok}`}><StatusIcon tone="ok" size={10} />通過 {okCount}</div>
+          <div className={`inline-flex items-center gap-1 border px-3 py-2 ${STATUS_CHIP.warn}`}><StatusIcon tone="warn" size={10} />注意 {warnCount}</div>
+          <div className={`inline-flex items-center gap-1 border px-3 py-2 ${STATUS_CHIP.fail}`}><StatusIcon tone="fail" size={10} />未通過 {failCount}</div>
         </div>
       </header>
 
@@ -236,13 +242,13 @@ export default function DataQualityTrendChart({ report, loading, error }: DataQu
               >
                 <div className="flex items-center justify-between gap-2">
                   <span className="truncate font-semibold">{point.check.label}</span>
-                  <span className="sv-num text-[10px]" style={{ color: point.color }}>{point.check.status}</span>
+                  <span className="inline-flex shrink-0 items-center gap-1 text-[10px]" style={{ color: point.color }} title={point.check.status}><StatusIcon tone={statusTone(point.check.status)} size={10} />{STATUS_LABEL[statusTone(point.check.status)]}</span>
                 </div>
                 <p className="mt-1 line-clamp-2 text-[#8b9bab]">{point.check.summary}</p>
               </a>
             )) : (
-              <div className="border border-emerald-400/25 bg-emerald-400/10 p-2 text-emerald-200">
-                目前沒有 fail/warn checks。
+              <div className={`flex items-center gap-1 border p-2 ${STATUS_CHIP.ok}`}>
+                <StatusIcon tone="ok" size={10} />目前沒有未通過或需注意的檢查。
               </div>
             )}
           </div>

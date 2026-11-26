@@ -4,6 +4,7 @@ import {
   type DashboardV4ChartViewModel,
 } from './dashboardV4ChartViewModel.ts'
 import type { DashboardV4ChartPacket } from './api'
+import { TW_COLORS } from './colorTokens.ts'
 
 function assert(condition: unknown, message: string): void {
   if (!condition) throw new Error(message)
@@ -89,8 +90,8 @@ const packet: DashboardV4ChartPacket = {
   assert(viewModel.candles[0].time === '2026-05-14', 'candles should be sorted ascending')
   assert(viewModel.volume[1].value === 5000, 'volume should stay aligned with sorted candle order')
   assert(viewModel.modelMarkers.length === 2, 'model markers should be carried through')
-  assert(viewModel.sectorFlow[0].color === '#10b981', 'negative sector flow should render green')
-  assert(viewModel.sectorFlow[1].color === '#ef4444', 'positive sector flow should render red')
+  assert(viewModel.sectorFlow[0].color === TW_COLORS.down, 'negative sector flow should render the TW down (green) token')
+  assert(viewModel.sectorFlow[1].color === TW_COLORS.up, 'positive sector flow should render the TW up (red) token')
   assertDeepEqual(viewModel.lanes.map((lane) => [lane.id, lane.status, lane.value]), [
     ['price', 'ok', '2'],
     ['model_signals', 'ok', '2'],

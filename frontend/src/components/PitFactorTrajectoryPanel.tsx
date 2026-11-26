@@ -1,3 +1,4 @@
+import { DataState } from '@/components/ui/data-state'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Pause, Play, Radar, RotateCcw } from 'lucide-react'
@@ -19,15 +20,15 @@ const PLOT_WIDTH = WIDTH - PAD.left - PAD.right
 const PLOT_HEIGHT = HEIGHT - PAD.top - PAD.bottom
 const PLOT_MID_X = PAD.left + PLOT_WIDTH / 2
 const PLOT_MID_Y = PAD.top + PLOT_HEIGHT / 2
-const COLORS = ['#67e8f9', '#fbbf24', '#fb7185', '#a78bfa', '#34d399', '#60a5fa', '#f97316', '#e879f9', '#a3e635', '#fda4af', '#22d3ee', '#c4b5fd']
+const COLORS = ['#67e8f9', '#fbbf24', '#c084fc', '#a78bfa', '#94a3b8', '#60a5fa', '#f97316', '#e879f9', '#fde68a', '#d8b4fe', '#22d3ee', '#c4b5fd']
 const WINDOW_OPTIONS = [3, 5, 10, 20, 60] as const
 const MAX_DEFAULT_LABELS = 12
 const DEFAULT_GROUP_LIMIT = 12
 
 const QUADRANT_GUIDES = [
   { corner: '左上', title: '資金先卡位', detail: '表現仍偏弱，但參與開始增加', className: 'border-slate-400/25 bg-slate-500/[0.07] text-slate-200' },
-  { corner: '右上', title: '強勢擴散', detail: '表現優於預期，且股票與資金同步', className: 'border-emerald-300/25 bg-emerald-400/[0.07] text-emerald-100' },
-  { corner: '左下', title: '弱勢退潮', detail: '表現偏弱，資金參與也較少', className: 'border-rose-300/25 bg-rose-400/[0.07] text-rose-100' },
+  { corner: '右上', title: '強勢擴散', detail: '表現優於預期，且股票與資金同步', className: 'border-up/25 bg-up/[0.07] text-up' },
+  { corner: '左下', title: '弱勢退潮', detail: '表現偏弱，資金參與也較少', className: 'border-down/25 bg-down/[0.07] text-down' },
   { corner: '右下', title: '強但未擴散', detail: '表現偏強，但支持面仍偏窄', className: 'border-amber-300/25 bg-amber-400/[0.07] text-amber-100' },
 ] as const
 
@@ -454,7 +455,7 @@ function TrajectoryChart({
           <span className="text-right">比原本預期強 →</span>
         </div>
       </div>
-      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-slate-500">
+      <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-muted-foreground">
         <span>圓點越大＝當天的強弱或支持訊號越明顯</span>
         <span>外圈越大、越粗＝相對更多資金參與（只比較當天族群，不是實際金額）</span>
         {focusKey == null && series.length > 1 ? <span>為避免文字打架，預設最多標示離中心最遠且互不重疊的 {MAX_DEFAULT_LABELS} 類；點上方族群可單獨查看</span> : null}
@@ -477,10 +478,12 @@ function PanelShell({
   totalGroupCount,
   showAllGroups,
   onShowAllGroupsChange,
+  onRetry,
 }: {
   data?: FactorFlowMapResponse
   isLoading: boolean
   error: Error | null
+  onRetry?: () => void
   scope: 'group' | 'stock'
   days: number
   onDaysChange: (days: number) => void
@@ -506,7 +509,7 @@ function PanelShell({
             <Radar className="h-4 w-4 text-cyan-300" />
             <h2 className="font-bold text-slate-100">{title}</h2>
           </div>
-          <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-500">
+          <p className="mt-1 max-w-3xl text-xs leading-5 text-muted-foreground">
             {scope === 'group'
               ? groupLayer === 'subindustry'
                 ? `目前展開「${selectedTheme ?? ''}」底下由 FinLab 定義的次產業。往右代表表現比原本預期強，往上代表成分股與資金支持較廣。`
@@ -535,7 +538,7 @@ function PanelShell({
                   'rounded-full border px-2.5 py-1 text-[10px] font-bold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70',
                   days === option
                     ? 'border-cyan-300/35 bg-cyan-300/10 text-cyan-100'
-                    : 'border-white/10 text-slate-500 hover:text-slate-300',
+                    : 'border-white/10 text-muted-foreground hover:text-slate-300',
                 )}
               >
                 {option}日
@@ -561,9 +564,9 @@ function PanelShell({
       {isLoading ? (
         <div className={cx('animate-pulse rounded-2xl border border-white/[0.06] bg-white/[0.025]', scope === 'group' ? 'h-[620px]' : 'h-[480px]')} />
       ) : error ? (
-        <div className="rounded-xl border border-amber-300/15 bg-amber-400/[0.055] p-4 text-sm text-amber-100">PIT factor map 暫時無法讀取：{error.message}</div>
+        <DataState kind="error" title="個股強弱軌跡讀取失敗" code={error.message} onRetry={onRetry} />
       ) : series.length === 0 ? (
-        <div className="rounded-xl border border-white/[0.06] bg-white/[0.025] p-5 text-sm text-slate-500">尚無 prospective PIT residual 軌跡；正式選股、倉位與下單維持原狀。</div>
+        <div className="rounded-xl border border-white/[0.06] bg-white/[0.025] p-5 text-sm text-muted-foreground">尚無 prospective PIT residual 軌跡；正式選股、倉位與下單維持原狀。</div>
       ) : (
         <>
           <TrajectoryChart
@@ -571,7 +574,7 @@ function PanelShell({
             scope={scope}
             onSeriesSelect={scope === 'group' && groupLayer === 'industry_theme' ? onThemeSelect : undefined}
           />
-          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-[11px] text-muted-foreground">
             <span>已累積 {data?.session_count ?? 0}/{data?.requested_sessions ?? 10} 個實際 session</span>
             {scope === 'group' ? (
               <span>
@@ -616,6 +619,7 @@ export function GroupFactorTrajectoryPanel() {
       data={displayData}
       isLoading={query.isLoading}
       error={query.error as Error | null}
+      onRetry={() => { void query.refetch() }}
       scope="group"
       days={days}
       onDaysChange={setDays}
@@ -651,5 +655,5 @@ export function StockFactorTrajectoryPanel() {
     staleTime: 5 * 60_000,
     retry: 1,
   })
-  return <PanelShell data={query.data} isLoading={query.isLoading || pending.isLoading || positions.isLoading} error={query.error as Error | null} scope="stock" days={days} onDaysChange={setDays} />
+  return <PanelShell data={query.data} isLoading={query.isLoading || pending.isLoading || positions.isLoading} error={query.error as Error | null} onRetry={() => { void query.refetch() }} scope="stock" days={days} onDaysChange={setDays} />
 }

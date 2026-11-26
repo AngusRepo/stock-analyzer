@@ -9,6 +9,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Button } from '@/components/ui/button'
 import { useState } from 'react'
 import { format } from 'date-fns'
+import { TW_COLORS } from '@/lib/colorTokens'
 
 const RANGES = [
   { label: '1M', days: 30 },
@@ -42,7 +43,7 @@ function Candlestick(props: any) {
 
   const { open, close, high, low } = payload
   const isUp = close >= open
-  const color = isUp ? '#ef4444' : '#22c55e' // 台股：紅漲綠跌
+  const color = isUp ? TW_COLORS.up : TW_COLORS.down // 台股：紅漲綠跌
   const bodyTop = Math.min(open, close)
   const bodyBottom = Math.max(open, close)
 
@@ -105,7 +106,7 @@ export default function CandlestickChart({ stockId }: { stockId: number }) {
   const chartData = displayPrices.map((p: any, displayIdx: number) => {
     const i = displayStart + displayIdx
     const row: any = {
-      date: format(new Date(p.date), 'MM/dd'),
+      date: format(new Date(p.date), 'MM-dd'),
       open: p.open,
       high: p.high,
       low: p.low,
@@ -168,7 +169,7 @@ export default function CandlestickChart({ stockId }: { stockId: number }) {
               if (!payload?.open || !payload?.close) return null
               const { open, close, high, low } = payload
               const isUp = close >= open
-              const color = isUp ? '#ef4444' : '#22c55e'
+              const color = isUp ? TW_COLORS.up : TW_COLORS.down
 
               const yAxisHeight = 290
               const priceRange = maxPrice - minPrice
@@ -207,7 +208,7 @@ export default function CandlestickChart({ stockId }: { stockId: number }) {
           <YAxis domain={[0, maxVol * 1.2]} hide />
           <Bar dataKey="volume" barSize={Math.min(6, Math.max(1, 400 / chartData.length))}>
             {chartData.map((entry, i) => (
-              <Cell key={i} fill={entry.close >= entry.open ? '#ef444480' : '#22c55e80'} />
+              <Cell key={i} fill={`${entry.close >= entry.open ? TW_COLORS.up : TW_COLORS.down}80`} />
             ))}
           </Bar>
         </ComposedChart>

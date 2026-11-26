@@ -201,7 +201,7 @@ function TodoCardView({
       {showRelease && (
         <div className="space-y-1.5 rounded-lg border border-[#2b3a49] bg-[#0b1118] p-2">
           <p className="sv-num text-[11px] text-[#ffd87f]">預計上線日：{card.release_date ?? '未填'}</p>
-          {card.prs.length === 0 && <p className="text-[11px] text-rose-300">尚無 PR</p>}
+          {card.prs.length === 0 && <p className="text-[11px] text-warn">尚無 PR</p>}
           {card.prs.map((pr) => (
             <div key={pr.number} className="min-w-0 text-xs">
               <a href={`${PR_URL}${pr.number}`} target="_blank" rel="noreferrer" className="inline-flex max-w-full items-center gap-1 text-[#a5e7ff] hover:underline">
@@ -318,7 +318,7 @@ function CardEditor({
                 type="button"
                 aria-label="刪除 PR"
                 onClick={() => set('prs', draft.prs.filter((_, i) => i !== index))}
-                className="row-span-2 self-start rounded-md border border-[#2b3a49] p-1.5 text-rose-300"
+                className="row-span-2 self-start rounded-md border border-[#2b3a49] p-1.5 text-fail"
               >
                 <Trash2 className="h-3.5 w-3.5" />
               </button>
@@ -327,7 +327,7 @@ function CardEditor({
           ))}
         </div>
 
-        {error && <p className="rounded-lg border border-rose-400/30 bg-rose-400/[0.06] p-2 text-sm text-rose-200">{error}</p>}
+        {error && <p className="rounded-lg border border-fail/35 bg-fail/[0.06] p-2 text-sm text-fail">{error}</p>}
 
         <DialogFooter>
           <button type="button" onClick={onClose} className="rounded-full border border-[#2b3a49] px-3 py-1.5 text-sm text-slate-300">取消</button>
@@ -489,14 +489,14 @@ export default function TodoBoardPage() {
         />
 
         {cardsQuery.error && (
-          <div className="rounded-xl border border-rose-400/30 bg-rose-400/[0.05] p-3 text-sm text-rose-200">
+          <div className="rounded-xl border border-fail/35 bg-fail/[0.05] p-3 text-sm text-fail">
             待辦 API 載入失敗：{errorText(cardsQuery.error)}
           </div>
         )}
         {boardError && (
-          <div className="flex items-start justify-between gap-2 rounded-xl border border-rose-400/30 bg-rose-400/[0.05] p-3 text-sm text-rose-200">
+          <div className="flex items-start justify-between gap-2 rounded-xl border border-fail/35 bg-fail/[0.05] p-3 text-sm text-fail">
             <span className="break-words">{boardError}</span>
-            <button type="button" onClick={() => setBoardError(null)} className="shrink-0 text-[11px] text-rose-100">關閉</button>
+            <button type="button" onClick={() => setBoardError(null)} className="shrink-0 text-[11px] text-foreground">關閉</button>
           </div>
         )}
 

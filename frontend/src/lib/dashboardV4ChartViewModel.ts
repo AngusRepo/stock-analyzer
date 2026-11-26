@@ -1,4 +1,5 @@
 import type { DashboardV4ChartPacket } from './api'
+import { TW_COLORS } from './colorTokens'
 
 export type ChartLaneStatus = 'ok' | 'warn' | 'error' | 'neutral'
 
@@ -78,7 +79,7 @@ export function buildDashboardV4ChartViewModel(packet: DashboardV4ChartPacket): 
   const modelMarkers = byTime(packet.series.modelMarkers)
   const sectorFlow = byTime(packet.series.sectorFlow).map((row) => ({
     ...row,
-    color: row.value >= 0 ? '#ef4444' : '#10b981',
+    color: row.value >= 0 ? TW_COLORS.up : TW_COLORS.down,
   }))
   const regimeLabel = String((packet.regimeOverlay as { label?: unknown } | null)?.label ?? 'unknown')
   const dataQualityStatus = dataQualityOverall(packet)

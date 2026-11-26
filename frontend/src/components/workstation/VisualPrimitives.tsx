@@ -3,17 +3,17 @@
 export type VisualTone = 'ok' | 'warn' | 'error' | 'info' | 'neutral'
 
 const TONE_CLASS: Record<VisualTone, string> = {
-  ok: 'border-emerald-400/25 bg-emerald-400/10 text-emerald-200',
-  warn: 'border-amber-400/25 bg-amber-400/10 text-amber-200',
-  error: 'border-rose-400/25 bg-rose-400/10 text-rose-200',
+  ok: 'border-ok/30 bg-ok/10 text-ok',
+  warn: 'border-warn/30 bg-warn/10 text-warn',
+  error: 'border-fail/35 bg-fail/10 text-fail',
   info: 'border-sky-400/25 bg-sky-400/10 text-sky-200',
   neutral: 'border-[#263247] bg-[#0b111b] text-[#aab6c8]',
 }
 
 const BAR_CLASS: Record<VisualTone, string> = {
-  ok: 'bg-emerald-300',
-  warn: 'bg-amber-300',
-  error: 'bg-rose-300',
+  ok: 'bg-ok',
+  warn: 'bg-warn',
+  error: 'bg-fail',
   info: 'bg-sky-300',
   neutral: 'bg-slate-400',
 }

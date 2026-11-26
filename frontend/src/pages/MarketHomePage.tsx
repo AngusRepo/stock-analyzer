@@ -3,7 +3,6 @@ import { useIsFetching, useQuery } from '@tanstack/react-query'
 import {
   Activity,
   BarChart3,
-  CalendarDays,
   CircleDollarSign,
   Gauge,
   Globe2,
@@ -13,13 +12,18 @@ import {
   ShieldAlert,
   Sparkles,
   TrendingDown,
-  Waves,
 } from 'lucide-react'
 import AppShell from '@/components/AppShell'
 import { DeferredRender } from '@/components/DeferredRender'
 import { GroupFactorTrajectoryPanel } from '@/components/PitFactorTrajectoryPanel'
 import { MarketRiskDetailBreakdown } from '@/components/MarketRiskDetailBreakdown'
+import { DataState } from '@/components/ui/data-state'
+import { ListDetailLayout } from '@/components/ui/list-detail'
+import { PriceChange, StatusBadge, StatusIcon } from '@/components/ui/status'
 import { marketApi, recommendationsApi } from '@/lib/api'
+import { TW_COLORS } from '@/lib/colorTokens'
+import { formatDate, formatDateShort, formatNumber as formatGrouped, formatPct as formatUnsignedPct, formatSignedPct } from '@/lib/format'
+import { looksInternal } from '@/lib/humanLabels'
 import { splitRecommendationLanes } from '@/lib/recommendationLanes'
 import { safeExternalUrl } from '@/lib/safeUrl'
 import {
@@ -30,12 +34,18 @@ import {
 } from '@/lib/recommendationConfidence'
 import { queryTtl, recommendationDailyKey } from '@/lib/queryPolicy'
 import { hedgeSentimentView } from '@/lib/hedgeSentimentView'
+import { listRefreshState } from '@/lib/listRefreshState'
 
+// 首屏只渲染前 12 張推薦卡（效能上限）；其餘接在後面、捲近時自動渲染。沒有展開按鈕，全部名單不收合。
+const HOME_INITIAL_RECOMMENDATION_LIMIT = 12
 const loadRecommendationCardClean = () =>
   import('@/components/RecommendationCardClean').then((module) => ({ default: module.RecommendationCardClean }))
 const RecommendationCardClean = lazy(loadRecommendationCardClean)
+const RecommendationCardDetail = lazy(() =>
+  import('@/components/RecommendationCardClean').then((module) => ({ default: module.RecommendationCardDetail })))
 
-type Tone = 'red' | 'green' | 'blue' | 'amber' | 'slate'
+// up/down: prices, returns, buy/sell flows (Taiwan convention). ok/warn/fail: status. info: neutral emphasis.
+type Tone = 'up' | 'down' | 'ok' | 'warn' | 'fail' | 'info' | 'slate'
 
 type MarketPoint = {
   close?: number | string | null
@@ -47,6 +57,7 @@ type IndexTile = {
   value: string
   change: string
   pct: string
+  delta: number | null
   tone: Tone
   source: string
   status: string
@@ -67,11 +78,14 @@ type RiskFactor = {
   detail?: string
 }
 
+type ScaleBand = { to: number; label: string; tone: Tone; range?: string }
+
 const HOME_RECOMMENDATION_LIMIT = 80
-const HOME_INITIAL_RECOMMENDATION_LIMIT = 12
 const POTENTIAL_BUY_MIN_EXPECTED_RETURN = 0.005
 const OBSERVATIONAL_POTENTIAL_BUY_POLICY = 'non_executable_formal_ml_observation_missing_expected_return_v1'
 const EMBEDDED_NEWS_LIMIT = 9
+const MISSING = '—'
+const NBSP = ' '
 
 function cx(...classes: Array<string | false | null | undefined>) {
   return classes.filter(Boolean).join(' ')
@@ -88,93 +102,86 @@ function asNumber(value: unknown): number | null {
 }
 
 function formatNumber(value: number | null, digits = 2) {
-  if (value == null) return '待接資料'
-  return value.toLocaleString('zh-TW', {
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  })
+  return formatGrouped(value, digits, MISSING)
 }
 
 function formatInteger(value: number | null) {
-  if (value == null) return '待接資料'
-  return Math.round(value).toLocaleString('zh-TW')
+  return formatGrouped(value == null ? null : Math.round(value), 0, MISSING)
 }
 
 function formatSigned(value: number | null, digits = 2) {
-  if (value == null) return '待接資料'
-  return `${value >= 0 ? '+' : ''}${value.toFixed(digits)}`
+  if (value == null) return MISSING
+  return `${value > 0 ? '+' : ''}${formatGrouped(value, digits)}`
 }
 
 function formatPct(value: number | null, digits = 2, signed = true) {
-  if (value == null) return '待接資料'
-  const sign = signed && value >= 0 ? '+' : ''
-  return `${sign}${value.toFixed(digits)}%`
+  return signed ? formatSignedPct(value, digits, MISSING) : formatUnsignedPct(value, digits, MISSING)
 }
 
-function formatCompactAmount(value: number | null) {
-  if (value == null) return '待接資料'
+// Market turnover is read in 億 (TWSE convention); number and unit never wrap apart.
+function formatAmountYi(value: number | null) {
+  if (value == null) return MISSING
   const abs = Math.abs(value)
-  if (abs >= 1_000_000_000_000) return `${(value / 1_000_000_000_000).toFixed(2)}兆`
-  if (abs >= 100_000_000) return `${(value / 100_000_000).toFixed(1)}億`
-  if (abs >= 10_000) return `${(value / 10_000).toFixed(1)}萬`
-  return value.toLocaleString('zh-TW', { maximumFractionDigits: 1 })
+  if (abs >= 1e8) return `${formatGrouped(value / 1e8, abs >= 1e10 ? 0 : 1)}${NBSP}億`
+  if (abs >= 1e4) return `${formatGrouped(value / 1e4, 1)}${NBSP}萬`
+  return formatGrouped(value, 0)
 }
 
 function formatCompactCount(value: number | null) {
-  if (value == null) return '待接資料'
+  if (value == null) return MISSING
   const abs = Math.abs(value)
-  if (abs >= 100_000_000) return `${(value / 100_000_000).toFixed(1)}億`
-  if (abs >= 10_000) return `${(value / 10_000).toFixed(1)}萬`
-  return Math.round(value).toLocaleString('zh-TW')
+  if (abs >= 1e8) return `${formatGrouped(value / 1e8, 1)}${NBSP}億`
+  if (abs >= 1e4) return `${formatGrouped(value / 1e4, 1)}${NBSP}萬`
+  return formatGrouped(Math.round(value), 0)
 }
 
 function formatLots(value: number | null) {
-  if (value == null) return '待匯入'
-  const abs = Math.abs(value)
-  if (abs >= 10_000) return `${(value / 10_000).toFixed(1)}萬張`
-  return `${Math.round(value).toLocaleString('zh-TW')}張`
+  if (value == null) return MISSING
+  if (Math.abs(value) >= 10_000) return `${formatGrouped(value / 10_000, 1)}${NBSP}萬張`
+  return `${formatGrouped(Math.round(value), 0)}${NBSP}張`
 }
 
+// Institutional flow values arrive already in 億.
 function formatBillion(value: number | null) {
-  if (value == null) return '待接資料'
-  return `${value >= 0 ? '+' : ''}${value.toFixed(2)}億`
+  if (value == null) return MISSING
+  return `${value > 0 ? '+' : ''}${formatGrouped(value, 2)}${NBSP}億`
 }
 
 function toneBySigned(value: number | null): Tone {
   if (value == null || value === 0) return 'slate'
-  return value >= 0 ? 'red' : 'green'
+  return value > 0 ? 'up' : 'down'
 }
 
 function riskTone(score: number | null): Tone {
   if (score == null) return 'slate'
-  if (score >= 70) return 'red'
-  if (score >= 46) return 'amber'
-  if (score >= 28) return 'blue'
-  return 'green'
+  if (score >= 70) return 'fail'
+  if (score >= 46) return 'warn'
+  return 'ok'
 }
 
-function fearGreedTone(score: number | null): Tone {
-  if (score == null) return 'slate'
-  if (score < 20) return 'green'
-  if (score < 45) return 'amber'
-  if (score < 55) return 'blue'
-  if (score < 75) return 'red'
-  return 'red'
+// Fear/greed is a gauge, not a price move: neutral colour, the band label carries the meaning.
+// (batch3 color rule: up/down only for prices and returns; threshold checks use status colours.)
+function sentimentTone(score: number | null): Tone {
+  return score == null ? 'slate' : 'info'
 }
 
 function toneText(tone: Tone) {
-  if (tone === 'red') return 'text-red-400'
-  if (tone === 'green') return 'text-emerald-400'
-  if (tone === 'blue') return 'text-blue-300'
-  if (tone === 'amber') return 'text-amber-300'
-  return 'text-slate-400'
+  if (tone === 'up') return 'text-up'
+  if (tone === 'down') return 'text-down'
+  if (tone === 'ok') return 'text-ok'
+  if (tone === 'warn') return 'text-warn'
+  if (tone === 'fail') return 'text-fail'
+  if (tone === 'info') return 'text-foreground'
+  return 'text-muted-foreground'
 }
 
 function toneBar(tone: Tone) {
-  if (tone === 'red') return 'bg-red-500'
-  if (tone === 'green') return 'bg-emerald-500'
-  if (tone === 'blue') return 'bg-blue-500'
-  if (tone === 'amber') return 'bg-amber-400'
+  if (tone === 'up') return 'bg-up'
+  if (tone === 'down') return 'bg-down'
+  if (tone === 'ok') return 'bg-ok'
+  if (tone === 'warn') return 'bg-warn'
+  if (tone === 'fail') return 'bg-fail'
+  if (tone === 'info') return 'bg-slate-300/80'
   return 'bg-slate-500'
 }
 
@@ -183,14 +190,6 @@ function panelClass(className?: string) {
     'sv-home-glass-panel rounded-[24px] border border-white/[0.09]',
     'bg-[linear-gradient(180deg,rgba(22,23,30,0.96),rgba(10,11,15,0.985))]',
     className,
-  )
-}
-
-function SourceBadge({ children }: { children: ReactNode }) {
-  return (
-    <span className="inline-flex items-center gap-1 rounded-full border border-white/[0.08] bg-white/[0.045] px-2.5 py-1 text-[11px] font-semibold text-slate-400">
-      {children}
-    </span>
   )
 }
 
@@ -204,18 +203,20 @@ function scopeLabel(scope: any) {
         : null
 }
 
-function ScopeBadge({ scope }: { scope: any }) {
-  const label = scopeLabel(scope)
-  if (!label) return null
-  const includesEmerging = scope?.includesEmerging === true
+// The panel header states the common scope once; a card repeats it only when it also covers emerging stocks.
+function EmergingScopeBadge({ scope }: { scope: any }) {
+  if (scope?.includesEmerging !== true) return null
+  return <StatusBadge tone="warn">{scopeLabel(scope) ?? '含興櫃'}</StatusBadge>
+}
+
+// A card shows its own data date only when it differs from the date in the block title.
+function DateIfDiffers({ date, panelDate }: { date: unknown; panelDate: string | null }) {
+  const own = isoDate(date)
+  if (!own || !panelDate || own === panelDate) return null
   return (
-    <span className={cx(
-      'inline-flex items-center gap-1 rounded-full border px-2.5 py-1 text-[11px] font-semibold',
-      includesEmerging
-        ? 'border-amber-300/25 bg-amber-400/10 text-amber-200'
-        : 'border-emerald-300/25 bg-emerald-400/10 text-emerald-200',
-    )}>
-      {label}
+    <span className="inline-flex items-center gap-1 whitespace-nowrap text-[11px] tabular-nums text-warn" title="與區塊標題的資料日不同">
+      <StatusIcon tone="warn" size={10} />
+      {formatDate(own)}
     </span>
   )
 }
@@ -230,7 +231,7 @@ function SectionHeader({
   action?: ReactNode
 }) {
   return (
-    <div className="flex min-h-[56px] items-center justify-between gap-3 px-5 py-4">
+    <div className="flex min-h-[48px] items-center justify-between gap-3 px-5 py-3">
       <div className="flex min-w-0 items-center gap-2">
         <Icon className="h-4 w-4 shrink-0 text-blue-400" />
         <h2 className="truncate text-[15px] font-bold text-slate-100">{title}</h2>
@@ -240,16 +241,15 @@ function SectionHeader({
   )
 }
 
-function shortDate(value: unknown) {
-  const raw = String(value ?? '')
-  return raw ? raw.slice(0, 10).replace(/-/g, '/') : 'latest'
+function HeaderMeta({ children }: { children: ReactNode }) {
+  return <span className="whitespace-nowrap text-[11px] tabular-nums text-muted-foreground">{children}</span>
 }
 
 function isoDate(value: unknown): string | null {
   const raw = String(value ?? '').trim()
   const compact = raw.match(/^(\d{4})(\d{2})(\d{2})$/)
   if (compact) return `${compact[1]}-${compact[2]}-${compact[3]}`
-  return /^\d{4}-\d{2}-\d{2}/.test(raw) ? raw.slice(0, 10) : null
+  return /^\d{4}[-/]\d{2}[-/]\d{2}/.test(raw) ? raw.slice(0, 10).replace(/\//g, '-') : null
 }
 
 function parseHistory(raw: any): number[] {
@@ -265,13 +265,15 @@ function toIndexTile(raw: any, label: string, source: string): IndexTile {
   const history = parseHistory(raw)
   const notMaterialized = raw?.status === 'finlab_not_materialized'
   const hasDelta = change != null || changePct != null
+  const delta = change ?? changePct
 
   return {
     label,
-    value: current == null ? (notMaterialized ? '待匯入' : '待接資料') : formatNumber(current, current >= 1000 ? 2 : 2),
-    change: current == null ? (notMaterialized ? 'FinLab未匯入' : '待接資料') : change == null ? '漲跌待補' : formatSigned(change, 2),
-    pct: current == null ? '--' : changePct == null ? '--' : formatPct(changePct, 2),
-    tone: current == null ? (notMaterialized ? 'amber' : 'slate') : hasDelta ? toneBySigned(change ?? changePct) : 'blue',
+    value: current == null ? (notMaterialized ? '尚未匯入' : '待接資料') : formatNumber(current, 2),
+    change: current == null ? '' : change == null ? '漲跌待補' : formatSigned(change, 2),
+    pct: current == null || changePct == null ? MISSING : formatPct(changePct, 2),
+    delta: current == null ? null : delta,
+    tone: current == null ? (notMaterialized ? 'warn' : 'slate') : hasDelta ? toneBySigned(delta) : 'info',
     source: raw?.source ?? source,
     status: raw?.status ?? (current == null ? 'missing' : 'ok'),
     history,
@@ -284,15 +286,21 @@ function pendingIndexTile(label: string, source: string): IndexTile {
   return {
     label,
     value: '待接資料',
-    change: '等待資料源',
-    pct: '--',
-    tone: 'amber',
+    change: '',
+    pct: MISSING,
+    delta: null,
+    tone: 'slate',
     source,
     status: 'missing',
     history: [],
     available: false,
     date: null,
   }
+}
+
+// The indices request itself failed: say so instead of showing it as missing data.
+function failedIndexTile(label: string, source: string): IndexTile {
+  return { ...pendingIndexTile(label, source), value: MISSING, status: 'fetch_failed' }
 }
 
 function findFactor(risk: any, ids: string[], labels: string[] = []): RiskFactor | null {
@@ -309,21 +317,15 @@ function findFactor(risk: any, ids: string[], labels: string[] = []): RiskFactor
   }) ?? null
 }
 
-function factorDisplay(factor: RiskFactor | null, fallback = '待接資料') {
+function factorDisplay(factor: RiskFactor | null, fallback = MISSING) {
   if (!factor) return fallback
-  if (factor.value != null && factor.value !== '') return String(factor.value)
+  if (factor.value != null && factor.value !== '' && !looksInternal(factor.value)) return String(factor.value)
   const raw = asNumber(factor.raw_value)
   return raw == null ? fallback : formatNumber(raw, 2)
 }
 
 function Sparkline({ values, tone }: { values: number[]; tone: Tone }) {
-  if (values.length < 2) {
-    return (
-      <span className="rounded-full border border-white/[0.08] bg-white/[0.04] px-2 py-1 text-[11px] font-semibold text-slate-500">
-        無歷史序列
-      </span>
-    )
-  }
+  if (values.length < 2) return <span className="text-[11px] text-muted-foreground">無走勢</span>
 
   const min = Math.min(...values)
   const max = Math.max(...values)
@@ -333,65 +335,101 @@ function Sparkline({ values, tone }: { values: number[]; tone: Tone }) {
     const y = 38 - ((value - min) / span) * 30
     return `${x.toFixed(1)},${y.toFixed(1)}`
   }).join(' ')
-  const stroke = tone === 'red' ? '#ef4444' : tone === 'green' ? '#22c55e' : tone === 'amber' ? '#f59e0b' : '#60a5fa'
+  const stroke = tone === 'up' ? TW_COLORS.up : tone === 'down' ? TW_COLORS.down : tone === 'warn' ? TW_COLORS.warn : '#60a5fa'
 
   return (
-    <svg viewBox="0 0 104 42" className="h-10 w-24 overflow-visible" aria-label="真實走勢">
+    <svg viewBox="0 0 104 42" className="h-10 w-24 overflow-visible" aria-label="近期走勢">
       <polyline points={points} fill="none" stroke={stroke} strokeOpacity="0.9" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   )
 }
 
 function IndexTileCard({ tile, panelDate }: { tile: IndexTile; panelDate: string | null }) {
-  // The night session always trades ahead of the day-session panel date, so it is not compared.
-  const dateDiffers = tile.label !== '台指期貨夜盤' && tile.date != null && panelDate != null && tile.date !== panelDate
+  // The night session always trades ahead of the day-session panel date, so it is labelled, not compared.
+  const isNight = tile.label === '台指期貨夜盤'
+  const dateDiffers = !isNight && tile.date != null && panelDate != null && tile.date !== panelDate
+  const fetchFailed = tile.status === 'fetch_failed'
+  const missingLabel = fetchFailed ? '讀取失敗' : tile.status === 'finlab_not_materialized' ? '尚未匯入' : '缺資料'
   return (
-    <div className={cx(
-      'relative min-h-[122px] overflow-hidden border-white/[0.045] px-5 py-4 md:border-r',
-      tile.tone === 'red' && 'bg-red-500/[0.045]',
-      tile.tone === 'green' && 'bg-emerald-500/[0.045]',
-      tile.tone === 'amber' && 'bg-amber-400/[0.04]',
-      tile.tone === 'blue' && 'bg-blue-500/[0.04]',
-      tile.tone === 'slate' && 'bg-white/[0.02]',
-    )}>
-      <span className={cx('absolute left-0 top-5 h-6 w-0.5 rounded-full', toneBar(tile.tone))} />
+    <div
+      title={`來源：${tile.source}`}
+      className={cx(
+        'relative overflow-hidden border-white/[0.045] px-5 py-3.5 md:border-r',
+        tile.tone === 'up' && 'bg-up/[0.045]',
+        tile.tone === 'down' && 'bg-down/[0.045]',
+        tile.tone === 'warn' && 'bg-warn/[0.04]',
+        (tile.tone === 'info' || tile.tone === 'slate') && 'bg-white/[0.02]',
+      )}
+    >
+      <span className={cx('absolute left-0 top-4 h-6 w-0.5 rounded-full', toneBar(tile.tone))} />
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <p className="truncate text-sm font-bold text-slate-100">{tile.label}</p>
-          <p className={cx('mt-3 text-[24px] font-bold leading-none tabular-nums', toneText(tile.tone))}>{tile.value}</p>
-          <p className={cx('mt-1 text-xs font-semibold tabular-nums', toneText(tile.tone))}>
-            {tile.change} <span className="mx-1 text-slate-600">|</span> {tile.pct}
+          <p className="flex items-center gap-2 truncate text-sm font-bold text-slate-100">
+            {tile.label}
+            {isNight && tile.date && <span className="text-[11px] font-normal tabular-nums text-muted-foreground">{formatDateShort(tile.date)}</span>}
+            {dateDiffers && (
+              <span className="inline-flex items-center gap-1 text-[11px] font-normal tabular-nums text-warn" title="與區塊標題的資料日不同">
+                <StatusIcon tone="warn" size={10} />
+                {formatDateShort(tile.date)}
+              </span>
+            )}
           </p>
+          <p className={cx('mt-2 whitespace-nowrap text-[24px] font-bold leading-none tabular-nums', tile.available ? toneText(tile.tone) : 'text-muted-foreground')}>{tile.value}</p>
+          {tile.available && (
+            <PriceChange value={tile.delta} className="mt-1 block text-xs font-semibold">
+              {tile.change} <span className="mx-1 text-muted-foreground">|</span> {tile.pct}
+            </PriceChange>
+          )}
         </div>
         {tile.available ? <Sparkline values={tile.history} tone={tile.tone} /> : (
-          <span className="rounded-full border border-amber-300/20 bg-amber-300/10 px-2 py-1 text-[11px] font-semibold text-amber-200">
-            {tile.status === 'finlab_not_materialized' ? '待匯入' : '缺資料'}
-          </span>
+          <StatusBadge tone={fetchFailed ? 'fail' : tile.status === 'finlab_not_materialized' ? 'warn' : 'na'}>{missingLabel}</StatusBadge>
         )}
       </div>
-      {tile.date && (
-        <p className={cx('mt-3 text-[11px] tabular-nums', dateDiffers ? 'font-semibold text-amber-200' : 'text-slate-400')}>
-          資料日 {shortDate(tile.date)}{dateDiffers ? '（與上方日期不同）' : ''}
-        </p>
-      )}
-      <p className={cx('truncate text-[11px] text-slate-500', tile.date ? 'mt-1' : 'mt-3')} title={tile.source}>
-        {tile.status === 'missing' ? 'source missing' : tile.status === 'finlab_not_materialized' ? 'FinLab 尚未 materialize' : tile.source}
-      </p>
     </div>
   )
 }
 
-function SplitBar({ values, colors }: { values: number[]; colors: string[] }) {
+function SplitBar({ values, colors, title }: { values: number[]; colors: string[]; title?: string }) {
   const cleaned = values.map((value) => Math.max(0, Number.isFinite(value) ? value : 0))
   const total = cleaned.reduce((sum, value) => sum + value, 0)
   return (
-    <div className="flex h-1.5 overflow-hidden rounded-full bg-white/[0.08]">
+    <div className="flex h-1.5 overflow-hidden rounded-full bg-white/[0.08]" title={title}>
       {cleaned.map((value, index) => (
         <span
           key={`${index}-${value}`}
-          style={{ width: `${total > 0 ? (value / total) * 100 : index === 0 ? 100 : 0}%`, backgroundColor: colors[index] }}
+          style={{ width: `${total > 0 ? (value / total) * 100 : 0}%`, backgroundColor: colors[index] }}
         />
       ))}
+    </div>
+  )
+}
+
+// Limited-step scale: neutral segments, the active one filled and its label highlighted.
+function SegmentScale({ value, bands, min = 0 }: { value: number | null; bands: ScaleBand[]; min?: number }) {
+  const max = bands[bands.length - 1]?.to ?? 100
+  const activeIndex = value == null ? -1 : bands.findIndex((band) => value <= band.to)
+  const active = activeIndex === -1 && value != null ? bands.length - 1 : activeIndex
+  let from = min
+  const cells = bands.map((band, index) => {
+    const width = ((band.to - from) / (max - min)) * 100
+    from = band.to
+    return { band, width, isActive: index === active }
+  })
+  return (
+    <div>
+      <div className="flex h-1.5 gap-0.5 overflow-hidden rounded-full">
+        {cells.map(({ band, width, isActive }) => (
+          <span key={band.label} style={{ width: `${width}%` }} className={isActive ? toneBar(band.tone) : 'bg-white/[0.1]'} />
+        ))}
+      </div>
+      <div className="mt-1.5 flex gap-0.5 text-[10px] leading-4">
+        {cells.map(({ band, width, isActive }) => (
+          <span key={band.label} style={{ width: `${width}%` }} className={cx('truncate text-center', isActive ? cx('font-semibold', toneText(band.tone)) : 'text-muted-foreground')}>
+            {band.label}
+            {band.range && <span className="block tabular-nums">{band.range}</span>}
+          </span>
+        ))}
+      </div>
     </div>
   )
 }
@@ -400,6 +438,7 @@ function StatTrack({
   icon: Icon,
   title,
   date,
+  panelDate,
   scope,
   bar,
   children,
@@ -407,33 +446,40 @@ function StatTrack({
   icon: ComponentType<{ className?: string }>
   title: string
   date?: string | null
+  panelDate: string | null
   scope?: any
-  bar: ReactNode
+  bar?: ReactNode
   children: ReactNode
 }) {
   return (
-    <div className="min-h-[154px] rounded-[18px] border border-white/[0.065] bg-white/[0.032] p-4">
-      <div className="mb-4 flex items-center justify-between gap-3">
+    <div className="min-w-0 border-t border-border pt-3">
+      <div className="mb-3 flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
           <Icon className="h-4 w-4 shrink-0 text-orange-400" />
           <h3 className="truncate text-sm font-bold text-slate-100">{title}</h3>
         </div>
-        <div className="flex shrink-0 flex-wrap justify-end gap-1.5">
-          <ScopeBadge scope={scope} />
-          <span className="rounded-full bg-white/[0.055] px-2 py-1 text-[11px] text-slate-500">{shortDate(date)}</span>
+        <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+          <EmergingScopeBadge scope={scope} />
+          <DateIfDiffers date={date} panelDate={panelDate} />
         </div>
       </div>
       {bar}
-      <div className="mt-5">{children}</div>
+      <div className={bar ? 'mt-4' : ''}>{children}</div>
     </div>
   )
 }
 
-function MarketStatsRibbon({ risk }: { risk: any }) {
-  return <MarketStatsRibbonClean risk={risk} />
+function Metric({ label, value, valueClass = 'text-slate-100', sub, title }: { label: string; value: ReactNode; valueClass?: string; sub?: ReactNode; title?: string }) {
+  return (
+    <div className="min-w-0" title={title}>
+      <p className="text-xs text-muted-foreground">{label}</p>
+      <p className={cx('mt-1 whitespace-nowrap text-lg font-bold tabular-nums', valueClass)}>{value}</p>
+      {sub && <p className="whitespace-nowrap text-[11px] tabular-nums text-muted-foreground">{sub}</p>}
+    </div>
+  )
 }
 
-function MarketStatsRibbonClean({ risk }: { risk: any }) {
+function MarketStatsRibbonClean({ risk, panelDate }: { risk: any; panelDate: string | null }) {
   const breadth = risk?.breadthSnapshot ?? risk?.breadth ?? {}
   const marketStats = risk?.marketStats ?? {}
   const credit = risk?.creditTrading ?? {}
@@ -444,6 +490,7 @@ function MarketStatsRibbonClean({ risk }: { risk: any }) {
   const unchanged = asNumber(breadth.unchanged_count ?? breadth.unchangedCount ?? breadth.flat ?? breadth.unchanged)
   const decline = asNumber(breadth.decline_count ?? breadth.declineCount ?? breadth.down ?? breadth.falling)
   const total = (advance ?? 0) + (unchanged ?? 0) + (decline ?? 0)
+  const share = (value: number | null) => (total > 0 ? formatPct(((value ?? 0) / total) * 100, 1, false) : MISSING)
 
   const volumeShares = asNumber(risk?.marketVolume ?? risk?.turnoverVolume ?? marketStats.volume)
   const volumeLots = volumeShares == null ? null : volumeShares / 1000
@@ -472,34 +519,25 @@ function MarketStatsRibbonClean({ risk }: { risk: any }) {
   const shortChangePct = asNumber(risk?.shortBalanceChangePct ?? credit.shortBalanceChangePct)
   const brokerBalanceIndex = asNumber(risk?.brokerBalanceIndex ?? chip.brokerBalanceIndex)
   const brokerBuySellRatio = asNumber(risk?.brokerBuySellRatio ?? chip.brokerBuySellRatio)
-  const brokerBalanceTone: Tone = brokerBalanceIndex == null ? 'slate' : brokerBalanceIndex >= 0 ? 'green' : 'red'
-  const brokerBuySellTone: Tone = brokerBuySellRatio == null ? 'slate' : brokerBuySellRatio >= 1 ? 'green' : 'red'
+  // Broker absorption is a buy/sell flow: net absorbing reads red, net distributing green.
+  const brokerBalanceTone: Tone = toneBySigned(brokerBalanceIndex)
+  const brokerBuySellTone: Tone = brokerBuySellRatio == null ? 'slate' : toneBySigned(brokerBuySellRatio - 1)
+  const amountSub = (value: number | null, note: string) => <span title={note}>{value == null ? note : `≈${NBSP}${formatAmountYi(value)}`}</span>
 
   return (
-    <div className="grid gap-4 xl:grid-cols-4">
+    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
       <StatTrack
         icon={TrendingDown}
         title="漲跌家數"
         date={breadth.date ?? risk?.date}
+        panelDate={panelDate}
         scope={breadth.scope ?? marketScope}
-        bar={<SplitBar values={[advance ?? 0, unchanged ?? 0, decline ?? 0]} colors={['#ef4444', '#6b7280', '#22c55e']} />}
+        bar={<SplitBar values={[advance ?? 0, unchanged ?? 0, decline ?? 0]} colors={[TW_COLORS.up, '#4b5563', TW_COLORS.down]} title="上漲／平盤／下跌家數比例" />}
       >
         <div className="grid grid-cols-3 gap-2">
-          <div>
-            <p className="text-xs text-slate-500">上漲</p>
-            <p className="mt-1 text-lg font-bold tabular-nums text-red-400">{formatInteger(advance)}</p>
-            <p className="text-[11px] text-slate-500">{total > 0 ? formatPct(((advance ?? 0) / total) * 100, 1, false) : '--'}</p>
-          </div>
-          <div>
-            <p className="text-xs text-slate-500">平盤</p>
-            <p className="mt-1 text-lg font-bold tabular-nums text-slate-300">{formatInteger(unchanged)}</p>
-            <p className="text-[11px] text-slate-500">{total > 0 ? formatPct(((unchanged ?? 0) / total) * 100, 1, false) : '--'}</p>
-          </div>
-          <div>
-            <p className="text-xs text-slate-500">下跌</p>
-            <p className="mt-1 text-lg font-bold tabular-nums text-emerald-400">{formatInteger(decline)}</p>
-            <p className="text-[11px] text-slate-500">{total > 0 ? formatPct(((decline ?? 0) / total) * 100, 1, false) : '--'}</p>
-          </div>
+          <Metric label="上漲" value={<>▲ {formatInteger(advance)}</>} valueClass="text-up" sub={share(advance)} />
+          <Metric label="平盤" value={formatInteger(unchanged)} valueClass="text-slate-300" sub={share(unchanged)} />
+          <Metric label="下跌" value={<>▼ {formatInteger(decline)}</>} valueClass="text-down" sub={share(decline)} />
         </div>
       </StatTrack>
 
@@ -507,25 +545,13 @@ function MarketStatsRibbonClean({ risk }: { risk: any }) {
         icon={BarChart3}
         title="成交量 / 成交額"
         date={risk?.date}
+        panelDate={panelDate}
         scope={marketScope}
-        bar={<SplitBar values={[volumeLots ?? 0, amount == null ? 0 : amount / 100_000_000]} colors={['#3b82f6', '#8b5cf6']} />}
       >
         <div className="grid grid-cols-3 gap-3">
-          <div>
-            <p className="text-xs text-slate-500">全市場成交張數</p>
-            <p className="mt-1 text-lg font-bold tabular-nums text-slate-100">{formatLots(volumeLots)}</p>
-            <p className="text-[11px] text-slate-500">由股數換算</p>
-          </div>
-          <div>
-            <p className="text-xs text-slate-500">全市場成交金額</p>
-            <p className="mt-1 text-lg font-bold tabular-nums text-slate-100">{formatCompactAmount(amount)}</p>
-            <p className="text-[11px] text-slate-500">成交金額（TWD）</p>
-          </div>
-          <div>
-            <p className="text-xs text-slate-500">成交筆數</p>
-            <p className="mt-1 text-lg font-bold tabular-nums text-slate-100">{formatCompactCount(tradeCount)}</p>
-            <p className="text-[11px] text-slate-500">交易密度</p>
-          </div>
+          <Metric label="成交張數" value={formatLots(volumeLots)} title="全市場成交股數換算張數" />
+          <Metric label="成交金額" value={formatAmountYi(amount)} title="全市場成交金額（新台幣）" />
+          <Metric label="成交筆數" value={formatCompactCount(tradeCount)} />
         </div>
       </StatTrack>
 
@@ -533,41 +559,32 @@ function MarketStatsRibbonClean({ risk }: { risk: any }) {
         icon={CircleDollarSign}
         title="融資融券"
         date={credit.date ?? risk?.date}
+        panelDate={panelDate}
         scope={creditScope}
-        bar={<SplitBar values={[marginBalanceUnits ?? 0, shortBalanceUnits ?? 0]} colors={['#3b82f6', '#8b5cf6']} />}
+        bar={<SplitBar values={[marginBalanceUnits ?? 0, shortBalanceUnits ?? 0]} colors={['#3b82f6', '#8b5cf6']} title="融資／融券餘額張數比例" />}
       >
         <div className="grid grid-cols-2 gap-x-4 gap-y-3">
-          <div>
-            <p className="text-xs text-slate-500">融資餘額（張數）</p>
-            <p className="mt-1 text-lg font-bold tabular-nums text-slate-100">{formatLots(marginBalanceUnits)}</p>
-            <p className="text-[11px] text-slate-500">{formatCompactAmount(marginAmount)} · {marginAmountNote}</p>
-            <p className={cx('text-[11px] tabular-nums', toneText(toneBySigned(marginChangePct)))}>{formatPct(marginChangePct)}</p>
-          </div>
-          <div>
-            <p className="text-xs text-slate-500">融券餘額（張數）</p>
-            <p className="mt-1 text-lg font-bold tabular-nums text-slate-100">{formatLots(shortBalanceUnits)}</p>
-            <p className="text-[11px] text-slate-500">{formatCompactAmount(shortAmount)} · {shortAmountNote}</p>
-            <p className={cx('text-[11px] tabular-nums', toneText(toneBySigned(shortChangePct)))}>{formatPct(shortChangePct)}</p>
-          </div>
-          <div>
-            <p className="text-xs text-slate-500">券商集中度</p>
-            <p className={cx('mt-1 text-lg font-bold tabular-nums', toneText(brokerBalanceTone))}>{formatNumber(brokerBalanceIndex, 2)}</p>
-            <p className="text-[11px] text-slate-500">broker balance index</p>
-          </div>
-          <div>
-            <p className="text-xs text-slate-500">券商買賣比</p>
-            <p className={cx('mt-1 text-lg font-bold tabular-nums', toneText(brokerBuySellTone))}>{formatNumber(brokerBuySellRatio, 2)}</p>
-            <p className="text-[11px] text-slate-500">大於 1 偏承接</p>
-          </div>
+          <Metric
+            label="融資餘額"
+            value={formatLots(marginBalanceUnits)}
+            sub={<>{amountSub(marginAmount, marginAmountNote)} <PriceChange value={marginChangePct}>{formatPct(marginChangePct)}</PriceChange></>}
+          />
+          <Metric
+            label="融券餘額"
+            value={formatLots(shortBalanceUnits)}
+            sub={<>{amountSub(shortAmount, shortAmountNote)} <PriceChange value={shortChangePct}>{formatPct(shortChangePct)}</PriceChange></>}
+          />
+          <Metric label="券商集中度" value={formatNumber(brokerBalanceIndex, 2)} valueClass={toneText(brokerBalanceTone)} title="券商分點買賣集中度；正值偏承接" />
+          <Metric label="券商買賣比" value={formatNumber(brokerBuySellRatio, 2)} valueClass={toneText(brokerBuySellTone)} title="大於 1 偏承接" />
         </div>
       </StatTrack>
 
-      <InstitutionFlowStatTrack risk={risk} />
+      <InstitutionFlowStatTrack risk={risk} panelDate={panelDate} />
     </div>
   )
 }
 
-function InstitutionFlowStatTrack({ risk }: { risk: any }) {
+function InstitutionFlowStatTrack({ risk, panelDate }: { risk: any; panelDate: string | null }) {
   const flow = risk?.institutionalFlows ?? {}
   const foreign = asNumber(flow.foreignNet ?? flow.foreign ?? risk?.foreignNet5d)
   const trust = asNumber(flow.trustNet ?? flow.trust)
@@ -585,102 +602,123 @@ function InstitutionFlowStatTrack({ risk }: { risk: any }) {
       icon={PieChart}
       title="主要法人資金動向"
       date={flow.date ?? risk?.date}
+      panelDate={panelDate}
       scope={flow.scope ?? risk?.marketDataScope}
       // Segment size only; red/green stay reserved for the signed buy/sell figures below.
-      bar={<SplitBar values={rows.map((row) => Math.abs(row.value ?? 0))} colors={['#8b5cf6', '#06b6d4', '#f59e0b']} />}
+      bar={<SplitBar values={rows.map((row) => Math.abs(row.value ?? 0))} colors={['#8b5cf6', '#06b6d4', '#f59e0b']} title="外資／投信／自營商買賣超金額占比" />}
     >
-      <div>
-        <div className="flex items-end justify-between gap-3">
-          <div>
-            <p className="text-xs text-slate-500">當日合計買賣超</p>
-            <p className={cx('mt-1 text-xl font-bold tabular-nums', toneText(toneBySigned(total)))}>
-              {total == null ? '待匯入' : formatBillion(total)}
+      <p className="text-xs text-muted-foreground">三大法人合計買賣超</p>
+      <PriceChange value={total} className="mt-1 block text-xl font-bold">{formatBillion(total)}</PriceChange>
+      <div className="mt-3 grid grid-cols-3 gap-3">
+        {rows.map((row) => (
+          <div key={row.label} className="min-w-0">
+            <p className="text-xs text-muted-foreground">
+              <span className="mr-1 inline-block h-1.5 w-1.5 rounded-full align-middle" style={{ backgroundColor: row.label === '外資' ? '#8b5cf6' : row.label === '投信' ? '#06b6d4' : '#f59e0b' }} />
+              {row.label}
             </p>
+            <PriceChange value={row.value} className="mt-1 block text-sm font-bold">{formatBillion(row.value)}</PriceChange>
           </div>
-          <span className="text-[11px] text-slate-500">三大法人</span>
-        </div>
-        <div className="mt-4 grid grid-cols-3 gap-3">
-          {rows.map((row) => (
-            <div key={row.label}>
-              <p className="text-xs text-slate-500">{row.label}</p>
-              <p className={cx('mt-1 text-sm font-bold tabular-nums', toneText(toneBySigned(row.value)))}>
-                {row.value == null ? '待匯入' : formatBillion(row.value)}
-              </p>
-            </div>
-          ))}
-        </div>
+        ))}
       </div>
     </StatTrack>
   )
 }
 
-function FearGreedCard({ risk }: { risk: any }) {
+const FEAR_GREED_BANDS: ScaleBand[] = [
+  { to: 25, label: '極度恐懼', tone: 'info' },
+  { to: 45, label: '恐懼', tone: 'info' },
+  { to: 55, label: '中性', tone: 'info' },
+  { to: 75, label: '貪婪', tone: 'info' },
+  { to: 100, label: '極度貪婪', tone: 'info' },
+]
+
+const HEDGE_BANDS: ScaleBand[] = [
+  { to: 46, label: '正常', tone: 'ok' },
+  { to: 70, label: '偏高', tone: 'warn' },
+  { to: 100, label: '高', tone: 'fail' },
+]
+
+// NDC business-cycle lights: the light name is the meaning, so the scale is labelled rather than painted.
+const BUSINESS_SIGNAL_BANDS: ScaleBand[] = [
+  { to: 16, label: '藍燈', range: '9–16', tone: 'info' },
+  { to: 22, label: '黃藍燈', range: '17–22', tone: 'info' },
+  { to: 31, label: '綠燈', range: '23–31', tone: 'info' },
+  { to: 37, label: '黃紅燈', range: '32–37', tone: 'info' },
+  { to: 45, label: '紅燈', range: '38–45', tone: 'info' },
+]
+
+function businessSignalLabel(score: number | null) {
+  if (score == null) return null
+  return (BUSINESS_SIGNAL_BANDS.find((band) => score <= band.to) ?? BUSINESS_SIGNAL_BANDS[BUSINESS_SIGNAL_BANDS.length - 1]).label
+}
+
+function CardTitle({ icon: Icon, title, iconClass, children }: { icon: ComponentType<{ className?: string }>; title: string; iconClass?: string; children?: ReactNode }) {
+  return (
+    <div className="flex items-center justify-between gap-3">
+      <div className="flex min-w-0 items-center gap-2">
+        <Icon className={cx('h-4 w-4 shrink-0', iconClass ?? 'text-muted-foreground')} />
+        <h3 className="truncate text-sm font-bold text-slate-100">{title}</h3>
+      </div>
+      {children}
+    </div>
+  )
+}
+
+function FearGreedCard({ risk, panelDate }: { risk: any; panelDate: string | null }) {
   const index = risk?.fearGreedIndex ?? {}
   const score = asNumber(index.score)
-  const label = String(index.label ?? (score == null ? '待匯入' : score < 45 ? '恐懼' : score > 55 ? '貪婪' : '中性'))
-  const marker = score == null ? 0 : Math.max(0, Math.min(100, score))
-  const tone = fearGreedTone(score)
+  const label = String(index.label ?? (score == null ? '待接資料' : score < 45 ? '恐懼' : score > 55 ? '貪婪' : '中性'))
+  const tone = sentimentTone(score)
   const factors = asArray<RiskFactor>(index.factors)
   const byFactorId = (id: string) => factors.find((factor) => String(factor.id ?? '') === id) ?? null
   const momentum = byFactorId('market_momentum')
   const globalRiskAppetite = byFactorId('global_risk_appetite')
   const safeHavenFx = byFactorId('safe_haven_fx')
   const creditStress = byFactorId('credit_stress')
-  const factorTone = (factor: RiskFactor | null) => fearGreedTone(asNumber(factor?.score))
+  const factorTone = (factor: RiskFactor | null) => sentimentTone(asNumber(factor?.score))
 
   return (
-    <section className="rounded-[20px] border border-white/[0.07] bg-white/[0.032] p-4">
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex min-w-0 items-center gap-2">
-          <Gauge className={cx('h-4 w-4 shrink-0', score == null ? 'text-slate-500' : toneText(tone))} />
-          <h3 className="truncate font-bold text-slate-100">貪婪指數</h3>
-        </div>
-        <div className="flex shrink-0 items-center gap-2">
-          <span className="rounded-full bg-white/[0.055] p-2">
-            <BarChart3 className="h-3.5 w-3.5 text-slate-400" />
-          </span>
-          <SourceBadge>{shortDate(index.date ?? risk?.date)}</SourceBadge>
-        </div>
-      </div>
+    <section className="min-w-0 border-t border-border pt-3">
+      <CardTitle icon={Gauge} title="貪婪指數" iconClass={score == null ? 'text-muted-foreground' : toneText(tone)}>
+        <DateIfDiffers date={index.date ?? risk?.date} panelDate={panelDate} />
+      </CardTitle>
 
-      <div className="mt-5 flex items-end justify-between gap-4">
-        <p className={cx('text-2xl font-semibold tabular-nums', score == null ? 'text-slate-500' : toneText(tone))}>
-          {score == null ? '--' : score}
-          <span className="ml-1 text-sm font-medium text-slate-500">/100</span>
+      <div className="mt-3 flex items-end justify-between gap-4">
+        <p className={cx('text-2xl font-semibold tabular-nums', toneText(tone))}>
+          {score == null ? MISSING : score}
+          <span className="ml-1 text-sm font-medium text-muted-foreground">/100</span>
         </p>
-        <p className={cx('text-sm font-bold', score == null ? 'text-slate-500' : toneText(tone))}>{label}</p>
+        <p className={cx('text-sm font-bold', toneText(tone))}>{label}</p>
       </div>
 
-      <div className="relative mt-4 h-1.5 rounded-full bg-[linear-gradient(90deg,#10b981_0%,#a3e635_26%,#f59e0b_50%,#f97316_72%,#db2777_100%)]">
-        {score != null && (
-          <span
-            className="absolute top-1/2 h-2.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow-[0_0_12px_rgba(255,255,255,0.45)]"
-            style={{ left: `${marker}%` }}
-          />
-        )}
+      <div className="mt-3">
+        <SegmentScale value={score} bands={FEAR_GREED_BANDS} />
       </div>
 
       <div className="mt-4 grid grid-cols-2 gap-3">
-        <HedgeFactor label="市場動能" value={factorDisplay(momentum, '待接資料')} note="20MA 偏離" tone={factorTone(momentum)} />
-        <HedgeFactor label="全球風險偏好" value={factorDisplay(globalRiskAppetite, '待接資料')} note="美股 / 半導體外溢" tone={factorTone(globalRiskAppetite)} />
-        <HedgeFactor label="避險匯率" value={factorDisplay(safeHavenFx, '待接資料')} note="美元避險壓力" tone={factorTone(safeHavenFx)} />
-        <HedgeFactor label="信用風險" value={factorDisplay(creditStress, '待接資料')} note="風險補償需求" tone={factorTone(creditStress)} />
+        <HedgeFactor label="市場動能" value={factorDisplay(momentum)} note="20MA 偏離" tone={factorTone(momentum)} />
+        <HedgeFactor label="全球風險偏好" value={factorDisplay(globalRiskAppetite)} note="美股 / 半導體" tone={factorTone(globalRiskAppetite)} />
+        <HedgeFactor label="避險匯率" value={factorDisplay(safeHavenFx)} note="美元避險壓力" tone={factorTone(safeHavenFx)} />
+        <HedgeFactor label="信用風險" value={factorDisplay(creditStress)} note="風險補償需求" tone={factorTone(creditStress)} />
       </div>
     </section>
   )
 }
 
+// Short notes stay visible; longer server explanations move into the tooltip.
 function HedgeFactor({ label, value, note, tone = 'slate' }: { label: string; value: string; note?: string; tone?: Tone }) {
+  const cleanNote = note && !looksInternal(note) ? note : undefined
+  const showNote = cleanNote != null && cleanNote.length <= 12
   return (
-    <div className="min-w-0">
-      <p className="text-xs text-slate-500">{label}</p>
-      <p className={cx('mt-1 whitespace-nowrap text-base font-bold tabular-nums 2xl:text-lg', toneText(tone))}>{value}</p>
-      {note && <p className="mt-1 text-[11px] text-slate-500">{note}</p>}
+    <div className="min-w-0" title={cleanNote && !showNote ? cleanNote : undefined}>
+      <p className="text-xs text-muted-foreground">{label}</p>
+      <p className={cx('mt-1 whitespace-nowrap text-base font-bold tabular-nums', toneText(tone))}>{value}</p>
+      {showNote && <p className="mt-0.5 text-[11px] text-muted-foreground">{cleanNote}</p>}
     </div>
   )
 }
 
-function HedgeSentimentCard({ risk }: { risk: any }) {
+function HedgeSentimentCard({ risk, panelDate }: { risk: any; panelDate: string | null }) {
   const sentiment = hedgeSentimentView(risk)
   const normalized = sentiment.score
   const hedgeFactors = asArray<RiskFactor>(risk?.hedgeSentimentFactors)
@@ -696,78 +734,59 @@ function HedgeSentimentCard({ risk }: { risk: any }) {
   const usVix = asNumber(usVixFactor?.raw_value ?? risk?.vix ?? risk?.usVix)
   const twVol20 = asNumber(twVolFactor?.raw_value ?? risk?.twiiVol20 ?? risk?.realizedVol20)
   const hedgeLabel = sentiment.label
-  const hedgeMarker = normalized == null ? 0 : Math.max(0, Math.min(100, normalized))
+  const hedgeTone = riskTone(normalized)
 
   return (
-    <section className="rounded-[20px] border border-white/[0.07] bg-white/[0.032] p-4">
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex items-center gap-2">
-          <ShieldAlert className="h-4 w-4 text-amber-300" />
-          <h3 className="font-bold text-slate-100">市場避險情緒</h3>
-        </div>
-        <SourceBadge>{shortDate(risk?.date)}</SourceBadge>
+    <section className="min-w-0 border-t border-border pt-3">
+      <CardTitle icon={ShieldAlert} title="市場避險情緒" iconClass="text-amber-300">
+        <DateIfDiffers date={risk?.date} panelDate={panelDate} />
+      </CardTitle>
+
+      <div className="mt-3 flex items-end justify-between gap-4">
+        <p className={cx('inline-flex items-center gap-1.5 text-sm font-bold', toneText(hedgeTone))}>
+          {normalized != null && <StatusIcon tone={hedgeTone === 'slate' ? 'na' : hedgeTone as 'ok' | 'warn' | 'fail'} size={12} />}
+          {hedgeLabel}
+        </p>
+        <p className={cx('text-2xl font-bold tabular-nums', toneText(hedgeTone))} title="避險值 0–100">{normalized == null ? MISSING : normalized.toFixed(0)}</p>
+      </div>
+      <div className="mt-3">
+        <SegmentScale value={normalized} bands={HEDGE_BANDS} />
       </div>
 
-      <div className="mt-4">
-        <div className="flex items-end justify-between gap-4">
-          <div>
-            <p className="text-xs text-slate-500">避險評級</p>
-            <p className={cx('mt-1 text-sm font-bold', toneText(riskTone(normalized)))}>{hedgeLabel}</p>
-          </div>
-          <div className="text-right">
-            <p className="text-xs text-slate-500">避險值</p>
-            <p className={cx('mt-1 text-2xl font-bold tabular-nums', toneText(riskTone(normalized)))}>{normalized == null ? '待接資料' : normalized.toFixed(0)}</p>
-          </div>
-        </div>
-        <div className="relative mt-3 h-1.5 rounded-full bg-[linear-gradient(90deg,#22c55e_0%,#84cc16_28%,#f59e0b_52%,#f97316_73%,#ef4444_100%)]">
-          {normalized != null && (
-            <span
-              className="absolute top-1/2 h-2.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white shadow-[0_0_12px_rgba(255,255,255,0.45)]"
-              style={{ left: `${hedgeMarker}%` }}
-            />
-          )}
-        </div>
-        <div className="mt-2 flex justify-between text-[11px] text-slate-500">
-          <span>正常</span>
-          <span>中性</span>
-          <span>偏高</span>
-        </div>
-      </div>
-
-      <div className="mt-4 grid gap-4 border-t border-white/[0.07] pt-4 sm:grid-cols-2">
+      <div className="mt-4 grid gap-4 border-t border-white/[0.07] pt-4 grid-cols-2">
         <HedgeFactor
-          label="外資5日買賣超"
-          value={factorDisplay(foreign5d, '待接資料')}
-          note={foreign5d?.detail ?? '外資連續買超/賣超反映本地籌碼風險。'}
+          label="外資 5 日買賣超"
+          value={factorDisplay(foreign5d)}
+          note={foreign5d?.detail ?? '外資連續買超／賣超反映本地籌碼風險。'}
           tone={toneBySigned(asNumber(foreign5d?.raw_value))}
         />
         <HedgeFactor
           label="大戶前五淨部位"
-          value={factorDisplay(largeTrader, '待接資料')}
+          value={factorDisplay(largeTrader)}
           note={largeTrader?.detail ?? 'TX+MTX/4+TMF/20；買方前五減賣方前五。'}
           tone={toneBySigned(asNumber(largeTrader?.raw_value))}
         />
         <HedgeFactor
           label="賣買權未平倉量比"
-          value={factorDisplay(pcr, '待接 PCR')}
-          note={pcr?.detail ?? '賣權未平倉相對買權未平倉越高，代表避險需求越強。'}
-          tone="blue"
+          value={factorDisplay(pcr)}
+          note={pcr?.detail ?? '賣權未平倉相對買權越高，避險需求越強。'}
+          tone="info"
         />
         <HedgeFactor
           label="台股波動率"
-          value={twVolFactor ? factorDisplay(twVolFactor) : twVol20 == null ? '待接資料' : `${twVol20.toFixed(2)}%`}
+          value={twVolFactor ? factorDisplay(twVolFactor) : twVol20 == null ? MISSING : `${formatNumber(twVol20, 2)}%`}
           note={twVolFactor?.detail ?? '加權指數 20 日實現波動率。'}
           tone={riskTone(twVol20)}
         />
         <HedgeFactor
           label="美股 VIX"
-          value={usVixFactor ? factorDisplay(usVixFactor) : usVix == null ? '待接資料' : usVix.toFixed(2)}
+          value={usVixFactor ? factorDisplay(usVixFactor) : usVix == null ? MISSING : formatNumber(usVix, 2)}
           note={usVixFactor?.detail ?? 'S&P 500 選擇權隱含波動。'}
           tone={riskTone(usVix == null ? null : usVix * 2.4)}
         />
         <HedgeFactor
           label="美元兌台幣"
-          value={usdTwd == null ? factorDisplay(usdTwdFactor) : usdTwd.toFixed(3)}
+          value={usdTwd == null ? factorDisplay(usdTwdFactor) : formatNumber(usdTwd, 3)}
           note={usdTwdFactor?.detail ?? (fxChange == null ? '匯率避險因子。' : `日變動 ${formatPct(fxChange)}`)}
           tone={toneBySigned(fxChange)}
         />
@@ -776,167 +795,27 @@ function HedgeSentimentCard({ risk }: { risk: any }) {
   )
 }
 
-function businessSignalTone(score: number | null) {
-  if (score == null) return 'bg-slate-600 shadow-none'
-  if (score <= 16) return 'bg-blue-600 shadow-[0_0_18px_rgba(37,99,235,0.38)]'
-  if (score <= 22) return 'bg-yellow-400 shadow-[0_0_18px_rgba(250,204,21,0.34)]'
-  if (score <= 31) return 'bg-emerald-500 shadow-[0_0_18px_rgba(16,185,129,0.34)]'
-  if (score <= 37) return 'bg-orange-500 shadow-[0_0_18px_rgba(249,115,22,0.34)]'
-  return 'bg-red-500 shadow-[0_0_18px_rgba(239,68,68,0.38)]'
-}
-
 function BusinessSignalCard({ risk }: { risk: any }) {
   const latest = risk?.businessCycle?.latest ?? risk?.businessSignal?.latest
   const months = asArray<any>(risk?.businessCycle?.months ?? risk?.businessSignal?.months)
   const latestRow = latest ?? months[months.length - 1] ?? null
   const score = asNumber(latestRow?.score ?? latestRow?.value)
-  const month = String(latestRow?.month ?? latestRow?.sourceDate ?? '').slice(0, 7)
-  const hasData = score != null
+  const month = String(latestRow?.month ?? latestRow?.sourceDate ?? '').slice(0, 7).replace(/\//g, '-')
+  const lightLabel = (typeof latestRow?.label === 'string' && latestRow.label) || businessSignalLabel(score)
 
   return (
-    <section className="rounded-[20px] border border-white/[0.07] bg-white/[0.032] p-4">
-      <div className="flex items-center justify-between gap-4">
-        <div className="flex items-center gap-2">
-          <Activity className="h-4 w-4 text-blue-300" />
-          <h3 className="font-bold text-slate-100">景氣對策信號</h3>
-        </div>
-        <SourceBadge>{hasData ? 'FinLab / NDC' : '待匯入'}</SourceBadge>
+    <section className="min-w-0 border-t border-border pt-3" title="資料來源：國發會景氣對策信號（FinLab）">
+      <CardTitle icon={Activity} title="景氣對策信號" iconClass="text-blue-300">
+        {month && <HeaderMeta>{month}</HeaderMeta>}
+      </CardTitle>
+
+      <div className="mt-3 flex items-end justify-between gap-4">
+        <p className="text-2xl font-bold tabular-nums text-slate-100">{score == null ? MISSING : score}</p>
+        <p className="text-sm font-bold text-foreground">{score == null ? '尚未匯入' : lightLabel}</p>
       </div>
 
-      <div className="mt-5 flex items-center justify-center">
-        <div className="text-center">
-          <span className={cx('mx-auto block h-5 w-5 rounded-full', businessSignalTone(score))} />
-          <span className="mt-3 inline-flex rounded-full bg-white/[0.055] px-3 py-1 text-xs text-slate-500">{month || '上月'}</span>
-          <p className="mt-2 text-2xl font-bold tabular-nums text-slate-100">{score == null ? '--' : score}</p>
-          <p className="text-xs text-slate-400">{score == null ? '待匯入' : (latestRow?.label ?? '已匯入')}</p>
-        </div>
-      </div>
-
-      <div className="mt-6 border-t border-white/[0.07] pt-4">
-        <div className="mb-2 flex justify-between text-xs text-slate-500">
-          <span>冷 (9)</span>
-          <span>信號分數區間</span>
-          <span>熱 (45)</span>
-        </div>
-        <div className="grid h-6 grid-cols-5 overflow-hidden rounded-full text-center text-[11px] font-semibold text-white sm:text-sm">
-          <div className="bg-blue-600">9-16</div>
-          <div className="bg-yellow-400 text-slate-900">17-22</div>
-          <div className="bg-emerald-500">23-31</div>
-          <div className="bg-orange-500">32-37</div>
-          <div className="bg-red-500">38-45</div>
-        </div>
-        <div className="mt-3 grid grid-cols-5 text-center text-[11px] text-slate-500">
-          <span>藍燈</span>
-          <span>黃藍燈</span>
-          <span>綠燈</span>
-          <span>黃紅燈</span>
-          <span>紅燈</span>
-        </div>
-      </div>
-    </section>
-  )
-}
-
-function InstitutionFlowCard({ risk }: { risk: any }) {
-  const flow = risk?.institutionalFlows ?? {}
-  const foreign = asNumber(flow.foreignNet ?? flow.foreign ?? risk?.foreignNet5d)
-  const trust = asNumber(flow.trustNet ?? flow.trust)
-  const dealer = asNumber(flow.dealerNet ?? flow.dealer)
-  const available = foreign != null || trust != null || dealer != null
-  const total = asNumber(flow.totalNet) ?? (available ? (foreign ?? 0) + (trust ?? 0) + (dealer ?? 0) : null)
-  const max = Math.max(1, Math.abs(foreign ?? 0), Math.abs(trust ?? 0), Math.abs(dealer ?? 0))
-  const rows = [
-    { label: '外資', value: foreign, tone: toneBySigned(foreign) },
-    { label: '投信', value: trust, tone: toneBySigned(trust) },
-    { label: '自營商', value: dealer, tone: toneBySigned(dealer) },
-  ]
-
-  return (
-    <section className="rounded-[20px] border border-white/[0.07] bg-white/[0.032] p-4">
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <PieChart className="h-4 w-4 text-amber-300" />
-          <h3 className="font-bold text-slate-100">主要法人資金動向</h3>
-        </div>
-        <SourceBadge>{shortDate(flow.date ?? risk?.date)}</SourceBadge>
-      </div>
-
-      <div className="flex items-end justify-between gap-4 border-b border-white/[0.07] pb-4">
-        <div>
-          <p className="text-xs text-slate-500">當日合計買賣超</p>
-          <p className={cx('mt-1 text-2xl font-bold tabular-nums', toneText(toneBySigned(total)))}>
-            {total == null ? '待接資料' : formatBillion(total)}
-          </p>
-        </div>
-        <span className="text-[11px] text-slate-500">全市場三大法人資金流</span>
-      </div>
-
-      <div className="mt-4 grid gap-4 md:grid-cols-3">
-        {rows.map((row) => (
-          <div key={row.label}>
-            <p className="text-xs font-semibold text-slate-500">{row.label}</p>
-            <p className={cx('mt-1 text-lg font-bold tabular-nums', toneText(row.tone))}>
-              {row.value == null ? '待接資料' : formatBillion(row.value)}
-            </p>
-            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/[0.07]">
-              <div className={cx('h-full rounded-full', toneBar(row.tone))} style={{ width: `${row.value == null ? 0 : Math.max(8, Math.abs(row.value) / max * 100)}%` }} />
-            </div>
-          </div>
-        ))}
-      </div>
-    </section>
-  )
-}
-
-function InstitutionFlowCardClean({ risk }: { risk: any }) {
-  const flow = risk?.institutionalFlows ?? {}
-  const foreign = asNumber(flow.foreignNet ?? flow.foreign ?? risk?.foreignNet5d)
-  const trust = asNumber(flow.trustNet ?? flow.trust)
-  const dealer = asNumber(flow.dealerNet ?? flow.dealer)
-  const available = foreign != null || trust != null || dealer != null
-  const total = asNumber(flow.totalNet) ?? (available ? (foreign ?? 0) + (trust ?? 0) + (dealer ?? 0) : null)
-  const max = Math.max(1, Math.abs(foreign ?? 0), Math.abs(trust ?? 0), Math.abs(dealer ?? 0))
-  const rows = [
-    { label: '外資', value: foreign, tone: toneBySigned(foreign) },
-    { label: '投信', value: trust, tone: toneBySigned(trust) },
-    { label: '自營商', value: dealer, tone: toneBySigned(dealer) },
-  ]
-
-  return (
-    <section className="rounded-[20px] border border-white/[0.07] bg-white/[0.032] p-4">
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <PieChart className="h-4 w-4 text-amber-300" />
-          <h3 className="font-bold text-slate-100">主要法人資金動向</h3>
-        </div>
-        <div className="flex flex-wrap justify-end gap-1.5">
-          <ScopeBadge scope={flow.scope} />
-          <SourceBadge>{shortDate(flow.date ?? risk?.date)}</SourceBadge>
-        </div>
-      </div>
-
-      <div className="flex items-end justify-between gap-4 border-b border-white/[0.07] pb-4">
-        <div>
-          <p className="text-xs text-slate-500">當日合計買賣超</p>
-          <p className={cx('mt-1 text-2xl font-bold tabular-nums', toneText(toneBySigned(total)))}>
-            {total == null ? '待匯入' : formatBillion(total)}
-          </p>
-        </div>
-        <span className="text-[11px] text-slate-500">全市場三大法人資金流</span>
-      </div>
-
-      <div className="mt-4 grid gap-4 md:grid-cols-3">
-        {rows.map((row) => (
-          <div key={row.label}>
-            <p className="text-xs font-semibold text-slate-500">{row.label}</p>
-            <p className={cx('mt-1 text-lg font-bold tabular-nums', toneText(row.tone))}>
-              {row.value == null ? '待匯入' : formatBillion(row.value)}
-            </p>
-            <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/[0.07]">
-              <div className={cx('h-full rounded-full', toneBar(row.tone))} style={{ width: `${row.value == null ? 0 : Math.max(8, Math.abs(row.value) / max * 100)}%` }} />
-            </div>
-          </div>
-        ))}
+      <div className="mt-3">
+        <SegmentScale value={score} bands={BUSINESS_SIGNAL_BANDS} min={9} />
       </div>
     </section>
   )
@@ -944,28 +823,33 @@ function InstitutionFlowCardClean({ risk }: { risk: any }) {
 
 function MarketOverviewBlock() {
   // Shares the route-prefetch key so a prefetched snapshot is reused instead of fetched again.
-  const { data: indices } = useQuery({
+  const { data: indices, isError: indicesError, refetch: refetchIndices } = useQuery({
     queryKey: ['market', 'indices'],
     queryFn: marketApi.indices,
     staleTime: 3 * 60 * 1000,
     refetchInterval: 5 * 60 * 1000,
     retry: 1,
   })
-  const { data: risk } = useQuery({
+  const { data: risk, isError: riskError, refetch: refetchRisk } = useQuery({
     queryKey: ['market', 'risk', 'home'],
     queryFn: marketApi.risk,
     staleTime: 10 * 60 * 1000,
     retry: 1,
   })
 
+  // Only a failure with nothing cached counts as a read failure; a failed refetch keeps the last snapshot.
+  const indicesFailed = indicesError && !indices
+  const riskFailed = riskError && !risk
+  const missingTile = indicesFailed ? failedIndexTile : pendingIndexTile
   const indexTiles = useMemo(() => [
-    indices?.twii ? toIndexTile(indices.twii, '加權指數', 'FinLab benchmark_return') : pendingIndexTile('加權指數', 'FinLab benchmark_return'),
-    indices?.twoii ? toIndexTile(indices.twoii, '櫃買指數', 'FinLab tw_stock_market_ind') : pendingIndexTile('櫃買指數', 'FinLab tw_stock_market_ind'),
-    indices?.txfDay ? toIndexTile(indices.txfDay, '台指期貨', indices.txfDay.source ?? 'FinLab futures_price') : pendingIndexTile('台指期貨', 'FinLab futures_price'),
-    indices?.txfNight ? toIndexTile(indices.txfNight, '台指期貨夜盤', indices.txfNight.source ?? 'TAIFEX MIS') : pendingIndexTile('台指期貨夜盤', 'TAIFEX MIS'),
-  ], [indices])
+    indices?.twii ? toIndexTile(indices.twii, '加權指數', 'FinLab benchmark_return') : missingTile('加權指數', 'FinLab benchmark_return'),
+    indices?.twoii ? toIndexTile(indices.twoii, '櫃買指數', 'FinLab tw_stock_market_ind') : missingTile('櫃買指數', 'FinLab tw_stock_market_ind'),
+    indices?.txfDay ? toIndexTile(indices.txfDay, '台指期貨', indices.txfDay.source ?? 'FinLab futures_price') : missingTile('台指期貨', 'FinLab futures_price'),
+    indices?.txfNight ? toIndexTile(indices.txfNight, '台指期貨夜盤', indices.txfNight.source ?? 'TAIFEX MIS') : missingTile('台指期貨夜盤', 'TAIFEX MIS'),
+  ], [indices, missingTile])
   // Only the risk packet's business date is a trading date; updatedAt is a UTC cache timestamp.
   const panelDate = isoDate(risk?.date)
+  const commonScope = scopeLabel(risk?.marketDataScope ?? risk?.marketStats?.scope)
 
   return (
     <section className="space-y-4" aria-label="市場概況與風險">
@@ -973,30 +857,61 @@ function MarketOverviewBlock() {
         <SectionHeader
           icon={BarChart3}
           title="市場概況與風險"
-          action={<SourceBadge>{shortDate(risk?.date ?? indices?.updatedAt)}</SourceBadge>}
+          action={(
+            <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1">
+              {commonScope && <HeaderMeta>{commonScope}</HeaderMeta>}
+              <HeaderMeta>資料日 {formatDate(panelDate ?? indices?.updatedAt)}</HeaderMeta>
+            </div>
+          )}
         />
-        <div className="border-t border-white/[0.055] bg-white/[0.045]">
-          <div className="grid bg-[#101116] md:grid-cols-2 xl:grid-cols-4">
-            {indexTiles.map((tile) => <IndexTileCard key={tile.label} tile={tile} panelDate={panelDate} />)}
-          </div>
-          <div className="border-t border-white/[0.055] bg-[#101116] p-4">
-            <MarketStatsRibbonClean risk={risk} />
-          </div>
+        <div className="grid border-t border-white/[0.055] bg-[#101116] md:grid-cols-2 xl:grid-cols-4">
+          {indexTiles.map((tile) => <IndexTileCard key={tile.label} tile={tile} panelDate={panelDate} />)}
+        </div>
+        {indicesFailed && (
+          <DataState
+            kind="error"
+            title="指數資料讀取失敗"
+            code="market/indices"
+            onRetry={() => refetchIndices()}
+            className="border-t border-white/[0.055] bg-[#101116]"
+          />
+        )}
+        <div className="border-t border-white/[0.055] bg-[#101116] p-4">
+          {riskFailed ? (
+            <DataState kind="error" title="市場風險資料讀取失敗" hint="成交、籌碼與情緒指標暫時讀不到" code="market/risk" onRetry={() => refetchRisk()} />
+          ) : (
+            <MarketStatsRibbonClean risk={risk} panelDate={panelDate} />
+          )}
         </div>
       </div>
 
       <div className="sv-home-deferred-section grid items-start gap-4 xl:grid-cols-[minmax(360px,0.92fr)_minmax(420px,1.02fr)] 2xl:grid-cols-[minmax(460px,1.06fr)_minmax(420px,0.78fr)_minmax(340px,0.78fr)]">
-        <div className={panelClass('grid gap-4 p-4 xl:self-stretch')}>
-          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-[minmax(290px,1.18fr)_minmax(220px,0.82fr)]">
-            <FearGreedCard risk={risk} />
-            <BusinessSignalCard risk={risk} />
+        {riskFailed ? (
+          <div className={panelClass('xl:self-stretch 2xl:col-span-2')}>
+            <DataState
+              kind="error"
+              title="市場風險資料讀取失敗"
+              hint="恐懼貪婪、景氣信號、避險情緒與風險拆解暫時讀不到"
+              code="market/risk"
+              onRetry={() => refetchRisk()}
+              className="px-5 py-6"
+            />
           </div>
-          <HedgeSentimentCard risk={risk} />
-        </div>
-        <div className={panelClass('grid gap-4 p-4 xl:self-stretch')}>
-          <MarketRiskDetailBreakdown risk={risk} />
-          <GlobalEventContextCard risk={risk} />
-        </div>
+        ) : (
+          <>
+            <div className={panelClass('grid gap-4 p-4 xl:self-stretch')}>
+              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-[minmax(290px,1.18fr)_minmax(220px,0.82fr)]">
+                <FearGreedCard risk={risk} panelDate={panelDate} />
+                <BusinessSignalCard risk={risk} />
+              </div>
+              <HedgeSentimentCard risk={risk} panelDate={panelDate} />
+            </div>
+            <div className={panelClass('grid gap-4 p-4 xl:self-stretch')}>
+              <MarketRiskDetailBreakdown risk={risk} />
+              <GlobalEventContextCard risk={risk} />
+            </div>
+          </>
+        )}
         <div className="grid gap-4 self-stretch xl:col-span-2 2xl:col-span-1">
           <NewsBlock embedded />
         </div>
@@ -1034,28 +949,11 @@ function pickBalancedNews(items: any[], limit: number) {
   return picked
 }
 
-function newsSourceTone(source: unknown) {
-  const normalized = String(source ?? '').trim().toLowerCase()
-  if (/經濟日報|money\.udn|udn/.test(normalized)) return 'border-emerald-300/25 bg-emerald-400/[0.10] text-emerald-200'
-  if (/鉅亨|anue/.test(normalized)) return 'border-amber-300/25 bg-amber-400/[0.10] text-amber-200'
-  if (/自由財經|ltn/.test(normalized)) return 'border-sky-300/25 bg-sky-400/[0.10] text-sky-200'
-  if (/moneydj/.test(normalized)) return 'border-violet-300/25 bg-violet-400/[0.10] text-violet-200'
-  return 'border-white/[0.08] bg-white/[0.05] text-slate-400'
-}
-
-function newsSourceAccent(source: unknown) {
-  const normalized = String(source ?? '').trim().toLowerCase()
-  if (/經濟日報|money\.udn|udn/.test(normalized)) return 'before:bg-emerald-300/70'
-  if (/鉅亨|anue/.test(normalized)) return 'before:bg-amber-300/75'
-  if (/自由財經|ltn/.test(normalized)) return 'before:bg-sky-300/70'
-  if (/moneydj/.test(normalized)) return 'before:bg-violet-300/75'
-  return 'before:bg-slate-500/70'
-}
-
 function NewsBlock({ embedded = false }: { embedded?: boolean }) {
-  const { data, isLoading } = useQuery({
+  // No catch here: a failed request must surface as an error, not as an empty news list.
+  const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['market', 'news', 'home'],
-    queryFn: () => marketApi.news().catch(() => []),
+    queryFn: marketApi.news,
     staleTime: 10 * 60 * 1000,
     retry: 1,
   })
@@ -1070,7 +968,7 @@ function NewsBlock({ embedded = false }: { embedded?: boolean }) {
 
   return (
     <section className={sectionClass}>
-      <SectionHeader icon={Newspaper} title="最新消息" action={<SourceBadge>{embedded ? `最多 ${EMBEDDED_NEWS_LIMIT} 則` : '每來源 3 則股票新聞'}</SourceBadge>} />
+      <SectionHeader icon={Newspaper} title="最新消息" />
       {isLoading ? (
         <div className={gridClass}>
           {Array.from({ length: embedded ? EMBEDDED_NEWS_LIMIT : 6 }).map((_, index) => (
@@ -1081,6 +979,14 @@ function NewsBlock({ embedded = false }: { embedded?: boolean }) {
             </div>
           ))}
         </div>
+      ) : isError && !rows.length ? (
+        <DataState
+          kind="error"
+          title="最新消息讀取失敗"
+          code={String((error as Error | null)?.message ?? 'market/news')}
+          onRetry={() => refetch()}
+          className="px-5 py-6"
+        />
       ) : rows.length ? (
         <div className={gridClass}>
           {rows.map((item: any, index: number) => (
@@ -1091,87 +997,96 @@ function NewsBlock({ embedded = false }: { embedded?: boolean }) {
               rel="noopener noreferrer"
               className={cx(
                 embedded
-                  ? 'relative min-h-0 border-b border-white/[0.055] px-4 py-2.5 before:absolute before:inset-y-2 before:left-0 before:w-[2px] before:rounded-full last:border-b-0'
+                  ? 'min-h-0 border-b border-white/[0.055] px-4 py-2.5 last:border-b-0'
                   : 'min-h-[126px] p-4',
-                embedded ? newsSourceAccent(item.source) : '',
                 'bg-[#111216] transition-colors hover:bg-[#151823]',
               )}
             >
-              <div className="flex items-center justify-between gap-3">
-                <span className={cx(embedded ? 'text-[12px] font-semibold' : 'rounded-full border px-2 py-1 text-[11px] font-semibold', newsSourceTone(item.source))}>{item.source ?? 'news'}</span>
-                <span className={cx(embedded ? 'text-[12px]' : 'text-[11px]', 'text-slate-600')}>{String(item.published_at ?? item.publishedAt ?? '').slice(0, 10)}</span>
+              <div className="flex items-center justify-between gap-3 text-[11px] text-muted-foreground">
+                <span className="truncate font-semibold">{item.source ?? '新聞'}</span>
+                <span className="shrink-0 tabular-nums">{formatDateShort(item.published_at ?? item.publishedAt, '')}</span>
               </div>
-              <p className={cx('line-clamp-2 font-semibold text-slate-100', embedded ? 'mt-1.5 text-sm leading-[1.45]' : 'mt-3 text-sm leading-6')}>{item.title}</p>
-              {item.stock_symbol && <p className={cx(embedded ? 'mt-1 text-[12px]' : 'mt-2 text-[11px]', 'text-blue-300')}>{item.stock_symbol} {item.stock_name ?? ''}</p>}
+              <p className={cx('line-clamp-2 font-semibold text-slate-100', embedded ? 'mt-1 text-sm leading-[1.45]' : 'mt-3 text-sm leading-6')}>{item.title}</p>
+              {item.stock_symbol && <p className="mt-1 text-[11px] text-sky-300">{item.stock_symbol} {item.stock_name ?? ''}</p>}
             </a>
           ))}
         </div>
       ) : (
-        <div className="px-5 py-8 text-sm text-slate-500">暫無股票相關新聞；請檢查 /market/news RSS ingestion。</div>
+        <DataState kind="empty" title="目前沒有股票相關新聞" className="px-5 py-6" />
       )}
     </section>
   )
 }
 
+// Backend placeholder rows (e.g. a GDELT fetch status) are not events and must not render as headlines.
+function isEventStatusText(text: unknown) {
+  const raw = String(text ?? '')
+  return /fetch_failed|status\s*:|formal shadow|no_accepted/i.test(raw) || looksInternal(raw)
+}
+
 function GlobalEventContextCard({ risk }: { risk: any }) {
   const context = risk?.globalEventContext ?? {}
   const events = asArray<any>(context.events)
+  const realEvents = events.filter((event) => event?.title && !isEventStatusText(event.title))
+  const placeholder = events.find((event) => isEventStatusText(event?.title))
   const sourceQuality = asNumber(context.sourceQuality)
   const entityConfidence = asNumber(context.entityConfidence)
   const status = String(context.status ?? 'missing')
-  const isReady = status === 'ok'
-  const statusText = isReady ? String(context.label ?? '全球事件脈絡') : '尚未匯入'
-  const qualityText = sourceQuality == null ? '待匯入' : `${Math.round(sourceQuality * 100)}%`
-  const confidenceText = entityConfidence == null ? '待匯入' : `${Math.round(entityConfidence * 100)}%`
+  const isReady = status === 'ok' && realEvents.length > 0
+  const failed = placeholder != null || /fail|error/i.test(status)
+  const statusLabel = typeof context.label === 'string' && context.label && !looksInternal(context.label) ? context.label : '全球事件脈絡'
+  const statusText = isReady ? statusLabel : failed ? '讀取失敗' : '尚未匯入'
+  const qualityText = sourceQuality == null ? MISSING : `${Math.round(sourceQuality * 100)}%`
+  const confidenceText = entityConfidence == null ? MISSING : `${Math.round(entityConfidence * 100)}%`
+  const rawCode = [placeholder?.title, context.missingReason, status !== 'ok' ? status : null].filter(Boolean).join(' · ')
 
   return (
-    <section className="rounded-[20px] border border-white/[0.07] bg-white/[0.032] p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-2">
-          <Globe2 className={cx('h-4 w-4 shrink-0', isReady ? 'text-cyan-300' : 'text-slate-500')} />
-          <h3 className="truncate font-bold text-slate-100">全球事件風險脈絡</h3>
-        </div>
-        <SourceBadge>{context.provider ?? 'GDELT'}</SourceBadge>
-      </div>
+    <section className="min-w-0 border-t border-border pt-3" title={`來源：${context.provider ?? 'GDELT'}`}>
+      <CardTitle icon={Globe2} title="全球事件風險脈絡" iconClass={isReady ? 'text-cyan-300' : 'text-muted-foreground'} />
 
-      <div className="mt-4 grid grid-cols-3 gap-3">
+      <div className="mt-3 grid grid-cols-3 gap-3">
         <div>
-          <p className="text-xs text-slate-500">狀態</p>
-          <p className={cx('mt-1 text-sm font-bold', isReady ? 'text-cyan-200' : 'text-amber-300')}>{statusText}</p>
+          <p className="text-xs text-muted-foreground">狀態</p>
+          <p className={cx('mt-1 inline-flex items-center gap-1 text-sm font-bold', isReady ? 'text-slate-100' : failed ? 'text-fail' : 'text-warn')}>
+            {!isReady && <StatusIcon tone={failed ? 'fail' : 'warn'} size={11} />}
+            {statusText}
+          </p>
         </div>
         <div>
-          <p className="text-xs text-slate-500">來源品質</p>
+          <p className="text-xs text-muted-foreground">來源品質</p>
           <p className="mt-1 text-sm font-bold tabular-nums text-slate-100">{qualityText}</p>
         </div>
         <div>
-          <p className="text-xs text-slate-500">連結信心</p>
+          <p className="text-xs text-muted-foreground">連結信心</p>
           <p className="mt-1 text-sm font-bold tabular-nums text-slate-100">{confidenceText}</p>
         </div>
       </div>
 
-      <div className="mt-4 space-y-2 border-t border-white/[0.07] pt-3">
-        {events.length ? events.slice(0, 2).map((event, index) => (
-          <a
-            key={`${event.url ?? event.title}-${index}`}
-            href={safeExternalUrl(event.url)}
-            target={safeExternalUrl(event.url) ? '_blank' : undefined}
-            rel="noopener noreferrer"
-            className="block rounded-[14px] border border-white/[0.055] bg-black/15 px-3 py-2 transition-colors hover:border-cyan-300/20 hover:bg-cyan-400/[0.04]"
-          >
-            <div className="flex items-center justify-between gap-3">
-              <span className="text-[11px] font-semibold text-cyan-200">risk context only</span>
-              <span className="text-[11px] text-slate-600">{String(event.publishedAt ?? '').slice(0, 10)}</span>
-            </div>
-            <p className="mt-1 line-clamp-2 text-sm font-semibold leading-5 text-slate-200">{event.title}</p>
-            {asArray<string>(event.themes).length > 0 && (
-              <p className="mt-1 truncate text-[11px] text-slate-500">{asArray<string>(event.themes).slice(0, 3).join(' / ')}</p>
-            )}
-          </a>
-        )) : (
-          <div className="rounded-[14px] border border-amber-300/12 bg-amber-400/[0.055] px-3 py-3">
-            <p className="text-sm font-semibold text-amber-200">GDELT formal shadow 尚未有可展示事件</p>
-            <p className="mt-1 text-[11px] leading-5 text-slate-500">{context.missingReason ?? 'no_accepted_gdelt_events_last_14d'}</p>
-          </div>
+      <div className="mt-3 border-t border-white/[0.07] pt-1">
+        {realEvents.length ? realEvents.slice(0, 2).map((event, index) => {
+          const themes = asArray<string>(event.themes).filter((theme) => !looksInternal(theme)).slice(0, 3)
+          return (
+            <a
+              key={`${event.url ?? event.title}-${index}`}
+              href={safeExternalUrl(event.url)}
+              target={safeExternalUrl(event.url) ? '_blank' : undefined}
+              rel="noopener noreferrer"
+              className="block border-b border-white/[0.055] py-2 transition-colors last:border-b-0 hover:text-cyan-200"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <p className="line-clamp-2 text-sm font-semibold leading-5 text-slate-200">{event.title}</p>
+                <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">{formatDateShort(event.publishedAt, '')}</span>
+              </div>
+              {themes.length > 0 && <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{themes.join(' / ')}</p>}
+            </a>
+          )
+        }) : (
+          <DataState
+            kind={failed ? 'error' : 'empty'}
+            title={failed ? '國際事件資料暫時讀不到' : '近 14 日沒有可顯示的國際事件'}
+            code={rawCode || null}
+            className="px-0"
+          />
         )}
       </div>
     </section>
@@ -1292,7 +1207,8 @@ function selectHomeRecommendationRows(rows: any[], sortMode: ConfidenceSortMode,
 }
 
 function RecommendationPanel() {
-  const [visibleCount, setVisibleCount] = useState(HOME_INITIAL_RECOMMENDATION_LIMIT)
+  // 列表＋明細區：列只負責選取，選中那檔的完整明細（含 K 線圖）只渲染一份；不分批載入、不展開卡片。
+  const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [sortMode, setSortMode] = useState<ConfidenceSortMode>(DEFAULT_CONFIDENCE_SORT)
   const { data, isLoading, isError, error, refetch } = useQuery({
     queryKey: recommendationDailyKey(),
@@ -1303,7 +1219,10 @@ function RecommendationPanel() {
   const { tradable, researchOnly } = splitRecommendationLanes<any>(data)
   const allRows = useMemo(() => recommendationRowsFromPayload(data), [data])
   const eligibleRows = useMemo(() => selectHomeRecommendationRows(allRows, sortMode), [allRows, sortMode])
-  const displayRows = eligibleRows.slice(0, visibleCount)
+  const listState = listRefreshState({ isLoading, isError, hasData: !!data, count: eligibleRows.length })
+  const rowKey = (rec: any, index: number) => String(rec?.stock_id ?? rec?.symbol ?? index)
+  const selectedIndex = Math.max(0, eligibleRows.findIndex((rec: any, index: number) => rowKey(rec, index) === selectedKey))
+  const selectedRec = eligibleRows[selectedIndex]
   const buyCount = allRows.filter(isBuySignalRecommendation).length
   const potentialBuyCount = allRows.filter((row) => !isBuySignalRecommendation(row) && isPotentialBuyRecommendation(row)).length
   const heatValues = allRows
@@ -1312,39 +1231,29 @@ function RecommendationPanel() {
   const avgHeat = heatValues.length ? heatValues.reduce((sum, item) => sum + item, 0) / heatValues.length : null
 
   useEffect(() => {
-    setVisibleCount(HOME_INITIAL_RECOMMENDATION_LIMIT)
+    setSelectedKey(null)
   }, [data?.date])
 
   return (
-    <section className={panelClass('overflow-hidden')}>
+    // overflow-clip (not hidden) so the sticky detail panel can follow the page scroll.
+    <section className={panelClass('overflow-clip')}>
       <SectionHeader
         icon={Sparkles}
         title="選股推薦名單"
-        action={<SourceBadge>{data?.date ?? 'latest'} · 顯示 {displayRows.length}/{eligibleRows.length} 檔</SourceBadge>}
+        action={<HeaderMeta>{data?.date ? `資料日 ${formatDate(data.date)} · ` : ''}共 {eligibleRows.length} 檔</HeaderMeta>}
       />
       <div className="border-t border-white/[0.06] bg-[#101116] px-5 py-4">
         <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
           <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="rounded-full border border-emerald-400/25 bg-emerald-400/10 px-2.5 py-1 text-[11px] font-bold text-emerald-300">
-                BUY {buyCount}
-              </span>
-              <span className="rounded-full border border-amber-400/25 bg-amber-400/10 px-2.5 py-1 text-[11px] font-bold text-amber-300">
-                potential BUY {potentialBuyCount}
-              </span>
-              <span className="rounded-full border border-emerald-400/20 bg-emerald-400/[0.07] px-2.5 py-1 text-[11px] font-bold text-emerald-300">
-                可交易 {tradable.length}
-              </span>
-              <span className="rounded-full border border-sky-400/20 bg-sky-400/10 px-2.5 py-1 text-[11px] font-bold text-sky-300">
-                研究 {researchOnly.length}
-              </span>
-              <span className="rounded-full border border-blue-400/20 bg-blue-400/10 px-2.5 py-1 text-[11px] font-bold text-blue-300">
-                平均熱度 {avgHeat == null ? '待接資料' : avgHeat.toFixed(1)}
-              </span>
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+              <CountStat label="買進" value={buyCount} />
+              <CountStat label="潛在買進" value={potentialBuyCount} />
+              <CountStat label="可交易" value={tradable.length} />
+              <CountStat label="研究" value={researchOnly.length} />
+              <CountStat label="平均熱度" value={avgHeat == null ? MISSING : formatNumber(avgHeat, 1)} />
             </div>
-            <p className="mt-2 text-xs leading-5 text-slate-500">預設依 L4 EV 排序（同 EV 再依 R33 分數）；信心度＝R33 排名百分位與校準勝率，僅供顯示、不影響下單。</p>
             <div className="mt-2 flex flex-wrap items-center gap-1.5" role="group" aria-label="推薦排序">
-              <span className="text-[11px] text-slate-500">排序</span>
+              <span className="text-[11px] text-muted-foreground" title="預設依 L4 EV 排序（同 EV 再依 R33 分數）；信心度＝R33 排名百分位與校準勝率，僅供顯示、不影響下單。">排序</span>
               {CONFIDENCE_SORT_OPTIONS.map((option) => (
                 <button
                   key={option.value}
@@ -1354,7 +1263,7 @@ function RecommendationPanel() {
                   onClick={() => setSortMode(option.value)}
                   className={sortMode === option.value
                     ? 'rounded-full border border-amber-300/40 bg-amber-400/15 px-2.5 py-1 text-[11px] font-semibold text-amber-100'
-                    : 'rounded-full border border-white/[0.08] bg-white/[0.04] px-2.5 py-1 text-[11px] font-medium text-slate-400 hover:bg-white/[0.07]'}
+                    : 'rounded-full border border-white/[0.08] bg-white/[0.04] px-2.5 py-1 text-[11px] font-medium text-muted-foreground hover:bg-white/[0.07]'}
                 >
                   {option.label}
                 </button>
@@ -1372,22 +1281,23 @@ function RecommendationPanel() {
         </div>
       </div>
 
-      {isLoading ? (
+      {listState === 'loading' ? (
         <div className="grid gap-px bg-white/[0.06] p-4 md:grid-cols-2">
           {[1, 2, 3, 4].map((index) => (
             <div key={index} className="h-28 animate-pulse rounded-[18px] border border-white/[0.06] bg-white/[0.035]" />
           ))}
         </div>
-      ) : isError ? (
-        <div className="bg-[#111216] p-8 text-center text-sm text-slate-500">
-          <div className="mx-auto max-w-md rounded-[18px] border border-amber-300/15 bg-amber-400/[0.055] p-6 text-left">
-            <Sparkles className="mb-3 h-8 w-8 text-amber-300" />
-            <p className="font-semibold text-amber-100">選股推薦名單讀取失敗</p>
-            <p className="mt-2 break-words text-xs leading-5 text-slate-400">{String((error as Error | null)?.message ?? 'recommendations/daily API error')}</p>
-          </div>
-        </div>
-      ) : displayRows.length ? (
+      ) : listState === 'error' ? (
+        <DataState
+          kind="error"
+          title="選股名單讀取失敗"
+          code={String((error as Error | null)?.message ?? 'recommendations/daily')}
+          onRetry={() => refetch()}
+          className="bg-[#111216] px-5 py-6"
+        />
+      ) : listState === 'list' || listState === 'list-stale' ? (
         <div className="bg-[#101116] p-4">
+          {listState === 'list-stale' && <DataState kind="stale" title="更新失敗，顯示上次的名單" onRetry={() => refetch()} className="mb-2 px-0 py-0" />}
           <Suspense fallback={(
             <div className="grid gap-3 lg:grid-cols-2">
               {[1, 2, 3, 4].map((index) => (
@@ -1395,32 +1305,61 @@ function RecommendationPanel() {
               ))}
             </div>
           )}>
-            <div className="grid gap-3 lg:grid-cols-2">
-              {displayRows.map((rec: any, index: number) => (
-                <RecommendationCardClean key={rec.stock_id ?? rec.symbol ?? index} rec={rec} rank={index + 1} context="home" />
-              ))}
-            </div>
+            <ListDetailLayout
+              listLabel="選股推薦名單"
+              detailLabel="選中標的明細"
+              listClassName="space-y-3"
+              detailKey={selectedRec ? rowKey(selectedRec, selectedIndex) : undefined}
+              list={(
+                <>
+                  {eligibleRows.slice(0, HOME_INITIAL_RECOMMENDATION_LIMIT).map((rec: any, index: number) => (
+                    <RecommendationCardClean
+                      key={rowKey(rec, index)}
+                      rec={rec}
+                      rank={index + 1}
+                      context="home"
+                      selected={index === selectedIndex}
+                      onSelect={() => setSelectedKey(rowKey(rec, index))}
+                    />
+                  ))}
+                  {eligibleRows.length > HOME_INITIAL_RECOMMENDATION_LIMIT && (
+                    <DeferredRender className="space-y-3" minHeight={(eligibleRows.length - HOME_INITIAL_RECOMMENDATION_LIMIT) * 88}>
+                      {eligibleRows.slice(HOME_INITIAL_RECOMMENDATION_LIMIT).map((rec: any, offset: number) => {
+                        const index = HOME_INITIAL_RECOMMENDATION_LIMIT + offset
+                        return (
+                          <RecommendationCardClean
+                            key={rowKey(rec, index)}
+                            rec={rec}
+                            rank={index + 1}
+                            context="home"
+                            selected={index === selectedIndex}
+                            onSelect={() => setSelectedKey(rowKey(rec, index))}
+                          />
+                        )
+                      })}
+                    </DeferredRender>
+                  )}
+                </>
+              )}
+              detail={selectedRec ? <RecommendationCardDetail key={rowKey(selectedRec, selectedIndex)} rec={selectedRec} context="home" /> : null}
+            />
           </Suspense>
-          {displayRows.length < eligibleRows.length && (
-            <button
-              type="button"
-              className="mt-4 w-full rounded-xl border border-white/[0.08] bg-white/[0.035] px-4 py-3 text-sm font-semibold text-slate-300 transition-colors hover:bg-white/[0.065]"
-              onClick={() => setVisibleCount((count) => Math.min(eligibleRows.length, count + HOME_INITIAL_RECOMMENDATION_LIMIT))}
-            >
-              顯示更多（尚有 {eligibleRows.length - displayRows.length} 檔）
-            </button>
-          )}
         </div>
       ) : (
-        <div className="bg-[#111216] p-8 text-center text-sm text-slate-500">
-          <div className="mx-auto max-w-md rounded-[18px] border border-white/[0.07] bg-white/[0.032] p-6">
-            <Sparkles className="mx-auto mb-3 h-8 w-8 text-slate-600" />
-            <p>目前沒有可列入推薦名單的標的。</p>
-            <p className="mt-1 text-xs text-slate-600">請檢查 recommendations/daily payload 或登入狀態。</p>
-          </div>
+        <div className="bg-[#111216] px-5 py-6">
+          {listState === 'empty-stale' && <DataState kind="stale" title="更新失敗，上次讀到的名單是空的" onRetry={() => refetch()} className="mb-2 px-0 py-0" />}
+          <DataState kind="empty" title="今天沒有符合條件的推薦標的" className="px-0 py-0" />
         </div>
       )}
     </section>
+  )
+}
+
+function CountStat({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <span className="whitespace-nowrap">
+      {label} <span className="font-semibold tabular-nums text-slate-100">{value}</span>
+    </span>
   )
 }
 
@@ -1472,7 +1411,7 @@ function HomeBootOverlay() {
           <span className="absolute h-2 w-2 animate-pulse rounded-full bg-amber-300 shadow-[0_0_16px_rgba(252,211,77,0.75)]" />
         </div>
         <strong className="relative mt-5 text-sm font-semibold tracking-[0.08em] text-slate-100">同步最新市場資料</strong>
-        <span className="relative mt-2 text-xs text-slate-500">指數、風險、選股與產業資金軌跡</span>
+        <span className="relative mt-2 text-xs text-muted-foreground">指數、風險、選股與產業資金軌跡</span>
       </div>
     </div>
   )
@@ -1495,25 +1434,13 @@ export default function MarketHomePage() {
   return (
     <AppShell>
       <HomeBootOverlay />
-      <div className="min-h-screen overflow-x-hidden text-slate-100">
-        <main className="w-full max-w-none space-y-4 px-4 py-5 md:px-8 2xl:px-10">
-          <div className="relative overflow-hidden rounded-[24px] border border-amber-300/12 bg-[radial-gradient(circle_at_78%_48%,rgba(196,154,76,0.18),transparent_34%),linear-gradient(100deg,rgba(42,36,25,0.92),rgba(18,19,24,0.97)_44%,rgba(38,34,24,0.92))] px-6 py-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.05),0_24px_70px_rgba(0,0,0,0.28)]">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-              <div>
-                <span className="inline-flex rounded-full border border-amber-300/25 bg-amber-300/10 px-3 py-1 text-xs font-bold text-amber-300">市場總覽</span>
-                <h1 className="mt-3 text-2xl font-bold text-white">StockVision 晨間概覽</h1>
-                <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-400">
-                  指數、信用交易、法人資金、避險情緒、景氣信號與題材輪動集中在同一張高密度儀表板。
-                </p>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <SourceBadge>FinLab / D1 / TWSE-TPEX</SourceBadge>
-                <SourceBadge>risk factor packet</SourceBadge>
-              </div>
-            </div>
-          </div>
+      {/* No extra min-h-screen here: AppShell's main already fills the viewport, a second one only adds dead scroll. */}
+      <div className="overflow-x-clip text-slate-100">
+        <main className="w-full max-w-none space-y-4 px-4 py-4 md:px-8 2xl:px-10">
+          <h1 className="text-lg font-bold text-slate-100" title="資料來源：FinLab、證交所、櫃買中心、期交所">市場總覽</h1>
 
           <MarketOverviewBlock />
+          {/* DeferredRender shows a labelled loading skeleton until the section nears the viewport. */}
           <DeferredRender className="sv-home-deferred-section" minHeight={760}>
             <div className="grid items-start gap-4 xl:grid-cols-2">
               <div className="min-w-0"><RecommendationPanel /></div>

@@ -13,16 +13,16 @@ export function attentionSkipReason(job?: Pick<SchedulerJob, 'lastStatus' | 'att
 }
 
 const HISTORY_CELL_STYLE: Record<SchedulerHistoryCell, { className: string; label: string }> = {
-  success: { className: 'bg-emerald-400', label: 'success' },
-  failed: { className: 'bg-rose-400', label: 'failed or stuck past SLA' },
-  blocked: { className: 'bg-orange-400', label: 'blocked' },
-  attention: { className: 'bg-amber-400', label: 'skipped; should have run for real' },
-  missing: { className: 'bg-amber-700', label: 'no receipt; chain moved on without it' },
-  running: { className: 'bg-sky-400', label: 'running' },
-  triggered: { className: 'bg-cyan-600', label: 'triggered; awaiting callback' },
-  waiting: { className: 'bg-indigo-400', label: 'waiting' },
-  skip: { className: 'bg-slate-700', label: 'skipped (no-op)' },
-  none: { className: 'bg-slate-900 ring-1 ring-inset ring-slate-700', label: 'no receipt' },
+  success: { className: 'bg-ok', label: '成功' },
+  failed: { className: 'bg-fail', label: '失敗或超過 SLA 卡住' },
+  blocked: { className: 'bg-orange-400', label: '被擋下' },
+  attention: { className: 'bg-warn', label: '略過，但應該實際執行' },
+  missing: { className: 'bg-amber-700', label: '沒有回執，鏈已往下走' },
+  running: { className: 'bg-sky-400', label: '執行中' },
+  triggered: { className: 'bg-cyan-600', label: '已觸發，等待 callback' },
+  waiting: { className: 'bg-indigo-400', label: '等待中' },
+  skip: { className: 'bg-slate-700', label: '略過（無動作）' },
+  none: { className: 'bg-slate-900 ring-1 ring-inset ring-slate-700', label: '無回執' },
 }
 
 export function historyCellStyle(cell: SchedulerHistoryCell): { className: string; label: string } {

@@ -87,8 +87,21 @@ assert(executionChain.includes('Running now') && executionChain.includes('No act
 assert(executionChain.includes("if (status === 'blocked') return 0") && executionChain.includes("if (status === 'running') return 1"), 'a blocker must remain the current death point while an independent recovery branch is running')
 assert(executionChainCss.includes('@keyframes obs-death-beacon') && executionChainCss.includes('@keyframes obs-death-wave'), 'death point must expose a visible blocked-stage animation')
 assert(executionChainCss.includes('@keyframes obs-progress-track-flow'), 'Overall progress track must expose persistent active flow')
-assert(executionChain.includes('JobStatusSummary') && executionChainCss.includes('.obs-chain__error-disclosure[open]'), 'long errors must use no-scroll progressive disclosure')
-assert(executionChainCss.includes('-webkit-line-clamp: 3') && !executionChainCss.includes('max-height: 96px'), 'collapsed error preview must clamp without an internal scroll box')
+// Wei 規則（11/25）：全站不收合、不藏下拉，所以長錯誤不用 <details> 展開。
+// 改成 600 字內全文換行直接顯示（手機沒有 hover 也看得到）；超過才截斷並註明全文字數，全文在 title。不開內捲軸。
+const errorPreview = fs.readFileSync(path.join(frontend, 'lib', 'errorPreview.ts'), 'utf8')
+const errorPreviewRule = executionChainCss.match(/\.obs-chain__error-preview \{[^}]*\}/)?.[0] ?? ''
+assert(
+  executionChain.includes('JobStatusSummary') &&
+    executionChain.includes('<p className="obs-chain__error-preview" title={summary}>{clipErrorText(summary).text}</p>') &&
+    errorPreview.includes('export const ERROR_PREVIEW_CHAR_LIMIT = 600') &&
+    errorPreview.includes('…（全文 ${chars.length} 字，見 title）') &&
+    !executionChain.includes('<details') &&
+    errorPreviewRule.includes('white-space: pre-wrap') &&
+    !/line-clamp|overflow(-y)?: (auto|scroll|hidden)|max-height|display: none/.test(errorPreviewRule),
+  'long errors must show up to 600 characters inline and wrapped, with no collapse, clamp or internal scroll box',
+)
+assert(!executionChainCss.includes('max-height: 96px') && !executionChainCss.includes('.obs-chain__error-disclosure'), 'errors must not return to the removed scroll box or the <details> toggle')
 assert(executionChainCss.includes('prefers-reduced-motion'), 'OBS animation must respect reduced-motion accessibility')
 
 assert(obs.includes('aria-labelledby="source-gates-title"') && obs.includes('<DataQualityCompactMatrix gates={gates} compact />'), 'full Source Gates must remain beside the readiness summary')

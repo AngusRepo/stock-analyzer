@@ -135,7 +135,7 @@ function PromotionControllerResultPanel({ result }: { result: ModelArtifactPromo
       <p className="mt-3 text-[#d0d8e8]">{summary.resultLabel}</p>
       {result.next_action && <p className="mt-1 text-[#8a92a6]">next: {result.next_action}</p>}
       {summary.blockers.length > 0 && (
-        <div className="mt-2 rounded-lg border border-rose-400/25 bg-rose-400/[0.05] p-2 text-rose-100">
+        <div className="mt-2 rounded-lg border border-fail/25 bg-fail/[0.05] p-2 text-fail">
           blockers: {summary.blockers.join(', ')}
         </div>
       )}
@@ -318,7 +318,7 @@ function PromotionQueuePanelV2({
                     size="sm"
                     variant="outline"
                     disabled={!row.artifact_id || isPromoting || isBlocked}
-                    className="rounded-full border-emerald-400/30 text-emerald-200 hover:bg-emerald-400/10"
+                    className="rounded-full border-sky-400/30 text-sky-200 hover:bg-sky-400/10"
                     onClick={() => row.artifact_id && onPromote(row.artifact_id, false, false)}
                   >
                     Final compare dry-run
@@ -328,13 +328,13 @@ function PromotionQueuePanelV2({
                       size="sm"
                       variant="outline"
                       disabled={!row.artifact_id || isPromoting || isBlocked}
-                      className="rounded-full border-amber-400/30 text-amber-200 hover:bg-amber-400/10"
+                      className="rounded-full border-warn/30 text-warn hover:bg-warn/10"
                       onClick={() => row.artifact_id && onPromote(row.artifact_id, true, true)}
                     >
                       Wei approve + promote pointer
                     </Button>
                   ) : (
-                    <div className="rounded-full border border-emerald-400/25 bg-emerald-400/[0.08] px-3 py-1.5 text-xs font-semibold text-emerald-200">
+                    <div className="rounded-full border border-sky-400/25 bg-sky-400/[0.08] px-3 py-1.5 text-xs font-semibold text-sky-200">
                       Auto promotion由 controller 執行 · UI audit only
                     </div>
                   )}
@@ -366,7 +366,7 @@ function PromotionQueuePanelV2({
                   <span className="sv-num text-[#70809b]">{row.candidate_type}</span>
                 </div>
                 {row.action_context?.root_cause && (
-                  <p className="mt-1 text-amber-200">root: {humanizeGovernanceToken(row.action_context.root_cause)}</p>
+                  <p className="mt-1 text-warn">root: {humanizeGovernanceToken(row.action_context.root_cause)}</p>
                 )}
               </div>
             ))}
@@ -536,10 +536,10 @@ export default function ModelPoolPage() {
         )}
 
         {(modelPoolError || refreshError) && (
-          <div className="border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300" role="status">{modelPoolSnapshotReady ? '更新失敗，保留上次成功快照：' : '讀取失敗：'}{(refreshError ?? modelPoolError)!.message}</div>
+          <div className="border border-fail/35 bg-fail/10 p-4 text-sm text-fail" role="status">{modelPoolSnapshotReady ? '更新失敗，保留上次成功快照：' : '讀取失敗：'}{(refreshError ?? modelPoolError)!.message}</div>
         )}
         {evidenceError && (
-          <div className="border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300" role="status">模型證據讀取失敗：{evidenceError.message}</div>
+          <div className="border border-fail/35 bg-fail/10 p-4 text-sm text-fail" role="status">模型證據讀取失敗：{evidenceError.message}</div>
         )}
 
         {modelPoolSnapshotReady && (

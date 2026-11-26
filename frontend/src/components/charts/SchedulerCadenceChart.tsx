@@ -12,6 +12,8 @@ import {
   type Time,
 } from 'lightweight-charts'
 import type { SchedulerJob, SchedulerStatus } from '@/lib/api'
+import { STATUS_CHIP, TW_COLORS } from '@/lib/colorTokens'
+import { StatusIcon } from '@/components/ui/status'
 
 type SchedulerCadenceChartProps = {
   status?: SchedulerStatus
@@ -42,8 +44,8 @@ function pointDate(index: number, total: number): string {
 }
 
 function issueColor(failures: number, skips: number): string {
-  if (failures > 0) return '#fb7185'
-  if (skips > 0) return '#fbbf24'
+  if (failures > 0) return TW_COLORS.fail
+  if (skips > 0) return TW_COLORS.warn
   return '#38bdf8'
 }
 
@@ -87,7 +89,7 @@ function buildMarkers(points: CadencePoint[]): SeriesMarker<Time>[] {
       time: point.time,
       position: 'aboveBar',
       shape: point.failures > 0 ? 'circle' : 'arrowDown',
-      color: point.failures > 0 ? '#fb7185' : '#fbbf24',
+      color: point.failures > 0 ? TW_COLORS.fail : TW_COLORS.warn,
       text: point.failures > 0 ? `${point.failures} failed` : `${point.slo}% slo`,
     }))
 }
@@ -130,9 +132,9 @@ function EmptyWorkbench({ message }: { message: string }) {
           <p className="mt-2 text-xs leading-5 text-[#9badbf]">{message}</p>
         </div>
         <div className="grid grid-cols-3 gap-2 sv-num text-[11px]">
-          <div className="border border-slate-500/25 bg-slate-500/10 px-3 py-2 text-slate-300">jobs 0</div>
-          <div className="border border-slate-500/25 bg-slate-500/10 px-3 py-2 text-slate-300">7d slo N/A</div>
-          <div className="border border-rose-400/25 bg-rose-400/10 px-3 py-2 text-rose-200">api degraded</div>
+          <div className={`border px-3 py-2 ${STATUS_CHIP.na}`}>jobs 0</div>
+          <div className={`border px-3 py-2 ${STATUS_CHIP.na}`}>7d SLO N/A</div>
+          <div className={`inline-flex items-center gap-1 border px-3 py-2 ${STATUS_CHIP.fail}`} title="api degraded"><StatusIcon tone="fail" size={10} />API 異常</div>
         </div>
       </header>
       <div className="relative min-h-[300px] overflow-hidden bg-[#070a10] p-4">
@@ -141,10 +143,10 @@ function EmptyWorkbench({ message }: { message: string }) {
           {bars.map((height, index) => (
             <div key={index} className="flex flex-1 flex-col items-center gap-2">
               <div
-                className="w-full border border-amber-300/25 bg-amber-300/10"
+                className="w-full border border-slate-500/25 bg-slate-500/10"
                 style={{ height: `${Math.max(18, height * 190)}px` }}
               />
-              <div className="h-1.5 w-1.5 bg-sky-300" />
+              <div className="h-1.5 w-1.5 bg-slate-500" />
             </div>
           ))}
         </div>
@@ -178,7 +180,7 @@ export default function SchedulerCadenceChart({ status, loading, error }: Schedu
     chartRef.current = chart
 
     const sloSeries = chart.addSeries(LineSeries, {
-      color: failedJobs.length ? '#fb7185' : durationRiskJobs.length ? '#fbbf24' : '#34d399',
+      color: failedJobs.length ? TW_COLORS.fail : durationRiskJobs.length ? TW_COLORS.warn : TW_COLORS.ok,
       lineWidth: 2,
       priceLineVisible: false,
       title: '7d slo',
@@ -227,9 +229,9 @@ export default function SchedulerCadenceChart({ status, loading, error }: Schedu
         </div>
         <div className="grid grid-cols-4 gap-2 sv-num text-[11px]">
           <div className="border border-sky-400/20 bg-sky-400/10 px-3 py-2 text-sky-200">jobs {status?.stats.total ?? jobs.length}</div>
-          <div className="border border-emerald-400/25 bg-emerald-400/10 px-3 py-2 text-emerald-200">7d slo {status?.stats.successRate7d ?? latestPoint?.slo ?? 0}%</div>
-          <div className="border border-amber-400/25 bg-amber-400/10 px-3 py-2 text-amber-200">active {activeJobs}</div>
-          <div className="border border-rose-400/25 bg-rose-400/10 px-3 py-2 text-rose-200">risk {failedJobs.length + durationRiskJobs.length}</div>
+          <div className="border border-slate-500/25 bg-slate-500/10 px-3 py-2 text-foreground">7d SLO {status?.stats.successRate7d ?? latestPoint?.slo ?? 0}%</div>
+          <div className="border border-sky-400/20 bg-sky-400/10 px-3 py-2 text-sky-200">執行中 {activeJobs}</div>
+          <div className={`inline-flex items-center gap-1 border px-3 py-2 ${STATUS_CHIP[failedJobs.length ? 'fail' : durationRiskJobs.length ? 'warn' : 'ok']}`}><StatusIcon tone={failedJobs.length ? 'fail' : durationRiskJobs.length ? 'warn' : 'ok'} size={10} />風險 {failedJobs.length + durationRiskJobs.length}</div>
         </div>
       </header>
 
@@ -246,14 +248,14 @@ export default function SchedulerCadenceChart({ status, loading, error }: Schedu
               >
                 <div className="flex items-center justify-between gap-2">
                   <span className="truncate font-semibold">{job.name}</span>
-                  <span className="sv-num text-[10px] text-rose-300">{job.lastStatus}</span>
+                  <span className={`inline-flex shrink-0 items-center gap-1 text-[10px] ${job.lastStatus === 'failed' ? 'text-fail' : 'text-warn'}`} title={job.lastStatus}><StatusIcon tone={job.lastStatus === 'failed' ? 'fail' : 'warn'} size={10} />{job.lastStatus === 'failed' ? '失敗' : '耗時異常'}</span>
                 </div>
                 <p className="mt-1 sv-num text-[10px] text-[#70809b]">{job.group} / {job.lastDuration || '-'}</p>
                 <p className="mt-1 line-clamp-2 text-[#8b9bab]">{job.durationConcernReason || job.summary || job.schedule}</p>
               </a>
             )) : (
-              <div className="border border-emerald-400/25 bg-emerald-400/10 p-2 text-emerald-200">
-                目前沒有 failed 或 suspicious duration jobs。
+              <div className={`flex items-center gap-1 border p-2 ${STATUS_CHIP.ok}`}>
+                <StatusIcon tone="ok" size={10} />目前沒有失敗或耗時異常的 job。
               </div>
             )}
           </div>

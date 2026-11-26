@@ -66,7 +66,8 @@ assert.match(page, /Promise\.allSettled/)
 assert.match(page, /strategyLabApi\.learning\(\)/)
 assert.match(page, /strategyLabApi\.specs\(\)/)
 assert.match(page, /strategyLabApi\.evidenceProfiles\(\)/)
-assert.match(page, /return numeric > 0 \? 'text-rose-300' : 'text-emerald-300'/)
+// Returns use the shared Taiwan up/down tokens (positive red, negative green).
+assert.match(page, /return numeric > 0 \? 'text-up' : 'text-down'/)
 assert.doesNotMatch(page, /latest V6 run/)
 
 console.log('strategy learning single-stream UI contract tests passed')

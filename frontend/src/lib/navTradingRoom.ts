@@ -4,7 +4,7 @@ export const navNumber = (n: number | null | undefined, digits = 0) => n == null
   ? '尚無可驗證數值' : n.toLocaleString('zh-TW', { minimumFractionDigits: digits, maximumFractionDigits: digits })
 export const navPercent = (n: number | null | undefined) => n == null || !Number.isFinite(n) ? '尚無可驗證數值' : `${navNumber(n * 100, 2)}%`
 export const navSign = (n: number | null | undefined) => n == null || !Number.isFinite(n) || n === 0
-  ? 'text-slate-200' : n > 0 ? 'text-emerald-300' : 'text-red-300'
+  ? 'text-slate-200' : n > 0 ? 'text-up' : 'text-down'
 export function comparisonTitle(pair: PairedNavShadowReadModel['pairs'][number]) {
   const ownerLabels: Record<string, string> = { l4_alpha_ev: 'L4 base EV', allocator_ev_fusion: 'L4+ 殘差增量', ensemble: 'L3 ML ensemble' }
   const owner = pair.comparison?.kind === 'strategy_bundle_replacement' ? 'L3＋三頭 L4 整鏈' : ownerLabels[pair.comparison?.owner ?? ''] ?? pair.comparison?.owner ?? '未標記 owner'

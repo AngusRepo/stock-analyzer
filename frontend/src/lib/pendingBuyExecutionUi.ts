@@ -217,6 +217,9 @@ const EXECUTION_REASON_LABELS: Record<string, string> = {
 
 const S12_STATE_LABELS: Record<string, string> = {
   waiting_15m_completed_bars: '等待 15M K 完成',
+  waiting_session_60m_completed_bar: '等待盤中 60M K 完成',
+  waiting_session_60m_long_bias: '等待盤中 60M 多方結構',
+  waiting_session_60m_bearish_risk: '盤中 60M 偏空，等待風險解除',
   waiting_4h_completed_bar: '等待 4H K 完成',
   waiting_4h_long_bias: '等待 4H 多方結構',
   waiting_1h_completed_bar: '等待 1H K 完成',
@@ -226,6 +229,7 @@ const S12_STATE_LABELS: Record<string, string> = {
   waiting_choch: '等待 CHoCH',
   waiting_bos: '等待 BOS',
   waiting_retest: '等待回測反應',
+  waiting_reaction: '回測已到，等待多方反應',
   reaction_ready: '多方反應結構成立',
   limited_takeover_ready: '有限接手條件成立',
   bearish_defense_ready: '空方防守結構成立',
@@ -485,8 +489,18 @@ export function formatPendingBuyExecutionBadge(item: PendingBuyExecutionContext)
   return base
 }
 
+// Worker 寫 S12 事件失敗時 status='error'、沒有 state（paperEntryTasks：s12_market_data_unavailable／s12_data_unavailable）。
+const S12_ERROR_REASON_LABELS: Record<string, string> = {
+  s12_market_data_unavailable: '盤中行情暫不可用',
+  s12_data_unavailable: 'S12 結構資料不足',
+}
+
+/** S12 狀態一律中文；未登錄的狀態不把代碼轉成英文片語，寫通用句（原碼由呼叫端放 title）。 */
 export function formatS12IntradayStructureState(state: string, reason: string): string {
-  return S12_STATE_LABELS[state] ?? humanizeExecutionReason(reason)
+  return S12_STATE_LABELS[state]
+    ?? S12_ERROR_REASON_LABELS[reason]
+    ?? EXECUTION_REASON_LABELS[reason.trim()]
+    ?? (state === 'error' ? 'S12 結構暫時無法判斷' : 'S12 結構狀態更新中')
 }
 
 export function formatS12IntradayStructureBadge(watchPoints: unknown): PendingBuyExecutionBadge | null {

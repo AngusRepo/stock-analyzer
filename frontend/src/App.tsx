@@ -35,7 +35,7 @@ const TodoBoardPage = lazy(loadTodoBoardPage)
 
 function PageLoader({ label }: { label: string }) {
   return (
-    <div className="grid h-screen place-items-center bg-[#090a0d] text-sm text-slate-500">
+    <div className="grid h-screen place-items-center bg-[#090a0d] text-sm text-muted-foreground">
       Loading {label}...
     </div>
   )

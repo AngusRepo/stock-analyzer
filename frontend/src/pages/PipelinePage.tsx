@@ -11,9 +11,15 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import AppShell from '@/components/AppShell'
 import {
-  AlertTriangle, Filter, ChevronDown, ChevronUp, RefreshCw,
+  Filter,
 } from 'lucide-react'
 import { useState } from 'react'
+import { DataState } from '@/components/ui/data-state'
+import { ListDetailLayout, selectableRowProps } from '@/components/ui/list-detail'
+import { StatusIcon, StatusText } from '@/components/ui/status'
+import { formatDate, formatNumber } from '@/lib/format'
+import { humanizeId, looksInternal, strategyDisplayLabel } from '@/lib/humanLabels'
+import type { StatusTone } from '@/lib/colorTokens'
 import { useAuth } from '@/_core/hooks/useAuth'
 import { buildScoreBreakdownViewModel } from '@/lib/scoreV2ViewModel'
 import PipelineMaturityContribution from '@/components/PipelineMaturityContribution'
@@ -21,39 +27,45 @@ import L4DistributionPanel from '@/components/L4DistributionPanel'
 import type { PipelineDecisionMaturityPacket } from '@/lib/pipelineMaturityContract'
 
 // ─── Signal config ─────────────────────────────────────────────────────────
+// 買賣訊號是模型評等，不是當日漲跌：用中性深淺表強弱（實心＝強、外框＝一般），文字與圖示表方向。
+// 紅綠只留給價格與報酬（batch3 顏色規則；Wei 可否決）。
 const SIGNAL_STYLE: Record<string, { label: string; cls: string }> = {
-  STRONG_BUY: { label: '強烈買進', cls: 'bg-red-500/15 text-red-400 border-red-500/30' },
-  BUY:        { label: '買進',     cls: 'bg-red-500/10 text-red-400 border-red-500/20' },
-  HOLD:       { label: '觀望',     cls: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20' },
-  SELL:       { label: '賣出',     cls: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' },
-  STRONG_SELL:{ label: '強烈賣出', cls: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30' },
+  STRONG_BUY: { label: '▲ 強烈買進', cls: 'bg-white/[0.14] text-foreground border-white/35 font-bold' },
+  BUY:        { label: '▲ 買進',     cls: 'bg-white/[0.06] text-foreground border-white/20' },
+  HOLD:       { label: '觀望',       cls: 'bg-transparent text-muted-foreground border-border' },
+  SELL:       { label: '▼ 賣出',     cls: 'bg-transparent text-foreground border-white/25' },
+  STRONG_SELL:{ label: '▼ 強烈賣出', cls: 'bg-transparent text-foreground border-white/40 font-bold' },
 }
 
-const SECTOR_ACCENTS = [
-  { border: 'border-cyan-400/25', bg: 'bg-cyan-400/[0.07]', text: 'text-cyan-200', bar: 'bg-cyan-400' },
-  { border: 'border-amber-400/25', bg: 'bg-amber-400/[0.08]', text: 'text-amber-200', bar: 'bg-amber-400' },
-  { border: 'border-emerald-400/25', bg: 'bg-emerald-400/[0.07]', text: 'text-emerald-200', bar: 'bg-emerald-400' },
-  { border: 'border-rose-400/25', bg: 'bg-rose-400/[0.07]', text: 'text-rose-200', bar: 'bg-rose-400' },
-  { border: 'border-violet-400/25', bg: 'bg-violet-400/[0.07]', text: 'text-violet-200', bar: 'bg-violet-400' },
-  { border: 'border-blue-400/25', bg: 'bg-blue-400/[0.07]', text: 'text-blue-200', bar: 'bg-blue-400' },
-]
+// 顏色少而有語意：分層／策略／產業卡不再各自配彩虹色，一律中性外框。
+const NEUTRAL_ACCENT = { border: 'border-white/[0.08]', bg: 'bg-white/[0.03]', text: 'text-slate-100', bar: 'bg-slate-300/70' }
 
-const FLOW_STEP_ACCENTS = [
-  'border-cyan-400/25 bg-cyan-400/[0.07] text-cyan-200',
-  'border-amber-400/25 bg-amber-400/[0.08] text-amber-200',
-  'border-violet-400/25 bg-violet-400/[0.07] text-violet-200',
-  'border-emerald-400/25 bg-emerald-400/[0.07] text-emerald-200',
-]
+// 內部識別 → 中文短名；原始鍵只進 title tooltip。
+const SOURCE_OF_TRUTH_LABELS: Record<string, string> = {
+  'legacy_fallback:screener_funnel_items.l1_candidate_seed_after_overlay': '來源：L1 候選名單（備援）',
+  canonical_v4: '來源：正式策略矩陣',
+}
 
-function sectorAccent(seed: string, index: number) {
-  let hash = index
-  for (const char of seed) hash = (hash * 31 + char.charCodeAt(0)) % 997
-  return SECTOR_ACCENTS[Math.abs(hash) % SECTOR_ACCENTS.length]
+function sourceOfTruthLabel(raw: unknown): string {
+  if (typeof raw === 'string' && raw.startsWith('legacy_fallback')) return SOURCE_OF_TRUTH_LABELS[raw] ?? '來源：舊版彙總（備援）'
+  return humanizeId(raw, SOURCE_OF_TRUTH_LABELS, '來源：策略彙總')
+}
+
+const RISK_REASON_LABELS: Record<string, string> = {
+  TRADING_ATTENTION_RISK_EVIDENCE: '注意股風險',
+}
+
+const RISK_STAGE: Record<string, { label: string; tone: StatusTone }> = {
+  hard_safety: { label: '硬性安全', tone: 'fail' },
+  soft_risk_overlay: { label: '軟性風控', tone: 'warn' },
+}
+
+function riskReasonLabel(raw: unknown): string {
+  return humanizeId(raw, RISK_REASON_LABELS, '風控檢查')
 }
 
 function fmt(n: number | null | undefined, decimals = 0): string {
-  if (n == null) return '-'
-  return n.toLocaleString('zh-TW', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
+  return formatNumber(n, decimals, '-')
 }
 
 function parseMaybeJson(raw: unknown): Record<string, any> {
@@ -387,45 +399,75 @@ function ScoreBar({ label, value, max, color }: { label: string; value: number; 
   )
 }
 
-// ─── Expandable stock row ──────────────────────────────────────────────────
-function StockRow({ rec, rank }: { rec: any; rank: number }) {
-  const [expanded, setExpanded] = useState(false)
+// ─── Stock list + detail panel ─────────────────────────────────────────────
+// 點列切換右側（窄欄時在下方）的固定明細區，不再用展開／收合。
+function rowKey(row: any, index: number): string {
+  return String(row?.symbol ?? index)
+}
+
+function rowClass(selected: boolean, selectedCls: string): string {
+  return `flex items-center gap-3 rounded-lg border px-3 py-2 cursor-pointer select-none outline-none focus-visible:ring-2 focus-visible:ring-primary/50 ${selected ? selectedCls : 'border-transparent hover:bg-card/50'}`
+}
+
+const DETAIL_PANEL_CLS = 'border-t border-border pt-3 @min-[34rem]:border-t-0 @min-[34rem]:border-l @min-[34rem]:pl-3 @min-[34rem]:pt-0'
+
+function StockRowSummary({ rec, rank }: { rec: any; rank: number }) {
   const sig = SIGNAL_STYLE[rec.signal] ?? SIGNAL_STYLE['HOLD']
   const scoreViewModel = buildScoreBreakdownViewModel(rec ?? {})
-
   return (
-    <div className={`border rounded-lg transition-all ${expanded ? 'border-border bg-card' : 'border-transparent hover:bg-card/50'}`}>
-      <div
-        className="flex items-center gap-3 px-3 py-2 cursor-pointer select-none"
-        onClick={() => setExpanded(v => !v)}
-      >
-        <span className="text-xs text-muted-foreground sv-num w-5 text-right">{rank}</span>
-        <span className="font-semibold text-sm w-14 sv-num">{rec.symbol}</span>
-        <span className="text-xs text-muted-foreground truncate flex-1 max-w-[80px]">{rec.name}</span>
-        {rec.sector && <Badge variant="outline" className="text-[9px] px-1.5 py-0 shrink-0">{rec.sector}</Badge>}
-        <Badge className={`text-[10px] px-1.5 py-0 border ${sig.cls}`}>{sig.label}</Badge>
-        <span className="text-sm font-bold sv-num text-primary w-8 text-right">{Math.round(scoreViewModel.finalScore)}</span>
-        {expanded ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground shrink-0" /> : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground shrink-0" />}
+    <>
+      <span className="text-xs text-muted-foreground sv-num w-5 text-right">{rank}</span>
+      <span className="font-semibold text-sm w-14 sv-num">{rec.symbol}</span>
+      <span className="text-xs text-muted-foreground truncate flex-1 max-w-[80px]">{rec.name}</span>
+      {rec.sector && <Badge variant="outline" className="text-[9px] px-1.5 py-0 shrink-0">{rec.sector}</Badge>}
+      <Badge className={`text-[10px] px-1.5 py-0 border ${sig.cls}`}>{sig.label}</Badge>
+      <span className="text-sm font-bold sv-num text-primary w-8 text-right">{Math.round(scoreViewModel.finalScore)}</span>
+    </>
+  )
+}
+
+function StockDetail({ rec }: { rec: any }) {
+  return (
+    <div className="space-y-2">
+      <p className="text-sm font-semibold"><span className="sv-num">{rec.symbol}</span> <span className="text-muted-foreground">{rec.name}</span></p>
+      <div className="space-y-1">
+        <ScoreBar label="籌碼" value={rec.chip_score ?? 0} max={40} color="bg-blue-500" />
+        <ScoreBar label="技術" value={rec.tech_score ?? 0} max={30} color="bg-purple-500" />
+        <ScoreBar label="ML" value={rec.ml_score ?? 0} max={30} color="bg-indigo-400" />
       </div>
-      {expanded && (
-        <div className="px-3 pb-3 pt-1 border-t border-border space-y-2">
-          <div className="space-y-1">
-            <ScoreBar label="籌碼" value={rec.chip_score ?? 0} max={40} color="bg-blue-500" />
-            <ScoreBar label="技術" value={rec.tech_score ?? 0} max={30} color="bg-purple-500" />
-            <ScoreBar label="ML" value={rec.ml_score ?? 0} max={30} color="bg-emerald-500" />
-          </div>
-          {rec.reason && (
-            <p className="text-xs text-muted-foreground leading-relaxed">{rec.reason}</p>
-          )}
-          <LayerTracePanel rec={rec} />
-          <div className="flex gap-4 text-[11px] text-muted-foreground">
-            {rec.current_price && <span>現價 <span className="sv-num">${fmt(rec.current_price, 2)}</span></span>}
-            {rec.rsi14 && <span>RSI <span className="sv-num">{rec.rsi14.toFixed(1)}</span></span>}
-            {rec.confidence && <span>信心度 <span className="sv-num">{(rec.confidence * 100).toFixed(0)}%</span></span>}
-          </div>
-        </div>
+      {rec.reason && (
+        <p className="text-xs text-muted-foreground leading-relaxed">{rec.reason}</p>
       )}
+      <LayerTracePanel rec={rec} />
+      <div className="flex gap-4 text-[11px] text-muted-foreground">
+        {rec.current_price && <span>現價 <span className="sv-num">${fmt(rec.current_price, 2)}</span></span>}
+        {rec.rsi14 && <span>RSI <span className="sv-num">{rec.rsi14.toFixed(1)}</span></span>}
+        {rec.confidence && <span>信心度 <span className="sv-num">{(rec.confidence * 100).toFixed(0)}%</span></span>}
+      </div>
     </div>
+  )
+}
+
+// 目前沒有頁面渲染這份清單（HEAD 起 StockRow 即未被引用）；保留為列表＋明細形式。
+function StockListDetail({ recs }: { recs: any[] }) {
+  const [selected, setSelected] = useState<string | null>(null)
+  const currentIndex = Math.max(0, recs.findIndex((rec, i) => rowKey(rec, i) === selected))
+  const current = recs[currentIndex]
+  if (!current) return null
+  return (
+    <ListDetailLayout
+      listWidth="narrow"
+      detailKey={rowKey(current, currentIndex)}
+      listLabel="推薦標的"
+      detailLabel="標的明細"
+      detailClassName={DETAIL_PANEL_CLS}
+      list={recs.map((rec, i) => (
+        <div key={rowKey(rec, i)} className={rowClass(i === currentIndex, 'border-border bg-card')} {...selectableRowProps(i === currentIndex, () => setSelected(rowKey(rec, i)))}>
+          <StockRowSummary rec={rec} rank={i + 1} />
+        </div>
+      ))}
+      detail={<StockDetail rec={current} />}
+    />
   )
 }
 
@@ -474,42 +516,61 @@ function DebateTurnsList({ turns, verdict, status }: { turns: any[]; verdict: st
   )
 }
 
-function T2BuyRow({ buy, rank }: { buy: any; rank: number }) {
-  const [expanded, setExpanded] = useState(false)
+function T2BuyRowSummary({ buy, rank }: { buy: any; rank: number }) {
   const scoreViewModel = buildScoreBreakdownViewModel(buy ?? {})
   return (
-    <div className={`border rounded-lg transition-all ${expanded ? 'border-primary/20 bg-card' : 'border-transparent hover:bg-card/50'}`}>
-      <div
-        className="flex items-center gap-3 px-3 py-2 cursor-pointer select-none"
-        onClick={() => setExpanded(v => !v)}
-      >
-        <span className="text-xs text-muted-foreground sv-num w-5 text-right">{rank}</span>
-        <span className="font-semibold text-sm w-14 sv-num">{buy.symbol}</span>
-        <span className="text-xs text-muted-foreground truncate flex-1 max-w-[80px]">{buy.name}</span>
-        <Badge className="text-[10px] px-1.5 py-0 border bg-red-500/10 text-red-400 border-red-500/20">
-          {buy.signal ?? 'BUY'}
-        </Badge>
-        {buy.confidence != null && (
-          <span className="text-xs sv-num text-muted-foreground">信心度 {(buy.confidence * 100).toFixed(0)}%</span>
-        )}
-        <span className="text-sm font-bold sv-num text-primary w-8 text-right">{Math.round(scoreViewModel.finalScore)}</span>
-        {expanded ? <ChevronUp className="w-3.5 h-3.5 text-muted-foreground shrink-0" /> : <ChevronDown className="w-3.5 h-3.5 text-muted-foreground shrink-0" />}
-      </div>
-      {expanded && (
-        <div className="px-3 pb-3 pt-1 border-t border-border space-y-2 text-xs text-muted-foreground">
-          <div className="grid grid-cols-3 gap-2">
-            <div>限價 <span className="sv-num text-foreground">${fmt(buy.ml_entry_price, 1)}</span></div>
-            <div>停損 <span className="sv-num text-emerald-400">${fmt(buy.ml_stop_loss, 1)}</span></div>
-            <div>目標 <span className="sv-num text-red-400">${fmt(buy.ml_target1, 1)}</span></div>
-          </div>
-          <DebateTurnsList
-            turns={buy.debate_turns ?? buy.debateTurns ?? []}
-            verdict={String(buy.debate_verdict ?? 'PENDING').toUpperCase()}
-            status={String(buy.debate_status ?? 'pending').toLowerCase()}
-          />
-        </div>
+    <>
+      <span className="text-xs text-muted-foreground sv-num w-5 text-right">{rank}</span>
+      <span className="font-semibold text-sm w-14 sv-num">{buy.symbol}</span>
+      <span className="text-xs text-muted-foreground truncate flex-1 max-w-[80px]">{buy.name}</span>
+      <Badge className="text-[10px] px-1.5 py-0 border bg-up/10 text-up border-up/20">
+        {buy.signal ?? 'BUY'}
+      </Badge>
+      {buy.confidence != null && (
+        <span className="text-xs sv-num text-muted-foreground">信心度 {(buy.confidence * 100).toFixed(0)}%</span>
       )}
+      <span className="text-sm font-bold sv-num text-primary w-8 text-right">{Math.round(scoreViewModel.finalScore)}</span>
+    </>
+  )
+}
+
+function T2BuyDetail({ buy }: { buy: any }) {
+  return (
+    <div className="space-y-2 text-xs text-muted-foreground">
+      <p className="text-sm font-semibold text-foreground"><span className="sv-num">{buy.symbol}</span> <span className="text-muted-foreground">{buy.name}</span></p>
+      <div className="grid grid-cols-3 gap-2">
+        <div>限價 <span className="sv-num text-foreground">${fmt(buy.ml_entry_price, 1)}</span></div>
+        <div>停損 <span className="sv-num text-down">${fmt(buy.ml_stop_loss, 1)}</span></div>
+        <div>目標 <span className="sv-num text-up">${fmt(buy.ml_target1, 1)}</span></div>
+      </div>
+      <DebateTurnsList
+        turns={buy.debate_turns ?? buy.debateTurns ?? []}
+        verdict={String(buy.debate_verdict ?? 'PENDING').toUpperCase()}
+        status={String(buy.debate_status ?? 'pending').toLowerCase()}
+      />
     </div>
+  )
+}
+
+function T2BuyListDetail({ pendingBuys }: { pendingBuys: any[] }) {
+  const [selected, setSelected] = useState<string | null>(null)
+  const currentIndex = Math.max(0, pendingBuys.findIndex((buy, i) => rowKey(buy, i) === selected))
+  const current = pendingBuys[currentIndex]
+  if (!current) return null
+  return (
+    <ListDetailLayout
+      listWidth="narrow"
+      detailKey={rowKey(current, currentIndex)}
+      listLabel="T2 待買"
+      detailLabel="待買明細與辯論"
+      detailClassName={DETAIL_PANEL_CLS}
+      list={pendingBuys.map((buy, i) => (
+        <div key={rowKey(buy, i)} className={rowClass(i === currentIndex, 'border-primary/20 bg-card')} {...selectableRowProps(i === currentIndex, () => setSelected(rowKey(buy, i)))}>
+          <T2BuyRowSummary buy={buy} rank={i + 1} />
+        </div>
+      ))}
+      detail={<T2BuyDetail buy={current} />}
+    />
   )
 }
 
@@ -517,6 +578,12 @@ function countValue(value: unknown): string {
   if (value == null || value === '') return 'N/A'
   const numeric = Number(value)
   return Number.isFinite(numeric) ? fmt(numeric, 0) : 'N/A'
+}
+
+function finiteCount(value: unknown): number | null {
+  if (value == null || value === '') return null
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? numeric : null
 }
 
 function ratioValue(value: unknown): string {
@@ -532,17 +599,17 @@ function PipelineColumn({
   className = '',
 }: {
   title: string
-  subtitle: string
+  subtitle: React.ReactNode
   children: React.ReactNode
   className?: string
 }) {
   return (
-    <Card className={`min-h-[520px] max-w-full overflow-hidden border-[#283140] bg-[#111319]/95 shadow-[0_18px_60px_rgba(0,0,0,0.18)] ${className}`}>
+    <Card className={`max-w-full overflow-clip border-[#283140] bg-[#111319]/95 shadow-[0_18px_60px_rgba(0,0,0,0.18)] ${className}`}>
       <CardHeader className="min-w-0 pb-2">
         <CardTitle className="text-base text-[#f5f7fb]">{title}</CardTitle>
-        <p className="break-words text-sm leading-6 text-[#8f9bb0]">{subtitle}</p>
+        <div className="break-words text-xs leading-5 text-[#8f9bb0]">{subtitle}</div>
       </CardHeader>
-      <CardContent className="min-w-0 space-y-3 overflow-hidden pt-0">
+      <CardContent className="min-w-0 space-y-3 overflow-clip pt-0">
         {children}
       </CardContent>
     </Card>
@@ -552,11 +619,7 @@ function PipelineColumn({
 function PipelineColumnLoading({ title, subtitle, className = '' }: { title: string; subtitle: string; className?: string }) {
   return (
     <PipelineColumn title={title} subtitle={subtitle} className={className}>
-      <div role="status" aria-label={`${title}載入中`} className="space-y-3">
-        {[1, 2, 3, 4].map((item) => (
-          <div key={item} className="h-20 animate-pulse rounded-xl border border-white/[0.06] bg-muted/30" />
-        ))}
-      </div>
+      <DataState kind="loading" title={`${title}載入中`} />
     </PipelineColumn>
   )
 }
@@ -573,49 +636,37 @@ function PipelineColumnError({
   className?: string
 }) {
   return (
-    <PipelineColumn title={title} subtitle="資料讀取失敗；其他流程欄位仍可獨立顯示。" className={className}>
-      <div role="alert" className="rounded-xl border border-amber-400/25 bg-amber-400/[0.07] p-4 text-amber-100">
-        <div className="flex min-w-0 items-start gap-3">
-          <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-300" />
-          <p className="min-w-0 break-words text-xs leading-5 text-amber-100/75">{message}</p>
-        </div>
-        <button
-          type="button"
-          onClick={onRetry}
-          className="mt-3 inline-flex items-center justify-center gap-2 rounded-md border border-amber-300/25 bg-amber-300/10 px-3 py-2 text-xs font-semibold text-amber-100 hover:bg-amber-300/15"
-        >
-          <RefreshCw className="h-4 w-4" />
-          重新載入
-        </button>
-      </div>
+    <PipelineColumn title={title} subtitle="其他流程欄位仍可獨立顯示。" className={className}>
+      <DataState kind="error" title="資料暫時讀不到" hint="可重試" code={message} onRetry={onRetry} />
     </PipelineColumn>
   )
 }
-function FunnelSummaryColumn({ summary, fallbackCount, l4Distribution }: {
+function FunnelSummaryColumn({ summary, fallbackCount }: {
   summary: any
   fallbackCount: number
-  l4Distribution?: PipelineDecisionMaturityPacket['l4_distribution']
 }) {
   const layers = Array.isArray(summary?.layers) ? summary.layers : []
   return (
     <PipelineColumn
       title="篩選、模型證據與交易訊號"
-      subtitle={summary?.run_id ? `${summary.date} · 已發布 ${countValue(summary?.recommendation_count)} 檔` : `已觀測 ${countValue(fallbackCount)} 檔；完整批次統計尚未提供。`}
+      subtitle={summary?.run_id
+        ? <span title="資料日＝這批推薦對應的交易日">資料日 {formatDate(summary.date)} · 已發布 {countValue(summary?.recommendation_count)} 檔</span>
+        : `已觀測 ${countValue(fallbackCount)} 檔；完整批次統計尚未提供。`}
     >
       <div className="space-y-2">
-        {layers.map((row: any, index: number) => {
-          const accent = SECTOR_ACCENTS[index % SECTOR_ACCENTS.length]
+        {layers.length ? layers.map((row: any) => {
           const metrics = Array.isArray(row.metrics) ? row.metrics : []
+          const complete = row.availability === 'available'
           return (
-            <div key={row.layer} className={`rounded-xl border ${accent.border} ${accent.bg} p-3`}>
+            <div key={row.layer} className={`rounded-xl border ${NEUTRAL_ACCENT.border} ${NEUTRAL_ACCENT.bg} p-3`}>
               <div className="flex items-center justify-between gap-2">
                 <div>
-                  <p className={`sv-num text-base font-semibold ${accent.text}`}>{row.layer}</p>
+                  <p className={`sv-num text-base font-semibold ${NEUTRAL_ACCENT.text}`}>{row.layer}</p>
                   <p className="mt-1 text-xs text-[#9aa4b7]">{row.label}</p>
                 </div>
-                <Badge variant="outline" className="border-white/[0.12] bg-black/20 text-[10px]">
-                  {row.availability === 'available' ? '完整統計' : '資料未完整'}
-                </Badge>
+                <StatusText tone={complete ? 'ok' : 'warn'} className="text-[10px]" title={row.availability}>
+                  {complete ? '完整統計' : '資料未完整'}
+                </StatusText>
               </div>
               <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
                 {metrics.map((metric: any) => (
@@ -628,99 +679,147 @@ function FunnelSummaryColumn({ summary, fallbackCount, l4Distribution }: {
               {row.note && <p className="mt-2 text-[11px] leading-relaxed text-[#9aa4b7]">{row.note}</p>}
             </div>
           )
-        })}
-        <details className="rounded-xl border border-white/10 p-3">
-          <summary className="cursor-pointer text-xs font-semibold text-slate-200">L4 · 配置詳情</summary>
-          <div className="mt-3 min-w-0">
-            {l4Distribution ? <L4DistributionPanel data={l4Distribution} /> : <p role="status" className="text-xs text-slate-400">尚未取得 L4 配置資料。</p>}
-          </div>
-        </details>
+        }) : <DataState kind="empty" title="篩選分層統計尚未提供" />}
       </div>
     </PipelineColumn>
   )
 }
 
+/** L4 配置直接就地呈現（全寬），不收在窄欄的收合區裡。 */
+function L4AllocationSection({ l4Distribution, loading, error, onRetry }: {
+  l4Distribution?: PipelineDecisionMaturityPacket['l4_distribution']
+  loading: boolean
+  error: Error | null
+  onRetry: () => void
+}) {
+  // l4_distribution rides on the maturity query; its loading / failure must not read as "no L4 data".
+  return (
+    <section className="rounded-2xl border border-[#283140] bg-[#111319]/95 p-4" aria-labelledby="l4-allocation-title">
+      <h2 id="l4-allocation-title" className="mb-2 text-sm font-semibold text-[#f5f7fb]">L4 · 配置詳情</h2>
+      {l4Distribution ? <L4DistributionPanel data={l4Distribution} />
+        : loading ? <DataState kind="loading" title="讀取 L4 配置" />
+        : error ? <DataState kind="error" title="L4 配置讀取失敗" code={error.message || 'pipeline/maturity'} onRetry={onRetry} />
+        : <DataState kind="empty" title="尚未取得 L4 配置資料" />}
+    </section>
+  )
+}
+
 function StrategySummaryColumn({ summary, sectors }: { summary: any; sectors: Array<{ sector: string; count: number; symbols: string[]; themeText: string; rotationText: string }> }) {
   const strategies = Array.isArray(summary?.strategies) ? summary.strategies : []
+  // display_name 由 Worker 從策略註冊表帶出（舊 Worker 沒有 → 機械轉換）；配對列也用同一張表。
+  const displayNames = new Map<string, unknown>(strategies.map((row: any) => [String(row?.strategy_id ?? ''), row?.display_name]))
+  const strategyName = (id: unknown) => strategyDisplayLabel(id, displayNames.get(String(id ?? '')))
+  // 後端每列帶 status：'active'＝註冊表正式策略、'observed'＝當日證據命中的觀察策略。兩組分開列，不再都叫「活躍」。
+  const activeStrategies = strategies.filter((row: any) => row?.status !== 'observed')
+  const observedStrategies = strategies.filter((row: any) => row?.status === 'observed')
   const canonicalMatrixReady = summary?.raw_matrix_status === 'canonical_v4'
+  // Worker caps strategies at 64 rows and sends strategies_total_count; counts must come from the totals, not the capped list.
+  const totalStrategyCount = finiteCount(summary?.strategies_total_count) ?? strategies.length
+  const strategiesTruncated = summary?.strategies_truncated === true && totalStrategyCount > strategies.length
+  const activeTotal = finiteCount(summary?.active_strategy_count)
+  // Worker pre-seeds every registry-active id into the hit map, so total − active is exactly the observed count.
+  // (Its observed_strategy_count field is that whole map's size, i.e. the total, so it is not used here.)
+  const activeCount = strategiesTruncated ? activeTotal : (activeStrategies.length || activeTotal)
+  const observedCount = strategiesTruncated
+    ? (activeTotal == null ? null : Math.max(0, totalStrategyCount - activeTotal))
+    : observedStrategies.length
   const pairwise = Array.isArray(summary?.pairwise) ? summary.pairwise : []
+  const pairwiseTruncated = summary?.pairwise_truncated === true
   const strongestPairs = [...pairwise]
     .sort((a: any, b: any) => Number(b.jaccard ?? -1) - Number(a.jaccard ?? -1))
     .slice(0, 4)
   return (
     <PipelineColumn
       className="xl:col-span-2"
-      title="Active strategy"
-      subtitle={summary?.source_of_truth ?? 'strategy_pool_ids 尚未彙總；等待後端 funnel summary。'}
+      title="策略彙總"
+      subtitle={summary?.source_of_truth
+        ? <span title={String(summary.source_of_truth)}>{sourceOfTruthLabel(summary.source_of_truth)}</span>
+        : '策略彙總尚未產生；等待後端篩選彙總。'}
     >
       {!canonicalMatrixReady && (
-        <div className="rounded-xl border border-amber-400/25 bg-amber-400/[0.08] px-3 py-2 text-xs leading-5 text-amber-100">
-          今日 canonical strategy matrix 尚未就緒；下方 legacy fallback 不顯示為 0，避免把缺資料誤讀成策略零命中。
-        </div>
+        <p className="flex items-start gap-1.5 rounded-xl border border-warn/25 bg-warn/[0.06] px-3 py-2 text-xs leading-5 text-slate-200" title={summary?.raw_matrix_status ? `raw_matrix_status：${summary.raw_matrix_status}` : undefined}>
+          <StatusIcon tone="warn" />
+          <span>今日正式策略矩陣尚未就緒；下方為備援名單，命中數以「—」表示，不是 0。</span>
+        </p>
       )}
-      <div className="grid min-w-0 gap-3 text-sm lg:grid-cols-3">
-        <div className="rounded-xl border border-cyan-400/20 bg-cyan-400/[0.06] p-3">
-          <p className="text-xs text-cyan-200/80">策略數</p>
-          <p className="mt-1 sv-num text-2xl font-semibold text-cyan-100">{countValue(summary?.active_strategy_count ?? strategies.length)}</p>
+      {/* 平面格線（gap-px＋底色），不在欄卡片裡再套圓角卡片。 */}
+      <div className="grid min-w-0 grid-cols-2 gap-px border-y border-white/[0.06] bg-white/[0.06] text-sm sm:grid-cols-4">
+        <div className="bg-[#111319] px-3 py-2" title="策略註冊表中 status=active 的正式策略">
+          <p className="text-xs text-[#9aa4b7]">正式啟用</p>
+          <p className="mt-1 sv-num text-xl font-semibold text-[#f5f7fb]">{countValue(activeCount)}</p>
         </div>
-        <div className="rounded-xl border border-amber-400/20 bg-amber-400/[0.07] p-3">
-          <p className="text-xs text-amber-200/80">Avg Jaccard</p>
-          <p className="mt-1 sv-num text-2xl font-semibold text-amber-100">{ratioValue(summary?.avg_jaccard)}</p>
+        <div className="bg-[#111319] px-3 py-2" title="不在正式名單、但當日篩選證據裡有命中的觀察策略">
+          <p className="text-xs text-[#9aa4b7]">當日命中的觀察策略</p>
+          <p className="mt-1 sv-num text-xl font-semibold text-[#f5f7fb]">{countValue(observedCount)}</p>
         </div>
-        <div className="rounded-xl border border-emerald-400/20 bg-emerald-400/[0.06] p-3">
-          <p className="text-xs text-emerald-200/80">Avg Corr</p>
-          <p className="mt-1 sv-num text-2xl font-semibold text-emerald-100">{ratioValue(summary?.avg_corr)}</p>
+        <div className="bg-[#111319] px-3 py-2" title={`選股集合兩兩重疊程度（0～1），越高越重複；${totalStrategyCount} 個策略（正式＋觀察）共 ${totalStrategyCount * (totalStrategyCount - 1) / 2} 組配對的平均`}>
+          <p className="text-xs text-[#9aa4b7]">平均重疊 Jaccard <span className="sv-num">· {totalStrategyCount} 個策略兩兩平均</span></p>
+          <p className="mt-1 sv-num text-xl font-semibold text-[#f5f7fb]">{ratioValue(summary?.avg_jaccard)}</p>
+        </div>
+        <div className="bg-[#111319] px-3 py-2" title={`策略分數兩兩相關係數平均；${totalStrategyCount} 個策略（正式＋觀察）共 ${totalStrategyCount * (totalStrategyCount - 1) / 2} 組配對的平均`}>
+          <p className="text-xs text-[#9aa4b7]">平均相關 <span className="sv-num">· {totalStrategyCount} 個策略兩兩平均</span></p>
+          <p className="mt-1 sv-num text-xl font-semibold text-[#f5f7fb]">{ratioValue(summary?.avg_corr)}</p>
         </div>
       </div>
+      {strategiesTruncated && (
+        <p className="text-[11px] text-muted-foreground">
+          名單依命中數只列前 <span className="sv-num">{strategies.length}</span> 個（共 <span className="sv-num">{totalStrategyCount}</span> 個）；上方計數與平均是全部策略。
+        </p>
+      )}
 
-      <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1.08fr)_minmax(0,0.92fr)]">
-        <div className="min-w-0">
-          <div className="mb-2 flex items-center justify-between gap-3">
-            <p className="text-sm font-semibold text-[#f5f7fb]">活躍策略</p>
-            <Badge variant="outline" className="border-white/[0.12] bg-white/[0.04] text-[10px] text-[#9aa4b7]">
-              {strategies.length || 0}
-            </Badge>
-          </div>
-          <div className="grid gap-2 md:grid-cols-2">
-            {strategies.length ? strategies.map((row: any, index: number) => {
-              const accent = SECTOR_ACCENTS[index % SECTOR_ACCENTS.length]
-              const selectedCount = Number(row.selected_count ?? 0)
-              return (
-                <div key={row.strategy_id ?? index} className={`rounded-xl border ${accent.border} ${accent.bg} px-3 py-2 text-sm`}>
-                  <div className="flex items-center justify-between gap-2">
-                    <span className={`truncate sv-num font-semibold ${accent.text}`} title={row.strategy_id}>{row.strategy_id}</span>
-                    <Badge variant="outline" className="border-white/[0.12] bg-black/20 sv-num text-[10px]">
-                      {canonicalMatrixReady ? countValue(row.selected_count) : '—'} 檔
-                    </Badge>
-                  </div>
-                  <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-black/30">
-                    <div className={`h-full rounded-full ${accent.bar}`} style={{ width: selectedCount > 0 ? `${Math.min(100, Math.max(8, selectedCount * 12))}%` : '0%' }} />
-                  </div>
-                </div>
-              )
-            }) : (
-              <p className="rounded-xl border border-white/[0.08] bg-white/[0.035] p-3 text-sm text-[#9aa4b7] md:col-span-2">今日推薦列沒有 strategy_pool_ids 彙總資料。</p>
-            )}
-          </div>
+      {/* 策略名單兩組並排佔滿欄寬（名稱不截斷），重疊與相關排在下方。 */}
+      <div className="grid min-w-0 gap-4">
+        <div className="grid min-w-0 gap-3 sm:grid-cols-2">
+          {[
+            { key: 'active', title: '正式啟用', hint: '策略註冊表 status=active', rows: activeStrategies, total: activeCount },
+            { key: 'observed', title: '當日命中的觀察策略', hint: '不在正式名單，當日篩選證據有命中', rows: observedStrategies, total: observedCount },
+          ].map((group) => (
+            <div key={group.key} className="min-w-0" data-strategy-group={group.key}>
+              <div className="mb-2 flex items-center justify-between gap-3" title={group.hint}>
+                <p className="text-sm font-semibold text-[#f5f7fb]">{group.title}</p>
+                <span className="sv-num text-[11px] text-muted-foreground" title={strategiesTruncated ? `列出 ${group.rows.length} 個；全部 ${countValue(group.total)} 個` : undefined}>
+                  {strategiesTruncated ? `${group.rows.length}／${countValue(group.total)}` : group.rows.length}
+                </span>
+              </div>
+              <div className="grid gap-1">
+                {group.rows.length ? group.rows.map((row: any, index: number) => {
+                  const selectedCount = Number(row.selected_count ?? 0)
+                  return (
+                    <div key={row.strategy_id ?? index} className="grid grid-cols-[minmax(0,1fr)_56px_32px] items-center gap-2 border-b border-white/[0.06] py-1 text-xs">
+                      <span className="min-w-0 truncate text-[#d7deea]" title={row.strategy_id}>{strategyDisplayLabel(row.strategy_id, row.display_name)}</span>
+                      {canonicalMatrixReady
+                        ? <div className="h-1.5 overflow-hidden rounded-full bg-black/30" title={`命中 ${countValue(row.selected_count)} 檔`}>
+                            <div className="h-full rounded-full bg-sky-400/70" style={{ width: selectedCount > 0 ? `${Math.min(100, Math.max(8, selectedCount * 12))}%` : '0%' }} />
+                          </div>
+                        : <span className="text-[10px] text-muted-foreground" title="正式策略矩陣未就緒，命中數未知">—</span>}
+                      <span className="text-right sv-num text-[11px] text-muted-foreground">{canonicalMatrixReady ? countValue(row.selected_count) : '—'}</span>
+                    </div>
+                  )
+                }) : (
+                  <DataState kind="empty" title={group.key === 'active' ? '沒有正式啟用策略資料' : '今日沒有觀察策略命中'} code="strategy_pool_ids" />
+                )}
+              </div>
+            </div>
+          ))}
         </div>
 
         <div className="min-w-0">
-          <p className="mb-2 text-sm font-semibold text-[#f5f7fb]">策略 overlap / corr</p>
-          <div className="grid min-w-0 gap-2">
-            {strongestPairs.length ? strongestPairs.map((row: any, index: number) => {
-              const accent = SECTOR_ACCENTS[(index + 2) % SECTOR_ACCENTS.length]
+          <p className="mb-2 text-sm font-semibold text-[#f5f7fb]" title={pairwiseTruncated ? `取自重疊檔數最多的 ${pairwise.length} 組（共 ${countValue(summary?.pairwise_total_count)} 組）` : undefined}>策略重疊與相關</p>
+          <div className="grid min-w-0 gap-px border-y border-white/[0.06] bg-white/[0.06] md:grid-cols-2">
+            {strongestPairs.length ? strongestPairs.map((row: any) => {
+              const accent = NEUTRAL_ACCENT
               return (
-                <div key={`${row.left}-${row.right}`} className={`min-w-0 overflow-hidden rounded-xl border ${accent.border} ${accent.bg} px-3 py-2 text-xs`}>
-                  <div className={`min-w-0 truncate sv-num font-semibold ${accent.text}`} title={`${row.left} / ${row.right}`}>{row.left} / {row.right}</div>
-                  <div className="mt-2 grid min-w-0 grid-cols-[minmax(0,1fr)_minmax(0,0.7fr)_minmax(0,0.8fr)] gap-2 text-[#9aa4b7]">
-                    <span className="min-w-0 truncate">overlap <b className="sv-num text-[#f5f7fb]">{countValue(row.overlap)}</b></span>
-                    <span className="min-w-0 truncate">J <b className="sv-num text-[#f5f7fb]">{ratioValue(row.jaccard)}</b></span>
-                    <span className="min-w-0 truncate">corr <b className="sv-num text-[#f5f7fb]">{ratioValue(row.corr)}</b></span>
+                <div key={`${row.left}-${row.right}`} className="min-w-0 overflow-hidden bg-[#111319] px-3 py-2 text-xs">
+                  <div className={`min-w-0 break-words font-semibold ${accent.text}`} title={`${row.left} / ${row.right}`}>{strategyName(row.left)} / {strategyName(row.right)}</div>
+                  <div className="mt-2 grid min-w-0 grid-cols-3 gap-2 text-[#9aa4b7]">
+                    <span className="min-w-0">重疊 <b className="sv-num text-[#f5f7fb]">{countValue(row.overlap)}</b></span>
+                    <span className="min-w-0">J <b className="sv-num text-[#f5f7fb]">{ratioValue(row.jaccard)}</b></span>
+                    <span className="min-w-0">相關 <b className="sv-num text-[#f5f7fb]">{ratioValue(row.corr)}</b></span>
                   </div>
                 </div>
               )
             }) : (
-              <p className="rounded-xl border border-white/[0.08] bg-white/[0.035] p-3 text-sm text-[#9aa4b7]">策略兩兩比較需要至少 2 個策略且有選股集合。</p>
+              <DataState kind="empty" title="至少需要 2 個策略且有選股集合才能比較" className="bg-[#111319] md:col-span-2" />
             )}
           </div>
         </div>
@@ -729,14 +828,14 @@ function StrategySummaryColumn({ summary, sectors }: { summary: any; sectors: Ar
       {sectors.length > 0 && (
         <div className="border-t border-white/[0.08] pt-3">
           <div className="mb-2 flex items-center justify-between gap-3">
-            <p className="text-sm font-semibold text-[#f5f7fb]">產業/題材脈絡</p>
-            <span className="text-xs text-[#8f9bb0]">依推薦列彙總，每個產業保留不同色彩提示</span>
+            <p className="text-sm font-semibold text-[#f5f7fb]">產業／題材脈絡</p>
+            <span className="text-xs text-[#8f9bb0]">依推薦列彙總</span>
           </div>
-          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-4">
-            {sectors.slice(0, 8).map((row, index) => {
-              const accent = sectorAccent(row.sector, index)
+          <div className="grid gap-px border-y border-white/[0.06] bg-white/[0.06] md:grid-cols-2 xl:grid-cols-4">
+            {sectors.slice(0, 8).map((row) => {
+              const accent = NEUTRAL_ACCENT
               return (
-                <div key={row.sector} className={`rounded-xl border ${accent.border} ${accent.bg} px-3 py-2 text-xs`}>
+                <div key={row.sector} className="bg-[#111319] px-3 py-2 text-xs">
                   <div className="flex items-start justify-between gap-2">
                     <p className={`font-semibold ${accent.text}`}>{row.sector}</p>
                     <span className="rounded-full border border-white/[0.12] bg-black/20 px-2 py-0.5 sv-num text-[10px] text-[#dfe7f5]">{row.count} 檔</span>
@@ -776,19 +875,20 @@ function ExecutionFlowColumn({
   onRetryRiskAudit?: () => void
 }) {
   const steps = [
-    { label: '候選', value: countValue(candidateCount), detail: 'BUY signal allocation' },
-    { label: '辯論', value: String(pendingBuys.length), detail: 'T2 pending buys' },
-    { label: '報價', value: String(riskAuditList.length), detail: 'risk / quote sanity' },
-    { label: '掛單', value: String(pendingBuys.filter((buy: any) => String(buy.execution_status ?? '').toLowerCase().includes('filled')).length), detail: 'paper fills' },
+    { label: '候選', value: countValue(candidateCount), detail: '買進訊號配置' },
+    { label: '辯論', value: String(pendingBuys.length), detail: 'T2 待買' },
+    { label: '報價', value: String(riskAuditList.length), detail: '風控／報價檢查' },
+    { label: '掛單', value: String(pendingBuys.filter((buy: any) => String(buy.execution_status ?? '').toLowerCase().includes('filled')).length), detail: '模擬成交' },
   ]
-  const subtitleDate = sourceRecoDate
-    ? `${pbDate || 'latest'} · src ${sourceRecoDate}`
-    : (pbDate || 'latest')
+  // 掛單日通常是推薦資料日的下一個交易日，標清楚避免和左欄日期看起來差一天。
+  const subtitleDate = pbDate
+    ? `掛單日 ${formatDate(pbDate)}${sourceRecoDate ? ` · 依 ${formatDate(sourceRecoDate)} 推薦` : ''}`
+    : '最新一批'
   return (
-    <PipelineColumn title="辯論與模擬掛單" subtitle={`BUY signal only → debate → quote sanity → execution audit（${subtitleDate}）`}>
+    <PipelineColumn title="辯論與模擬掛單" subtitle={<span title="買進訊號 → 多空辯論 → 報價檢查 → 模擬掛單">{subtitleDate}</span>}>
       <div className="grid gap-2">
         {steps.map((step, index) => (
-          <div key={step.label} className={`grid grid-cols-[2rem_minmax(0,1fr)_4rem] items-center gap-2 rounded-xl border p-2 text-sm ${FLOW_STEP_ACCENTS[index % FLOW_STEP_ACCENTS.length]}`}>
+          <div key={step.label} className={`grid grid-cols-[2rem_minmax(0,1fr)_4rem] items-center gap-2 rounded-xl border border-white/[0.08] bg-white/[0.03] p-2 text-sm text-slate-200`}>
             <span className="flex h-7 w-7 items-center justify-center rounded-md border border-white/[0.12] bg-black/25 sv-num">{index + 1}</span>
             <div>
               <p className="font-semibold text-[#f5f7fb]">{step.label}</p>
@@ -800,26 +900,14 @@ function ExecutionFlowColumn({
       </div>
 
       {pendingBuys.length === 0 ? (
-        <div className="rounded-lg border border-border/70 bg-background/45 p-3 text-center text-xs text-muted-foreground">
-          目前沒有 active pending buys；若曾被 skipped/cancelled/expired/rejected，請到模擬交易頁看 terminal 狀態。
-        </div>
+        <DataState kind="empty" title="目前沒有待買" hint="已略過、取消或過期的單請到模擬交易室查看" />
       ) : (
-        <div className="max-h-[300px] space-y-1 overflow-y-auto pr-1">
-          {pendingBuys.map((buy: any, i: number) => (
-            <T2BuyRow key={buy.symbol ?? i} buy={buy} rank={i + 1} />
-          ))}
-        </div>
+        // 點列切換明細區（含辯論全文），不展開／收合。
+        <T2BuyListDetail pendingBuys={pendingBuys} />
       )}
 
       {riskAuditError ? (
-        <div role="alert" className="rounded-lg border border-amber-400/20 bg-amber-400/[0.06] p-3 text-xs text-amber-100/80">
-          <p>晨間風控紀錄暫時無法讀取：{riskAuditError.message}</p>
-          {onRetryRiskAudit ? (
-            <button type="button" onClick={onRetryRiskAudit} className="mt-2 inline-flex items-center gap-1 font-semibold text-amber-200 hover:text-amber-100">
-              <RefreshCw className="h-3.5 w-3.5" />重新載入
-            </button>
-          ) : null}
-        </div>
+        <DataState kind="error" title="晨間風控紀錄暫時讀不到" code={riskAuditError.message} onRetry={onRetryRiskAudit} />
       ) : null}
 
       {riskAuditList.length > 0 && (
@@ -827,12 +915,19 @@ function ExecutionFlowColumn({
           <p className="mb-2 text-xs text-muted-foreground">晨間風控與報價檢查紀錄</p>
           <div className="flex flex-wrap gap-1.5">
             {riskAuditList.map((entry: any) => {
-              const tone = entry.stage === 'hard_safety' ? 'text-red-300' : entry.stage === 'soft_risk_overlay' ? 'text-amber-300' : 'text-slate-300'
+              const stage = RISK_STAGE[String(entry.stage ?? '')]
+              const rawReason = entry.reason_code ?? entry.action
               return (
-                <Badge key={`${entry.symbol}-${entry.reason_code ?? entry.action}`} variant="outline" className="gap-1 text-[10px]">
+                <Badge
+                  key={`${entry.symbol}-${rawReason}`}
+                  variant="outline"
+                  className="gap-1 text-[10px]"
+                  title={[rawReason, entry.stage].filter(Boolean).join(' · ')}
+                >
+                  <StatusIcon tone={stage?.tone ?? 'na'} size={10} />
                   <span className="sv-num">{entry.symbol}</span>
-                  <span className={tone}>{entry.reason_code ?? entry.action}</span>
-                  <span className="text-muted-foreground">{entry.stage ?? 'audit'}</span>
+                  <span className="text-slate-200">{riskReasonLabel(rawReason)}</span>
+                  <span className="text-muted-foreground">{stage?.label ?? (looksInternal(entry.stage) ? '檢查' : entry.stage ?? '檢查')}</span>
                 </Badge>
               )
             })}
@@ -951,10 +1046,10 @@ export default function PipelinePage() {
     return (
       <AppShell>
         <div className="flex items-center justify-center h-full p-4">
-          <div className="rounded-2xl border border-[#3a3125] bg-[#171714]/90 p-6 text-center space-y-4">
-            <Filter className="w-12 h-12 mx-auto text-[#d6a85f]/80" />
-            <p className="text-[#b9b1a1]">請先登入以查看每日流程</p>
-            <button onClick={login} className="rounded-full border border-[#d6a85f]/35 bg-[#d6a85f]/90 px-4 py-2 text-sm text-[#171714] hover:bg-[#f1c16f]">
+          <div className="rounded-lg border border-border bg-card p-6 text-center space-y-4">
+            <Filter className="mx-auto h-8 w-8 text-muted-foreground" />
+            <p className="text-sm text-muted-foreground">請先登入以查看每日流程</p>
+            <button onClick={login} className="rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground hover:bg-primary/90">
               Google 登入
             </button>
           </div>
@@ -968,20 +1063,16 @@ export default function PipelinePage() {
       <div className="p-4 lg:p-5 space-y-4 text-sm">
 
         {/* Page header */}
-        <div className="rounded-2xl border border-[#3a3125] bg-[linear-gradient(135deg,#1f211c,#171714_58%,#241a11)] p-4 shadow-[0_18px_70px_rgba(0,0,0,0.18)] flex items-center justify-between">
-          <div>
-            <p className="text-[10px] font-semibold normal-case text-[#d6a85f]">Daily flow</p>
-            <h1 className="mt-1 text-lg font-bold text-[#fff7e8]">每日流程</h1>
-            <p className="mt-1 text-xs text-[#b9b1a1]">{recDate} 從初篩、模型、推薦到模擬掛單的節奏總覽</p>
-          </div>
-          <div className="hidden items-center gap-2 rounded-full border border-[#3a3125] bg-[#171714] px-3 py-2 text-xs text-[#b9b1a1] md:flex">
-            <span className="sv-num">
-              L4 BUY {countValue(l4BuyCount)} · 推薦 {countValue(publishedCount)} · HOLD {countValue(holdCount)} · 掛單 {countValue(pendingCount)}
-            </span>
-          </div>
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+          <h1 className="text-[15px] font-semibold text-foreground">每日流程</h1>
+          <span className="text-[11px] text-muted-foreground">資料日 {formatDate(recDate)} · 從初篩、模型、推薦到模擬掛單</span>
+          <span className="sv-num text-[11px] text-muted-foreground md:ml-auto">
+            L4 BUY {countValue(l4BuyCount)} · 推薦 {countValue(publishedCount)} · HOLD {countValue(holdCount)} · 掛單 {countValue(pendingCount)}
+          </span>
         </div>
 
-        <div className="grid gap-4 xl:grid-cols-4">
+        {/* items-start：各欄依內容高度，不被最高的一欄撐出空洞。 */}
+        <div className="grid items-start gap-4 xl:grid-cols-4">
           {recIsError ? (
             <PipelineColumnError
               title="每日推薦與策略彙總讀取失敗"
@@ -991,12 +1082,12 @@ export default function PipelinePage() {
             />
           ) : recLoading ? (
             <>
-              <PipelineColumnLoading title="篩選、模型證據與交易訊號" subtitle="讀取正式 funnel aggregate" />
-              <PipelineColumnLoading title="Active strategy" subtitle="讀取正式策略與產業 aggregate" className="xl:col-span-2" />
+              <PipelineColumnLoading title="篩選、模型證據與交易訊號" subtitle="讀取篩選彙總" />
+              <PipelineColumnLoading title="策略彙總" subtitle="讀取策略與產業彙總" className="xl:col-span-2" />
             </>
           ) : (
             <>
-              <FunnelSummaryColumn summary={funnelSummary} fallbackCount={publishedCount ?? 0} l4Distribution={maturityData?.l4_distribution} />
+              <FunnelSummaryColumn summary={funnelSummary} fallbackCount={publishedCount ?? 0} />
               <StrategySummaryColumn summary={recData?.strategy_summary} sectors={screenerSectorSummary} />
             </>
           )}
@@ -1008,7 +1099,7 @@ export default function PipelinePage() {
               onRetry={() => { void refetchPendingBuys() }}
             />
           ) : pbLoading ? (
-            <PipelineColumnLoading title="辯論與模擬掛單" subtitle="讀取 pending-buy execution audit" />
+            <PipelineColumnLoading title="辯論與模擬掛單" subtitle="讀取待買與掛單紀錄" />
           ) : (
             <ExecutionFlowColumn
               pendingBuys={pendingBuys}
@@ -1021,6 +1112,13 @@ export default function PipelinePage() {
             />
           )}
         </div>
+
+        <L4AllocationSection
+          l4Distribution={maturityData?.l4_distribution}
+          loading={maturityLoading}
+          error={maturityError as Error | null}
+          onRetry={() => { void refetchMaturity() }}
+        />
 
         <PipelineMaturityContribution
           data={maturityData}

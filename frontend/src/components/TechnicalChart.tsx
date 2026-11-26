@@ -3,6 +3,8 @@ import { stocksApi } from '@/lib/api'
 import { ResponsiveContainer, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ReferenceLine, Legend } from 'recharts'
 import { Skeleton } from '@/components/ui/skeleton'
 import { format } from 'date-fns'
+import { priceToneClass, TW_COLORS } from '@/lib/colorTokens'
+import { StatusIcon } from '@/components/ui/status'
 
 export default function TechnicalChart({ stockId }: { stockId: number }) {
   const { data: indicators = [], isLoading } = useQuery({
@@ -34,14 +36,15 @@ export default function TechnicalChart({ stockId }: { stockId: number }) {
       <div className="grid grid-cols-3 gap-3 text-sm">
         <div className="rounded-lg border border-border/50 p-3">
           <p className="text-xs text-muted-foreground mb-1">RSI (14)</p>
-          <p className={`text-lg sv-num font-bold ${latest.rsi14 > 70 ? 'text-red-400' : latest.rsi14 < 30 ? 'text-emerald-400' : 'text-foreground'}`}>
+          <p className={`inline-flex items-center gap-1.5 text-lg sv-num font-bold ${latest.rsi14 > 70 || latest.rsi14 < 30 ? 'text-warn' : 'text-foreground'}`}>
+            {(latest.rsi14 > 70 || latest.rsi14 < 30) && <StatusIcon tone="warn" size={12} />}
             {latest.rsi14?.toFixed(1) ?? '—'}
           </p>
           <p className="text-xs text-muted-foreground">{latest.rsi14 > 70 ? '超買' : latest.rsi14 < 30 ? '超賣' : '中性'}</p>
         </div>
         <div className="rounded-lg border border-border/50 p-3">
           <p className="text-xs text-muted-foreground mb-1">MACD</p>
-          <p className={`text-lg sv-num font-bold ${latest.macd_hist > 0 ? 'text-red-400' : 'text-emerald-400'}`}>
+          <p className={`text-lg sv-num font-bold ${priceToneClass(latest.macd_hist)}`}>
             {latest.macd?.toFixed(3) ?? '—'}
           </p>
           <p className="text-xs text-muted-foreground">Signal: {latest.macd_signal?.toFixed(3) ?? '—'}</p>
@@ -62,9 +65,9 @@ export default function TechnicalChart({ stockId }: { stockId: number }) {
             <XAxis dataKey="date" tick={{ fontSize: 10, fill: '#888' }} tickLine={false} interval={9} />
             <YAxis domain={[0, 100]} tick={{ fontSize: 10, fill: '#888' }} tickLine={false} />
             <Tooltip contentStyle={{ background: '#1a1a2e', border: '1px solid #333' }} />
-            <ReferenceLine y={70} stroke="#ef4444" strokeDasharray="4 4" opacity={0.6} label={{ value: '70', fontSize: 9, fill: '#ef4444' }} />
-            <ReferenceLine y={30} stroke="#3b82f6" strokeDasharray="4 4" opacity={0.6} label={{ value: '30', fontSize: 9, fill: '#3b82f6' }} />
-            <Line type="monotone" dataKey="RSI" stroke="#22c55e" strokeWidth={1.5} dot={false} />
+            <ReferenceLine y={70} stroke={TW_COLORS.warn} strokeDasharray="4 4" opacity={0.6} label={{ value: '70', fontSize: 9, fill: TW_COLORS.warn }} />
+            <ReferenceLine y={30} stroke={TW_COLORS.warn} strokeDasharray="4 4" opacity={0.6} label={{ value: '30', fontSize: 9, fill: TW_COLORS.warn }} />
+            <Line type="monotone" dataKey="RSI" stroke="#38bdf8" strokeWidth={1.5} dot={false} />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -79,8 +82,8 @@ export default function TechnicalChart({ stockId }: { stockId: number }) {
             <YAxis tick={{ fontSize: 10, fill: '#888' }} tickLine={false} />
             <Tooltip contentStyle={{ background: '#1a1a2e', border: '1px solid #333' }} />
             <ReferenceLine y={0} stroke="#333" />
-            <Line type="monotone" dataKey="MACD" stroke="#22c55e" strokeWidth={1.5} dot={false} />
-            <Line type="monotone" dataKey="Signal" stroke="#ef4444" strokeWidth={1.5} dot={false} />
+            <Line type="monotone" dataKey="MACD" stroke="#38bdf8" strokeWidth={1.5} dot={false} />
+            <Line type="monotone" dataKey="Signal" stroke="#c084fc" strokeWidth={1.5} dot={false} />
           </LineChart>
         </ResponsiveContainer>
       </div>

@@ -6,6 +6,10 @@ function assert(condition: unknown, message: string): void {
 
 const uiHelper = readFileSync('../frontend/src/lib/pendingBuyExecutionUi.ts', 'utf8')
 const botDashboard = readFileSync('../frontend/src/pages/BotDashboard.tsx', 'utf8')
+// 待買候選（推薦候選）在 batch3 改成模擬交易室：BotDashboard 組資料、simroomModel 算每列、SimRoom 畫列與明細。
+// 待買相關的契約改為檢查這三個檔案，保護的行為不變。
+const simroomModel = readFileSync('../frontend/src/lib/simroomModel.ts', 'utf8')
+const simroom = readFileSync('../frontend/src/components/simroom/SimRoom.tsx', 'utf8')
 const obsPage = readFileSync('../frontend/src/pages/ObservabilityPage.tsx', 'utf8')
 const paperRoutes = readFileSync('src/routes/paper.ts', 'utf8')
 
@@ -68,17 +72,32 @@ assert(
   'frontend S12 trace must explain takeover role in readable Chinese',
 )
 assert(
-  botDashboard.includes('formatPendingBuyExecutionBadge'),
+  botDashboard.includes('<SimRoom') && botDashboard.includes('buildSimRow(b,') &&
+    simroomModel.includes('executionBadge: formatPendingBuyExecutionBadge(item ?? {})') &&
+    simroom.includes('const executionBadge = row.executionBadge') &&
+    simroom.includes('執行狀態：{executionBadge.label}'),
   'Bot dashboard must use item-aware execution status labels',
 )
 assert(
-  botDashboard.includes('{executionBadge.label}') &&
-    botDashboard.includes('交易門檻：</span>{trade.gateReason ??') &&
-    botDashboard.includes("allocatorAction === 'buy' || allocatorAction === 'add'") &&
-    botDashboard.includes('trade.l5Status') &&
-    botDashboard.includes("{isOr15 ? 'OR15 盤中結構：' : 'S12 結構：'}</span>") && botDashboard.includes(': s12Label}</div>') &&
-    botDashboard.includes('formatS12IntradayStructureState(s12Preview.state, s12Preview.reason)') &&
-    botDashboard.includes("s12Badge?.label ?? '等待近期盤中結構資料'"),
+  // 交易門檻：每列的卡住原因（第一個未通過的關卡＋中文原因，原碼只進 title），沒有原因時用 trade.gateReason。
+  simroomModel.includes(': trade.gateReason ?? (allocatorAction') &&
+    simroom.includes('title={row.reasonCode ?? undefined}>{row.blockerText}') &&
+    // 配置器與五檔是同一張條件表裡的兩格（最近檢查值，送單時重查）。
+    simroomModel.includes("key === 'allocation' && preview?.allocator") &&
+    // 配置器結論：沒有擋單原因時寫「L4 配置可買，等待進場條件」；配置格也寫可買／可加碼。
+    simroomModel.includes("allocatorAction === 'buy' || allocatorAction === 'add' ? 'L4 配置可買，等待進場條件'") &&
+    simroomModel.includes('allocatorActionLabel(preview.allocator.action)') &&
+    // l5Status 中文轉換：pass→L5 報價通過、其餘→未通過／缺五檔；原碼只進 title。
+    simroomModel.includes('l5StatusLabel(preview.allocator.l5_status)') &&
+    simroomModel.includes("if (key === 'pass') return 'L5 報價通過'") &&
+    simroomModel.includes("return 'L5 報價未通過'") &&
+    simroom.includes('title={c.raw}') &&
+    // S12 事件超過 5 分鐘時退回 watch_points 最後一筆結構狀態。
+    simroomModel.includes('formatS12IntradayStructureBadge(item?.watch_points)') &&
+    simroomModel.includes("s12Badge?.label ?? '等待近期盤中結構資料'") &&
+    // OR15 與 S12 合在同一張即時卡：S12 owner 顯示結構狀態中文，沒資料時寫「等待近期盤中結構資料」。
+    simroomModel.includes("formatS12IntradayStructureState(String(s12.state ?? ''), String(s12.reason ?? ''))") &&
+    simroom.includes('S12 結構：{row.s12Text}'),
   'Bot dashboard pending-buy cards must merge intraday threshold and S12 structure into one readable real-time gate card',
 )
 assert(
@@ -133,11 +152,12 @@ assert(
   'Bot dashboard must not duplicate S12 primary ownership inside the stop/take-profit contract card',
 )
 assert(
-  botDashboard.includes('formatPartialFillRemaining'),
+  simroomModel.includes('partialRemaining: formatPartialFillRemaining(item?.watch_points)') &&
+    simroom.includes('{row.partialRemaining ??'),
   'Bot dashboard must surface partial-fill remaining shares',
 )
 assert(
-  !botDashboard.includes('execution: {b.execution_status'),
+  !botDashboard.includes('execution: {b.execution_status') && !simroom.includes('execution: {'),
   'Bot dashboard must not render raw execution status labels',
 )
 assert(

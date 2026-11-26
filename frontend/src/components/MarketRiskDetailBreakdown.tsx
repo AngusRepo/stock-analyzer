@@ -1,6 +1,11 @@
 import { Landmark } from 'lucide-react'
+import { StatusBadge } from '@/components/ui/status'
+import { priceArrow } from '@/lib/colorTokens'
+import { formatNumber, formatTwdCompact } from '@/lib/format'
+import { humanSource } from '@/lib/humanLabels'
 
-type Tone = 'cyan' | 'emerald' | 'amber' | 'rose' | 'violet' | 'slate'
+// up/down: signed lots and amounts (Taiwan convention, net long red). cyan/amber/violet: participant identity only.
+type Tone = 'cyan' | 'up' | 'down' | 'amber' | 'violet' | 'slate'
 
 type FuturesInstitutionalRow = {
   id?: string
@@ -15,31 +20,24 @@ type FuturesInstitutionalRow = {
   previousDate?: string | null
 }
 
+const NBSP = '\u00a0'
+
 const TONE_TEXT: Record<Tone, string> = {
   cyan: 'text-cyan-200',
-  emerald: 'text-emerald-300',
+  up: 'text-up',
+  down: 'text-down',
   amber: 'text-amber-300',
-  rose: 'text-rose-300',
   violet: 'text-violet-300',
   slate: 'text-slate-300',
 }
 
 const TONE_BAR: Record<Tone, string> = {
   cyan: 'bg-cyan-400',
-  emerald: 'bg-emerald-400',
+  up: 'bg-up',
+  down: 'bg-down',
   amber: 'bg-amber-300',
-  rose: 'bg-rose-400',
   violet: 'bg-violet-400',
   slate: 'bg-slate-500',
-}
-
-const TONE_BORDER: Record<Tone, string> = {
-  cyan: 'border-cyan-300/20 bg-cyan-400/[0.055]',
-  emerald: 'border-emerald-300/20 bg-emerald-400/[0.055]',
-  amber: 'border-amber-300/20 bg-amber-400/[0.055]',
-  rose: 'border-rose-300/20 bg-rose-400/[0.055]',
-  violet: 'border-violet-300/20 bg-violet-400/[0.055]',
-  slate: 'border-white/[0.07] bg-white/[0.035]',
 }
 
 const PARTICIPANT_TONE: Record<string, Tone> = {
@@ -59,18 +57,14 @@ function clamp(value: number, min = 0, max = 100) {
   return Math.max(min, Math.min(max, value))
 }
 
-function compact(value: number | null, digits = 1) {
-  if (value == null) return '待接資料'
-  const abs = Math.abs(value)
-  if (abs >= 1_000_000_000_000) return `${(value / 1_000_000_000_000).toFixed(digits)} 兆`
-  if (abs >= 100_000_000) return `${(value / 100_000_000).toFixed(digits)} 億`
-  if (abs >= 10_000) return `${(value / 10_000).toFixed(digits)} 萬`
-  return value.toLocaleString('zh-TW', { maximumFractionDigits: digits })
+function signedAmount(value: number | null) {
+  if (value == null) return '—'
+  return `${priceArrow(value)}${priceArrow(value) ? ' ' : ''}${value > 0 ? '+' : ''}${formatTwdCompact(value)}`
 }
 
-function signed(value: number | null, suffix = '', digits = 1) {
-  if (value == null) return '待接資料'
-  return `${value >= 0 ? '+' : ''}${value.toFixed(digits)}${suffix}`
+function signedLots(value: number | null) {
+  if (value == null) return '—'
+  return `${priceArrow(value)}${priceArrow(value) ? ' ' : ''}${value > 0 ? '+' : ''}${formatNumber(value, 0)}${NBSP}口`
 }
 
 function realOrPreview<T>(value: T | null | undefined, preview: T): { value: T; preview: boolean } {
@@ -81,7 +75,7 @@ function realOrPreview<T>(value: T | null | undefined, preview: T): { value: T; 
 function participantTone(value: number | null | undefined): Tone {
   const n = asNumber(value)
   if (n == null || n === 0) return 'slate'
-  return n > 0 ? 'rose' : 'emerald'
+  return n > 0 ? 'up' : 'down'
 }
 
 function participantLabel(row: FuturesInstitutionalRow) {
@@ -139,14 +133,6 @@ function majorInstitutionRows(rows: FuturesInstitutionalRow[]) {
   return selected.length ? selected : rows
 }
 
-function DetailPill({ children, tone = 'slate' }: { children: string; tone?: Tone }) {
-  return (
-    <span className={`inline-flex min-w-0 items-center rounded-full border px-2.5 py-1 text-[11px] font-semibold ${TONE_BORDER[tone]} ${TONE_TEXT[tone]}`}>
-      <span className="truncate">{children}</span>
-    </span>
-  )
-}
-
 function FuturesOpenInterestBar({ rows }: { rows: FuturesInstitutionalRow[] }) {
   const segments = rows.map((row) => {
     const value = Math.abs(asNumber(row.netOiLots) ?? 0)
@@ -159,11 +145,8 @@ function FuturesOpenInterestBar({ rows }: { rows: FuturesInstitutionalRow[] }) {
   const total = segments.reduce((sum, segment) => sum + segment.value, 0)
 
   return (
-    <div className="rounded-[14px] border border-white/[0.055] bg-black/20 p-3">
-      <div className="mb-2 flex items-center justify-between gap-3">
-        <span className="text-[11px] font-semibold text-slate-500">未平倉分布</span>
-        <span className="text-[11px] text-slate-600">三大法人</span>
-      </div>
+    <div>
+      <div className="mb-1.5 text-[11px] font-semibold text-muted-foreground" title="三大法人未平倉口數絕對值占比">未平倉分布</div>
       <div className="flex h-2.5 overflow-hidden rounded-full bg-white/[0.07]">
         {segments.map((segment) => (
           <span
@@ -176,9 +159,9 @@ function FuturesOpenInterestBar({ rows }: { rows: FuturesInstitutionalRow[] }) {
       <div className="mt-2 grid grid-cols-3 gap-2">
         {segments.map((segment) => (
           <div key={segment.label} className="min-w-0">
-            <div className="truncate text-[10px] font-semibold text-slate-500">{segment.label}</div>
-            <div className={`mt-0.5 text-xs font-bold tabular-nums ${TONE_TEXT[segment.tone]}`}>
-              {segment.value ? `${Math.round(segment.value).toLocaleString('zh-TW')} 口` : '待接資料'}
+            <div className="truncate text-[10px] font-semibold text-muted-foreground">{segment.label}</div>
+            <div className={`mt-0.5 whitespace-nowrap text-xs font-bold tabular-nums ${TONE_TEXT[segment.tone]}`}>
+              {segment.value ? `${formatNumber(segment.value, 0)}${NBSP}口` : '—'}
             </div>
           </div>
         ))}
@@ -199,10 +182,10 @@ function FuturesMetricCell({
   intensity: number
 }) {
   return (
-    <div className="min-w-0 rounded-[12px] border border-white/[0.055] bg-black/20 px-3 py-2">
-      <div className="text-[10px] font-semibold text-slate-500 sm:hidden">{label}</div>
-      <div className={`mt-1 break-words text-sm font-bold leading-tight tabular-nums sm:mt-0 ${TONE_TEXT[tone]}`}>{value}</div>
-      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-black/35">
+    <div className="min-w-0">
+      <div className="text-[10px] font-semibold text-muted-foreground sm:hidden">{label}</div>
+      <div className={`mt-1 whitespace-nowrap text-sm font-bold leading-tight tabular-nums sm:mt-0 ${TONE_TEXT[tone]}`}>{value}</div>
+      <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-white/[0.07]">
         <div className={`h-full rounded-full ${TONE_BAR[tone]}`} style={{ width: `${clamp(intensity, 6)}%` }} />
       </div>
     </div>
@@ -217,37 +200,33 @@ function FuturesInstitutionRow({ row }: { row: FuturesInstitutionalRow }) {
   const netTrade = asNumber(row.netTradeLots)
   const netAmountK = asNumber(row.netOiAmountK)
   const dominant = netOi ?? netTrade ?? netAmountK
-  const tone = participantTone(dominant)
   return (
-    <div className={`grid min-w-0 gap-2 rounded-[16px] border p-3 ${TONE_BORDER[tone]} sm:grid-cols-[minmax(72px,0.72fr)_repeat(4,minmax(0,1fr))]`}>
-      <div className="flex min-w-0 items-center gap-2 sm:block">
-        <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${TONE_BAR[identityTone]}`} />
-        <div className="min-w-0">
-          <div className="truncate text-sm font-bold text-slate-100">{label}</div>
-          <div className="mt-0.5 text-[10px] font-semibold text-slate-500">台指期貨</div>
-        </div>
+    <div className="grid min-w-0 gap-2 border-b border-white/[0.06] px-1 py-2.5 last:border-b-0 sm:grid-cols-[minmax(64px,0.6fr)_repeat(4,minmax(0,1fr))] sm:items-center" data-net-direction={participantTone(dominant)}>
+      <div className="flex min-w-0 items-center gap-2">
+        <span className={`h-2 w-2 shrink-0 rounded-full ${TONE_BAR[identityTone]}`} />
+        <div className="truncate text-sm font-bold text-slate-100">{label}</div>
       </div>
       <FuturesMetricCell
         label="未平倉"
-        value={signed(netOi, ' 口', 0)}
+        value={signedLots(netOi)}
         tone={participantTone(netOi)}
         intensity={Math.abs(netOi ?? 0) / 800}
       />
       <FuturesMetricCell
         label="未平倉差"
-        value={signed(netOiDelta, ' 口', 0)}
+        value={signedLots(netOiDelta)}
         tone={participantTone(netOiDelta)}
         intensity={Math.abs(netOiDelta ?? 0) / 80}
       />
       <FuturesMetricCell
         label="交易淨口"
-        value={signed(netTrade, ' 口', 0)}
+        value={signedLots(netTrade)}
         tone={participantTone(netTrade)}
         intensity={Math.abs(netTrade ?? 0) / 220}
       />
       <FuturesMetricCell
         label="未平倉淨額"
-        value={compact(netAmountK == null ? null : netAmountK * 1000)}
+        value={signedAmount(netAmountK == null ? null : netAmountK * 1000)}
         tone={participantTone(netAmountK)}
         intensity={Math.abs(netAmountK ?? 0) / 120_000}
       />
@@ -291,36 +270,29 @@ function buildFuturesView(risk: any) {
   }
 }
 
+// The data date sits once in the market overview title; the raw source key only reaches the tooltip.
 export function MarketRiskDetailBreakdown({ risk }: { risk: any }) {
   const view = buildFuturesView(risk)
-  const date = String(risk?.date ?? risk?.marketStats?.date ?? 'latest').slice(0, 10)
 
   return (
-    <section className="min-w-0 rounded-[20px] border border-white/[0.08] bg-[linear-gradient(180deg,rgba(20,22,30,0.96),rgba(13,15,22,0.98))]">
-      <div className="p-4">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-          <div className="flex min-w-0 items-start gap-3">
-            <span className={`rounded-[12px] border p-2 ${TONE_BORDER[view.tone]}`}>
-              <Landmark className={`h-4 w-4 ${TONE_TEXT[view.tone]}`} />
-            </span>
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <h2 className="text-sm font-bold text-slate-100">期貨與全球風險</h2>
-                <DetailPill tone="slate">{date}</DetailPill>
-                {view.preview && <DetailPill tone="amber">local preview</DetailPill>}
-              </div>
-              <p className="mt-1 text-xs leading-5 text-slate-500">
-                三大法人期貨拆解；未平倉看隔日風險，交易淨口看當日方向。
-              </p>
-            </div>
+    <section className="min-w-0 border-t border-border">
+      <div className="pt-3">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-2" title="三大法人台指期貨拆解；未平倉看隔日風險，交易淨口看當日方向。">
+            <Landmark className={`h-4 w-4 shrink-0 ${TONE_TEXT[view.tone]}`} />
+            <h2 className="truncate text-sm font-bold text-slate-100">期貨三大法人</h2>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            {view.preview && <StatusBadge tone="warn" title="部分欄位尚未入庫">資料不全</StatusBadge>}
+            <span className="text-[11px] text-muted-foreground" title={`來源：${view.source}`}>{humanSource(view.source, '期交所')}</span>
           </div>
         </div>
 
-        <div className="mt-4">
+        <div className="mt-3">
           <FuturesOpenInterestBar rows={view.rows} />
         </div>
 
-        <div className="mt-4 hidden grid-cols-[minmax(72px,0.72fr)_repeat(4,minmax(0,1fr))] gap-2 px-3 text-[11px] font-semibold text-slate-500 sm:grid">
+        <div className="mt-3 hidden grid-cols-[minmax(64px,0.6fr)_repeat(4,minmax(0,1fr))] gap-2 px-1 text-[11px] font-semibold text-muted-foreground sm:grid">
           <span>法人</span>
           <span>未平倉</span>
           <span>未平倉差</span>
@@ -328,14 +300,10 @@ export function MarketRiskDetailBreakdown({ risk }: { risk: any }) {
           <span>未平倉淨額</span>
         </div>
 
-        <div className="mt-2 grid min-w-0 gap-2">
+        <div className="mt-1 grid min-w-0">
           {view.rows.map((row) => (
             <FuturesInstitutionRow key={`${participantLabel(row)}-${row.id ?? row.category ?? 'row'}`} row={row} />
           ))}
-        </div>
-
-        <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-white/[0.06] pt-3">
-          <span className="min-w-0 break-words text-[11px] text-slate-500">{view.source}</span>
         </div>
       </div>
     </section>

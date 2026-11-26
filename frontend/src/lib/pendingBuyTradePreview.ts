@@ -140,6 +140,11 @@ const OR15_REASONS: Record<string, string> = {
   or15_vwap_breakout: '開盤區間突破且站上 VWAP，等待即時報價與風控確認',
 }
 
+/** 已知的進場原因代碼 → 中文；不認得回傳 null（呼叫端決定 fallback，代碼只放 tooltip）。 */
+export function knownOr15Reason(reason: unknown): string | null {
+  return typeof reason === 'string' && Object.prototype.hasOwnProperty.call(OR15_REASONS, reason) ? OR15_REASONS[reason] : null
+}
+
 export function describeOr15Reason(reason: string): string {
   return OR15_REASONS[reason] ?? reason.replace(/^or15_/, '').replace(/_/g, ' ')
 }
@@ -160,7 +165,7 @@ export function buildPendingBuyTradeView(item: PendingBuyTradeInput): PendingBuy
     missing_executable_l1: '缺少可成交一檔報價',
     l5_depth_incomplete: '五檔深度不足',
   }
-  const l5Reasons = (preview?.allocator?.l5_reasons ?? []).map((reason) => l5ReasonLabels[reason] ?? reason)
+  const l5Reasons = (preview?.allocator?.l5_reasons ?? []).map((reason) => l5ReasonLabels[reason] ?? '其他五檔檢查未通過')
   const availableCash = nonnegative(preview?.allocator?.available_cash)
   const allocatorAction = preview?.allocator?.action
   const sizingPrice = s12Price ?? referencePrice

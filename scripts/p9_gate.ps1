@@ -32,13 +32,8 @@ npm run type-check
 if ($LASTEXITCODE -ne 0) { throw "worker type-check failed" }
 
 Write-Host '[P9 gate] worker contract tests'
-$RuntimeE2ETests = @(
-  'strategyDiscoveryLocalE2E.test.ts',
-  'strategyDiscoveryRealModelE2E.test.ts'
-)
 $WorkerTestSources = @(Get-ChildItem -Path (Join-Path (Get-Location) 'src\lib') -Filter '*.test.ts' |
   Sort-Object Name |
-  Where-Object { $RuntimeE2ETests -notcontains $_.Name } |
   ForEach-Object { "src/lib/$($_.Name)" })
 # The monitoring Worker (wrangler.monitoring.toml) shares this package: same list as ci/run_suite.sh.
 $WorkerTestSources += @(Get-ChildItem -Path (Join-Path (Get-Location) 'src\monitoring') -Filter '*.test.ts' -Recurse |
@@ -75,7 +70,6 @@ for ($offset = 0; $offset -lt $WorkerTestSources.Count; $offset += $WorkerTestBa
 if ($FailedWorkerTests.Count -gt 0) {
   throw "worker contract tests failed ($($FailedWorkerTests.Count)): $($FailedWorkerTests -join ', ')"
 }
-Write-Host '[P9 gate] runtime E2E tests are gated separately with an explicit local server/model runtime'
 Pop-Location
 
 Write-Host '[P9 gate] ml-controller contract tests'

@@ -88,7 +88,6 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
   'd1-evidence-scrub': { kind: 'maintenance', holidayGated: false, description: 'scrub only explicitly queued D1 blobs backed by verified R2 artifacts' },
   'r2-retention-sweep': { kind: 'maintenance', holidayGated: false, description: 'apply lineage-aware R2 retention policies' },
   'orphan-reachability-gc': { kind: 'maintenance', holidayGated: false, description: 'remove unreachable staging objects after grace period' },
-  'cleanup-dlq-replay': { kind: 'maintenance', holidayGated: false, description: 'replay blocked artifact cleanup work' },
   'storage-health-check': { kind: 'maintenance', holidayGated: false, description: 'fail-close integrity and producer admission health assertion; trading paths remain exempt' },
   'storage-health-gate': { kind: 'maintenance', holidayGated: false, description: 'deprecated compatibility alias for storage-health-check' },
   'storage-integrity-audit': { kind: 'maintenance', holidayGated: false, description: 'manifest to R2 checksum and lineage audit' },

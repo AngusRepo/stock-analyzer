@@ -69,13 +69,11 @@ function runtimeSources(root: string): string[] {
 test('no runtime file reads env.DB except legacyDatabase.ts and the listed holdouts', () => {
   const allowed = new Set([
     'src/lib/legacyDatabase.ts',
-    // Dormant: strategyDiscoveryRoutes is not mounted and the workflow has no wrangler binding.
-    'src/routes/strategyDiscoveryRoutes.ts',
   ])
   const offenders: string[] = []
   for (const file of runtimeSources('src')) {
     const rel = file.replaceAll('\\', '/')
-    if (allowed.has(rel) || rel.startsWith('src/strategy-discovery/')) continue
+    if (allowed.has(rel)) continue
     const source = fs.readFileSync(file, 'utf8')
     for (const pattern of LEGACY_BINDING_READS) {
       for (const match of source.matchAll(pattern)) {

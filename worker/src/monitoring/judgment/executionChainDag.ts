@@ -97,7 +97,6 @@ export const STAGES: Record<string, StageDefinition> = {
   'd1-evidence-scrub': { id: 'd1-evidence-scrub', label: 'D1 scrub', optional: true },
   'r2-retention-sweep': { id: 'r2-retention-sweep', label: 'R2 retention', optional: true },
   'orphan-reachability-gc': { id: 'orphan-reachability-gc', label: 'Reachability GC', optional: true },
-  'cleanup-dlq-replay': { id: 'cleanup-dlq-replay', label: 'DLQ replay', optional: true },
   'storage-health-check': { id: 'storage-health-check', label: 'Storage health' },
   'weekly-backtest': { id: 'weekly-backtest', label: 'Validation / MC' },
   'alpha-quality': { id: 'alpha-quality', label: 'Alpha quality' },

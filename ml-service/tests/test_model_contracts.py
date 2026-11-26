@@ -2,7 +2,6 @@ import sys
 import types
 
 import numpy as np
-import pytest
 
 
 def test_markov_switching_accepts_ndarray_params_without_fallback(monkeypatch):
@@ -91,42 +90,3 @@ def test_prediction_runtime_blocks_degraded_model_predictions():
 
     clean = types.SimpleNamespace(degraded=False, forecast_pct=0.03)
     assert _model_prediction_block_reason(clean) is None
-
-
-def _retired_degraded_model_pool_status_defaults_to_low_weight():
-    from app.ensemble import merge_with_time_series
-    from app.model_pool import compute_weight
-
-    pool = {"models": {"LightGBM": {"status": "degraded"}}}
-    assert compute_weight("LightGBM", 0.5, pool=pool) == 0.05
-
-    _merged, weights = merge_with_time_series(
-        {"LightGBM": 0.8},
-        {},
-        ic_weights={"LightGBM": 0.5},
-        model_status={"LightGBM": "degraded"},
-    )
-    assert weights["LightGBM"] == 0.05
-
-
-def _retired_single_stock_sequence_forecast_cannot_impersonate_cross_sectional_rank():
-    from app.ensemble import merge_with_time_series, time_series_to_rank
-
-    with pytest.raises(ValueError, match="same-run market cross-sectional percentile"):
-        time_series_to_rank(0.05)
-
-    merged, _weights = merge_with_time_series(
-        {"XGBoost": 0.8},
-        {"DLinear": {"forecast_pct": 0.20}},
-        ic_weights={"XGBoost": 0.1, "DLinear": 0.1},
-        model_status={"XGBoost": "active", "DLinear": "active"},
-    )
-    assert "DLinear" not in merged
-
-    merged, _weights = merge_with_time_series(
-        {"XGBoost": 0.8},
-        {"DLinear": {"forecast_pct": 0.20, "rank_score": 0.75}},
-        ic_weights={"XGBoost": 0.1, "DLinear": 0.1},
-        model_status={"XGBoost": "active", "DLinear": "active"},
-    )
-    assert merged["DLinear"] == 0.75

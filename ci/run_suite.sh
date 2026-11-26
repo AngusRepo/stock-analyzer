@@ -16,10 +16,9 @@ case "$suite" in
     npm ci --no-audit --no-fund || { fail "worker: npm ci"; exit 0; }
     npx tsc --noEmit -p tsconfig.json > "$RUNNER_TEMP/tsc.txt" 2>&1 || tsc_ids "worker tsc" < "$RUNNER_TEMP/tsc.txt"
     npx tsc --noEmit -p tsconfig.tests.json > "$RUNNER_TEMP/tsc-tests.txt" 2>&1 || tsc_ids "worker tsc tests" < "$RUNNER_TEMP/tsc-tests.txt"
-    # Runtime E2E tests need a local server/model runtime (same exclusion as p9_gate.ps1).
     # Repo tools tests (../tools/*.test.ts) run here too: they import Worker code and need its tsx.
     # The monitoring Worker (wrangler.monitoring.toml) shares this package; its tests run here as well.
-    mapfile -t files < <({ ls src/lib/*.test.ts | grep -vE 'strategyDiscovery(LocalE2E|RealModelE2E)\.test\.ts$'; ls src/monitoring/*.test.ts src/monitoring/judgment/*.test.ts; ls ../tools/*.test.ts 2>/dev/null || true; } | sort)
+    mapfile -t files < <({ ls src/lib/*.test.ts; ls src/monitoring/*.test.ts src/monitoring/judgment/*.test.ts; ls ../tools/*.test.ts 2>/dev/null || true; } | sort)
     node --import tsx --test --test-concurrency=4 \
       --test-reporter=dot --test-reporter-destination=stdout \
       --test-reporter="$tools/node_failures_reporter.mjs" --test-reporter-destination="$RUNNER_TEMP/node-fail.txt" \

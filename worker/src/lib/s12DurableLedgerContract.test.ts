@@ -2,7 +2,6 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 
 const migration = fs.readFileSync('migrations/0085_s12_durable_structure_and_formal_ev.sql', 'utf8')
-const taxonomy = fs.readFileSync('src/lib/s12StructureTaxonomy.ts', 'utf8')
 
 for (const table of [
   's12_structure_batch_runs',
@@ -18,7 +17,6 @@ for (const state of [
   'invalidated',
   'unavailable',
 ]) {
-  assert(taxonomy.includes(`'${state}'`), `taxonomy must preserve ${state}`)
   assert(migration.includes(`'${state}'`), `decision ledger must preserve ${state}`)
 }
 

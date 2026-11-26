@@ -2,9 +2,7 @@
 _predictions_schema.py — D1 `predictions` table column constants + shared types
 
 shared between recommendation_service.py (write) and verify_service.py (update).
-Mirror of worker/src/lib/_predictionsSchema.ts (must keep in sync 1:1).
-
-Source of truth for column names — change here and the TS file together.
+Source of truth for column names.
 """
 from dataclasses import dataclass, field
 from typing import Literal

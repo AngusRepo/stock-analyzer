@@ -22,10 +22,8 @@ assert(
     gateScript.includes('node --import tsx --test') &&
     gateScript.includes('node_failures_reporter.mjs') &&
     gateScript.includes('$FailedWorkerTests += $batchFailures') &&
-    gateScript.includes('throw "worker contract tests failed ($($FailedWorkerTests.Count)): $($FailedWorkerTests -join \', \')"') &&
-    gateScript.includes('strategyDiscoveryLocalE2E.test.ts') &&
-    gateScript.includes('strategyDiscoveryRealModelE2E.test.ts'),
-  'P12 release gate must execute every offline worker test, explicitly separate runtime E2E, and fail naming every broken test instead of stopping at the first',
+    gateScript.includes('throw "worker contract tests failed ($($FailedWorkerTests.Count)): $($FailedWorkerTests -join \', \')"'),
+  'P12 release gate must execute every offline worker test and fail naming every broken test instead of stopping at the first',
 )
 
 assert(

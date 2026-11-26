@@ -47,7 +47,7 @@ const learningHandler = handlers.slice(
 )
 const legacyHandler = handlers.slice(
   handlers.indexOf("'legacy-learning-deletion-readiness'"),
-  handlers.indexOf("'timeverse-sync'"),
+  handlers.indexOf("'us-leading'"),
 )
 assert.match(learningHandler, /requestedRunDate\(\) \|\| twToday\(\)/)
 assert.match(legacyHandler, /requestedRunDate\(\) \|\| twToday\(\)/)

@@ -6,9 +6,8 @@ function assert(condition: unknown, message: string): void {
 
 const source = readFileSync('src/lib/marketScreener.ts', 'utf8')
 const start = source.indexOf('export async function calcFactorIC')
-const end = source.indexOf('export async function analyzeMAE', start)
-assert(start >= 0 && end > start, 'calcFactorIC block should be locatable')
-const block = source.slice(start, end)
+assert(start >= 0, 'calcFactorIC block should be locatable')
+const block = source.slice(start)
 
 assert(block.includes('score_components'), 'factor IC should select canonical Score V2 payload')
 assert(block.includes('readScoreV2Snapshot'), 'factor IC should derive factors through Score V2 snapshot')

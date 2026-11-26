@@ -2,7 +2,8 @@ import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
 
 const RESIDUAL_STAGE = 'pit_residual_momentum_shadow'
-const MAX_SYMBOLS = 30
+export const PIT_FACTOR_MAX_SYMBOLS = 30
+const MAX_SYMBOLS = PIT_FACTOR_MAX_SYMBOLS
 
 export interface PitFactorFunnelPoint {
   date: string
@@ -119,10 +120,12 @@ function parseFunnelRows(rows: Array<Record<string, unknown>>): PitFactorFunnelP
   return points
 }
 
-async function loadFunnelPoints(env: Bindings, requestedDate: string, days: number): Promise<PitFactorFunnelPoint[]> {
-  const opsDb = databaseForDataDomain(env, 'ops')
-  const { results } = await opsDb.prepare(
-    `WITH canonical_runs AS (
+// With bound parameters the planner satisfied ORDER BY i.date, i.id by walking
+// idx_screener_funnel_items_date_id over the whole table (~663K rows, ~8.3 s per call,
+// ops-db 24h top reader on 2026-11-25). MATERIALIZED + CROSS JOIN + the pinned index keep the
+// <= `days` canonical runs as the outer loop and seeks (run_id, stage) per run; the temp
+// B-tree only sorts those runs' rows. Plan locked by pitFactorFlowMapPlan.test.ts.
+export const PIT_FACTOR_FUNNEL_POINTS_SQL = `WITH canonical_runs AS MATERIALIZED (
        SELECT r.run_id, r.date, r.candidate_count
          FROM screener_funnel_runs r
          JOIN canonical_run_heads h
@@ -139,10 +142,14 @@ async function loadFunnelPoints(env: Bindings, requestedDate: string, days: numb
      )
      SELECT i.date, i.symbol, i.name, i.evidence, r.candidate_count
        FROM canonical_runs r
-       JOIN screener_funnel_items i ON i.run_id = r.run_id
-      WHERE i.stage = ?
-      ORDER BY i.date ASC, i.id ASC`,
-  ).bind(requestedDate, RESIDUAL_STAGE, days, RESIDUAL_STAGE).all<Record<string, unknown>>()
+       CROSS JOIN screener_funnel_items i INDEXED BY idx_screener_funnel_items_run
+         ON i.run_id = r.run_id AND i.stage = ?
+      ORDER BY i.date ASC, i.id ASC`
+
+async function loadFunnelPoints(env: Bindings, requestedDate: string, days: number): Promise<PitFactorFunnelPoint[]> {
+  const opsDb = databaseForDataDomain(env, 'ops')
+  const { results } = await opsDb.prepare(PIT_FACTOR_FUNNEL_POINTS_SQL)
+    .bind(requestedDate, RESIDUAL_STAGE, days, RESIDUAL_STAGE).all<Record<string, unknown>>()
   return parseFunnelRows(results ?? [])
 }
 
@@ -262,24 +269,13 @@ export function buildPitFactorTaxonomySeries(
 
 export const buildPitFactorIndustryThemeSeries = buildPitFactorTaxonomySeries
 
-async function loadPitFactorTaxonomyMemberships(
-  env: Bindings,
-  dates: string[],
-  symbols: string[],
-  tagType: PitFactorGroupLayer,
-  parent?: string | null,
-): Promise<PitFactorTaxonomyMembership[]> {
-  const uniqueDates = [...new Set(dates.filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date)))].sort()
-  const uniqueSymbols = [...new Set(symbols.map((symbol) => symbol.trim()).filter(Boolean))]
-  if (!uniqueDates.length || !uniqueSymbols.length) return []
-  const marketDb = databaseForDataDomain(env, 'market')
-  const dateValues = uniqueDates.map(() => '(?)').join(',')
-  const memberships: PitFactorTaxonomyMembership[] = []
-  for (let index = 0; index < uniqueSymbols.length; index += 80) {
-    const chunk = uniqueSymbols.slice(index, index + 80)
-    const symbolPlaceholders = chunk.map(() => '?').join(',')
-    const { results } = await marketDb.prepare(`
-      WITH requested_dates(signal_date) AS (VALUES ${dateValues}),
+// The membership key is (snapshot_date, tag_type, tag, symbol), so a symbol filter cannot seek:
+// every requested date reads its whole (snapshot_date, tag_type) slice. The old 80-symbol
+// chunk loop re-read those same slices once per chunk (6 chunks = 6 x ~38K rows per call,
+// 9.78M market-db rows on 2026-11-25). One statement with the symbol set as a JSON array reads
+// each slice once. Plan locked by pitFactorFlowMapPlan.test.ts.
+export const PIT_FACTOR_TAXONOMY_MEMBERSHIP_SQL = (dateCount: number) => `
+      WITH requested_dates(signal_date) AS (VALUES ${Array.from({ length: dateCount }, () => '(?)').join(',')}),
       snapshot_candidates AS (
         SELECT requested_dates.signal_date,
                snapshot_runs.snapshot_date,
@@ -306,13 +302,26 @@ async function loadPitFactorTaxonomyMemberships(
          AND membership.snapshot_id=resolved.snapshot_id
          AND membership.tag_type=?
          AND membership.source='finlab.security_industry_themes'
-       WHERE membership.symbol IN (${symbolPlaceholders})
+       WHERE membership.symbol IN (SELECT value FROM json_each(?))
          AND (? IS NULL OR json_extract(membership.source_lineage_json, '$.parent') = ?)
        ORDER BY resolved.signal_date, membership.symbol, membership.tag
-    `).bind(...uniqueDates, tagType, tagType, ...chunk, parent || null, parent || null).all<PitFactorTaxonomyMembership>()
-    memberships.push(...(results ?? []))
-  }
-  return memberships
+    `
+
+async function loadPitFactorTaxonomyMemberships(
+  env: Bindings,
+  dates: string[],
+  symbols: string[],
+  tagType: PitFactorGroupLayer,
+  parent?: string | null,
+): Promise<PitFactorTaxonomyMembership[]> {
+  const uniqueDates = [...new Set(dates.filter((date) => /^\d{4}-\d{2}-\d{2}$/.test(date)))].sort()
+  const uniqueSymbols = [...new Set(symbols.map((symbol) => symbol.trim()).filter(Boolean))]
+  if (!uniqueDates.length || !uniqueSymbols.length) return []
+  const marketDb = databaseForDataDomain(env, 'market')
+  const { results } = await marketDb.prepare(PIT_FACTOR_TAXONOMY_MEMBERSHIP_SQL(uniqueDates.length))
+    .bind(...uniqueDates, tagType, tagType, JSON.stringify(uniqueSymbols), parent || null, parent || null)
+    .all<PitFactorTaxonomyMembership>()
+  return results ?? []
 }
 
 export function selectPitFactorStockSymbols(points: PitFactorFunnelPoint[], requested: string[], includeMovers: number): string[] {

@@ -41,7 +41,6 @@ duplicate.active8_bundle.selected_models.push('TabM')
 assert.equal(modelPoolHealth(duplicate).tone, 'error')
 assert.equal(presentationTime(null), '尚未取得')
 assert.equal(presentationTime('bad date'), '日期未知')
-console.log('modelPoolPresentation: OK')
 
 const qualifiedRanking = structuredClone(pointers)
 qualifiedRanking.active8_bundle.qualifications = {
@@ -60,3 +59,29 @@ assert.equal(separate.ranking, '排名資格通過')
 assert.equal(separate.direction, '方向訊號資格受阻')
 assert.ok(separate.detail.includes('預測與排名仍可服務'))
 assert.equal(ensembleQualificationPresentation(pointers).direction, '訊號資格待確認')
+
+// Paper admission: the controller serves all observation models, so unselected ones report
+// v5_serving. They are still "not selected" (觀測池保留), never "角色待確認".
+const allEight = [...names, 'LightGBM', 'XGBoost', 'ExtraTrees']
+const paperAdmission = {
+  ready_count: 8, model_count: 8,
+  active8_bundle: {
+    status: 'production', production_effect: true, adoption_basis: 'paper_experiment_unproven',
+    selected_models: names.slice(0, 4), model_order: allEight,
+    base_artifacts: Object.fromEntries(names.slice(0, 4).map(name => [name, base[name]])),
+    serving_artifacts: Object.fromEntries(allEight.map(name => [name, { artifact_id: name + ':v1', version: 'v1', checksum: 'sha256:x' }])),
+    blockers: [],
+  },
+  models: Object.fromEntries(allEight.map(name => [name, { readiness: 'v5_serving', serving_artifact_id: name + ':v1', serving_version: 'v1', serving_checksum: 'sha256:x' }])),
+} as unknown as ModelChampionPointersResponse
+assert.equal(modelPoolHealth(paperAdmission).ready, 4)
+assert.equal(modelPoolHealth(paperAdmission).tone, 'ok')
+for (const name of names.slice(0, 4)) assert.equal(modelMembership(name, paperAdmission), 'selected')
+const unselected = allEight.filter(name => modelMembership(name, paperAdmission) === 'not_selected')
+assert.deepEqual(unselected.sort(), ['ExtraTrees', 'LightGBM', 'XGBoost', 'iTransformer'].sort())
+assert.equal(allEight.filter(name => modelMembership(name, paperAdmission) === 'unknown').length, 0)
+const invalidPaper = structuredClone(paperAdmission)
+invalidPaper.active8_bundle.status = 'validation_failed'
+assert.equal(modelMembership('LightGBM', invalidPaper), 'unknown', 'unknown is only for a missing/invalid bundle')
+assert.equal(modelMembership('NotInPool', paperAdmission), 'unknown')
+console.log('modelPoolPresentation: OK')

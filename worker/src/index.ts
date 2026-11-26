@@ -127,6 +127,9 @@ app.use('/api/*', cors({
   allowHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key'],
   allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   credentials: true,
+  // Every API call is cross-origin with Authorization, so each needs a preflight. Without
+  // Max-Age, browsers re-preflight almost every request (Chromium caps the value at 7200 s).
+  maxAge: 3600,
 }))
 
 // ─── Security Headers ──────────────────────────────────────────────────────

@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Loader2, RefreshCw } from 'lucide-react'
 import AppShell from '@/components/AppShell'
 import ModelPoolNewFlowWorkbench from '@/components/model-pool/ModelPoolNewFlowWorkbench'
@@ -23,13 +23,10 @@ import {
   strategyLabApi,
   type ModelArtifactPromotionControllerResponse,
   type ModelArtifactPromotionQueueResponse,
-  type ModelArtifactSelectionResponse,
-  type ModelChampionPointersResponse,
-  type ModelPoolLineage,
-  type ModelPoolWorkbenchResponse,
+  type ModelPoolWorkbenchEvidenceResponse,
+  type ModelPoolWorkbenchSummaryResponse,
   type ModelPoolLineageModel,
   type ModelPoolStateOverlay,
-  type ModelUpgradeResearchStatusRow,
 } from '@/lib/api'
 import {
   MODEL_POOL_RETIRED_MODEL_IDS,
@@ -39,14 +36,7 @@ const RETIRED_MODEL_NAMES = new Set<string>(MODEL_POOL_RETIRED_MODEL_IDS)
 
 type OverlayEntry = [string, ModelPoolStateOverlay]
 
-type ModelPoolWorkbenchSnapshot = {
-  lineage: ModelPoolLineage
-  selection: ModelArtifactSelectionResponse
-  promotionQueue: ModelArtifactPromotionQueueResponse
-  pointers: ModelChampionPointersResponse
-  statusRows: ModelUpgradeResearchStatusRow[]
-  capturedAt: number
-}
+const MODEL_POOL_SUMMARY_KEY = ['model-pool', 'workbench', 'summary'] as const
 
 function toneFromStatus(status?: string | null): WorkstationTone {
   if (status === 'active' || status === 'ok' || status === 'ready_for_review' || status === 'approved_for_patch') return 'ok'
@@ -360,12 +350,10 @@ function PromotionQueuePanelV2({
         {promotionResult && <PromotionControllerResultPanel result={promotionResult} />}
       </div>
       {suppressedRows.length > 0 && (
-        <details className="group border-t border-[#263247] p-3">
-          <summary className="cursor-pointer list-none text-xs font-semibold text-[#90a0b8]">Superseded / suppressed versions · {suppressedRows.length} hidden</summary>
-          <div className="mt-3">
+        <div className="border-t border-[#263247] p-3">
           <div className="mb-2 flex items-center justify-between gap-2">
-            <p className="sv-num text-[11px] normal-case text-[#90a0b8]">Suppressed versions</p>
-            <WorkstationPill tone="info">{suppressedRows.length} hidden</WorkstationPill>
+            <p className="sv-num text-[11px] normal-case text-[#90a0b8]">Superseded / suppressed versions</p>
+            <WorkstationPill tone="info">{suppressedRows.length} superseded</WorkstationPill>
           </div>
           <div className="grid gap-2 lg:grid-cols-2">
             {suppressedRows.slice(0, 8).map((row) => (
@@ -383,20 +371,37 @@ function PromotionQueuePanelV2({
               </div>
             ))}
           </div>
-          </div>
-        </details>
+        </div>
       )}
     </WorkstationPanel>
   )
 }
 
 export default function ModelPoolPage() {
-  const { data: workbench, error, isLoading, isFetching, refetch } = useQuery<ModelPoolWorkbenchResponse>({
-    queryKey: ['model-pool', 'workbench'],
-    queryFn: modelPoolApi.workbench,
+  const queryClient = useQueryClient()
+  // Two halves of ONE verified controller observation: the summary (lineage, V5 bundle/pointer
+  // readiness, overview) paints first; the evidence half (selection + promotion queue) is read by
+  // the summary's snapshot id, so both always describe the same observation.
+  const summaryQuery = useQuery<ModelPoolWorkbenchSummaryResponse>({
+    queryKey: MODEL_POOL_SUMMARY_KEY,
+    queryFn: () => modelPoolApi.workbenchSummary(false),
     retry: false,
     staleTime: 60_000,
     refetchOnMount: 'always',
+  })
+  const summary = summaryQuery.data
+  const snapshotId = summary?.snapshot?.id ?? null
+  // The evidence half sometimes comes inline: a degraded observation (not stored, so not readable
+  // by id) and a pre-split Worker (rollback) that answers with the full payload.
+  const inlineEvidence = summary && ('selection' in summary || 'promotion_queue' in summary)
+    ? { status: summary.status, selection: summary.selection ?? undefined, promotion_queue: summary.promotion_queue ?? undefined }
+    : undefined
+  const evidenceQuery = useQuery<ModelPoolWorkbenchEvidenceResponse>({
+    queryKey: ['model-pool', 'workbench', 'evidence', snapshotId],
+    queryFn: () => modelPoolApi.workbenchEvidence(snapshotId!),
+    enabled: Boolean(snapshotId) && !inlineEvidence,
+    retry: false,
+    staleTime: Number.POSITIVE_INFINITY,
   })
   const modelUpgradeStatus = useQuery({
     queryKey: ['strategy-lab', 'model-upgrade-status'],
@@ -405,52 +410,63 @@ export default function ModelPoolPage() {
     staleTime: 60_000,
     refetchOnMount: 'always',
   })
-  const data = workbench?.lineage
-  const artifactSelection = { data: workbench?.selection, error, isFetching }
-  const artifactPromotionQueue = { data: workbench?.promotion_queue, error, isFetching }
-  const championPointers = { data: workbench?.champion_pointers, error, isFetching }
-  const overview = { data: workbench?.overview ?? undefined, error, isFetching }
-  const snapshotHasError = Boolean(error || modelUpgradeStatus.error || artifactSelection.error || artifactPromotionQueue.error || championPointers.error)
-  const [modelPoolSnapshot, setModelPoolSnapshot] = useState<ModelPoolWorkbenchSnapshot | null>(null)
-  const modelPoolFetching = (
-    isFetching ||
-    modelUpgradeStatus.isFetching ||
-    artifactSelection.isFetching ||
-    artifactPromotionQueue.isFetching ||
-    championPointers.isFetching
-  )
-  const modelPoolHydrated = Boolean(
-    data &&
-    modelUpgradeStatus.data &&
-    artifactSelection.data &&
-    artifactPromotionQueue.data &&
-    championPointers.data,
-  )
+  const [refreshesInFlight, setRefreshesInFlight] = useState(0)
+  const refreshing = refreshesInFlight > 0
+  const [refreshError, setRefreshError] = useState<Error | null>(null)
+  const revalidatedSnapshot = useRef<string | null>(null)
+  // Only the most recently issued refresh may replace the summary: a background revalidate that
+  // started before a promotion can answer after the post-promotion fresh read.
+  const refreshGeneration = useRef(0)
+
+  // A new observation costs the controller ~50 s; the cached one stays on screen meanwhile. The
+  // request stays open until the observation lands: the Worker runs it inside this request, so
+  // it is not cut off by the post-response waitUntil limit.
+  const replaceSummary = useCallback(async (load: () => Promise<ModelPoolWorkbenchSummaryResponse>) => {
+    const generation = ++refreshGeneration.current
+    setRefreshesInFlight((count) => count + 1)
+    setRefreshError(null)
+    try {
+      const next = await load()
+      if (generation === refreshGeneration.current) queryClient.setQueryData(MODEL_POOL_SUMMARY_KEY, next)
+    } catch (error) {
+      if (generation === refreshGeneration.current) setRefreshError(error instanceof Error ? error : new Error(String(error)))
+    } finally {
+      setRefreshesInFlight((count) => Math.max(0, count - 1))
+    }
+  }, [queryClient])
+
+  // Refresh button and after a promotion: a new observation started after the click.
   const refreshModelPoolSnapshot = useCallback(async () => {
-    await Promise.allSettled([refetch(), modelUpgradeStatus.refetch()])
-  }, [modelUpgradeStatus, refetch])
-
-  useEffect(() => {
-    if (!modelPoolHydrated || modelPoolFetching || snapshotHasError) return
-    setModelPoolSnapshot({
-      lineage: data!,
-      selection: artifactSelection.data!,
-      promotionQueue: artifactPromotionQueue.data!,
-      pointers: championPointers.data!,
-      statusRows: modelUpgradeStatus.data!.candidates ?? [],
-      capturedAt: Date.now(),
+    await replaceSummary(async () => {
+      const [fresh] = await Promise.all([
+        modelPoolApi.workbenchSummary(true),
+        modelUpgradeStatus.refetch(),
+      ])
+      return fresh
     })
-  }, [
-    artifactPromotionQueue.data,
-    artifactSelection.data,
-    championPointers.data,
-    data,
-    modelPoolFetching,
-    modelPoolHydrated,
-    snapshotHasError,
-    modelUpgradeStatus.data,
-  ])
+  }, [modelUpgradeStatus, replaceSummary])
 
+  // An old cached snapshot is shown immediately and replaced once, in the background.
+  useEffect(() => {
+    if (!summary?.snapshot?.stale || !snapshotId || revalidatedSnapshot.current === snapshotId) return
+    revalidatedSnapshot.current = snapshotId
+    void replaceSummary(() => modelPoolApi.workbenchRevalidate(snapshotId))
+  }, [replaceSummary, snapshotId, summary?.snapshot?.stale])
+
+  // The evidence half outlived its snapshot (replaced or expired): re-read the summary once per
+  // snapshot id. A new id changes the evidence key; the same id again surfaces as an error.
+  const evidenceExpired = String((evidenceQuery.error as Error | null)?.message ?? '').includes('model_pool_snapshot_expired')
+  const expiredSnapshot = useRef<string | null>(null)
+  const refetchSummary = summaryQuery.refetch
+  useEffect(() => {
+    if (!evidenceExpired || !snapshotId || expiredSnapshot.current === snapshotId) return
+    expiredSnapshot.current = snapshotId
+    void refetchSummary()
+  }, [evidenceExpired, refetchSummary, snapshotId])
+
+  const data = summary?.lineage
+  const evidence = inlineEvidence ?? (evidenceQuery.data?.snapshot?.id === snapshotId ? evidenceQuery.data : undefined)
+  const overview = { data: summary?.overview ?? undefined, error: summaryQuery.error, isFetching: summaryQuery.isFetching }
   const promotionController = useMutation({
     mutationFn: ({ artifactId, approved, confirm }: { artifactId: string; approved: boolean; confirm: boolean }) => modelPoolApi.promotionController({
       artifact_id: artifactId,
@@ -464,7 +480,7 @@ export default function ModelPoolPage() {
     },
   })
 
-  const models = modelPoolSnapshot?.lineage.models ?? {}
+  const models = data?.models ?? {}
   const modelList = Object.entries(models).filter(([name, model]) => !isStateSpaceOverlay(name, model) && !isRetiredModelName(name))
   const legacyOverlayList: OverlayEntry[] = Object.entries(models)
     .filter(([name, model]) => isStateSpaceOverlay(name, model))
@@ -478,18 +494,16 @@ export default function ModelPoolPage() {
       note: 'Lineage entry rendered as state-space overlay; excluded from alpha model IC counts.',
     }])
   const overlayList: OverlayEntry[] = [
-    ...Object.entries(modelPoolSnapshot?.lineage.state_overlays ?? {}),
+    ...Object.entries(data?.state_overlays ?? {}),
     ...legacyOverlayList,
   ]
-  const modelPoolSnapshotReady = Boolean(modelPoolSnapshot)
-  const modelPoolError = (
-    error ||
-    modelUpgradeStatus.error ||
-    artifactSelection.error ||
-    artifactPromotionQueue.error ||
-    championPointers.error
-  ) as Error | null
-  const modelPoolInitialLoading = !modelPoolSnapshotReady && !modelPoolError && (isLoading || modelPoolFetching || !modelPoolHydrated)
+  const modelPoolSnapshotReady = Boolean(summary?.lineage && summary?.champion_pointers)
+  const modelPoolError = (summaryQuery.error ?? null) as Error | null
+  const evidenceRecovering = evidenceExpired && (expiredSnapshot.current !== snapshotId || summaryQuery.isFetching)
+  const evidenceError = !evidenceRecovering ? (evidenceQuery.error as Error | null) : null
+  const evidencePending = modelPoolSnapshotReady && !evidence && !evidenceError
+  const modelPoolInitialLoading = !modelPoolSnapshotReady && !modelPoolError
+  const capturedAt = summary?.snapshot?.captured_at ? Date.parse(summary.snapshot.captured_at) : undefined
 
   return (
     <AppShell>
@@ -500,12 +514,14 @@ export default function ModelPoolPage() {
           description="正式 ensemble、八模型角色、證據成熟度與下一個 cohort。模型選擇與服務狀態分開呈現。"
           action={
             <div className="flex flex-wrap items-center gap-2">
-              {modelPoolSnapshotReady && modelPoolFetching && <WorkstationPill tone="info">refreshing snapshot</WorkstationPill>}
+              {modelPoolSnapshotReady && refreshing && <WorkstationPill tone="info">refreshing snapshot</WorkstationPill>}
+              {summary?.snapshot?.degraded && <span title="controller overview 讀取失敗；這份觀測只顯示給你，不會快取"><WorkstationPill tone="warn">overview 缺</WorkstationPill></span>}
               <Button
                 size="sm"
                 variant="outline"
                 className="rounded-full border-[#d6a85f]/30 text-[#f1c16f]"
                 onClick={refreshModelPoolSnapshot}
+                disabled={refreshing}
               >
                 <RefreshCw className="mr-1 h-3 w-3" /> Refresh
               </Button>
@@ -515,12 +531,15 @@ export default function ModelPoolPage() {
 
         {modelPoolInitialLoading && (
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Loader2 className="h-4 w-4 animate-spin" /> Loading complete model-pool evidence snapshot...
+            <Loader2 className="h-4 w-4 animate-spin" /> Loading model-pool summary...
           </div>
         )}
 
-        {modelPoolError && (
-          <div className="border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300" role="status">{modelPoolSnapshotReady ? '更新失敗，保留上次成功快照：' : '讀取失敗：'}{modelPoolError.message}</div>
+        {(modelPoolError || refreshError) && (
+          <div className="border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300" role="status">{modelPoolSnapshotReady ? '更新失敗，保留上次成功快照：' : '讀取失敗：'}{(refreshError ?? modelPoolError)!.message}</div>
+        )}
+        {evidenceError && (
+          <div className="border border-red-500/30 bg-red-500/10 p-4 text-sm text-red-300" role="status">模型證據讀取失敗：{evidenceError.message}</div>
         )}
 
         {modelPoolSnapshotReady && (
@@ -529,13 +548,14 @@ export default function ModelPoolPage() {
               models={modelList}
               overview={overview.error ? undefined : overview.data}
               overviewLoading={overview.isFetching}
-              capturedAt={modelPoolSnapshot!.capturedAt}
-              stale={Boolean(modelPoolError)}
-              selection={modelPoolSnapshot!.selection}
-              pointers={modelPoolSnapshot!.pointers}
-              promotionQueue={modelPoolSnapshot!.promotionQueue}
-              statusRows={modelPoolSnapshot!.statusRows}
-              modelUpgradeStatusReady
+              capturedAt={capturedAt}
+              stale={Boolean(refreshError || modelPoolError)}
+              selection={evidence?.selection}
+              pointers={summary!.champion_pointers}
+              promotionQueue={evidence?.promotion_queue}
+              evidencePending={evidencePending}
+              statusRows={modelUpgradeStatus.data?.candidates ?? []}
+              modelUpgradeStatusReady={Boolean(modelUpgradeStatus.data)}
               promotionResult={promotionController.data}
               finalComparePending={promotionController.isPending}
               onDryRunFinalCompare={(artifactId) => promotionController.mutate({ artifactId, approved: false, confirm: false })}

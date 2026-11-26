@@ -1930,10 +1930,16 @@ export type Active8ServingBundleReadModel = {
   promoted_at?: string | null
   selected_models: string[]
   model_order?: string[]
-  adoption_basis?: 'committed_paired_nav'
+  adoption_basis?: 'committed_paired_nav' | 'paper_experiment_unproven'
   nav_decision_checksum?: string
   qualifications?: EnsembleQualifications
   base_artifacts: Record<string, {
+    artifact_id?: string | null
+    version?: string | null
+    checksum?: string | null
+  }>
+  /** Paper admission: every observation model the controller serves (superset of selected_models). */
+  serving_artifacts?: Record<string, {
     artifact_id?: string | null
     version?: string | null
     checksum?: string | null
@@ -2025,8 +2031,70 @@ export type ModelPoolWorkbenchResponse = {
   overview: ModelPoolOverview | null
 }
 
+/** Which verified controller observation a workbench half came from (Worker snapshot cache). */
+// /api/paper/gate-calibration: one outcome per pending_buy check plus paper_orders buys over the
+// Taiwan trading-date window; total_events = filled + deferred + blocked + skipped.
+export type PaperGateCalibrationRow = {
+  outcome: 'deferred' | 'blocked' | 'skipped'
+  event_type: 'pending_buy'
+  status: string
+  reason: string
+  source: string | null
+  count: number
+  last_seen: string | null
+}
+
+export type PaperGateCalibrationResponse = {
+  status: 'success'
+  days: number
+  window_start: string
+  window_end: string
+  denominator_definition: string
+  total_events: number
+  filled_events: number
+  deferred_events: number
+  blocked_events: number
+  skipped_events: number
+  /** Subset of skipped_events. */
+  cancelled_events: number
+  rows: PaperGateCalibrationRow[]
+}
+
+export type ModelPoolWorkbenchSnapshotMeta = {
+  id: string
+  captured_at: string
+  age_seconds: number
+  cache: 'kv' | 'memory' | 'miss' | 'refresh'
+  stale: boolean
+  fresh_seconds: number
+  section_bytes: Record<string, number>
+  degraded?: 'overview_unavailable'
+}
+
+export type ModelPoolWorkbenchSummaryResponse = {
+  status: string
+  /** Absent from a pre-split Worker, which answers view=summary with the full payload. */
+  snapshot?: ModelPoolWorkbenchSnapshotMeta
+  lineage: ModelPoolLineage
+  champion_pointers: ModelChampionPointersResponse
+  overview: ModelPoolOverview | null
+  selection?: ModelArtifactSelectionResponse
+  promotion_queue?: ModelArtifactPromotionQueueResponse
+}
+
+export type ModelPoolWorkbenchEvidenceResponse = {
+  status: string
+  snapshot: ModelPoolWorkbenchSnapshotMeta
+  selection: ModelArtifactSelectionResponse
+  promotion_queue: ModelArtifactPromotionQueueResponse
+}
+
 export const modelPoolApi = {
   workbench: () => get<ModelPoolWorkbenchResponse>('/model-pool/workbench'),
+  workbenchSummary: (fresh = false) => get<ModelPoolWorkbenchSummaryResponse>(`/model-pool/workbench?view=summary${fresh ? '&fresh=1' : ''}`),
+  /** Background refresh of a stale snapshot; the Worker may answer with a newer one or a peer observation. */
+  workbenchRevalidate: (staleSnapshotId: string) => get<ModelPoolWorkbenchSummaryResponse>(`/model-pool/workbench?view=summary&revalidate=${encodeURIComponent(staleSnapshotId)}`),
+  workbenchEvidence: (snapshotId: string) => get<ModelPoolWorkbenchEvidenceResponse>(`/model-pool/workbench?view=evidence&snapshot=${encodeURIComponent(snapshotId)}`),
   overview: () => get<ModelPoolOverview>('/model-pool/overview'),
   status: () => get<any>('/model-pool/status'),
   lineage: () => get<ModelPoolLineage>('/model-pool/lineage'),
@@ -2084,7 +2152,7 @@ export const paperApi = {
   riskAudit:       (date?: string, options?: ApiRequestOptions) => get<any>(`/paper/quadrant-filter${date ? `?date=${date}` : ''}`, options),
   displayQuotes: (symbols: string[], options?: ApiRequestOptions) => get<any>('/paper/display-quotes?symbols=' + encodeURIComponent(symbols.join(',')), options),
   pendingBuys:     (options?: ApiRequestOptions) => get<any>('/paper/pending-buys', options),
-  gateCalibration: (days = 7) => get<any>(`/paper/gate-calibration?days=${days}`),
+  gateCalibration: (days = 7) => get<PaperGateCalibrationResponse>(`/paper/gate-calibration?days=${days}`),
 }
 
 export const adaptiveApi = {

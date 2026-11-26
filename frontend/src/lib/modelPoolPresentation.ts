@@ -32,12 +32,19 @@ export function modelPoolHealth(pointers?: ModelChampionPointersResponse) {
   return { selected, ready, readyModels, blockers: [...new Set(blockers)], tone, label: tone === 'ok' ? '可服務' : tone === 'error' ? '受阻' : '尚未就緒' }
 }
 
+// Membership comes from the bundle itself, not from per-model readiness. Under a Paper admission
+// grant (adoption_basis 'paper_experiment_unproven') the controller serves every observation
+// model (serving_artifacts), so unselected models report readiness v5_serving; inferring the role
+// from readiness labelled them "角色待確認" while the header counted 0 unselected.
 export function modelMembership(name: string, pointers?: ModelChampionPointersResponse): PoolMembership {
   const bundle = pointers?.active8_bundle
   if (bundle?.selected_models?.includes(name)) return 'selected'
-  if (bundle?.production_effect && bundle.status === 'production' && bundle.selected_models.length > 0
-      && pointers?.models?.[name]?.readiness === 'evidence_only_no_action') return 'not_selected'
-  return 'unknown'
+  const validBundle = bundle?.production_effect === true && bundle.status === 'production' && (bundle.selected_models?.length ?? 0) > 0
+  if (!validBundle) return 'unknown'
+  const inPool = (bundle.model_order ?? []).includes(name)
+    || Object.prototype.hasOwnProperty.call(bundle.serving_artifacts ?? {}, name)
+    || pointers?.models?.[name]?.readiness === 'evidence_only_no_action'
+  return inPool ? 'not_selected' : 'unknown'
 }
 
 export function membershipLabel(role: PoolMembership): string {

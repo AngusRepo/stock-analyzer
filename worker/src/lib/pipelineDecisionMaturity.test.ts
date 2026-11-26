@@ -3,7 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import test from 'node:test'
-import { maturityProgress, routeCalibrationSplitCounts } from './pipelineDecisionMaturity'
+import { isFixedVerificationFailure, maturityProgress, routeCalibrationSplitCounts } from './pipelineDecisionMaturity'
 import {
   STRATEGY_ROUTE_MIN_TOTAL_DATES,
   STRATEGY_ROUTE_MIN_TRAIN_DATES,
@@ -192,7 +192,33 @@ test('pipeline maturity API preserves canonical lineage and explicit evidence fi
   const routeStart = routes.indexOf("/api/dashboard/v4/pipeline/maturity")
   assert(routeStart >= 0)
   assert(routes.slice(routeStart, routeStart + 360).includes('requireValidToken'))
-  assert(routes.slice(routeStart, routeStart + 420).includes("Cache-Control', 'no-store, max-age=0"))
+  // 2026-11-26: one shared Worker copy (5 min, ?fresh=1 rebuilds); browsers still never keep it and
+  // a packet built during a failed sub-read is not shared.
+  const routeBody = routes.slice(routeStart, routes.indexOf('dashboardReadRoutes.get(', routeStart + 1))
+  assert(routeBody.includes("Cache-Control', 'no-store, max-age=0"))
+  assert(routeBody.includes("workerReadCacheKey('pipeline:maturity:v1', { date })"))
+  assert(routeBody.includes('cacheable: (packet) => !packet.source_query_error_count'))
+  assert.match(source, /source_query_error_count: queryErrors\.length \+ \(pairedNav\?\.status === 'unavailable'/)
+  // Fixed validation states stay cacheable but visible; transient read failures keep the packet out of the cache.
+  assert.match(source, /recordSourceFailure\(error, queryErrors, verificationFailures, 'strategy_route_nav_publication_or_execution_unverified'\)/)
+  assert.match(source, /recordSourceFailure\(error, queryErrors, verificationFailures, 'portfolio_plan_unavailable'\)/)
+  assert.match(source, /console\.warn\('\[pipeline\/maturity\] source verification failed'/)
+  assert.match(source, /source_verification_failures: verificationFailures/)
+})
+test('maturity: only free-text read failures count as transient source errors', () => {
+  assert.equal(isFixedVerificationFailure(new Error('strategy_route_nav_receipt_invalid')), true)
+  assert.equal(isFixedVerificationFailure(new Error('strategy_route_nav_runtime_version_unavailable')), true)
+  assert.equal(isFixedVerificationFailure(new Error('l4_plan_contract_invalid')), true)
+  let parseError: unknown
+  try { JSON.parse('{bad') } catch (error) { parseError = error }
+  assert.equal(isFixedVerificationFailure(parseError), true)
+  assert.equal(isFixedVerificationFailure(new Error('D1_ERROR: Network connection lost.')), false)
+  assert.equal(isFixedVerificationFailure(new Error('D1 DB is overloaded. Requests queued for too long.')), false)
+  assert.equal(isFixedVerificationFailure(new TypeError('fetch failed')), false)
+  // Race / retry codes are transient even though they are bare codes.
+  assert.equal(isFixedVerificationFailure(new Error('nav_screener_observation_canonical_changed')), false)
+  assert.equal(isFixedVerificationFailure(new Error('nav_screener_observation_canonical_ambiguous')), false)
+  assert.equal(isFixedVerificationFailure(new Error('l4_plan_concurrent_change_retry')), false)
 })
 test('shadow maturity SQL selects one deterministic successor and projects v2 identity', () => {
   const source = fs.readFileSync(path.join(process.cwd(), 'src/lib/pipelineDecisionMaturity.ts'), 'utf8')

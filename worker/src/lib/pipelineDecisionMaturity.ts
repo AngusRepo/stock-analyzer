@@ -230,6 +230,10 @@ export interface PipelineDecisionMaturityPacket {
   schema_version: 'pipeline-decision-maturity-v2'
   requested_date: string
   generated_at: string
+  /** Sub-reads that failed while building this packet (0 = complete read). */
+  source_query_error_count?: number
+  /** Fixed validation states (cached with the packet, logged on each rebuild). */
+  source_verification_failures?: string[]
   current_selection_signal_owner: 'allocator_opb_policy'
   current_expected_return_owner: 'l4_alpha_ev' | 'allocator_ev_fusion' | 'l4_distribution' | null
   current_allocation_utility_owner: 'expected_return_owner' | 'risk_abstention'
@@ -348,11 +352,38 @@ function safeError(error: unknown): string {
   return (error instanceof Error ? error.message : String(error)).replace(/\s+/g, ' ').slice(0, 220)
 }
 
-async function safeQuery<T>(work: () => Promise<T>): Promise<QueryResult<T>> {
+/**
+ * Fixed states (a stored receipt or plan that fails validation, a runtime-version mismatch) stay
+ * the same on every rebuild, so they are real packet content, not read failures: the packet
+ * still caches and the failure is logged. Only listed validation codes and bad stored JSON
+ * (SyntaxError) qualify. Everything else, including D1/KV/network failures and race codes such
+ * as nav_screener_observation_canonical_changed or l4_plan_concurrent_change_retry, counts as a
+ * transient source error and keeps the packet out of the cache.
+ */
+const FIXED_VERIFICATION_CODES = new Set(['strategy_route_nav_receipt_invalid', 'strategy_route_nav_runtime_version_unavailable'])
+// L4 plan validators (l4PortfolioPlan.ts) report contract violations with these suffixes.
+const FIXED_L4_PLAN_CODE = /^l4_[a-z0-9_]+_(invalid|missing|mismatch|exceeded|cannot_publish|cannot_execute)$/
+
+export function isFixedVerificationFailure(error: unknown): boolean {
+  if (error instanceof SyntaxError) return true
+  const message = error instanceof Error ? error.message : String(error)
+  return FIXED_VERIFICATION_CODES.has(message) || FIXED_L4_PLAN_CODE.test(message)
+}
+
+function recordSourceFailure(error: unknown, queryErrors: string[], verificationFailures: string[], context: string): string {
+  const message = safeError(error)
+  if (isFixedVerificationFailure(error)) verificationFailures.push(`${context}:${message}`)
+  else queryErrors.push(`${context}:${message}`)
+  return message
+}
+
+async function collectQuery<T>(work: () => Promise<T>, errors: string[], verificationFailures: string[] = errors): Promise<QueryResult<T>> {
   try {
     return { value: await work(), error: null }
   } catch (error) {
-    return { value: null, error: safeError(error) }
+    const message = safeError(error)
+    ;(isFixedVerificationFailure(error) ? verificationFailures : errors).push(message)
+    return { value: null, error: message }
   }
 }
 
@@ -499,6 +530,11 @@ export async function buildPipelineDecisionMaturityPacket(
   requestedDate: string,
 ): Promise<PipelineDecisionMaturityPacket> {
   if (!validDate(requestedDate)) throw new Error(`invalid_pipeline_maturity_date:${requestedDate}`)
+  // Failed sub-reads degrade their stage instead of failing the packet; their count is returned
+  // so the Worker read cache never stores a packet built during a D1 error.
+  const queryErrors: string[] = []
+  const verificationFailures: string[] = []
+  const safeQuery = <T,>(work: () => Promise<T>) => collectQuery(work, queryErrors, verificationFailures)
   const learningDb = databaseForDataDomain(env, 'learning')
 
   const distributionConfig = await env.KV.get('trading:config', 'json') as { l4Distribution?: {operating_mode?: string; artifact?:{model?:{residual_tabpack?:unknown;residual_mlp?:{schema_version?:string}};release?:{efficacy_status?:string;acceptance_mode?:string}}} } | null
@@ -1106,9 +1142,10 @@ export async function buildPipelineDecisionMaturityPacket(
           evidence_semantics: 'Original costed paired NAV adoption receipt; not weekly route OOS calibration.',
           source: ROUTE_NAV_ARTIFACT_VERSION, updated_at: promotedRoute.promoted_at },
       })
-    } catch {
+    } catch (error) {
+      const detail = recordSourceFailure(error, queryErrors, verificationFailures, 'strategy_route_nav_publication_or_execution_unverified')
       stages.push(unavailableStage('route_score_v2', 'L1.5', '策略路由校準', requestedDate,
-        'strategy_route_calibration_head_v1', ['strategy_route_nav_publication_or_execution_unverified']))
+        'strategy_route_calibration_head_v1', ['strategy_route_nav_publication_or_execution_unverified', detail]))
     }
   } else if (!route) {
     stages.push(unavailableStage('route_score_v2', 'L1.5', '策略路由校準', requestedDate, 'strategy_route_calibration_runs_v1', [routeRun.error, routeHead.error]))
@@ -1982,8 +2019,9 @@ export async function buildPipelineDecisionMaturityPacket(
       const plan = await readL4PortfolioPlan(env)
       distributionStatus = { status: !plan ? 'awaiting_first_plan' : plan.signal_date === requestedDate ? 'ready' : 'stale', plan,
           ...(plan && plan.signal_date !== requestedDate ? { reason: 'plan_date_differs_from_requested_date' } : {}) }
-    } catch {
-      distributionStatus = { status: 'failed', reason: 'portfolio_plan_unavailable' }
+    } catch (error) {
+      const detail = recordSourceFailure(error, queryErrors, verificationFailures, 'portfolio_plan_unavailable')
+      distributionStatus = { status: 'failed', reason: isFixedVerificationFailure(error) ? `portfolio_plan_unavailable:${detail}` : 'portfolio_plan_unavailable' }
     }
   }
   if (distributionStatus) {
@@ -1997,15 +2035,23 @@ export async function buildPipelineDecisionMaturityPacket(
   // Legacy evidence remains in its original storage; it is no longer a current-flow stage.
   const visibleStages=stages.filter(stage=>!['l4','fusion'].includes(stage.id))
   const mlVersion = await mlVersionPromise
+  const pairedNav = await pairedNavPromise
+  if (verificationFailures.length) {
+    // Cached like any packet; one line per rebuild keeps the fixed state visible in Workers Logs.
+    console.warn('[pipeline/maturity] source verification failed', JSON.stringify({ requested_date: requestedDate, failures: verificationFailures }))
+  }
   return {
     l4_distribution: distributionStatus,
     strategy_route_bundle: strategyRouteBundle,
     active_ml_ensemble: mlVersion.value ?? { status: 'error', artifact_id: null, cohort_id: null, validation_end_date: null, knowledge_cutoff_date: null, promoted_at: null },
 
-    paired_nav_shadow: await pairedNavPromise,
+    paired_nav_shadow: pairedNav,
     schema_version: 'pipeline-decision-maturity-v2',
     requested_date: requestedDate,
     generated_at: new Date().toISOString(),
+    // readPairedNav catches its own learning-db errors and reports status 'unavailable'.
+    source_query_error_count: queryErrors.length + (pairedNav?.status === 'unavailable' ? 1 : 0),
+    source_verification_failures: verificationFailures,
     current_selection_signal_owner: servingState?.selection_signal_owner ?? 'allocator_opb_policy',
     current_expected_return_owner: servingState?.expected_return_owner ?? null,
     current_allocation_utility_owner: servingState?.allocation_utility_owner ?? 'risk_abstention',

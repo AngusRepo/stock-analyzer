@@ -58,11 +58,8 @@ export async function handleWorkerDomainCron(deps: WorkerCronDeps): Promise<bool
 
   if (cron === '0 19 * * *') {
     runWithLog('debate-memory-retention', async () => {
-      const res = await databaseForTable(env, 'debate_memory').prepare(
-        `DELETE FROM debate_memory WHERE debate_date < DATE('now', '-180 days')`,
-      ).run()
-      const meta = (res as any)?.meta ?? {}
-      return `deleted=${meta.changes ?? 0}`
+      const { deleteExpiredDebateMemory } = await import('./debateMemoryRetention')
+      return deleteExpiredDebateMemory(databaseForTable(env, 'debate_memory'))
     })
     return true
   }

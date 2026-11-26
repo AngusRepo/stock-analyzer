@@ -43,7 +43,7 @@ assert(dailyPanelSource.includes("view: 'card'"), 'DailyRecommendationPanelV2 mu
 assert(!obsSource.includes('VirtualizedList'), 'OBS overview must avoid nested virtual scroll for small incident/job lists')
 assert(!obsSource.includes('scrollIntoView({ behavior'), 'OBS incident open must not trigger smooth-scroll jank on every click')
 assert(recommendationRouteSource.includes('compactRecommendationForCard'), 'Worker daily recommendations must support compact card payloads')
-assert(recommendationRouteSource.includes("requestedView === 'card' || requestedView === 'pipeline'"), 'Worker must make payload slimming an explicit request contract')
+assert(recommendationRouteSource.includes("requestedView === 'full' || requestedView === 'pipeline' ? requestedView : 'card'"), 'Worker must serve the full payload only on an explicit request')
 assert(viteConfigSource.includes('resolveBuildId'), 'Vite config must derive a build id for production cache busting')
 assert(viteConfigSource.includes('entryFileNames') && viteConfigSource.includes('chunkFileNames'), 'Vite output filenames must include build id to prevent stale PWA chunks')
 assert(viteConfigSource.includes('VITE_BUILD_ID'), 'Frontend must expose build id for deployment diagnostics')

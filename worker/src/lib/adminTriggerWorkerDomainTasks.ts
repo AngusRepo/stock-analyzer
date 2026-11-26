@@ -27,8 +27,10 @@ const RESCORE_SLOT_TASK_BY_CRON: Record<string, string> = {
   '30 4 * * 1-5': 'rescore-1230',
 }
 const RESCORE_CRONS = new Set(Object.keys(RESCORE_SLOT_TASK_BY_CRON))
+// debate-memory-retention is not here: a bounded indexed delete on paper needs no lease (it was skipped
+// behind audit-json 11 of 14 nights).
 const D1_HEAVY_MAINTENANCE_TASKS = new Set([
-  'debate-memory-retention', 'audit-json-retention', 'retention-archive-only', 'retention-hot-window-drain', 'artifact-reconcile',
+  'audit-json-retention', 'retention-archive-only', 'retention-hot-window-drain', 'artifact-reconcile',
   'legacy-evidence-migration', 'legacy-strategy-evidence-migration',
   'legacy-hot-data-retirement', 'd1-evidence-scrub', 'r2-retention-sweep',
   'orphan-reachability-gc', 'cleanup-dlq-replay', 'weekly-cleanup',
@@ -930,11 +932,8 @@ export function buildAdminWorkerDomainTaskMap(
       return `bias=${report.bias} conf=${report.confidence.toFixed(2)} factors=${report.key_factors.length}`
     }),
     'debate-memory-retention': async () => {
-      const res = await databaseForTable(c.env, 'debate_memory').prepare(
-        `DELETE FROM debate_memory WHERE debate_date < DATE('now', '-180 days')`,
-      ).run()
-      const meta = (res as any)?.meta ?? {}
-      return `deleted=${meta.changes ?? 0} rows_read=${meta.rows_read ?? 0}`
+      const { deleteExpiredDebateMemory } = await import('./debateMemoryRetention')
+      return deleteExpiredDebateMemory(databaseForTable(c.env, 'debate_memory'))
     },
     'audit-json-retention': async () => {
       const {

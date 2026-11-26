@@ -27,6 +27,8 @@ RUN python -c "import numpy; import pyarrow; from finlab import data; import pan
 # TypeScript screener code with D1/KV REST adapters instead of Worker bindings.
 RUN mkdir -p /app/worker /app/schemas /app/infra
 COPY schemas/expected-return-contracts-v1.json /app/schemas/expected-return-contracts-v1.json
+# ROSTER-PREP-60 owner: the screener (worker-dist) and controller services read the same file.
+COPY schemas/price-history-eligibility-v1.json /app/schemas/price-history-eligibility-v1.json
 COPY infra/gcp-scheduler-jobs.json /app/infra/gcp-scheduler-jobs.json
 COPY worker/package.json worker/package-lock.json /app/worker/
 RUN cd /app/worker && npm ci

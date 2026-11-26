@@ -8,6 +8,7 @@ from datetime import datetime,timedelta
 import hashlib,io,json,os,re
 import polars as pl
 from services.l4_forward_materialization import digest,materialize,timestamp
+from services.r33_forward_projection import POOL_CONTRACT as R33_POOL_CONTRACT,pool_relative_labels
 
 PREFIX='l4_distribution/forward_data/v1/'
 _SECRET_ENV=re.compile(r'TOKEN|SECRET|PASSWORD|KEY|PRIVATE|CREDENTIAL|AUTH|WEBHOOK')
@@ -40,7 +41,10 @@ class CachedProjectionFailure(Exception):
         self.record=record;super().__init__(record['error_summary'])
 
 class R33ProjectionExcluded(Exception):
-    """Phase 0: R33 snapshots are kept out of the legacy projection until their own exists."""
+    """Phase 0: excluded is neither failed nor collected. Since Phase 1 an R33 snapshot projects
+    through services.r33_forward_projection and nothing raises this; the class and the excluded
+    item shape stay so registry readers handle a stored Phase 0 refresh result. Phase 0
+    projection_exclusions markers are ignored."""
     reason='r33_forward_projection_not_implemented'
 
 def _is_r33_snapshot(runtime,predictions):
@@ -74,7 +78,9 @@ def project(frozen):
     if manifest['snapshot_kind']!='allocation_context':raise ValueError('l4_forward_snapshot_kind')
     policy=content['inputs']['alpha_policy']['l4Distribution'];runtime=policy['runtime']
     identity=runtime['l3_identity'];predictions=content.get('model_predictions') or runtime['predictions']
-    if _is_r33_snapshot(runtime,predictions):raise R33ProjectionExcluded()
+    if _is_r33_snapshot(runtime,predictions):
+        from services.r33_forward_projection import project_r33
+        return project_r33(frozen)
     rows=[];excluded=[]
     for symbol,prediction in sorted(predictions.items()):
         reasons=missing_l3_evidence(prediction,identity,manifest['signal_date'])
@@ -138,7 +144,8 @@ def refresh(*,query,bucket,price_capture,expected_identity,cutoff,lookback_days=
     manifests=query("SELECT * FROM paired_nav_frozen_manifests_v1 WHERE snapshot_kind=? AND signal_date>=? AND signal_date<=? ORDER BY signal_date,snapshot_id",['allocation_context',start,day])
     calendar,prices,price_proof=price_loader(bucket,price_capture,start=start,cutoff_day=day)
     reader=snapshot_reader or (lambda sid:read_context_projection(query,sid,
-        ('inputs.alpha_policy.l4Distribution.runtime','model_predictions','l4_native_pool_contract')))
+        ('inputs.alpha_policy.l4Distribution.runtime','inputs.alpha_policy.l4Distribution.artifact',
+         'model_predictions','l4_native_pool_contract')))
     items=[]
     for manifest in manifests:
         item=dict(snapshot_id=manifest['snapshot_id'],signal_date=manifest['signal_date'])
@@ -159,19 +166,14 @@ def refresh(*,query,bucket,price_capture,expected_identity,cutoff,lookback_days=
                 source_sha=os.environ.get('STOCKVISION_SOURCE_SHA','').strip()
                 marker=digest(dict(manifest=manifest,source_sha=source_sha))+'.json'
                 failure=bucket.blob(PREFIX+'projection_failures/'+marker) if source_sha else None
-                # An exclusion is remembered the same way, so a deploy with an R33 projection re-reads it.
-                exclusion=bucket.blob(PREFIX+'projection_exclusions/'+marker) if source_sha else None
                 if failure is not None and failure.exists():
                     raise CachedProjectionFailure(json.loads(failure.download_as_bytes()))
-                if exclusion is not None and exclusion.exists():raise R33ProjectionExcluded()
+                # Phase 1: a Phase 0 projection_exclusions marker is never read, so no source sha
+                # (a rollback, a reused env) can skip an R33 snapshot without projecting it.
                 frozen=reader(manifest['snapshot_id'])
                 if frozen['manifest']!=manifest:raise ValueError('l4_forward_manifest_changed')
                 try:snapshot=project(frozen)
-                except R33ProjectionExcluded as exc:
-                    if exclusion is not None:
-                        try:exclusion.upload_from_string(json.dumps(dict(reason=exc.reason)),content_type='application/json',if_generation_match=0)
-                        except Exception:pass  # best effort, as for failures
-                    raise
+                except R33ProjectionExcluded:raise  # never remembered as a failure
                 except Exception as exc:
                     if failure is not None and not isinstance(exc,(MemoryError,RecursionError)):
                         record=dict(error_type=type(exc).__name__,error_summary=error_summary(exc))
@@ -183,11 +185,19 @@ def refresh(*,query,bucket,price_capture,expected_identity,cutoff,lookback_days=
                 try:cache.upload_from_string(raw,if_generation_match=0)
                 except PreconditionFailed:
                     if json.loads(cache.download_as_bytes())!=ref:raise ValueError('l4_forward_projection_index_conflict')
+            # By the pool contract, not the schema string: a cached projection of an older
+            # schema version must not fall into the legacy identity check.
+            r33=snapshot['pool_contract']==R33_POOL_CONTRACT
+            # An R33 row carries the identity its projection verified (rank pool, bundle and
+            # ensemble agree), so it still matures after the monthly identity changes (Q4).
             rows,receipt=materialize(snapshot,calendar=calendar,prices=prices,cutoff=cutoff,
-                expected_identity=expected_identity,pool_contract=NATIVE_POOL)
+                expected_identity=snapshot['l3_identity'] if r33 else expected_identity,pool_contract=NATIVE_POOL)
             if snapshot['coverage_exclusions']:
-                receipt.update(training_eligible=False,training_blocker='incomplete_original_l3_coverage')
+                # R33 keeps its evaluation-only blocker; the coverage gap is reported beside it.
+                receipt.update(training_eligible=False,**({'coverage_blocker':'incomplete_original_l3_coverage'} if r33
+                    else {'training_blocker':'incomplete_original_l3_coverage'}))
             body=dict(rows=rows,receipt=receipt,projection=ref,price_proof=price_proof)
+            if r33:body['pool_relative_labels']=pool_relative_labels(rows,receipt)
             record=publisher(bucket,'materializations',body)
             items.append({**item,**receipt,'materialization':record})
         except R33ProjectionExcluded as exc:
@@ -352,4 +362,7 @@ def callback_summary(result):
         'failure_samples':[{k:r.get(k) for k in ('signal_date','reason','error_type','error_summary')}
             for r in result.get('items',[]) if r['status']=='failed'][:3],
         'training_blocker_counts':dict(Counter(r['training_blocker'] for r in result.get('items',[])
-            if r.get('training_blocker')))}
+            if r.get('training_blocker'))),
+        # R33 coverage gaps (unscored pool names) sit beside its evaluation-only blocker.
+        'coverage_blocker_counts':dict(Counter(r['coverage_blocker'] for r in result.get('items',[])
+            if r.get('coverage_blocker')))}

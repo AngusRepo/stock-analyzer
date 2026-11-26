@@ -723,6 +723,8 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
         FEATURE_SEMANTIC_VERSION,
     )
     from .sequence_training import build_sequence_record
+    # ROSTER-PREP-60: one owner shared with the screener's universe gate (schemas/, not KV).
+    from services.price_history_contract import MIN_PRICE_ROWS
 
     t0 = time.time()
     pit_contract_sha256 = None
@@ -744,7 +746,7 @@ def prep_universal_batch(req: UniversalPrepRequest) -> dict:
     skipped = 0
     for payload in payloads:
         prices_data = payload.get("prices", [])
-        if len(prices_data) < 60:
+        if len(prices_data) < MIN_PRICE_ROWS:
             skipped += 1
             continue
         try:

@@ -30,7 +30,7 @@ export interface ScreenerFunnelSummary {
 
 export const L0_DROP_REASON_CONSERVATION_SCHEMA_VERSION = 'l0-drop-reason-conservation-v1' as const
 export const L0_DROP_REASON_CONSERVATION_RUN_VERSION = 'l0-l05-terminal-decision-v2' as const
-export const L0_DROP_REASON_CONFIG_VERSION = 'l0-drop-reason-taxonomy-v2' as const
+export const L0_DROP_REASON_CONFIG_VERSION = 'l0-drop-reason-taxonomy-v3' as const
 
 export const L0_DROP_PRIMARY_REASON_TAXONOMY = [
   'insufficient_price_history',

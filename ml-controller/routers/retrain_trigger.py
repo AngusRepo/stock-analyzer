@@ -1961,13 +1961,15 @@ async def trigger_universal_retrain(
         sym_to_sector[r["symbol"]] = r["tag"]
 
     # ?? 5. Build pooled payloads ????????????????????????????????????????????
+    # ROSTER-PREP-60: the same minimum the prep and the screener read (schemas/, one owner).
+    from services.price_history_contract import MIN_PRICE_ROWS
     per_stock_payloads = []
     skipped = []
     for row in stock_rows:
         sid, sym = row["id"], row["symbol"]
         px = prices_map.get(sid, [])
-        if len(px) < 60:
-            skipped.append(f"{sym}(prices={len(px)}<60)")
+        if len(px) < MIN_PRICE_ROWS:
+            skipped.append(f"{sym}(prices={len(px)}<{MIN_PRICE_ROWS})")
             continue
         sector_tag = sym_to_sector.get(sym, "")
         # market_env: lightweight per-stock (no history, no per_stock_ts)

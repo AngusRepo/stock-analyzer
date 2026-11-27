@@ -132,6 +132,25 @@ def test_us_update_keeps_old_history_and_applies_recent_corrections(tmp_path):
                                fetch=lambda symbol:us_body(symbol,missing))
 
 
+def test_us_update_drops_a_retracted_in_session_bar_from_the_prior_capture(tmp_path):
+    # 11/26: the prior capture ran during the US session and stored a provisional bar dated
+    # on its own TW business date; the vendor later retracted it (Thanksgiving DXY).
+    old={'2026-09-01':100.,'2026-09-25':102.,'2026-09-28':103.,'2026-09-29':103.5}
+    base={'end_date':'2026-09-29','us_quotes':{f:packed(encode(us_body(s,old))) for f,s in SYMBOLS.items()}}
+    recent={'2026-09-01':100.,'2026-09-25':102.,'2026-09-28':103.,'2026-09-30':104.}
+    write_us_quote_capture(run_dir=tmp_path,start='2026-01-02',end='2026-09-30',baseline=base,
+                           fetch=lambda symbol:us_body(symbol,recent))
+    for field,symbol in SYMBOLS.items():
+        rows=quote_series(json.loads((tmp_path/'raw/daily_price_full_vintage/us_quotes'/f'{field}.json').read_bytes()),symbol)
+        assert '2026-09-29' not in rows
+        assert rows==recent
+    # An older admissible day that disappears is still a gap.
+    missing={k:v for k,v in recent.items() if k!='2026-09-28'}
+    with pytest.raises(ValueError,match='recent_window_gap'):
+        write_us_quote_capture(run_dir=tmp_path/'missing',start='2026-01-02',end='2026-09-30',baseline=base,
+                               fetch=lambda symbol:us_body(symbol,missing))
+
+
 def test_import_seed_then_next_run_loads_its_own_published_snapshot(monkeypatch, tmp_path):
     from services import daily_inference_producer as producer
     bucket, price=calendar_fixture()

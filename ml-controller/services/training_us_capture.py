@@ -41,7 +41,14 @@ def write_us_quote_capture(*,run_dir,start,end,fetch=None,baseline=None):
         if baseline is not None:
             from services.daily_history_capture import unpack
             prior = quote_series(json.loads(unpack(baseline['us_quotes'][field])),symbol)
-            if any(day >= requested_start.isoformat() and day <= baseline['end_date'] and day not in rows for day in prior):
+            # A bar dated on/after the prior TW business date was never admissible there (US date must
+            # be strictly earlier) and, on the nightly schedule, is an in-session quote the vendor may
+            # still retract (11/26 Thanksgiving DXY). Only the vendor's current view of it is kept.
+            unconfirmed = sorted(day for day in prior if day >= baseline['end_date'] and day not in rows)
+            if unconfirmed:
+                print(f'[training-us] prior_bar_retracted field={field} days={",".join(unconfirmed)}')
+            prior = {day: value for day, value in prior.items() if day < baseline['end_date']}
+            if any(day >= requested_start.isoformat() and day not in rows for day in prior):
                 raise ValueError('training_us_recent_window_gap:' + field)
             if not set(prior) & set(rows):
                 raise ValueError('training_us_recent_window_no_overlap:' + field)

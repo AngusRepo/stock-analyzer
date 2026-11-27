@@ -3,6 +3,7 @@ import { paperExecutionDate } from './paperExecutionScope'
 import type { Bindings } from '../types'
 import { twNow, twToday } from './dateUtils'
 import { databaseForDataDomain } from './dataDomainRegistry'
+import { writerDeadlineMinuteTw } from './opsChainStageCatalog'
 
 export type DataQualityStatus = 'ok' | 'warn' | 'fail'
 
@@ -144,6 +145,32 @@ export const EXPECTED_V2_MODELS = [
 ] as const
 
 export const DATA_QUALITY_EOD_READY_MINUTE_TW = 18 * 60 + 30
+/** Chip data, technical indicators and the market dashboard sources are written by the evening chain, not by the
+ * 18:10 close refresh: chip_data by Market update, technical_indicators by Indicator queue, the canonical dashboard
+ * tables by FinLab canonical (22:45) and the start of Market update. Today becomes their target only at the
+ * writing stage's deadline in the stage catalog (the monitoring Worker's /v1/data-readiness uses the same minutes). */
+export const DATA_QUALITY_CHIP_READY_MINUTE_TW = writerDeadlineMinuteTw('update')
+export const DATA_QUALITY_TECHNICAL_READY_MINUTE_TW = writerDeadlineMinuteTw('indicator-queue')
+export const DATA_QUALITY_MARKET_DASHBOARD_READY_MINUTE_TW = writerDeadlineMinuteTw('update')
+
+export type DataQualityTargetDates = { price: string; chip: string; technical: string; marketDashboard: string }
+
+/** The date each group of checks is judged against. A requested date is judged as is for every group; otherwise
+ * each group's latest date that should be complete by now (prices at 18:30, the evening-chain data at its writer's
+ * deadline). */
+export async function resolveDataQualityTargetDates(
+  kv: KVNamespace,
+  requested?: string,
+  startDate: string = twToday(),
+  nowTw: Date = twNow(),
+): Promise<DataQualityTargetDates> {
+  if (requested) return { price: requested, chip: requested, technical: requested, marketDashboard: requested }
+  const [price, chip, technical, marketDashboard] = await Promise.all([
+    DATA_QUALITY_EOD_READY_MINUTE_TW, DATA_QUALITY_CHIP_READY_MINUTE_TW,
+    DATA_QUALITY_TECHNICAL_READY_MINUTE_TW, DATA_QUALITY_MARKET_DASHBOARD_READY_MINUTE_TW,
+  ].map((minute) => resolveExpectedCompletedDataDate(kv, startDate, nowTw, minute)))
+  return { price, chip, technical, marketDashboard }
+}
 
 const UNCLASSIFIED_LABEL = '\u672a\u5206\u985e'
 const UNCLASSIFIED_EN_LABEL = 'Unclassified'
@@ -1432,7 +1459,9 @@ export async function loadBoardLaneStats(
 }
 
 export async function buildDataQualityReport(env: Bindings, options: { date?: string } = {}) {
-  const targetDate = options.date ?? await resolveExpectedCompletedDataDate(env.KV, twToday())
+  const targets = await resolveDataQualityTargetDates(env.KV, options.date)
+  // The report's date: everything but the evening-chain data groups below is judged against it.
+  const targetDate = targets.price
   const expectedModels = await publishedAlphaModelOrder(databaseForDataDomain(env, 'learning'))
   const expectedModelPlaceholders = expectedModels.map(() => '?').join(',')
   const coreDb = databaseForDataDomain(env, 'core')
@@ -1858,7 +1887,7 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
       id: 'chip_freshness',
       label: 'Chip data',
       latestDate: chipStats.latest_date,
-      targetDate,
+      targetDate: targets.chip,
       rowsOnLatest: chipStats.rows_on_latest,
       warnLagDays: 0,
       failLagDays: 0,
@@ -1868,14 +1897,14 @@ export async function buildDataQualityReport(env: Bindings, options: { date?: st
       id: 'technical_indicator_freshness',
       label: 'Technical indicators',
       latestDate: tiStats.latest_date,
-      targetDate,
+      targetDate: targets.technical,
       rowsOnLatest: tiStats.rows_on_latest,
       warnLagDays: 0,
       failLagDays: 0,
       minRows: 1000,
     }),
     buildMarketDashboardMaterializationCheck({
-      targetDate,
+      targetDate: targets.marketDashboard,
       sources: [
         {
           key: 'twii_index',

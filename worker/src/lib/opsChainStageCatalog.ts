@@ -57,6 +57,13 @@ export interface ChainStageCatalogEntry {
    * worst result of the day, the last result goes to summary, never running, never a heartbeat.
    */
   repeat?: boolean
+  /**
+   * A watcher guards a window instead of finishing a job (intraday-check: every minute 09:00–13:30).
+   * Its expectedBy is the deadline of its first result; completed_at is its last result, so a
+   * deadline-minus-completion margin means nothing. Readers judge overdue only while it has no
+   * result yet (status pending), never give it an ETA margin, and still judge failed and stalled.
+   */
+  watcher?: boolean
 }
 
 const bd = (dayOffset: number, tw: string): ChainStageExpectedBy => ({ dayOffset, tw, anchor: 'business_date' })
@@ -115,8 +122,8 @@ const sun = (dayOffset: number, tw: string): ChainStageExpectedBy => ({ dayOffse
  * within 10 s). Owner-confirmed 2026-11-25.
  */
 export const INTRADAY_GUARD_STAGE_CATALOG: readonly ChainStageCatalogEntry[] = [
-  // columns. intraday-check: two GCP jobs, every minute 09:00–13:30; its deadline is the first result.
-  { stageId: 'intraday-check', label: 'Intraday check', optional: false, sources: ['scheduler_run_log'], sourceDate: 'business_date', expectedBy: bd(0, '09:10'), repeat: true },
+  // columns. intraday-check: two GCP jobs, every minute 09:00–13:30; a watcher, its deadline is the first result.
+  { stageId: 'intraday-check', label: 'Intraday check', optional: false, sources: ['scheduler_run_log'], sourceDate: 'business_date', expectedBy: bd(0, '09:10'), repeat: true, watcher: true },
   { stageId: 'eod-exit', label: 'EOD exit', optional: false, sources: ['scheduler_run_log'], sourceDate: 'business_date', expectedBy: bd(0, '13:30') },
   { stageId: 'post-close-price-refresh', label: 'Close price', optional: false, sources: ['scheduler_run_log'], sourceDate: 'business_date', expectedBy: bd(0, '13:50') },
   // 14:20 run; the 18:25 settle re-run may turn a 14:20 refusal (error) into success.
@@ -215,6 +222,19 @@ export function chainsOfStage(stageId: string): readonly string[] {
 
 export function dailyReadinessStage(stageId: string): ChainStageCatalogEntry | undefined {
   return chainStage(DAILY_READINESS_CHAIN_ID, stageId)
+}
+
+/**
+ * Minute of the Taiwan day (0–1439) by which a stage of business date X is due: its same-day deadline. Data a
+ * stage writes is expected for X only from then on (dataQualityMonitor's chip / technical / market dashboard
+ * targets). Throws for a stage without a same-day business-date deadline, so a catalog edit cannot silently
+ * move a data target to another day.
+ */
+export function writerDeadlineMinuteTw(stageId: string): number {
+  const expectedBy = dailyReadinessStage(stageId)?.expectedBy
+  if (!expectedBy || expectedBy.dayOffset !== 0 || expectedBy.anchor !== 'business_date') throw new Error(`no same-day deadline for ${stageId}`)
+  const [hours, minutes] = expectedBy.tw.split(':').map(Number)
+  return hours * 60 + minutes
 }
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/

@@ -4,10 +4,10 @@
  * main Worker's own buildFreshnessCheck / buildMarketDashboardMaterializationCheck; the gate rows are the
  * copied OBS mapping (judgment/obsJudgment.ts). */
 import {
-  buildFreshnessCheck, buildMarketDashboardMaterializationCheck, resolveExpectedCompletedDataDate,
+  buildFreshnessCheck, buildMarketDashboardMaterializationCheck, DATA_QUALITY_CHIP_READY_MINUTE_TW,
+  DATA_QUALITY_MARKET_DASHBOARD_READY_MINUTE_TW, DATA_QUALITY_TECHNICAL_READY_MINUTE_TW, resolveExpectedCompletedDataDate,
   type DataQualityCheck,
 } from '../lib/dataQualityMonitor'
-import { DAILY_READINESS_STAGE_CATALOG } from '../lib/opsChainStageCatalog'
 import { buildReadinessGates } from './judgment/obsJudgment'
 import { addDays, memoized, twDate, TW_OFFSET_MS, type Memo, type MonitoringEnv } from './env'
 
@@ -114,23 +114,20 @@ async function gdeltStats(db: D1Database, targetDate: string) {
 
 const settle = <T>(promise: Promise<T>, fallback: T) => promise.catch(() => fallback)
 
-/** Chip data and technical indicators are written by the evening chain (Market update, Indicator queue), not by the
- * close refresh, so today becomes their target only at the writing stage's deadline, read from the stage catalog. */
-function writerDeadlineMinuteTw(stageId: string): number {
-  const expectedBy = DAILY_READINESS_STAGE_CATALOG.find((stage) => stage.stageId === stageId)?.expectedBy
-  if (!expectedBy || expectedBy.dayOffset !== 0 || expectedBy.anchor !== 'business_date') throw new Error(`no same-day deadline for ${stageId}`)
-  const [hours, minutes] = expectedBy.tw.split(':').map(Number)
-  return hours * 60 + minutes
-}
-export const CHIP_READY_MINUTE_TW = writerDeadlineMinuteTw('update')
-export const TECHNICAL_READY_MINUTE_TW = writerDeadlineMinuteTw('indicator-queue')
+/** Chip data, technical indicators and the market dashboard sources are written by the evening chain (FinLab canonical
+ * and Market update, Indicator queue), not by the close refresh, so today becomes their target only at the writing
+ * stage's deadline: the main Worker's minutes (dataQualityMonitor, read from the stage catalog), so both reports and
+ * the CD gate move their targets at the same time. */
+export const CHIP_READY_MINUTE_TW = DATA_QUALITY_CHIP_READY_MINUTE_TW
+export const TECHNICAL_READY_MINUTE_TW = DATA_QUALITY_TECHNICAL_READY_MINUTE_TW
+export const MARKET_DASHBOARD_READY_MINUTE_TW = DATA_QUALITY_MARKET_DASHBOARD_READY_MINUTE_TW
 
 /** Lag thresholds are buildDataQualityReport's (pinned by dataReadiness.test.ts against its source). */
 export async function dataReadinessReport(env: MonitoringEnv, nowMs: number, requested?: string | null) {
   const expectedAt = (readyMinuteTw?: number) =>
     requested ?? resolveExpectedCompletedDataDate(env.KV, twDate(nowMs), new Date(nowMs + TW_OFFSET_MS), readyMinuteTw)
-  const [targetDate, chipTargetDate, technicalTargetDate] = await Promise.all([
-    expectedAt(), expectedAt(CHIP_READY_MINUTE_TW), expectedAt(TECHNICAL_READY_MINUTE_TW),
+  const [targetDate, chipTargetDate, technicalTargetDate, dashboardTargetDate] = await Promise.all([
+    expectedAt(), expectedAt(CHIP_READY_MINUTE_TW), expectedAt(TECHNICAL_READY_MINUTE_TW), expectedAt(MARKET_DASHBOARD_READY_MINUTE_TW),
   ])
   const db = env.MARKET_DB
   const empty = { latest_date: null, rows_on_latest: 0 }
@@ -157,7 +154,7 @@ export async function dataReadinessReport(env: MonitoringEnv, nowMs: number, req
       rowsOnLatest: chip.rows_on_latest, warnLagDays: 0, failLagDays: 0, minRows: 1000 }),
     buildFreshnessCheck({ id: 'technical_indicator_freshness', label: 'Technical indicators', latestDate: technical.latest_date, targetDate: technicalTargetDate,
       rowsOnLatest: technical.rows_on_latest, warnLagDays: 0, failLagDays: 0, minRows: 1000 }),
-    buildMarketDashboardMaterializationCheck({ targetDate, sources: MATERIALIZATION_SOURCES.map((source) => {
+    buildMarketDashboardMaterializationCheck({ targetDate: dashboardTargetDate, sources: MATERIALIZATION_SOURCES.map((source) => {
       const stats = ({
         twii_index: [twii.rows_on_latest, twii.latest_date],
         twoii_index: [twoii.rows_on_latest, twoii.latest_date],

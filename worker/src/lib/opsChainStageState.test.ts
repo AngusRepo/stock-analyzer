@@ -18,6 +18,7 @@ import {
 import {
   CHAIN_STAGE_SQL,
   chainStageTransitionAllowed,
+  chainStageWaitSummary,
   precreateChainRows,
   precreateDailyReadinessChain,
   precreateDailyReadinessChainForDate,
@@ -557,6 +558,52 @@ test('pipeline log derives ml-predict and recommendation like schedulerStatus do
     await logSchedulerRunResult(kv, 'update', { status: 'error', duration_ms: 0, run_date: FRIDAY, summary: 'x', run_scope: 'historical_replay' })
   })
   assert.equal(f.row(FRIDAY, 'update')!.status, 'pending')
+})
+
+test('waiting: no waiting status in 0027, so the summary says it (status=waiting [wait_until=…]); pure rule', () => {
+  const now = Date.parse('2026-11-24T00:00:00Z')
+  const at = '2026-11-24T14:20:00+08:00'
+  assert.equal(chainStageWaitSummary({ status: 'waiting', summary: 'Serving published; research waits', wait_until: at }, now),
+    'status=waiting wait_until=2026-11-24T06:20:00.000Z Serving published; research waits')
+  // A summary that already starts with status=waiting (allocator EV, FinLab late lane) is not prefixed twice.
+  assert.equal(chainStageWaitSummary({ status: 'waiting', summary: 'status=waiting awaiting_late_lane fields=a' }, now), 'status=waiting awaiting_late_lane fields=a')
+  assert.equal(chainStageWaitSummary({ status: 'waiting' }, now), 'status=waiting')
+  // running / triggered parked on a dispatch still ahead (the evening-chain root's form) waits; once it passed, it does not.
+  assert.equal(chainStageWaitSummary({ status: 'running', summary: 'root', wait_until: at }, now), 'status=waiting wait_until=2026-11-24T06:20:00.000Z root')
+  assert.equal(chainStageWaitSummary({ status: 'running', summary: 'root', wait_until: at }, Date.parse(at)), 'root')
+  assert.equal(chainStageWaitSummary({ status: 'waiting', summary: 'x', wait_until: at }, Date.parse(at) + 1),
+    'status=waiting wait_until=2026-11-24T06:20:00.000Z x', 'a passed wait_until is kept: the reader judges it')
+  assert.equal(chainStageWaitSummary({ status: 'success', summary: 'done', wait_until: at }, now), 'done')
+  assert.equal(chainStageWaitSummary({ status: 'running' }, now), undefined)
+})
+
+test('waiting: Pipeline callback parked on the 14:20 dispatch is running + status=waiting; the dispatch rewrites the summary', async () => {
+  const f = sqliteOps()
+  const kv = tradingKv()
+  const env = envFor(f.db, kv)
+  await precreateDailyReadinessChain(f.db, { businessDate: FRIDAY, nextTradingDate: MONDAY })
+  const dispatch = new Date(Date.now() + 6 * 3600_000).toISOString()
+  const log = (status: 'waiting' | 'success', summary: string, extra: Record<string, unknown> = {}) => withOpsRuntimeScope(env, () =>
+    logSchedulerRunResult(kv, 'post-pipeline-chain', { status, summary, duration_ms: 0, run_id: 'r1', run_date: FRIDAY, ...extra }))
+  await log('waiting', 'Serving published; research and verification wait for the after-close dispatch run_id=r1', { wait_until: dispatch })
+  const parked = f.row(FRIDAY, 'post-pipeline-chain')!
+  assert.equal(parked.status, 'running', 'the CHECK has no waiting value')
+  assert.equal(parked.summary, `status=waiting wait_until=${dispatch} Serving published; research and verification wait for the after-close dispatch run_id=r1`)
+  assert.equal(JSON.parse(kv.store.get(`scheduler:run:post-pipeline-chain:${FRIDAY}`)!).wait_until, dispatch, 'the KV run log keeps its own fields')
+  // A repeated wait is a heartbeat at most, never a summary rewrite.
+  const transitions = f.transitions(FRIDAY, 'post-pipeline-chain').length
+  assert.equal(await writeChainStageState(f.db, { businessDate: FRIDAY, stageId: 'post-pipeline-chain', status: 'running', summary: parked.summary, nowMs: Date.now() + 10 * 60_000 }), 'heartbeat')
+  assert.ok(f.row(FRIDAY, 'post-pipeline-chain')!.heartbeat_at)
+  // The 14:20 dispatch releases it: same status, but the summary (and the heartbeat clock) follow the new phase.
+  assert.equal(await writeChainStageState(f.db, { businessDate: FRIDAY, stageId: 'post-pipeline-chain', status: 'running', summary: 'post-pipeline continuation queued', nowMs: Date.now() + 20 * 60_000 }), 'wait_changed')
+  const released = f.row(FRIDAY, 'post-pipeline-chain')!
+  assert.deepEqual([released.status, released.summary, released.heartbeat_at, released.started_at], ['running', 'post-pipeline continuation queued', null, parked.started_at])
+  assert.equal(f.transitions(FRIDAY, 'post-pipeline-chain').length, transitions, 'not a status change: no transition row')
+  // A lost race on the summary is a conflict (the caller re-reads); the SQL guard alone refuses it.
+  const stale = await f.db.prepare(CHAIN_STAGE_SQL.waitChange).bind(FRIDAY, 'daily_readiness', 'post-pipeline-chain', 'x', new Date().toISOString(), parked.summary).run()
+  assert.equal(stale.meta.changes, 0)
+  await log('success', 'research and verification done')
+  assert.deepEqual([f.row(FRIDAY, 'post-pipeline-chain')!.status, f.row(FRIDAY, 'post-pipeline-chain')!.summary], ['success', 'research and verification done'])
 })
 
 test('the writer and scope modules stay out of the native Paper bundle', () => {

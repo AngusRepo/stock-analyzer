@@ -1631,6 +1631,8 @@ async function handleSchedulerCallback(c: any) {
             duration_ms: 0,
             run_id: callbackRunId,
             run_date: callbackRunDate,
+            // The chain stage state keeps it as the stage's wait_until (opsChainStageState chainStageWaitSummary).
+            wait_until: dispatchAt,
           }, c.env as any)
           return c.json({ ok: true, task: body.task, status: body.status, serving_published: true, research_status: 'queued_postclose' })
         }

@@ -324,12 +324,21 @@ const jobRuns = (result) => ['resource.type', '=', 'cloud_run_job', 'AND', 'metr
   'AND', 'metric.label.result', '=', result]
 const SCHEDULER_ERRORS = ['resource.type', '=', 'cloud_scheduler_job', 'AND', 'metric.type', '=', 'logging.googleapis.com/log_entry_count',
   'AND', 'metric.label.severity', '=', 'ERROR']
+/** Names past 18 characters, shortened around an ellipsis: the bar chart gives its names half the panel width and cuts
+ * what is past it at the left edge (375 px phone: about 18 characters; xTickLabelMaxLength and axisWidth do not change
+ * it). The first matching rule wins. ml-controller-min-0-* and min-1-* differ only at the 19th character, so that prefix
+ * is shortened to ml-ctl- and keeps min-N; the rest keep their first 9 and last 8. No two of the 79 scheduler and Cloud
+ * Run job names (11/28) shorten to the same text. */
+const SHORT_NAMES = [['^ml-controller-(.{1,11})$', 'ml-ctl-$1'], ['^ml-controller-(.{5}).{2,}(.{5})$', 'ml-ctl-$1…$2'],
+  ['^(.{9}).{2,}(.{8})$', '$1…$2']].map(([pattern, text], index) => ({ type: 'regex', options: { pattern, result: { text, index } } }))
 /** One bar per series: the series' total over the panel's 14 days, the largest on top. */
-const gcpTotals = (title, target, x, y, w, h, o) => Object.assign(hbars(title, target, 'Field', x, y, w, h,
-  { th: th([o.color, null]), empty: o.empty, desc: o.desc, labelMax: 28 }), { timeFrom: '14d', hideTimeOverride: true,
+const gcpTotals = (title, target, x, y, w, h, o) => Object.assign(hbars(title, target, o.name, x, y, w, h,
+  { th: th([o.color, null]), empty: o.empty, desc: `${o.desc}名稱超過 18 字時中間以「…」省略（ml-controller 縮成 ml-ctl）。`, labelMax: 28,
+    overrides: [{ matcher: { id: 'byName', options: o.name }, properties: [{ id: 'mappings', value: SHORT_NAMES }] }] }),
+  { timeFrom: '14d', hideTimeOverride: true,
   transformations: [{ id: 'reduce', options: { mode: 'seriesToRows', reducers: ['sum'] } },
     { id: 'sortBy', options: { fields: {}, sort: [{ field: 'Total', desc: true }] } },
-    { id: 'organize', options: { renameByName: { Total: '次數' } } }] })
+    { id: 'organize', options: { renameByName: { Field: o.name, Total: '次數' } } }] })
 
 /** Cloud Run over Google Cloud Monitoring (already live; the fixture build reads it too), unplaced. */
 function gcpPanels() {
@@ -974,9 +983,9 @@ function resources5(q, mode) {
         ({ matcher: { id: 'byFrameRefID', options: refId }, properties: [{ id: 'color', value: { mode: 'fixed', fixedColor: color } }] })) }),
       { gridPos: gp(0, 32, 8, 9), hideTimeOverride: true }),
     gcpTotals('失敗的 Job（14 天）', gcpSeries('A', jobRuns('failed'), 'resource.label.job_name', 'ALIGN_SUM', '+86400s', '{{resource.label.job_name}}'), 8, 32, 8, 9,
-      { color: C.bad, empty: '14 天內沒有失敗', desc: '14 天內有失敗的 Cloud Run Job 與失敗次數，最多的在上。' }),
+      { name: 'Job', color: C.bad, empty: '14 天內沒有失敗', desc: '14 天內有失敗的 Cloud Run Job 與失敗次數，最多的在上。' }),
     gcpTotals('Scheduler 錯誤日誌（14 天）', gcpSeries('A', SCHEDULER_ERRORS, 'resource.label.job_id', 'ALIGN_SUM', '+86400s', '{{resource.label.job_id}}'), 16, 32, 8, 9,
-      { color: C.warn, empty: '14 天內沒有錯誤日誌', desc: '14 天內每個排程寫出的錯誤日誌筆數，最多的在上。錯誤日誌不一定是最終失敗（重試後成功也會留一筆），要看最終結果請對照 ② 執行品質。' }),
+      { name: '排程', color: C.warn, empty: '14 天內沒有錯誤日誌', desc: '14 天內每個排程寫出的錯誤日誌筆數，最多的在上。錯誤日誌不一定是最終失敗（重試後成功也會留一筆），要看最終結果請對照 ② 執行品質。' }),
   ]
 }
 

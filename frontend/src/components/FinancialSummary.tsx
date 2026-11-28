@@ -290,8 +290,8 @@ export default function FinancialSummary({ stockId }: { stockId: number }) {
       {(monthlyRevenue as any[]).length > 0 && (
         <div>
           <h4 className="text-xs font-semibold text-muted-foreground normal-case mb-2">近 12 月營收</h4>
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
+          <div className="md:overflow-x-auto">
+            <table className="sv-stack-table w-full text-xs">
               <thead>
                 <tr className="text-muted-foreground border-b border-border/30">
                   <th className="text-left py-1.5 pr-2">月份</th>
@@ -303,12 +303,12 @@ export default function FinancialSummary({ stockId }: { stockId: number }) {
               <tbody>
                 {(monthlyRevenue as any[]).map((r: any, i: number) => (
                   <tr key={i} className="border-b border-border/20 last:border-0">
-                    <td className="py-1.5 pr-2 text-muted-foreground">{r.date?.slice(0, 7) ?? r.period}</td>
-                    <td className="py-1.5 px-2 text-right sv-num">{r.revenue ? fmt(r.revenue) : '—'}</td>
-                    <td className={`py-1.5 px-2 text-right sv-num ${pctClass(r.revenue_mom)}`}>
+                    <td data-label="月份" className="py-1.5 pr-2 text-muted-foreground">{r.date?.slice(0, 7) ?? r.period}</td>
+                    <td data-label="營收" className="py-1.5 px-2 text-right sv-num">{r.revenue ? fmt(r.revenue) : '—'}</td>
+                    <td data-label="MoM" className={`py-1.5 px-2 text-right sv-num ${pctClass(r.revenue_mom)}`}>
                       {r.revenue_mom != null ? `${r.revenue_mom > 0 ? '+' : ''}${r.revenue_mom.toFixed(1)}%` : '—'}
                     </td>
-                    <td className={`py-1.5 pl-2 text-right sv-num ${pctClass(r.revenue_yoy)}`}>
+                    <td data-label="YoY" className={`py-1.5 pl-2 text-right sv-num ${pctClass(r.revenue_yoy)}`}>
                       {r.revenue_yoy != null ? `${r.revenue_yoy > 0 ? '+' : ''}${r.revenue_yoy.toFixed(1)}%` : '—'}
                     </td>
                   </tr>

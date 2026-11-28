@@ -1,6 +1,7 @@
 import { ensembleQualificationPresentation, modelPoolHealth, modelMembership, membershipLabel, presentationTime, type PoolMembership } from '@/lib/modelPoolPresentation'
 import { useMemo, useState, type ReactNode } from 'react'
 import EnsembleAuthority from './EnsembleAuthority'
+import { humanTitle } from '@/lib/humanLabels'
 import {
   formalModelSlots,
   MODEL_POOL_PRODUCTION_SLOT_IDS,
@@ -52,7 +53,7 @@ const TABULAR_NEURAL_MODELS = new Set(['TabM'])
 const ADAPTIVE_EVIDENCE_STEPS = [
   {
     label: 'Active-8 confidence hook',
-    detail: 'Risk thresholds and PF quality use active-8 direct-alpha verified model_accuracy only; retired models and TimesFM sidecar stay out of confidence and quality multipliers.',
+    detail: 'Risk thresholds and PF quality use active-8 direct-alpha verified model accuracy only; retired models and TimesFM sidecar stay out of confidence and quality multipliers.',
     tone: 'ok' as const,
   },
   {
@@ -948,7 +949,7 @@ function GrafanaPanel({
       <header className="flex min-h-12 items-center justify-between gap-3 border-b border-[#2d3a49] bg-[#18212c] px-4 py-2">
         <div className="min-w-0">
           {kicker && <p className="sv-num text-[12px] normal-case text-[#90a0b8]">{kicker}</p>}
-          <h3 className="truncate font-['Space_Grotesk'] text-[17px] font-semibold text-[#eef4fb]">{title}</h3>
+          <h3 className="break-words font-['Space_Grotesk'] text-[17px] font-semibold text-[#eef4fb]">{title}</h3>
         </div>
         {action}
       </header>
@@ -1046,24 +1047,49 @@ function EnsembleContext({ pointers, overview, loading }: {
   </div>
 }
 
+function observationRowView(record: GrafanaModelRecord, overview: ModelPoolOverview | undefined, evidencePending: boolean | undefined) {
+  const live = record.history.find(cell => cell.label === 'LIVE IC')
+  const oof = record.history.find(cell => cell.label === 'BASE CPCV')
+  const coefficient = overview?.rank_coefficients[record.candidate.id]
+  return {
+    role: membershipLabel(record.membership),
+    coefficient: coefficient == null ? '未提供' : coefficient.toFixed(6),
+    oof: evidencePending ? '…' : oof?.value || '待確認',
+    oofTone: evidencePending ? 'neutral' : oof?.tone || 'neutral',
+    live: live?.value === 'N/A' ? '待累積／尚無可用數值' : `IC ${live?.value ?? '—'}`,
+    liveSamples: record.model?.version === record.latestRetrainArtifact?.version && record.model?.last_ic_status != null && record.model?.last_ic_sample_count != null ? `最近回報樣本 ${record.model.last_ic_sample_count}` : '同版本樣本數尚未提供',
+  }
+}
+
 function ModelObservationTable({ records, overview, evidencePending }: { records: GrafanaModelRecord[]; overview?: ModelPoolOverview; evidencePending?: boolean }) {
   return <GrafanaPanel title="八模型觀測池" kicker="角色、服務與證據分開判斷">
-    <p className="px-3 pt-3 text-xs text-[#a7b5c8] md:hidden">表格可左右滑動，查看 OOF 與 Live 證據。</p>
-    <div className="overflow-x-auto" role="region" aria-label="八模型觀測資料" tabIndex={0}><table className="!table min-w-[680px] w-full text-left text-sm text-[#c6d2e2]">
+    {/* md 以上表格；窄螢幕改成卡片列，不需要橫向捲動（Wei：全站不准內捲軸）。 */}
+    <table className="hidden w-full text-left text-sm text-[#c6d2e2] md:table">
       <thead className="border-b border-[#2d3a49] bg-[#0b1118] text-[#a7b5c8]"><tr>{['模型', '本輪角色', 'Rank 係數', '個別 OOF', 'Live 證據'].map(label => <th key={label} scope="col" className="whitespace-nowrap p-3">{label}</th>)}</tr></thead>
       <tbody>{records.map(record => {
-        const live = record.history.find(cell => cell.label === 'LIVE IC')
-        const oof = record.history.find(cell => cell.label === 'BASE CPCV')
-        const coefficient = overview?.rank_coefficients[record.candidate.id]
+        const view = observationRowView(record, overview, evidencePending)
         return <tr key={record.candidate.id} className="border-b border-[#263247] align-top">
           <th scope="row" className="p-3 text-[#eef4fb]">{record.candidate.id}</th>
-          <td className="p-3">{membershipLabel(record.membership)}<div className={`mt-1 text-xs ${grafanaTextClass(record.fleetTone)}`}>{record.servingStatus}</div></td>
-          <td className="p-3 tabular-nums">{coefficient == null ? '未提供' : coefficient.toFixed(6)}</td>
-          <td className={`p-3 ${grafanaTextClass(evidencePending ? 'neutral' : oof?.tone || 'neutral')}`}>{evidencePending ? '…' : oof?.value || '待確認'}</td>
-          <td className="p-3">{live?.value === 'N/A' ? '待累積／尚無可用數值' : `IC ${live?.value ?? '—'}`}<div className="mt-1 text-xs text-[#a7b5c8]">{record.model?.version === record.latestRetrainArtifact?.version && record.model?.last_ic_status != null && record.model?.last_ic_sample_count != null ? `最近回報樣本 ${record.model.last_ic_sample_count}` : '同版本樣本數尚未提供'}</div></td>
+          <td className="p-3">{view.role}<div className={`mt-1 text-xs ${grafanaTextClass(record.fleetTone)}`}>{record.servingStatus}</div></td>
+          <td className="p-3 tabular-nums">{view.coefficient}</td>
+          <td className={`p-3 ${grafanaTextClass(view.oofTone)}`}>{view.oof}</td>
+          <td className="p-3">{view.live}<div className="mt-1 text-xs text-[#a7b5c8]">{view.liveSamples}</div></td>
         </tr>
       })}</tbody>
-    </table></div>
+    </table>
+    <ul className="space-y-2 p-3 md:hidden" aria-label="八模型觀測資料">
+      {records.map(record => {
+        const view = observationRowView(record, overview, evidencePending)
+        return <li key={record.candidate.id} className="rounded-lg border border-[#263247] p-2.5 text-sm text-[#c6d2e2]">
+          <div className="flex flex-wrap items-baseline justify-between gap-x-2"><span className="font-semibold text-[#eef4fb]">{record.candidate.id}</span><span className={`text-xs ${grafanaTextClass(record.fleetTone)}`}>{view.role} · {record.servingStatus}</span></div>
+          <dl className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+            <div><dt className="text-[#a7b5c8]">Rank 係數</dt><dd className="tabular-nums">{view.coefficient}</dd></div>
+            <div><dt className="text-[#a7b5c8]">個別 OOF</dt><dd className={grafanaTextClass(view.oofTone)}>{view.oof}</dd></div>
+            <div className="col-span-2"><dt className="text-[#a7b5c8]">Live 證據</dt><dd>{view.live}（{view.liveSamples}）</dd></div>
+          </dl>
+        </li>
+      })}
+    </ul>
     <p className="p-3 text-xs text-[#a7b5c8]">Rank 係數不是資金權重。未入選模型仍保留觀測與下次擬合資格；LIVE IC 空白不代表模型失效。</p>
   </GrafanaPanel>
 }
@@ -1135,7 +1161,7 @@ function CandidateHousekeepingPanel({
           </div>
           <div className="flex flex-wrap gap-1.5">
             {archivePreview.length ? archivePreview.map((id) => (
-              <span key={id} className="max-w-full truncate rounded-full border border-amber-300/20 bg-amber-300/[0.07] px-2.5 py-1 sv-num text-[11px] normal-case text-amber-100" title={id}>
+              <span key={id} className="max-w-full truncate rounded-full border border-amber-300/20 bg-amber-300/[0.07] px-2.5 py-1 sv-num text-[11px] normal-case text-amber-100" title={humanTitle(id)}>
                 {compactText(id, 28)}
               </span>
             )) : (
@@ -1148,8 +1174,8 @@ function CandidateHousekeepingPanel({
               const delta = compare?.oos_ic_delta
               return (
                 <div key={row.artifact_id ?? `${row.model_name}-${row.candidate_version}`} className="grid min-w-0 gap-2 rounded-lg border border-[#263247] bg-[#0e1620] px-2 py-1.5 text-xs text-[#a7b5c8] sm:grid-cols-[minmax(0,0.7fr)_minmax(0,1fr)_80px]">
-                  <span className="min-w-0 truncate font-semibold text-[#f2ead8]">{row.model_name}</span>
-                  <span className="min-w-0 truncate sv-num normal-case">{row.candidate_version ?? row.artifact_id ?? row.candidate_type}</span>
+                  <span className="min-w-0 break-words font-semibold text-[#f2ead8]">{row.model_name}</span>
+                  <span className="min-w-0 break-all sv-num normal-case">{row.candidate_version ?? row.artifact_id ?? row.candidate_type}</span>
                   <span className="sv-num text-amber-200">{typeof delta === 'number' ? delta.toFixed(4) : 'delta n/a'}</span>
                 </div>
               )
@@ -1207,11 +1233,11 @@ function FleetStatusStrip({
             className={`rounded-xl border p-3 text-left transition-colors hover:border-[#f0c365]/55 focus:outline-none focus:ring-2 focus:ring-[#f0c365]/40 ${selectedFrameClass(isSelected)}`}
           >
             <div className="flex items-center justify-between gap-2">
-              <p className="truncate font-['Space_Grotesk'] text-[14px] font-semibold text-[#f2ead8]">{record.candidate.id}</p>
+              <p className="break-words font-['Space_Grotesk'] text-[14px] font-semibold text-[#f2ead8]">{record.candidate.id}</p>
               <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${record.fleetTone === 'ok' ? 'bg-ok' : record.fleetTone === 'warn' ? 'bg-warn' : record.fleetTone === 'error' ? 'bg-fail' : record.fleetTone === 'info' ? 'bg-sky-400' : 'bg-slate-500'}`} />
             </div>
-            <p className="mt-1 truncate text-[12px] text-[#90a0b8]">{record.family} / {record.dataset?.window ?? 'model-specific'}</p>
-            <p className="mt-1 truncate sv-num text-[11px] normal-case text-[#a7b5c8]">slot {record.slotStatus} / {record.servingStatus}</p>
+            <p className="mt-1 break-words text-[12px] text-[#90a0b8]">{record.family} / {record.dataset?.window ?? 'model-specific'}</p>
+            <p className="mt-1 break-words sv-num text-[11px] normal-case text-[#a7b5c8]">slot {record.slotStatus} / {record.servingStatus}</p>
             <div className={`mt-2 border px-2 py-1.5 text-center sv-num text-[12px] font-semibold ${grafanaCellClass(record.fleetTone)}`}>
               {membershipLabel(record.membership)}
             </div>
@@ -1240,8 +1266,9 @@ function StateTimelinePanel({
       action={<span className="sv-num text-[12px] normal-case text-[#90a0b8]">values include gate thresholds</span>}
       className="min-h-[360px]"
     >
-      <div className="overflow-x-auto">
-        <div className="min-w-[1240px]">
+      {/* xl 以上：完整矩陣（寬度足夠，不需橫捲）。xl 以下：欄位說明一次列出，再逐模型排成卡片格，不開內捲軸。 */}
+      <div className="hidden xl:block">
+        <div>
           <div className="grid grid-cols-[152px_repeat(7,minmax(136px,1fr))] border-b border-[#2d3a49] bg-[#0b1118] px-4 py-3 text-[#90a0b8]">
             <div className="sv-num text-[12px] normal-case">model</div>
             {columns.map((column) => (
@@ -1263,8 +1290,8 @@ function StateTimelinePanel({
                 className={`grid w-full grid-cols-[152px_repeat(7,minmax(136px,1fr))] items-center gap-2.5 px-4 py-2.5 text-left transition-colors hover:bg-[#151d28] focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[#f0c365]/35 ${isSelected ? 'bg-[#151d28]' : ''}`}
               >
                 <div className="min-w-0">
-                  <p className="truncate font-['Space_Grotesk'] text-[14px] font-semibold text-[#f2ead8]">{record.candidate.id}</p>
-                  <p className="truncate text-[12px] text-[#90a0b8]">{record.family}</p>
+                  <p className="break-words font-['Space_Grotesk'] text-[14px] font-semibold text-[#f2ead8]">{record.candidate.id}</p>
+                  <p className="break-words text-[12px] text-[#90a0b8]">{record.family}</p>
                 </div>
                 {record.history.map((cell) => (
                   <div
@@ -1283,6 +1310,38 @@ function StateTimelinePanel({
           </div>
         </div>
       </div>
+      <div className="xl:hidden">
+        <dl className="grid gap-x-4 gap-y-1 border-b border-[#2d3a49] bg-[#0b1118] px-3 py-2 text-[11px] leading-4 sm:grid-cols-2">
+          {columns.map((column) => (
+            <div key={column.label}><dt className="sv-num text-[#b4c0d0]">{column.label}</dt><dd className="text-[#7f8ca3]">{column.description}</dd></div>
+          ))}
+        </dl>
+        <div className="divide-y divide-[#263247]">
+          {records.map((record) => {
+            const isSelected = selectedModelId === record.candidate.id
+            return (
+              <button
+                key={record.candidate.id}
+                type="button"
+                aria-pressed={isSelected}
+                onClick={() => onSelectModel(record.candidate.id)}
+                className={`block w-full px-3 py-2.5 text-left transition-colors hover:bg-[#151d28] focus:outline-none focus:ring-2 focus:ring-inset focus:ring-[#f0c365]/35 ${isSelected ? 'bg-[#151d28]' : ''}`}
+              >
+                <p className="font-['Space_Grotesk'] text-[14px] font-semibold text-[#f2ead8]">{record.candidate.id} <span className="text-[12px] font-normal text-[#90a0b8]">{record.family}</span></p>
+                <div className="mt-1.5 grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+                  {record.history.map((cell) => (
+                    <div key={`${record.candidate.id}-${cell.label}`} className={`border px-2 py-1.5 sv-num text-[12px] font-semibold leading-5 ${grafanaCellClass(cell.tone)}`} aria-label={cell.title}>
+                      <span className="block text-[10px] font-medium opacity-75">{cell.label}</span>
+                      <span className="block break-words">{cell.value}</span>
+                      {cell.detail && <span className="mt-0.5 block whitespace-pre-line break-words text-[11px] font-medium leading-4 opacity-85">{cell.detail}</span>}
+                    </div>
+                  ))}
+                </div>
+              </button>
+            )
+          })}
+        </div>
+      </div>
     </GrafanaPanel>
   )
 }
@@ -1298,96 +1357,78 @@ function EvidenceTablePanel({
 }) {
   return (
     <GrafanaPanel title="Evidence table" kicker="V5 serving bundle, selected challenger, and latest retrain evidence stay separate; legacy pointers are audit-only">
-      <div className="overflow-x-auto bg-[#0b1118] p-3">
-        <table className="w-full min-w-[1380px] border-separate border-spacing-y-2 text-left">
-          <thead className="sv-num text-[12px] normal-case text-[#90a0b8]">
-            <tr>
-              <th className="px-3 py-2 font-medium">Model</th>
-              <th className="px-3 py-2 font-medium">Family</th>
-              <th className="px-3 py-2 font-medium">V5 production bundle artifact</th>
-              <th className="px-3 py-2 font-medium">Dataset</th>
-              <th className="px-3 py-2 font-medium">Pointer</th>
-              <th className="px-3 py-2 font-medium" title="Latest research registry state for this model artifact lane.">Research state</th>
-              <th className="px-3 py-2 font-medium" title="Promotion queue load plus blockers that need review before release.">Review pressure</th>
-              <th className="min-w-[300px] whitespace-normal px-3 py-2 font-medium leading-5">V5 serving bundle vs latest retrain</th>
-              <th className="px-3 py-2 font-medium">Missing evidence</th>
-            </tr>
-          </thead>
-          <tbody>
-            {records.map((record) => {
-              const isSelected = selectedModelId === record.candidate.id
-              const pressureTone = record.blockers.length ? maxTone([promotionPressureTone(record.promotionRows), 'warn']) : promotionPressureTone(record.promotionRows)
-              const pressureLabel = record.promotionRows.length ? `${record.promotionRows.length} queued` : record.blockers.length ? 'blocked' : 'clear'
-              const missing = uniqueTokens([...record.missingEvidence, ...record.blockers])
-              const compare = artifactCompareSummary(record)
-              const diagnosis = researchStatusDiagnosis(record)
-              const researchState = record.latestRetrainArtifact?.state ?? (record.selectedArtifact?.state ?? 'no new retrain')
-              const researchTone = toneFromStatus(researchState)
-              return (
-              <tr
-                key={record.candidate.id}
-                role="button"
-                tabIndex={0}
-                aria-pressed={isSelected}
-                onClick={() => onSelectModel(record.candidate.id)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault()
-                    onSelectModel(record.candidate.id)
-                  }
-                }}
-                className={`cursor-pointer bg-[#111821] outline-none transition-colors hover:bg-[#151f2b] focus:bg-[#151f2b] focus:ring-2 focus:ring-inset focus:ring-[#f0c365]/35 ${isSelected ? 'bg-[#151f2b]' : ''}`}
-              >
-                <td className="rounded-l-xl border-y border-l border-[#263247] px-3 py-3 font-['Space_Grotesk'] text-[15px] font-semibold text-[#f2ead8]">{record.candidate.id}</td>
-                <td className="border-y border-[#263247] px-3 py-3 text-[13px] text-[#a7b5c8]">{record.family}</td>
-                <td className="max-w-[210px] truncate border-y border-[#263247] px-3 py-3 sv-num text-[13px] text-[#dce3ea]" title={record.artifactVersion}>{record.artifactVersion}</td>
-                <td className="border-y border-[#263247] px-3 py-3">
-                  <p className="sv-num text-[13px] text-sky-300">{record.dataset?.window ?? 'model-specific'}</p>
-                  <p className="text-[12px] text-[#90a0b8]">{record.dataset?.shape ?? 'N/A'}</p>
-                </td>
-                <td className="border-y border-[#263247] px-3 py-3">
-                  <span className={`border px-2.5 py-1 sv-num text-[12px] ${grafanaCellClass(record.pointerTone)}`}>
-                    {record.pointerRow?.readiness ?? 'missing'}
-                  </span>
-                </td>
-                <td className="border-y border-[#263247] px-3 py-3">
-                  <span className={`border px-2.5 py-1 sv-num text-[12px] ${grafanaCellClass(researchTone)}`}>
-                    {researchState}
-                  </span>
-                  <p className="mt-1 max-w-[280px] text-[12px] leading-5 text-[#a7b5c8]">{diagnosis.rootCause}</p>
-                  <p className="mt-1 max-w-[280px] sv-num text-[12px] leading-5 text-sky-200">next: {diagnosis.nextAction}</p>
-                </td>
-                <td className="border-y border-[#263247] px-3 py-3">
-                  <span className={`border px-2.5 py-1 sv-num text-[12px] ${grafanaCellClass(pressureTone)}`}>
-                    {pressureLabel}
-                  </span>
-                </td>
-                <td className="min-w-[300px] max-w-[390px] border-y border-[#263247] px-3 py-3" title={compare.title}>
-                  <span className={`inline-block border px-2.5 py-1 sv-num text-[12px] ${grafanaCellClass(compare.tone)}`}>
+      {/* 卡片列取代 1380px 寬表格：任何寬度都不需要橫向捲動（Wei：全站不准內捲軸）。 */}
+      <ul className="grid gap-2 bg-[#0b1118] p-3" aria-label="模型證據">
+        {records.map((record) => {
+          const isSelected = selectedModelId === record.candidate.id
+          const pressureTone = record.blockers.length ? maxTone([promotionPressureTone(record.promotionRows), 'warn']) : promotionPressureTone(record.promotionRows)
+          const pressureLabel = record.promotionRows.length ? `${record.promotionRows.length} queued` : record.blockers.length ? 'blocked' : 'clear'
+          const missing = uniqueTokens([...record.missingEvidence, ...record.blockers])
+          const compare = artifactCompareSummary(record)
+          const diagnosis = researchStatusDiagnosis(record)
+          const researchState = record.latestRetrainArtifact?.state ?? (record.selectedArtifact?.state ?? 'no new retrain')
+          const researchTone = toneFromStatus(researchState)
+          return (
+            <li
+              key={record.candidate.id}
+              role="button"
+              tabIndex={0}
+              aria-pressed={isSelected}
+              onClick={() => onSelectModel(record.candidate.id)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault()
+                  onSelectModel(record.candidate.id)
+                }
+              }}
+              className={`cursor-pointer rounded-xl border border-[#263247] bg-[#111821] p-3 outline-none transition-colors hover:bg-[#151f2b] focus:bg-[#151f2b] focus:ring-2 focus:ring-inset focus:ring-[#f0c365]/35 ${isSelected ? 'bg-[#151f2b]' : ''}`}
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-['Space_Grotesk'] text-[15px] font-semibold text-[#f2ead8]">{record.candidate.id}</span>
+                <span className="text-[13px] text-[#a7b5c8]">{record.family}</span>
+                <span className={`border px-2 py-0.5 sv-num text-[12px] ${grafanaCellClass(record.pointerTone)}`} title="Pointer">{record.pointerRow?.readiness ?? 'missing'}</span>
+                <span className={`border px-2 py-0.5 sv-num text-[12px] ${grafanaCellClass(researchTone)}`} title="Research state">{researchState}</span>
+                <span className={`border px-2 py-0.5 sv-num text-[12px] ${grafanaCellClass(pressureTone)}`} title="Review pressure">{pressureLabel}</span>
+              </div>
+              <div className="mt-2 grid gap-3 text-[12px] leading-5 md:grid-cols-2 xl:grid-cols-4">
+                <div className="min-w-0">
+                  <p className="sv-num text-[#70809b]">V5 production bundle artifact</p>
+                  <p className="break-all sv-num text-[13px] text-[#dce3ea]">{record.artifactVersion}</p>
+                  <p className="mt-1 sv-num text-sky-300">{record.dataset?.window ?? 'model-specific'}</p>
+                  <p className="text-[#90a0b8]">{record.dataset?.shape ?? 'N/A'}</p>
+                </div>
+                <div className="min-w-0">
+                  <p className="sv-num text-[#70809b]">Research state</p>
+                  <p className="break-words text-[#a7b5c8]">{diagnosis.rootCause}</p>
+                  <p className="mt-1 break-words sv-num text-sky-200">next: {diagnosis.nextAction}</p>
+                </div>
+                <div className="min-w-0" title={humanTitle(compare.title)}>
+                  <p className="sv-num text-[#70809b]">V5 serving bundle vs latest retrain</p>
+                  <span className={`mt-0.5 inline-block border px-2 py-0.5 sv-num text-[12px] ${grafanaCellClass(compare.tone)}`}>
                     {compare.compareReady ? 'formal compare ready' : compare.hasCandidate ? 'selected challenger' : compare.latestRetrainState ? 'latest retrain rejected' : 'serving only'}
                   </span>
-                  <dl className="mt-2 grid max-w-[360px] gap-1.5 sv-num text-[12px] leading-5">
-                    <div className="grid grid-cols-[96px_1fr] gap-2"><dt className="text-[#70809b]">V5 bundle</dt><dd className="break-all text-[#dce3ea]">{compare.champion}</dd></div>
-                    <div className="grid grid-cols-[96px_1fr] gap-2"><dt className="text-[#70809b]">challenger</dt><dd className="break-all text-[#dce3ea]">{compare.candidate}</dd></div>
-                    <div className="grid grid-cols-[96px_1fr] gap-2"><dt className="text-[#70809b]">latest retrain</dt><dd className="break-all text-[#dce3ea]">{compare.latestRetrain}</dd></div>
+                  <dl className="mt-1.5 grid gap-1 sv-num">
+                    <div className="grid grid-cols-[96px_minmax(0,1fr)] gap-2"><dt className="text-[#70809b]">V5 bundle</dt><dd className="break-all text-[#dce3ea]">{compare.champion}</dd></div>
+                    <div className="grid grid-cols-[96px_minmax(0,1fr)] gap-2"><dt className="text-[#70809b]">challenger</dt><dd className="break-all text-[#dce3ea]">{compare.candidate}</dd></div>
+                    <div className="grid grid-cols-[96px_minmax(0,1fr)] gap-2"><dt className="text-[#70809b]">latest retrain</dt><dd className="break-all text-[#dce3ea]">{compare.latestRetrain}</dd></div>
                   </dl>
-                  <p className="mt-2 max-w-[340px] whitespace-pre-line sv-num text-[12px] leading-5 text-[#dce3ea]">{compare.latestMetricDetail}</p>
-                </td>
-                <td className="rounded-r-xl border-y border-r border-[#263247] px-3 py-3">
-                  <div className="flex max-w-[320px] flex-wrap gap-1">
+                  <p className="mt-1.5 whitespace-pre-line break-words sv-num text-[#dce3ea]">{compare.latestMetricDetail}</p>
+                </div>
+                <div className="min-w-0">
+                  <p className="sv-num text-[#70809b]">Missing evidence{missing.length > 4 ? `（前 4 項，共 ${missing.length} 項）` : ''}</p>
+                  <div className="mt-0.5 flex flex-wrap gap-1">
                     {(missing.length ? missing : ['complete']).slice(0, 4).map((item) => (
-                      <span key={item} className="rounded-full border border-[#303947] bg-[#151a22] px-2 py-0.5 sv-num text-[12px] text-[#c0cad8]">
+                      <span key={item} className="break-all rounded-full border border-[#303947] bg-[#151a22] px-2 py-0.5 sv-num text-[12px] text-[#c0cad8]">
                         {item}
                       </span>
                     ))}
                   </div>
-                </td>
-              </tr>
-              )
-            })}
-          </tbody>
-        </table>
-      </div>
+                </div>
+              </div>
+            </li>
+          )
+        })}
+      </ul>
     </GrafanaPanel>
   )
 }
@@ -1494,7 +1535,8 @@ export default function ModelPoolNewFlowWorkbench({
         evidencePending={evidencePending}
       />
 
-      <div className="grid gap-4 bg-[#0b1118] p-4">
+      {/* minmax(0,1fr)：單欄 grid 的隱含欄寬是 auto，會被子元素的 min-content 撐到超出右緣（1440 時到 1479）。 */}
+      <div className="grid grid-cols-[minmax(0,1fr)] gap-4 bg-[#0b1118] p-4">
         <EnsembleAuthority bundle={pointers?.active8_bundle} />
         <ModelObservationTable records={grafanaRecords} overview={currentOverview} evidencePending={evidencePending} />
         {evidencePending && <p className="text-xs text-[#a7b5c8]" role="status">模型證據（candidate selection、promotion queue）載入中；以上角色與服務狀態已是同一份快照。</p>}

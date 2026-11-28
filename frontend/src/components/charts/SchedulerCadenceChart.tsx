@@ -1,3 +1,4 @@
+import { humanJobSummary, jobSummaryText } from '@/lib/humanLabels'
 ﻿import { useEffect, useMemo, useRef } from 'react'
 import {
   ColorType,
@@ -247,11 +248,11 @@ export default function SchedulerCadenceChart({ status, loading, error }: Schedu
                 className="block border border-[#263247] bg-[#0f151d] p-2 text-[#c8d3df] hover:border-[#d6a85f]/50"
               >
                 <div className="flex items-center justify-between gap-2">
-                  <span className="truncate font-semibold">{job.name}</span>
+                  <span className="min-w-0 break-words font-semibold">{job.name}</span>
                   <span className={`inline-flex shrink-0 items-center gap-1 text-[10px] ${job.lastStatus === 'failed' ? 'text-fail' : 'text-warn'}`} title={job.lastStatus}><StatusIcon tone={job.lastStatus === 'failed' ? 'fail' : 'warn'} size={10} />{job.lastStatus === 'failed' ? '失敗' : '耗時異常'}</span>
                 </div>
-                <p className="mt-1 sv-num text-[10px] text-[#70809b]">{job.group} / {job.lastDuration || '-'}</p>
-                <p className="mt-1 line-clamp-2 text-[#8b9bab]">{job.durationConcernReason || job.summary || job.schedule}</p>
+                <p className="mt-1 sv-num text-[10px] text-[#70809b]">{job.group.replace(/_/g, ' ')} / {job.lastDuration || '-'}</p>
+                <p className="mt-1 break-all text-[#8b9bab]">{job.durationConcernReason ? humanJobSummary(job.durationConcernReason) : jobSummaryText(job, job.schedule)}</p>
               </a>
             )) : (
               <div className={`flex items-center gap-1 border p-2 ${STATUS_CHIP.ok}`}>

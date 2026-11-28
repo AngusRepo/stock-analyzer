@@ -168,6 +168,30 @@ export function botLineData(points: PerformancePoint[]): LineDatum[] {
   return points.map((point) => point.bot == null ? { time: point.time } : { time: point.time, value: point.bot })
 }
 
+/** 帶狀圖的資料點：per-point 顏色（領先／落後）讓同一條 area 分段上色。 */
+export type BandDatum = { time: string; value?: number; topColor?: string; bottomColor?: string }
+
+/**
+ * bot 與基準之間的差距帶：upper＝兩者較高者，依領先／落後上色；lower＝兩者較低者，用背景色蓋掉下方，
+ * 疊起來只剩兩線之間的帶。任一邊缺值的日期是 whitespace，帶子斷開，不補值。
+ */
+export function gapBandData(points: PerformancePoint[], key: BenchmarkKey, colors: { lead: string; lag: string; background: string }): { upper: BandDatum[]; lower: BandDatum[] } {
+  const upper: BandDatum[] = []
+  const lower: BandDatum[] = []
+  for (const point of points) {
+    const bench = point.benchmarks[key]
+    if (point.bot == null || bench == null) {
+      upper.push({ time: point.time })
+      lower.push({ time: point.time })
+      continue
+    }
+    const color = point.bot >= bench ? colors.lead : colors.lag
+    upper.push({ time: point.time, value: Math.max(point.bot, bench), topColor: color, bottomColor: color })
+    lower.push({ time: point.time, value: Math.min(point.bot, bench), topColor: colors.background, bottomColor: colors.background })
+  }
+  return { upper, lower }
+}
+
 /** 期間最大回撤（%，≤0）：只看所選期間內的點；全部缺值時為 null。 */
 export function periodMaxDrawdown(points: PerformancePoint[]): number | null {
   const values = points.map((point) => point.drawdown).filter((value): value is number => value != null)

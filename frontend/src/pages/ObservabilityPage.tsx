@@ -17,7 +17,7 @@ import {
 } from '@/components/workstation/WorkstationChrome'
 import { STATUS_CHIP, TW_COLORS } from '@/lib/colorTokens'
 import { StatusIcon } from '@/components/ui/status'
-import { humanStatus } from '@/lib/humanLabels'
+import { humanSource, humanStatus, humanJobSummary, jobErrorText, jobSummaryText } from '@/lib/humanLabels'
 import {
   ApprovalReviewPanel,
   type ApprovalReviewGate,
@@ -88,9 +88,55 @@ function toneColor(tone: WorkstationTone) {
 }
 
 /** 狀態碼 → 中文短名；原始碼放 title。 */
+const OBS_STATUS_LABELS: Record<string, string> = {
+  high_recent_loss_rate_force_explore: '近期虧損率高，強制探索',
+}
+
+// 狀態碼：先查白話對照，查不到就把底線換空白（可換行、不撐出右緣）；原碼不進 tooltip。
+const GOVERNANCE_LABELS: Record<string, string> = {
+  manual_only: '僅人工核准',
+  comparison_only: '僅供比較',
+  regime_independent: '不分盤勢',
+}
+
+// 後端識別名（snake_case）顯示時把底線換成空白，畫面不露原碼、長名稱可換行。
+function plainCode(value: unknown): string {
+  return String(value ?? '').replace(/_/g, ' ')
+}
+
+// GA 晉級所需 evidence 的中文名稱（後端 required_evidence 代碼）。
+const GA_EVIDENCE_LABELS: Record<string, string> = {
+  policy_candidate: '候選策略',
+  primary_gate: '主要門檻',
+  stable_history: '穩定歷史',
+  pbo_mc_cost_governance: 'PBO／蒙地卡羅／成本治理',
+}
+
+const L3_BLOCKER_LABELS: Record<string, string> = {
+  primary_gate: '主要門檻',
+  min_trade_count: '交易筆數不足',
+  min_sharpe: 'Sharpe 不足',
+  max_drawdown: '最大回撤超標',
+  pbo: '過度擬合機率（PBO）超標',
+  promotion_packet: '升級封包未就緒',
+  model_pool: '模型池未就緒',
+}
+
+// GA L3 阻擋原因：primary_gate / min_trade_count → 主要門檻／交易筆數不足。
+function l3BlockerLabel(raw: string): string {
+  return raw.split('/').map((part) => part.trim()).filter(Boolean)
+    .map((part) => L3_BLOCKER_LABELS[part] ?? (looksInternalCode(part) ? part.replace(/_/g, ' ') : part)).join('／')
+}
+
+function looksInternalCode(text: string): boolean {
+  return /^[a-z0-9]+(?:_[a-z0-9]+)+$/i.test(text)
+}
+
 function StatusCode({ raw, fallback = 'N/A' }: { raw?: string | null; fallback?: string }) {
   if (!raw) return <>{fallback}</>
-  return <span title={String(raw)}>{humanStatus(String(raw), String(raw).toUpperCase())}</span>
+  const key = String(raw).trim()
+  const mapped = OBS_STATUS_LABELS[key.toLowerCase()]
+  return <span>{mapped ?? humanStatus(key, key.replace(/_/g, ' ').toLowerCase())}</span>
 }
 
 function errorMessage(error: unknown) {
@@ -241,7 +287,7 @@ function stageFromDefinition(def: typeof READINESS_STAGES[number], jobs: Schedul
     id: def.id,
     label: def.label,
     owner: def.owner,
-    detail: job?.summary || def.detail,
+    detail: job?.summary ? jobSummaryText(job) : def.detail,
     status,
     tone: readinessTone(status),
     job,
@@ -271,15 +317,16 @@ function buildReadinessGates(checks: DataQualityCheck[]): ReadinessGate[] {
   if (items.length) {
     return items.map((item) => {
       const status = gateStatusFromQuality(item.status)
-      const freshness = item.lag_days == null ? 'lag n/a' : `lag ${item.lag_days}d`
+      const freshness = item.lag_days == null ? '落後天數未知' : `落後 ${item.lag_days} 天`
       return {
         id: item.key,
         label: item.label,
         status,
         tone: readinessTone(status),
-        value: `${Number(item.rows ?? 0).toLocaleString()} rows`,
-        source: item.source || 'canonical',
-        detail: item.root_cause || `${item.scope || 'market dashboard'} / ${freshness}`,
+        value: `${Number(item.rows ?? 0).toLocaleString()} 筆`,
+        // source／root_cause 是後端識別名（canonical_*、formal_shadow_fetch_failed），畫面只放白話。
+        source: humanSource(item.source, '正式日資料'),
+        detail: item.root_cause ? humanStatus(item.root_cause, '需要檢查來源') : `${humanSource(item.scope, '市場儀表板')}／${freshness}`,
         latestDate: item.latest_date,
       }
     })
@@ -311,7 +358,7 @@ function buildReadinessGates(checks: DataQualityCheck[]): ReadinessGate[] {
       tone: 'warn',
       value: '待 API payload',
       source: 'data-quality API',
-      detail: '目前 OBS 尚未取得 market_dashboard_materialization；local preview 只顯示結構。',
+      detail: '目前 OBS 尚未取得首頁資料匯入檢查；local preview 只顯示結構。',
     },
     {
       id: 'official-supplement',
@@ -331,6 +378,15 @@ function statusRingClass(tone: WorkstationTone) {
   if (tone === 'error') return 'border-fail/35 bg-fail/10 text-fail'
   if (tone === 'info') return 'border-sky-400/35 bg-sky-400/10 text-sky-100 shadow-[0_0_28px_rgba(56,189,248,0.10)]'
   return 'border-slate-500/35 bg-slate-500/10 text-slate-200'
+}
+
+// 11/28 Wei：OBS 不再整頁等最慢的 API；各區塊只等自己的資料來源。
+function SectionLoading({ sources }: { sources: string }) {
+  return (
+    <div className="flex items-center gap-2 border-t border-border p-4 text-xs text-slate-400">
+      <Loader2 className="h-4 w-4 animate-spin text-sky-300" /> Loading OBS evidence · {sources}
+    </div>
+  )
 }
 
 function ReadinessGauge({ score, tone }: { score: number; tone: WorkstationTone }) {
@@ -470,7 +526,7 @@ function ReadinessFlowMap({ stages }: { stages: ReadinessStage[] }) {
                 </div>
                 <p className="mt-3 text-base font-semibold text-[#f8efe0]">{stage.label}</p>
                 <p className="mt-1 sv-num text-xs normal-case text-[#9badbf]">{stage.owner}</p>
-                <p className="mt-3 line-clamp-2 text-xs leading-5 text-[#a8b6c5]">{stage.detail}</p>
+                <p className="mt-3 text-xs leading-5 text-[#a8b6c5]">{stage.detail}</p>
                 {detailItems.length > 0 && (
                   <div className="mt-2 flex min-w-0 flex-wrap gap-1">
                     {detailItems.map((detail) => {
@@ -511,8 +567,8 @@ function ReadinessGateMatrix({ gates, limit = 12 }: { gates: ReadinessGate[]; li
         <div key={gate.id} className={`rounded-2xl border p-3 ${statusRingClass(gate.tone)}`}>
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <p className="truncate text-sm font-semibold text-[#f2ead8]">{gate.label}</p>
-              <p className="mt-1 truncate sv-num text-xs normal-case text-[#7f8ba0]">{gate.source}</p>
+              <p className="break-words text-sm font-semibold text-[#f2ead8]">{gate.label}</p>
+              <p className="mt-1 break-words sv-num text-xs normal-case text-[#7f8ba0]">{gate.source}</p>
             </div>
             <WorkstationStatusPill tone={gate.tone}>{readinessLabel(gate.status)}</WorkstationStatusPill>
           </div>
@@ -521,7 +577,7 @@ function ReadinessGateMatrix({ gates, limit = 12 }: { gates: ReadinessGate[]; li
             <p className="sv-num text-xs normal-case text-[#8b9bab]">{gate.latestDate ?? 'date n/a'}</p>
           </div>
           <MiniBar value={gate.status === 'ready' ? 94 : gate.status === 'running' ? 72 : gate.status === 'waiting' ? 48 : gate.status === 'blocked' ? 100 : 28} tone={gate.tone} />
-          <p className="mt-2 line-clamp-2 text-xs leading-5 text-[#9badbf]">{gate.detail}</p>
+          <p className="mt-2 break-words text-xs leading-5 text-[#9badbf]">{gate.detail}</p>
         </div>
       ))}
     </div>
@@ -535,19 +591,19 @@ function DataQualityCompactMatrix({ gates, compact = false }: { gates: Readiness
         <div key={gate.id} className={`min-h-[106px] rounded-xl border p-2 ${statusRingClass(gate.tone)}`}>
           <div className="flex items-start justify-between gap-2">
             <div className="min-w-0">
-              <p className="truncate text-xs font-semibold text-[#f2ead8]">{gate.label}</p>
-              <p className="mt-0.5 truncate sv-num text-xs normal-case text-[#7f8ba0]">{gate.source}</p>
+              <p className="break-words text-xs font-semibold text-[#f2ead8]">{gate.label}</p>
+              <p className="mt-0.5 break-words sv-num text-xs normal-case text-[#7f8ba0]">{gate.source}</p>
             </div>
             <span className="shrink-0 rounded-full border border-white/10 bg-black/20 px-1.5 py-0.5 sv-num text-xs normal-case" style={{ color: toneColor(gate.tone) }}>
               {readinessLabel(gate.status)}
             </span>
           </div>
           <div className="mt-2 flex items-end justify-between gap-2">
-            <p className="truncate sv-num text-base font-semibold" style={{ color: toneColor(gate.tone) }}>{gate.value}</p>
+            <p className="whitespace-nowrap sv-num text-base font-semibold" style={{ color: toneColor(gate.tone) }}>{gate.value}</p>
             <p className="shrink-0 sv-num text-xs normal-case text-[#8b9bab]">{gate.latestDate ?? 'n/a'}</p>
           </div>
           <MiniBar value={gate.status === 'ready' ? 94 : gate.status === 'running' ? 72 : gate.status === 'waiting' ? 48 : gate.status === 'blocked' ? 100 : 28} tone={gate.tone} />
-          <p className="mt-1 line-clamp-2 text-xs leading-4 text-[#9badbf]">{gate.detail}</p>
+          <p className="mt-1 break-words text-xs leading-4 text-[#9badbf]">{gate.detail}</p>
         </div>
       ))}
     </div>
@@ -692,7 +748,7 @@ function SchedulerShortcutCard({
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold text-[#f8efe0]">{meta.label}</p>
-          <p className="mt-0.5 truncate sv-num text-xs normal-case text-[#7f8ba0]">{group}</p>
+          <p className="mt-0.5 break-words sv-num text-xs normal-case text-[#7f8ba0]">{plainCode(group)}</p>
         </div>
         <WorkstationStatusPill tone={cardTone}>{healthLabel}</WorkstationStatusPill>
       </div>
@@ -768,7 +824,9 @@ function schedulerPlainSummary(job: SchedulerJob): string {
   if (/blocked by storage admission/i.test(raw)) {
     return `D1 容量保護已阻擋這個高寫入工作${utilization ? `；legacy D1 目前使用 ${utilization}%` : ''}。這不是策略或模型失敗，而是為避免資料庫碰到 10 GB 上限而停止新增研究資料。`
   }
-  return raw
+  if (job.lastError) return jobErrorText(job)
+  if (job.summary) return jobSummaryText(job)
+  return humanJobSummary(raw)
 }
 
 function schedulerReadinessDetails(job: SchedulerJob): string[] {
@@ -794,7 +852,7 @@ function SchedulerJobRow({ job, compact = false }: { job: SchedulerJob; compact?
             <span className="h-2.5 w-2.5 shrink-0 rounded-full shadow-[0_0_12px_currentColor]" style={{ color: toneColor(tone), backgroundColor: toneColor(tone) }} />
             <p className="truncate text-sm font-semibold text-[#f8efe0]">{job.name}</p>
           </div>
-          <p className="mt-1 truncate sv-num text-xs normal-case text-[#7f8ba0]">{job.id} · {job.schedule}</p>
+          <p className="mt-1 break-words sv-num text-xs normal-case text-[#7f8ba0]">{plainCode(job.id)} · {job.schedule}</p>
         </div>
         <WorkstationStatusPill tone={tone}>{schedulerStatusLabel(job.lastStatus)}</WorkstationStatusPill>
       </div>
@@ -804,7 +862,7 @@ function SchedulerJobRow({ job, compact = false }: { job: SchedulerJob; compact?
         <span className="min-w-0 truncate rounded-lg border border-[#253244] bg-[#111824] px-2 py-1">7d {job.rate7d || '-'}</span>
       </div>
       {(job.summary || job.lastError || job.durationConcernReason) && (
-        <p className={`mt-2 line-clamp-3 min-w-0 break-words text-xs leading-5 [overflow-wrap:anywhere] ${tone === 'error' ? 'text-fail' : tone === 'warn' ? 'text-warn' : 'text-[#9badbf]'}`}>
+        <p className={`mt-2 min-w-0 break-words text-xs leading-5 [overflow-wrap:anywhere] ${tone === 'error' ? 'text-fail' : tone === 'warn' ? 'text-warn' : 'text-[#9badbf]'}`}>
           {schedulerPlainSummary(job)}
         </p>
       )}
@@ -972,7 +1030,7 @@ function CriticalSchedulerErrors({ jobs }: { jobs: SchedulerJob[] }) {
                 <WorkstationStatusPill tone="error">{schedulerStatusLabel(job.lastStatus)}</WorkstationStatusPill>
                 <p className="truncate text-base font-semibold text-[#f8efe0]">{job.name}</p>
               </div>
-              <p className="mt-1 truncate sv-num text-xs normal-case text-[#71839a]">{job.group} / {job.schedule}</p>
+              <p className="mt-1 break-words sv-num text-xs normal-case text-[#71839a]">{plainCode(job.group)} / {job.schedule}</p>
               <p className="mt-2 sv-num text-xs normal-case text-[#9badbf]">發生 {job.lastRun || '-'} · {job.lastDuration || '-'}</p>
             </div>
             <p className="min-w-0 text-[#a9d7ff]">
@@ -1096,10 +1154,10 @@ function EvidenceClockPanel({
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {(report?.clocks ?? []).filter(clock => clock.mechanism !== 'shadow_a').map((clock) => (
               <article key={clock.mechanism} className="min-w-0 border-t border-border p-3">
-                <div className="flex items-start justify-between gap-2">
+                <div className="flex flex-wrap items-start justify-between gap-2">
                   <div className="min-w-0">
-                    <p className="truncate text-sm font-medium text-slate-100">{clock.label}</p>
-                    <p className="mt-1 sv-num text-xs normal-case text-muted-foreground">{clock.governance} · auto promote OFF</p>
+                    <p className="break-words text-sm font-medium text-slate-100">{clock.label}</p>
+                    <p className="mt-1 sv-num text-xs normal-case text-muted-foreground">{GOVERNANCE_LABELS[String(clock.governance)] ?? String(clock.governance ?? '').replace(/_/g, ' ')} · auto promote OFF</p>
                   </div>
                   <WorkstationStatusPill tone={statusTone(clock.status)}><StatusCode raw={clock.status} /></WorkstationStatusPill>
                 </div>
@@ -1144,8 +1202,8 @@ function EvidenceClockPanel({
                     )}
                   </div>
                 )}
-                <div className="mt-2 text-xs leading-5 text-slate-400">
-                  {clock.blockers.length ? clock.blockers.join(' · ') : 'No current blocker'}
+                <div className="mt-2 text-xs leading-5 text-slate-400 [overflow-wrap:anywhere]">
+                  {clock.blockers.length ? clock.blockers.join(' · ').replace(/_/g, ' ') : 'No current blocker'}
                 </div>
               </article>
             ))}
@@ -1206,7 +1264,7 @@ function AdaptiveMetaPanel({
   const pendingApprovalLevel = (pendingApprovalRaw === 'L3' || pendingApprovalRaw === 'L4' ? pendingApprovalRaw : '') as '' | 'L3' | 'L4'
   const canRequestNextLevel = promotion.canRequestNextLevel === true || promotion.can_request_next_level === true
   const nextLevel = (String(promotion.nextLevel ?? promotion.next_level ?? 'L3').toUpperCase() === 'L4' ? 'L4' : 'L3') as 'L3' | 'L4'
-  const gaNextAction = String(promotion.nextAction ?? ga?.next_action ?? '')
+  const gaNextAction = plainCode(promotion.nextAction ?? ga?.next_action ?? '')
   const approvalRequiredForNextLevel =
     promotion.approvalRequiredForNextLevel === true || promotion.approval_required_for_next_level === true
   const rawL3Blockers = missingEvidence.length
@@ -1281,7 +1339,7 @@ function AdaptiveMetaPanel({
     ...(requiredEvidence.length ? requiredEvidence : ['policy_candidate', 'primary_gate', 'stable_history', 'pbo_mc_cost_governance'])
       .filter((item) => !(item === 'primary_gate' && failedGates.length))
       .map((item) => ({
-      label: item,
+      label: GA_EVIDENCE_LABELS[item] ?? item.replace(/_/g, ' '),
       status: missingEvidence.includes(item) ? 'missing' as const : 'pass' as const,
       detail: missingEvidence.includes(item) ? '缺 evidence，不能升 L3/L4。' : 'promotion packet 已具備此 evidence。',
     })),
@@ -1289,7 +1347,7 @@ function AdaptiveMetaPanel({
       label: '驗證資料未就緒', status: 'missing' as const,
       detail: String(validation.reason ?? '缺少有效回測證據；尚未測得本輪績效。'),
     }] : failedGates.map((item) => ({
-      label: 'primary_gate / ' + item,
+      label: '主要門檻 / ' + item.replace(/_/g, ' '),
       status: 'fail' as const,
       detail: '已完成驗證但未通過此門檻；保留原本晉級標準。',
     }))),
@@ -1304,8 +1362,8 @@ function AdaptiveMetaPanel({
   const gaImpacts: ApprovalReviewImpact[] = [
     {
       label: 'Runtime owner',
-      value: String(gaRuntime.runtime_role ?? 'learning/review only'),
-      detail: 'GA 不進 model_pool；由 adaptive meta context 消費。',
+      value: plainCode(gaRuntime.runtime_role ?? 'learning/review only'),
+      detail: 'GA 不進模型池；由 adaptive meta context 消費。',
       tone: gaRuntime.runtime_role ? 'info' : 'neutral',
     },
     {
@@ -1317,13 +1375,13 @@ function AdaptiveMetaPanel({
     {
       label: 'Exposure cap',
       value: gaEffectPolicy.max_bandit_max_mult != null ? `bandit max ${fmtNumber(gaEffectPolicy.max_bandit_max_mult, 2)}x` : 'not active',
-      detail: String(gaEffectPolicy.scope ?? 'L3 approved 才能套 capped meta-policy effect。'),
+      detail: plainCode(gaEffectPolicy.scope ?? 'L3 approved 才能套 capped meta-policy effect。'),
       tone: gaEffectPolicy.enabled === true ? 'warn' : 'neutral',
     },
   ]
   const gaCandidateSummary = (
     <>
-      <div>candidate: {String(gaEvidence.best_candidate_id ?? 'best GA policy')}</div>
+      <div>candidate: {plainCode(gaEvidence.best_candidate_id ?? 'best GA policy')}</div>
       <div>learned policy: {summarizeLearnedPolicy(learnedPolicy)}</div>
       <div>requested: {pendingApprovalLevel || (canRequestNextLevel ? `${nextLevel} ready for approval` : 'none')}</div>
     </>
@@ -1331,7 +1389,7 @@ function AdaptiveMetaPanel({
   const gaCurrentSummary = (
     <>
       <div>level: {String(promotion.level ?? 'L0')} / status: {String(promotion.status ?? ga?.status ?? '-')}</div>
-      <div>runtime: {String(gaRuntime.runtime_role ?? 'no approved runtime effect')}</div>
+      <div>runtime: {plainCode(gaRuntime.runtime_role ?? 'no approved runtime effect')}</div>
       <div>last candidate generated: {gaLearningUpdatedAt}</div>
     </>
   )
@@ -1383,7 +1441,7 @@ function AdaptiveMetaPanel({
       <div className="grid items-stretch gap-3 p-3 xl:grid-cols-[minmax(0,0.78fr)_minmax(0,1.22fr)]">
         <div className="grid h-full gap-3 xl:grid-rows-[auto_minmax(0,1fr)]">
           <div className="border-t border-border p-3">
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="sv-num text-xs normal-case text-[#70809b]">Threshold Policy</p>
               <WorkstationStatusPill tone={tone}><StatusCode raw={adaptive?.status} fallback="缺資料" /></WorkstationStatusPill>
             </div>
@@ -1404,13 +1462,13 @@ function AdaptiveMetaPanel({
               <span>credit {fmtNumber(Number(threshold.regime_opportunity_credit ?? 0) + Number(threshold.trend_quality_credit ?? 0))}</span>
             </div>
             <div className="mt-3 border-l-2 border-border p-2 text-xs leading-5 text-slate-300">
-              <div className="flex items-center justify-between gap-2">
+              <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="sv-num text-sky-200">Runtime Active-8 signal policy</span>
                 <WorkstationStatusPill tone={severityTone(thresholdPolicyEvent?.severity)}><StatusCode raw={thresholdPolicyEvent?.status} fallback="缺資料" /></WorkstationStatusPill>
               </div>
-              <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1">
+              <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 break-all">
                 <span>id {String(runtimePolicy.policy_id ?? '-')}</span>
-                <span>scope {String(runtimePolicy.selected_regime ?? '-')}</span>
+                <span>scope {GOVERNANCE_LABELS[String(runtimePolicy.selected_regime)] ?? plainCode(runtimePolicy.selected_regime ?? '-')}</span>
                 <span>buy coverage {fmtNumber(runtimePolicyThresholds.buyCoverage ?? runtimeSignalPolicy.buy_coverage, 3)}</span>
                 <span>strong coverage {fmtNumber(runtimePolicyThresholds.strongCoverage ?? runtimeSignalPolicy.strong_coverage, 3)}</span>
                 <span>overlay {runtimePolicyOverlay.applied_delta == null ? 'N/A' : fmtNumber(runtimePolicyOverlay.applied_delta, 3)}</span>
@@ -1424,7 +1482,7 @@ function AdaptiveMetaPanel({
           </div>
 
           <div className="border-t border-border p-3">
-            <div className="flex items-center justify-between gap-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <p className="sv-num text-xs normal-case text-[#70809b]">LinUCB Risk Guard</p>
               <WorkstationStatusPill tone={bandit.decision ? 'ok' : 'warn'}><StatusCode raw={bandit.decision == null ? null : String(bandit.decision)} fallback="缺資料" /></WorkstationStatusPill>
             </div>
@@ -1470,7 +1528,7 @@ function AdaptiveMetaPanel({
           metrics={gaMetrics}
           gates={gaGates}
           impacts={gaImpacts}
-          blockers={l3Blockers.map((item) => `L3 blockers: ${item}`)}
+          blockers={l3Blockers.map((item) => `L3：${l3BlockerLabel(item)}`)}
           nextAction={(gaReviewError ?? gaNextAction) || 'GA promotion state has not exposed a next action yet.'}
           actions={gaActions}
         />
@@ -1485,7 +1543,7 @@ function AdaptiveMetaPanel({
                   {String(stage)}
                 </WorkstationStatusPill>
               </div>
-              <p className="mt-2 line-clamp-2 text-xs leading-5 text-slate-300">{String(description)}</p>
+              <p className="mt-2 text-xs leading-5 text-slate-300">{String(description)}</p>
               <p className="mt-2 text-xs leading-5 text-muted-foreground">needs: {String(evidenceNeed)}</p>
             </div>
           ))}
@@ -1520,7 +1578,7 @@ function schedulerHasRootCause(job: SchedulerJob) {
 function schedulerRootCause(job: SchedulerJob) {
   if (job.lastError) return schedulerPlainSummary(job)
   if (job.durationConcern && job.durationConcern !== 'expected_short') {
-    return job.durationConcernReason || job.summary || job.durationConcern
+    return job.durationConcernReason || (job.summary ? jobSummaryText(job) : job.durationConcern)
   }
   if (schedulerHasRootCause(job) && job.summary) return schedulerPlainSummary(job)
   if (job.lastStatus === 'waiting') return '等待前序 stage callback 完成。'
@@ -1583,7 +1641,6 @@ export default function ObservabilityPage() {
   const dqChecks = dataQuality.data?.checks ?? []
   const schedulerScore = Number(scheduler.data?.stats?.successRate7d ?? 0)
   const schedulerApiError = errorMessage(scheduler.error)
-  const initialLoading = [scheduler, dataQuality, deployGate, system, observability].some((query) => query.isLoading)
   const readinessStages = READINESS_STAGES.map((stage) => stageFromDefinition(stage, jobs))
   const readinessScore = Math.round(schedulerScore)
   const readinessTone: WorkstationTone = schedulerApiError
@@ -1595,28 +1652,23 @@ export default function ObservabilityPage() {
 
   return (
     <AppShell>
-      <div className="sv-stockintelli-page relative min-h-[70vh] p-4 lg:p-5">
-        {initialLoading && (
-          <div className="absolute inset-0 z-20 flex items-center justify-center bg-[#05070c]/95 backdrop-blur-sm">
-            <div className="rounded-xl border border-[#263247] bg-[#070a10] px-5 py-4 text-center shadow-xl">
-              <Loader2 className="mx-auto h-6 w-6 animate-spin text-sky-300" />
-              <p className="mt-3 sv-num text-xs normal-case text-sky-200">Loading OBS evidence</p>
-              <p className="mt-1 text-xs text-muted-foreground">scheduler / data quality / deploy gate / model events</p>
-            </div>
-          </div>
-        )}
-        <div className={`space-y-4 ${initialLoading ? 'pointer-events-none opacity-0' : 'opacity-100 transition-opacity duration-300'}`}>
+      <div className="sv-stockintelli-page min-h-[70vh] p-4 lg:p-5">
+        <div className="space-y-4">
         <WorkstationPageTitle
           kicker="Observability"
           title="OBS 可觀測中心"
           description="用事件、時間、count、SLO 與 drilldown CTA 回答：哪裡壞、多久了、影響哪一層。"
           action={
             <div className="flex flex-wrap items-center gap-3">
-              <ReadinessGauge score={readinessScore} tone={readinessTone} />
+              {scheduler.isLoading ? (
+                <div className="grid h-20 w-20 shrink-0 place-items-center rounded-full border border-[#2b3a49] bg-[#070a10]">
+                  <Loader2 className="h-5 w-5 animate-spin text-sky-300" aria-label="Loading readiness" />
+                </div>
+              ) : <ReadinessGauge score={readinessScore} tone={readinessTone} />}
               <div className="flex max-w-xs flex-wrap gap-2">
-                <WorkstationStatusPill tone={statusTone(deployGate.data?.decision)}>Gate <StatusCode raw={deployGate.data?.decision} /></WorkstationStatusPill>
-                <WorkstationStatusPill tone={severityTone(observability.data?.overall)}>OBS <StatusCode raw={observability.data?.overall} /></WorkstationStatusPill>
-                <WorkstationStatusPill tone={system.error ? 'error' : 'ok'}>System {system.error ? '異常' : '連線中'}</WorkstationStatusPill>
+                <WorkstationStatusPill tone={deployGate.isLoading ? 'neutral' : statusTone(deployGate.data?.decision)}>Gate {deployGate.isLoading ? '載入中' : <StatusCode raw={deployGate.data?.decision} />}</WorkstationStatusPill>
+                <WorkstationStatusPill tone={observability.isLoading ? 'neutral' : severityTone(observability.data?.overall)}>OBS {observability.isLoading ? '載入中' : <StatusCode raw={observability.data?.overall} />}</WorkstationStatusPill>
+                <WorkstationStatusPill tone={system.isLoading ? 'neutral' : system.error ? 'error' : 'ok'}>System {system.isLoading ? '載入中' : system.error ? '異常' : '連線中'}</WorkstationStatusPill>
                 <span className="w-full sv-num text-xs normal-case text-muted-foreground">Readiness-gated Chain Control</span>
               </div>
             </div>
@@ -1624,7 +1676,7 @@ export default function ObservabilityPage() {
         />
 
         <WorkstationPanel title="Operational Drilldown / 維運追蹤" kicker="full rows, not fake tabs">
-          <OperationalReadinessDeck
+          {scheduler.isLoading || dataQuality.isLoading ? <SectionLoading sources="scheduler / data quality" /> : <OperationalReadinessDeck
             jobs={jobs}
             checks={dqChecks}
             schedulerApiError={schedulerApiError}
@@ -1634,7 +1686,7 @@ export default function ObservabilityPage() {
             capacityReport={capacity.data}
             capacityLoading={capacity.isLoading}
             capacityError={errorMessage(capacity.error)}
-          />
+          />}
           <div className="border-b border-[#263247] p-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <p className="text-xs leading-5 text-slate-400">
@@ -1649,9 +1701,15 @@ export default function ObservabilityPage() {
           </div>
         </WorkstationPanel>
 
-        <ExecutionChainPanel jobs={jobs} isFetching={scheduler.isFetching}
-          dataUpdatedAt={scheduler.dataUpdatedAt} apiError={schedulerApiError}
-          governance={scheduler.data?.governance} />
+        {scheduler.isLoading ? (
+          <WorkstationPanel title="Execution chain" kicker="scheduler">
+            <SectionLoading sources="scheduler" />
+          </WorkstationPanel>
+        ) : (
+          <ExecutionChainPanel jobs={jobs} isFetching={scheduler.isFetching}
+            dataUpdatedAt={scheduler.dataUpdatedAt} apiError={schedulerApiError}
+            governance={scheduler.data?.governance} />
+        )}
 
         <section>
           <EvidenceClockPanel
@@ -1662,12 +1720,16 @@ export default function ObservabilityPage() {
         </section>
 
         <section>
-          <AdaptiveMetaPanel
+          {observability.isLoading ? (
+            <WorkstationPanel title="Adaptive / Meta Evidence" kicker="threshold, bandit, GA">
+              <SectionLoading sources="model events" />
+            </WorkstationPanel>
+          ) : <AdaptiveMetaPanel
             events={events}
             onGaReview={(action, level) => gaReview.mutate({ action, level })}
             gaReviewPending={gaReview.isPending}
             gaReviewError={gaReview.error ? (gaReview.error as Error).message : null}
-          />
+          />}
         </section>
         </div>
       </div>

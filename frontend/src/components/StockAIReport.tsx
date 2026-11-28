@@ -253,7 +253,7 @@ export default function StockAIReport({ stockId }: { stockId: number }) {
             </div>
           ) : <p className="text-xs text-muted-foreground">尚未分類</p>}
           {profile?.business_desc && (
-            <p className="mt-2 text-[11px] text-muted-foreground leading-relaxed line-clamp-3 border-t border-white/[0.05] pt-2">
+            <p className="mt-2 text-[11px] text-muted-foreground leading-relaxed border-t border-white/[0.05] pt-2">
               {profile.business_desc.replace(/\*\*/g, '').slice(0, 200)}
             </p>
           )}

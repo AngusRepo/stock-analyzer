@@ -10,6 +10,7 @@ import { currentStage, scopeById, scopeDisplayStageIds, statusLabel, visualStatu
 import { dailyPhaseForStage } from './judgment/dailyReadinessPhases'
 import { CHAIN_IDS, CHAIN_SPECS, periodKeyFor, periodKeys, previousPeriodKey, REPEAT_STALL_AFTER_MS, type ChainId, type ChainSpec } from './judgment/chainCatalog'
 import { chainPhaseForStage, chainStageIds } from './judgment/chainPhases'
+import { errorBrief } from './errorBrief'
 import type { SchedulerJob } from './judgment/schedulerJob'
 import { readStageProgress, subStageCards, type SubStageCard } from './chainSubStages'
 import { addDays, memoized, twDate, TW_OFFSET_MS, type MonitoringEnv } from './env'
@@ -101,6 +102,8 @@ export type ChainAlert = {
   minutes: number | null
   summary: string | null
   error: string | null
+  /** The error as a short zh-TW reason (errorBrief): what the panels show in place of the raw error. */
+  error_brief: string | null
   root_ticket_id: string | null
   ticket_id: string | null
   run_id: string | null
@@ -126,7 +129,7 @@ function alert(row: ChainStateRow, kind: AlertKind, since: string | null, nowMs:
     severity: kind === 'failed' || kind === 'missed' ? 'critical' : 'warning',
     status: row.status, attempt: Number(row.attempt ?? 0),
     expected_by: isoStamp(row.expected_by) as string | null, since: isoStamp(since) as string | null,
-    minutes: minutesSince(parse(since), nowMs), summary: row.summary, error: row.error,
+    minutes: minutesSince(parse(since), nowMs), summary: row.summary, error: row.error, error_brief: errorBrief(row.error),
     root_ticket_id: row.root_ticket_id, ticket_id: row.ticket_id, run_id: row.run_id, execution_name: row.execution_name,
   }
 }
@@ -282,7 +285,7 @@ export async function chainAlerts(env: MonitoringEnv, dates: ChainDates, rows: C
         business_date: date, stage_id: chain.firstStage, kind: 'missed', severity: 'critical', status: 'absent', attempt: 0,
         expected_by: since, since, minutes: minutesSince(deadline, nowMs),
         summary: chain.period === 'trading_day' ? 'no chain rows for this trading day' : 'no chain rows for this period',
-        error: null, root_ticket_id: null, ticket_id: null, run_id: null, execution_name: null,
+        error: null, error_brief: null, root_ticket_id: null, ticket_id: null, run_id: null, execution_name: null,
       })
     }
   }
@@ -493,7 +496,7 @@ export async function chainStateReport(env: MonitoringEnv, nowMs: number, reques
     const eta = etas.get(key)
     const visual = visualStatus(job)
     return {
-      ...row, optional: Number(row.optional) === 1, trading_day: tradingFlag(dates, row.business_date),
+      ...row, optional: Number(row.optional) === 1, trading_day: tradingFlag(dates, row.business_date), error_brief: errorBrief(row.error),
       label: STAGES[row.stage_id]?.label ?? row.stage_id,
       phase: (daily ? dailyPhaseForStage(row.stage_id) : chainPhaseForStage(chainId as Exclude<ChainId, 'daily_readiness'>, row.stage_id)) ?? null,
       position: order.get(row.stage_id) ?? null, visual_status: visual, status_label: statusLabel(job),
@@ -514,7 +517,7 @@ export async function chainStateReport(env: MonitoringEnv, nowMs: number, reques
       business_date: date, chain_id: parent.chain_id, stage_id: job.id, status: CARD_STATUS[job.lastStatus] ?? 'pending',
       optional: Number(parent.optional) === 1, expected_by: null, attempt: Number(parent.attempt ?? 0),
       root_ticket_id: parent.root_ticket_id, ticket_id: parent.ticket_id, run_id: card.run_id, execution_name: null,
-      summary: job.summary, error: job.lastError ?? null, started_at: job.lastRunAt ?? null, completed_at: card.completed_at,
+      summary: job.summary, error: job.lastError ?? null, error_brief: errorBrief(job.lastError), started_at: job.lastRunAt ?? null, completed_at: card.completed_at,
       heartbeat_at: null, updated_at: card.observed_at, trading_day: tradingFlag(dates, date),
       label: job.name, phase: dailyPhaseForStage(job.id) ?? null, position: DAILY_ORDER.get(job.id) ?? null,
       visual_status: visual, status_label: statusLabel(job), alerts: [] as AlertKind[],
@@ -607,6 +610,7 @@ export async function chainHistoryReport(env: MonitoringEnv, nowMs: number, days
     repeat_failures: [...failedDates(rows)].map(([stage, failures]) => ({
       stage_id: stage, label: label(stage), failures: failures.length, repeat: failures.length >= 2,
       last_failed_date: failures.at(-1)!.business_date, last_error: failures.at(-1)!.error,
+      last_error_brief: errorBrief(failures.at(-1)!.error),
       dates: failures.map((row) => row.business_date).join(','),
     })).sort((a, b) => b.failures - a.failures || (position(a.stage_id) ?? 9999) - (position(b.stage_id) ?? 9999)),
   }

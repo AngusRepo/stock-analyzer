@@ -81,34 +81,119 @@ export function PriceLadder({ row, width = 190, height = 26, showDistance = true
   )
 }
 
-function Dots({ row, keys = CONDITION_KEYS }: { row: SimRow; keys?: string[] }) {
+/** 收盤折線：台股紅漲綠跌，終點標圓點；ma 給天數時畫虛線均線。 */
+export function Sparkline({ values, width = 120, height = 24, ma }: { values: number[]; width?: number; height?: number; ma?: number }) {
+  if (values.length < 2) return <span className="text-muted-foreground">—</span>
+  const lo = Math.min(...values)
+  const span = Math.max(...values) - lo || 1
+  const x = (i: number) => 2 + i / (values.length - 1) * (width - 6)
+  const y = (v: number) => height - 3 - (v - lo) / span * (height - 6)
+  const line = (vs: Array<number | null>) => vs.map((v, i) => v == null ? null : `${x(i).toFixed(1)},${y(v).toFixed(1)}`).filter(Boolean).join(' ')
+  const avg = ma ? values.map((_, i) => i + 1 >= ma ? values.slice(i + 1 - ma, i + 1).reduce((a, b) => a + b, 0) / ma : null) : null
+  const last = values[values.length - 1]
+  const color = last > values[0] ? 'var(--up)' : last < values[0] ? 'var(--down)' : 'var(--sr-sub)'
   return (
-    <span className="dots">
-      {keys.map((key) => {
-        const i = CONDITION_KEYS.indexOf(key)
-        const c = row.conditions[i]
-        const groupStart = i === 4 || i === 8
-        return <i key={key} className={`${c.tone === 'na' ? '' : c.tone} ${i === row.firstBlocker ? 'first' : ''} ${groupStart && keys.length > 4 ? 'g' : ''}`}
-          title={`${c.label}：${c.value}${i === row.firstBlocker ? '（第一個卡住的關卡）' : ''}`} />
+    <svg width={width} height={height} style={{ verticalAlign: 'middle', display: 'block' }} aria-label={`${values.length} 日收盤 ${formatPrice(values[0])} → ${formatPrice(last)}`}>
+      {avg && <polyline points={line(avg)} fill="none" stroke="#8992a3" strokeWidth="1" strokeDasharray="2 2" />}
+      <polyline points={line(values)} fill="none" stroke={color} strokeWidth="1.5" />
+      <circle cx={x(values.length - 1)} cy={y(last)} r="2.5" fill="#fff" />
+    </svg>
+  )
+}
+
+export type DailyBar = { open: number; high: number; low: number; close: number }
+
+/** 近 20 日 K 棒：收≥開紅、收<開綠（台股慣例），白點標最後收盤。 */
+function CandleSpark({ bars, width = 200, height = 44 }: { bars: DailyBar[]; width?: number; height?: number }) {
+  if (bars.length < 2) return <span className="text-muted-foreground">—</span>
+  const lo = Math.min(...bars.map((b) => b.low))
+  const span = Math.max(...bars.map((b) => b.high)) - lo || 1
+  const step = (width - 4) / bars.length
+  const body = Math.max(1, Math.min(5, step - 2))
+  const y = (v: number) => height - 2 - (v - lo) / span * (height - 4)
+  const first = bars[0].close
+  const last = bars[bars.length - 1].close
+  return (
+    <svg width={width} height={height} style={{ verticalAlign: 'middle', display: 'block' }} aria-label={`${bars.length} 日 K 線 收盤 ${formatPrice(first)} → ${formatPrice(last)}`}>
+      {bars.map((b, i) => {
+        const cx = 2 + step * (i + 0.5)
+        const color = b.close >= b.open ? 'var(--up)' : 'var(--down)'
+        const top = y(Math.max(b.open, b.close))
+        return (
+          <g key={i}>
+            <line x1={cx} x2={cx} y1={y(b.high)} y2={y(b.low)} stroke={color} strokeWidth="1" />
+            <rect x={cx - body / 2} y={top} width={body} height={Math.max(1, y(Math.min(b.open, b.close)) - top)} fill={color} />
+          </g>
+        )
+      })}
+    </svg>
+  )
+}
+
+/** 20 日區間：最後收盤在高低之間的位置，距高點百分比。 */
+function RangeCell({ values }: { values: number[] }) {
+  if (values.length < 2) return <span className="text-muted-foreground">—</span>
+  const lo = Math.min(...values)
+  const hi = Math.max(...values)
+  const last = values[values.length - 1]
+  const pos = hi > lo ? (last - lo) / (hi - lo) : 1
+  return (
+    <span className="inline-flex items-center gap-2">
+      <svg width="110" height="14" aria-hidden="true">
+        <line x1="4" x2="104" y1="7" y2="7" stroke="#292c37" strokeWidth="2" />
+        <line x1="104" x2="104" y1="1" y2="13" stroke="#e8ecf3" strokeWidth="2" />
+        <circle cx={4 + pos * 100} cy="7" r="4" fill="#fff" />
+      </svg>
+      <span className="text-muted-foreground">{formatSignedPct((last / hi - 1) * 100, 1)}</span>
+    </span>
+  )
+}
+
+const TONE_COLOR: Record<CondTone, string> = { ok: 'var(--ok)', warn: 'var(--warn)', fail: 'var(--fail)', na: 'var(--sr-sub)', rec: 'var(--sr-sub)' }
+
+/** 關卡進度：每段一條分格條（一格一關）＋通過數；僅記錄的關卡不算在分母。 */
+function GateProgress({ row, groups = CONDITION_GROUPS }: { row: SimRow; groups?: typeof CONDITION_GROUPS }) {
+  return (
+    <span className="gates">
+      {groups.map((g) => {
+        const conds = g.keys.map((key) => ({ c: row.conditions[CONDITION_KEYS.indexOf(key)], i: CONDITION_KEYS.indexOf(key) }))
+        const required = conds.filter(({ c }) => c.tone !== 'rec')
+        const passed = required.filter(({ c }) => c.tone === 'ok').length
+        const checked = conds.some(({ c }) => c.tone !== 'na' && c.tone !== 'rec')
+        const done = checked && passed === required.length
+        return (
+          <span key={g.title} className="gseg" style={{ width: g.keys.length * 12 + 30 }}>
+            <span className="bar">
+              {conds.map(({ c, i }) => <i key={c.key} className={`${c.tone} ${i === row.firstBlocker ? 'first' : ''}`} title={`${c.label}：${c.tone === 'na' ? '尚未檢查' : c.value}`} />)}
+            </span>
+            <em className={done ? 'done' : ''}>{checked ? `${passed}/${required.length}` : '—'}</em>
+          </span>
+        )
       })}
     </span>
   )
 }
 
-function DotsHeader({ groups = CONDITION_GROUPS }: { groups?: typeof CONDITION_GROUPS }) {
-  return (
-    <>
-      <div className="ghead">
-        {groups.map((g, i) => <span key={g.title} style={{ width: g.keys.length * 13 - 2, marginLeft: i ? 8 : 0 }}>{g.title}</span>)}
-      </div>
-      <div className="dhead">
-        {groups.flatMap((g, gi) => g.keys.map((key, ki) => <span key={key} className={gi && !ki ? 'g' : ''}>{CONDITION_GROUP_LABEL(key)}</span>))}
-      </div>
-    </>
-  )
+function GateHeader({ groups = CONDITION_GROUPS }: { groups?: typeof CONDITION_GROUPS }) {
+  return <span className="gates">{groups.map((g) => <span key={g.title} className="gseg" style={{ width: g.keys.length * 12 + 30 }}>{g.title}</span>)}</span>
 }
+
+/** 卡在哪：第一個未通過或等待中的關卡＋實際數值；已結束寫結束原因；已成交不另寫。 */
+function BlockerCell({ row, premarket = false }: { row: SimRow; premarket?: boolean }) {
+  if (row.status === 'filled' && !row.partial) return null
+  if (row.completed) return <div className="why">{row.blockerText ?? '已結束'}</div>
+  const c = row.firstBlocker >= 0 ? row.conditions[row.firstBlocker] : null
+  if (!c) {
+    // 沒有卡住的關卡：全部（不含僅記錄）都通過才寫「關卡全過」；還有關卡沒檢查就不下結論。
+    const allOk = row.conditions.every((x) => x.tone === 'ok' || x.tone === 'rec')
+    if (allOk) return <div className="why" style={{ color: 'var(--ok)' }}>關卡全過</div>
+    return premarket ? <div className="why">開盤後檢查</div> : null
+  }
+  return <div className="why">卡在 <b style={{ color: TONE_COLOR[c.tone], fontWeight: 600 }}>{c.label}</b>：{c.value}</div>
+}
+
 const CONDITION_GROUP_LABEL = (key: string) => ({
-  plan: '計畫', ma60: 'MA60', opening_limit: '開盤未漲停', atr_once: 'ATR 動能', bars: 'K棒完整', or_touch: '觸 ORH',
+  plan: '計畫', ma60: 'MA60', opening_limit: '開盤未漲停', atr_once: 'ATR動能', bars: 'K棒完整', or_touch: '觸ORH',
   vwap: '≥VWAP', relative_strength: '強於0050', window: '送單期限', quote: '新報價', buy_limit: '未漲停',
   chase: '≤追價上限', position: '未持有', allocation: '配置', l5: '五檔', final: '風控',
 } as Record<string, string>)[key] ?? key
@@ -145,17 +230,17 @@ function RowMarks({ row }: { row: SimRow }) {
 
 function AllocCell({ row, maxWeight }: { row: SimRow; maxWeight: number }) {
   if (row.allocValue == null) return <span className="text-muted-foreground">—</span>
-  return <span className="alloc">{formatTwd(row.allocValue)}<em style={{ width: maxWeight > 0 && row.weight ? row.weight / maxWeight * 48 : 0 }} /></span>
+  return <span className="alloc">{formatTwd(row.allocValue)}<em style={{ width: maxWeight > 0 && row.weight ? row.weight / maxWeight * 28 : 0 }} /></span>
 }
 
-function SidePanel({ row, view, onOpenChart, orhPending, panelRef }: { row: SimRow | null; view: SimroomView; onOpenChart?: (symbol: string) => void; orhPending: boolean; panelRef?: Ref<HTMLDivElement> }) {
-  if (!row) return <div ref={panelRef} className="sr-panel sr-side text-muted-foreground">點左側任一列，這裡顯示該檔的價格梯與 16 項條件數值。</div>
-  const cells: Array<{ k: string; v: ReactNode; tone?: CondTone | '' }> = [
-    { k: view === 'premarket' ? '昨收' : '現價', v: formatPrice(view === 'premarket' ? row.prevClose : row.price) },
+function SidePanel({ row, onOpenChart, orhPending, panelRef }: { row: SimRow; onOpenChart?: (symbol: string) => void; orhPending: boolean; panelRef?: Ref<HTMLDivElement> }) {
+  const view: SimroomView = 'intraday'
+  const all: Array<{ k: string; v: ReactNode; tone?: CondTone | '' }> = [
+    { k: '現價', v: formatPrice(row.price) },
     { k: '選股參考價', v: formatPrice(row.refPrice), tone: row.refFlag ? 'warn' : '' },
     row.owner === 's12'
       ? { k: 'S12 進場價', v: row.trigger != null ? formatPrice(row.trigger) : '結構未就緒' }
-      : { k: '觸發價 ORH', v: row.orh != null ? formatPrice(row.orh) : orhPending ? '09:15 定' : '缺資料', tone: row.orh == null && !orhPending && !row.completed ? 'warn' : '' },
+      : { k: '觸發價 ORH', v: row.orh != null ? formatPrice(row.orh) : row.completed ? '—' : orhPending ? '09:15 定' : '缺資料', tone: row.orh == null && !orhPending && !row.completed ? 'warn' : '' },
     { k: '追價上限', v: formatPrice(row.chase) },
     { k: 'VWAP', v: formatPrice(row.vwap) },
     { k: '漲停', v: formatPrice(row.limitUp) },
@@ -166,6 +251,9 @@ function SidePanel({ row, view, onOpenChart, orhPending, panelRef }: { row: SimR
     ...(row.fill ? [{ k: row.partial ? '部分成交' : '今日成交', v: `${formatShares(row.fill.shares)} @ ${formatPrice(row.fill.avgPrice)}`, tone: 'ok' as const }] : []),
     { k: '最近檢查', v: row.checkedAt ? formatTime(row.checkedAt) : '—' },
   ]
+  // 沒有數值的欄位收成一行名稱，不畫一排「—」。
+  const cells = all.filter((c) => c.v !== '—')
+  const emptyCells = all.filter((c) => c.v === '—').map((c) => c.k)
   return (
     // 不設 aria-live：盤中每 10 秒換報價，整塊 16 項條件會一直被重念。
     <div ref={panelRef} className="sr-panel sr-side scroll-mt-16" aria-label={`${row.symbol} ${row.name} 明細`}>
@@ -175,9 +263,9 @@ function SidePanel({ row, view, onOpenChart, orhPending, panelRef }: { row: SimR
         {onOpenChart && <button type="button" onClick={() => onOpenChart(row.symbol)} className="ml-auto rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground" title="查看 K 線"><Activity className="h-3.5 w-3.5" /></button>}
       </h2>
       <div className="px">{formatPrice(row.price ?? row.prevClose)}{row.price != null ? <small><Change row={row} /></small> : <small className="text-muted-foreground">{row.prevClose != null ? '昨收' : ''}</small>}</div>
-      <PriceLadder row={row} width={290} height={34} orhPending={orhPending} showDistance={view === 'intraday'} />
+      <PriceLadder row={row} width={290} height={34} orhPending={orhPending} showDistance />
       {row.blockerText && row.status !== 'filled' && (
-        <p className="mt-1 text-[11px] text-muted-foreground" title={row.reasonCode ?? undefined}>{row.blockerText}</p>
+        <p className="mt-1 text-[11px] text-muted-foreground">{row.blockerText}</p>
       )}
       {row.owner === 's12' && row.s12Text && <p className="mt-1 text-[11px] text-muted-foreground">S12 結構：{row.s12Text}</p>}
       {(() => {
@@ -188,23 +276,30 @@ function SidePanel({ row, view, onOpenChart, orhPending, panelRef }: { row: SimR
       {row.partial && <p className="mt-1 text-[11px] text-muted-foreground">{row.partialRemaining ?? '已部分成交'}；{row.statusText ? '今日不再加碼。' : '剩餘股數每輪重跑進場檢查，不是終態。'}</p>}
       {row.riskSkip && <p className="mt-1 border-l-2 border-warn pl-2 text-[11px] text-warn">來源風控標記「跳過買入」，但此檔仍在今日待買清單；目前等待技術條件不代表風控已否決。</p>}
       {row.debateLabel && <p className="mt-1 text-[11px] text-muted-foreground" title="辯論只做觀察，不影響進場">{row.debateLabel}</p>}
-      <div className="vals">{cells.map((c) => <div key={c.k} className={`v ${c.tone ?? ''}`}><div className="k">{c.k}</div><div className="n">{c.v}</div></div>)}</div>
-      {CONDITION_GROUPS.map((g) => (
+      {cells.length > 0 && <div className="vals">{cells.map((c) => <div key={c.k} className={`v ${c.tone ?? ''}`}><div className="k">{c.k}</div><div className="n">{c.v}</div></div>)}</div>}
+      {emptyCells.length > 0 && <p className="pend">尚無數值：{emptyCells.join('、')}</p>}
+      {CONDITION_GROUPS.map((g) => {
+        // 還沒檢查的條件不畫空框，收成一行名稱；有結果的才畫格子。
+        const checked = g.keys.filter((key) => row.conditions[CONDITION_KEYS.indexOf(key)].tone !== 'na')
+        const pending = g.keys.filter((key) => row.conditions[CONDITION_KEYS.indexOf(key)].tone === 'na').map((key) => row.conditions[CONDITION_KEYS.indexOf(key)].label)
+        return (
         <div key={g.title}>
-          <div className="vgroup">{g.title}</div>
-          <div className="vals cond">
-            {g.keys.map((key) => {
+          <div className="vgroup">{g.title}{!checked.length && <span> · 尚未檢查：{pending.join('、')}</span>}</div>
+          {checked.length > 0 && <div className="vals cond">
+            {checked.map((key) => {
               const i = CONDITION_KEYS.indexOf(key)
               const c = row.conditions[i]
-              // 數值直接寫出來（手機沒有 hover）；左側色條＋符號表示狀態。
-              return <div key={key} title={c.raw} className={`v ${c.tone === 'na' ? '' : c.tone} ${i === row.firstBlocker ? 'first' : ''}`}>
-                <div className="k">{c.label}{c.tone !== 'na' && <span className="ml-1">· {COND_TEXT[c.tone]}</span>}</div>
-                <div className="n">{c.tone === 'ok' ? '✓ ' : c.tone === 'fail' ? '✕ ' : c.tone === 'warn' ? '… ' : ''}{c.value}</div>
+              // 數值直接寫出來（手機沒有 hover）；左側色條＋符號表示狀態；還沒檢查的寫「—」。
+              return <div key={key} className={`v ${c.tone === 'na' ? '' : c.tone} ${i === row.firstBlocker ? 'first' : ''} ${c.tone !== 'na' && c.value.length > 8 ? 'wide' : ''}`} aria-label={`${c.label} ${COND_TEXT[c.tone]}`}>
+                <div className="k">{c.label}</div>
+                <div className="n">{c.tone === 'na' ? '—' : <>{c.tone === 'ok' ? '✓ ' : c.tone === 'fail' ? '✕ ' : c.tone === 'warn' ? '… ' : ''}{c.value}</>}</div>
               </div>
             })}
-          </div>
+          </div>}
+          {checked.length > 0 && pending.length > 0 && <p className="pend">尚未檢查：{pending.join('、')}</p>}
         </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
@@ -225,31 +320,27 @@ export interface SimRoomProps {
   quoteError?: boolean
   /** 待買清單的資料日（pending-buys 的 date；沒有才用 session_date）。盤前頁尾用，不用時鐘日期。 */
   dataDate?: string | null
+  /** 各檔近 20 日收盤（舊到新）；盤前走勢欄與側欄圖用。 */
+  bars?: Record<string, DailyBar[]>
 }
-
-const VIEW_OF_PHASE: Record<string, SimroomView> = { night: 'premarket', premarket: 'premarket', intraday: 'intraday', close: 'postmarket', postmarket: 'postmarket' }
 
 export function SessionAxis({ clock, view, closed, onViewChange }: { clock: TwClock; view: SimroomView; closed: boolean; onViewChange: (view: SimroomView) => void }) {
   const phase = sessionPhase(clock.minutes)
   return (
     <div className="sr-axis" style={{ gridTemplateColumns: SESSION_SEGMENTS.map((s) => `${s.weight}fr`).join(' ') }} role="tablist" aria-label="時段">
-      {SESSION_SEGMENTS.map((s) => {
-        const target = VIEW_OF_PHASE[s.phase]
-        return (
-          // 夜間與盤前都切到盤前版面；只標盤前那格為選取，避免兩個 tab 同時 aria-selected。
-          <button key={s.phase} type="button" role="tab" aria-selected={target === view && s.phase !== 'night'}
-            className={`${!closed && s.phase === phase ? 'now' : ''} ${target === view && s.phase !== 'night' ? 'view' : ''}`}
-            onClick={() => onViewChange(target)} title={`${s.label} ${s.detail} · 點選切換到${target === 'premarket' ? '盤前計畫' : target === 'intraday' ? '盤中' : '盤後結果'}版面`}>
-            {s.label}<span className="t"> {s.detail}</span>
-          </button>
-        )
-      })}
+      {SESSION_SEGMENTS.map((s) => (
+        <button key={s.phase} type="button" role="tab" aria-selected={s.phase === view}
+          className={`${!closed && s.phase === phase ? 'now' : ''} ${s.phase === view ? 'view' : ''}`}
+          onClick={() => onViewChange(s.phase)}>
+          {s.label}<span className="t"> {s.detail}</span>
+        </button>
+      ))}
       {!closed && <div className="mark" style={{ left: `calc(${axisPosition(clock.minutes) * 100}% - 1px)` }} title={`現在 ${String(Math.floor(clock.minutes / 60)).padStart(2, '0')}:${String(clock.minutes % 60).padStart(2, '0')}`} />}
     </div>
   )
 }
 
-export function SimRoom({ clock, closed, rows, view, onViewChange, kpis, status, empty, quoteAgeSec, trend, onOpenChart, quoteError = false, dataDate = null }: SimRoomProps) {
+export function SimRoom({ clock, closed, rows, view, onViewChange, kpis, status, empty, quoteAgeSec, trend, onOpenChart, quoteError = false, dataDate = null, bars = {} }: SimRoomProps) {
   const sorted = useMemo(() => sortRows(rows), [rows])
   const [selected, setSelected] = useState<string | null>(null)
   const current = sorted.find((r) => r.symbol === selected) ?? sorted[0] ?? null
@@ -282,13 +373,15 @@ export function SimRoom({ clock, closed, rows, view, onViewChange, kpis, status,
     const top = side.getBoundingClientRect().top
     if (top < 0 || top > window.innerHeight * 0.6) side.scrollIntoView({ block: 'start', behavior: 'smooth' })
   }
+  // 右側單檔明細只在盤中（有即時報價與逐項檢查）；盤前、盤後表格全寬，點列直接看 K 線。
+  const withDetail = view === 'intraday'
   const rowProps = (row: SimRow) => ({
-    className: `sr-row ${row.symbol === current?.symbol ? 'sel' : ''} ${row.status === 'stop' ? 'term' : ''} ${row.stale && view === 'intraday' ? 'stale' : ''}`,
-    onClick: () => select(row.symbol),
-    onKeyDown: (e: KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); select(row.symbol) } },
+    className: `sr-row ${withDetail && row.symbol === current?.symbol ? 'sel' : ''} ${row.status === 'stop' ? 'term' : ''} ${row.stale && view === 'intraday' ? 'stale' : ''}`,
+    onClick: () => withDetail ? select(row.symbol) : onOpenChart?.(row.symbol),
+    onKeyDown: (e: KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); if (withDetail) select(row.symbol); else onOpenChart?.(row.symbol) } },
     tabIndex: 0,
     // 表格列不在 grid／listbox 裡，aria-selected 無效；用 aria-current 標目前顯示在側欄的列。
-    'aria-current': row.symbol === current?.symbol ? ('true' as const) : undefined,
+    'aria-current': withDetail && row.symbol === current?.symbol ? ('true' as const) : undefined,
   })
 
   const trendKpi = trend && (
@@ -309,7 +402,7 @@ export function SimRoom({ clock, closed, rows, view, onViewChange, kpis, status,
     </div>
   ) : view === 'intraday' ? (
     <div className="sr-kpis">
-      <div className="sr-kpi">計畫 <b>{rows.length}</b> 檔 <span className="hide-m">{formatTwd(planValue)}</span></div>
+      <div className="sr-kpi">計畫 <b>{rows.length}</b> 檔 <span>{formatTwd(planValue)}</span></div>
       {(['filled', 'trig', 'near', 'wait', 'stop'] as RowStatus[]).filter((s) => s !== 'filled' || counts.filled > 0).map((s) => (
         <div key={s} className="sr-kpi"><StatusGlyph status={s} view="intraday" bare />{ROW_STATUS_LABEL[s]} <b>{counts[s]}</b></div>
       ))}
@@ -348,26 +441,31 @@ export function SimRoom({ clock, closed, rows, view, onViewChange, kpis, status,
           </div>
         )}
         <div className="sr-scroll">
+          <div className="sr-ttl"><b>今日計畫</b><span>開盤前 · 點列看 K 線</span></div>
           <table className="sr-rows">
             <thead><tr>
+              <th className="l">狀態</th>
               <th className="l">標的</th>
               <th title="前一交易日收盤（當日基準評估後才有）">昨收</th>
               <th>選股參考價</th>
               <th className="l">權重 · 配置</th>
-              <th className="hide-m" title="配置 ÷ 參考價；含零股、未扣手續費；參考價差 >20% 時不算">預估股數</th>
-              <th className="l hide-m" title="觸發價要 09:15 開盤 15 分鐘高點才確定">觸發價</th>
-              <th className="l hide-m"><DotsHeader groups={groups} /></th>
+              <th title="配置 ÷ 參考價；含零股、未扣手續費；參考價差 >20% 時不算">預估股數</th>
+              <th className="l" title="近 20 日 K 線：紅＝收高於開、綠＝收低於開">20 日 K 線</th>
+              <th className="l">20 日區間 · 距高點</th>
+              <th className="l"><GateHeader groups={groups} /></th>
             </tr></thead>
             <tbody>
               {sorted.map((row) => (
                 <tr key={row.symbol} {...rowProps(row)}>
-                  <td className="l sym"><b>{row.symbol}</b><span>{row.name}</span><RefFlag row={row} /><RowMarks row={row} /></td>
-                  <td className="px">{formatPrice(row.prevClose)}</td>
-                  <td className={row.refFlag ? 'text-warn' : ''}>{formatPrice(row.refPrice)}</td>
-                  <td className="l"><AllocCell row={row} maxWeight={maxWeight} />{row.weight != null && <span className="ml-1 text-muted-foreground">{formatNumber(row.weight * 100, 1)}%</span>}</td>
-                  <td className="hide-m">{row.refFlag ? <span className="text-warn">待確認</span> : formatShares(row.estimatedShares)}</td>
-                  <td className="l hide-m text-muted-foreground">{row.owner === 's12' ? (row.trigger != null ? formatPrice(row.trigger) : 'S12 結構定') : row.orh != null ? formatPrice(row.orh) : orhPending ? '09:15 定' : '缺資料'}</td>
-                  <td className="l dotcell"><Dots row={row} keys={CONDITION_GROUPS[0].keys} /></td>
+                  <td className="l" data-label="狀態"><StatusGlyph status={row.status} view={view} text={row.statusText} /></td>
+                  <td className="l sym" data-label="標的"><b>{row.symbol}</b><span>{row.name}</span><RefFlag row={row} /><RowMarks row={row} /></td>
+                  <td className="px" data-label="昨收">{formatPrice(row.prevClose)}</td>
+                  <td className={row.refFlag ? 'text-warn' : ''} data-label="選股參考價">{formatPrice(row.refPrice)}</td>
+                  <td className="l" data-label="權重 · 配置"><AllocCell row={row} maxWeight={maxWeight} />{row.weight != null && <span className="ml-1 text-muted-foreground">{formatNumber(row.weight * 100, 1)}%</span>}</td>
+                  <td data-label="預估股數">{row.refFlag ? <span className="text-warn">待確認</span> : formatShares(row.estimatedShares)}</td>
+                  <td className="l wide" data-label="20 日 K 線"><CandleSpark bars={bars[row.symbol] ?? []} /></td>
+                  <td className="l wide" data-label="20 日區間 · 距高點"><RangeCell values={(bars[row.symbol] ?? []).map((b) => b.close)} /></td>
+                  <td className="l dotcell" data-label="進場關卡"><span className="sr-gate-head"><GateHeader groups={groups} /></span><GateProgress row={row} groups={groups} /><BlockerCell row={row} premarket />{row.debateLabel && <div className="why">{row.debateLabel}</div>}</td>
                 </tr>
               ))}
             </tbody>
@@ -380,33 +478,32 @@ export function SimRoom({ clock, closed, rows, view, onViewChange, kpis, status,
     let lastGroup: RowStatus | null = null
     table = (
       <div className="sr-scroll">
+        {post && <div className="sr-ttl"><b>今天結果</b><span>每檔一個終態 · 點列看 K 線</span></div>}
         <table className="sr-rows">
           <thead><tr>
             <th className="l">{post ? '結果' : '狀態'}</th>
             <th className="l">標的</th>
-            <th>{post ? '最後價' : '現價'}</th>
-            <th>漲跌</th>
+            <th>{post ? '最後價 · 漲跌' : '現價 · 漲跌'}</th>
             <th className="l" title="▏參考價 ┃觸發價（ORH） ░到追價上限 │VWAP ● 現價">{post ? '價格梯' : '價格梯 · 距觸發'}</th>
-            {post && <th className="hide-m">成交</th>}
-            <th className="l hide-m"><DotsHeader /></th>
-            <th className="hide-m">配置</th>
+            {post && <th>成交</th>}
+            <th className="l"><GateHeader /></th>
+            <th>配置</th>
           </tr></thead>
           <tbody>
             {sorted.map((row) => {
               const header = !post && row.status !== lastGroup
-                ? <tr className="grp"><td colSpan={8}>{GROUP_TITLE[row.status]}</td></tr> : null
+                ? <tr className="grp"><td colSpan={7}>{GROUP_TITLE[row.status]}</td></tr> : null
               lastGroup = row.status
               return (
                 <FragmentRow key={row.symbol} header={header}>
                   <tr {...rowProps(row)}>
-                    <td className="l"><StatusGlyph status={row.status} view={view} outcome={postOutcome(row)} text={row.statusText} /></td>
-                    <td className="l sym"><b>{row.symbol}</b><span>{row.name}</span><RefFlag row={row} /><RowMarks row={row} /></td>
-                    <td className="px">{formatPrice(row.price)}</td>
-                    <td><Change row={row} /></td>
-                    <td className="l ladder wide">{row.completed && row.blockerText ? <span className="text-muted-foreground" title={row.reasonCode ?? undefined}>{row.blockerText}</span> : <PriceLadder row={row} showDistance={!post} orhPending={orhPending} />}</td>
-                    {post && <td className="hide-m">{row.fill ? `${formatPrice(row.fill.avgPrice)} × ${formatNumber(row.fill.shares, 0)}` : '—'}</td>}
-                    <td className="l dotcell"><Dots row={row} /></td>
-                    <td className="hide-m"><AllocCell row={row} maxWeight={maxWeight} /></td>
+                    <td className="l" data-label={post ? '結果' : '狀態'}><StatusGlyph status={row.status} view={view} outcome={postOutcome(row)} text={row.statusText} /></td>
+                    <td className="l sym" data-label="標的"><b>{row.symbol}</b><span>{row.name}</span><RefFlag row={row} /><RowMarks row={row} /></td>
+                    <td className="px" data-label={post ? '最後價 · 漲跌' : '現價 · 漲跌'}>{formatPrice(row.price)}{row.price != null && <div className="chg"><Change row={row} /></div>}</td>
+                    <td className="l ladder wide" data-label={post ? '價格梯' : '價格梯 · 距觸發'}>{row.completed ? <span className="text-muted-foreground">—</span> : <PriceLadder row={row} width={160} showDistance={!post} orhPending={orhPending} />}</td>
+                    {post && <td data-label="成交">{row.fill ? `${formatPrice(row.fill.avgPrice)} × ${formatNumber(row.fill.shares, 0)}` : '—'}</td>}
+                    <td className="l dotcell" data-label="進場關卡"><span className="sr-gate-head"><GateHeader /></span><GateProgress row={row} /><BlockerCell row={row} /></td>
+                    <td data-label="配置"><AllocCell row={row} maxWeight={maxWeight} /></td>
                   </tr>
                 </FragmentRow>
               )
@@ -419,15 +516,18 @@ export function SimRoom({ clock, closed, rows, view, onViewChange, kpis, status,
 
   return (
     <div className="simroom" data-view={view}>
-      <SessionAxis clock={clock} view={view} closed={closed} onViewChange={onViewChange} />
-      {kpiStrip}
-      {status}
-      <div className="sr-main" ref={mainRef}>
+      {/* 上方三列（時段、KPI、狀態）併成一張卡，用細線分隔，跟下方表格同一種樣式。 */}
+      <div className="sr-panel sr-head">
+        <SessionAxis clock={clock} view={view} closed={closed} onViewChange={onViewChange} />
+        {kpiStrip}
+        {status && <div className="sr-meta">{status}</div>}
+      </div>
+      <div className={`sr-main ${withDetail && current ? '' : 'solo'}`} ref={mainRef}>
         <div className="sr-panel">
           {table}
           {rows.length > 0 && <Legend view={view} />}
         </div>
-        <SidePanel row={current} view={view} onOpenChart={onOpenChart} orhPending={orhPending} panelRef={sideRef} />
+        {withDetail && current && <SidePanel row={current} onOpenChart={onOpenChart} orhPending={orhPending} panelRef={sideRef} />}
       </div>
       {view === 'premarket' && rows.length > 0 && <p className="mt-1 text-[11px] text-muted-foreground">資料日 {formatDateShort(dataDate ?? clock.date)}{dataDate && dataDate !== clock.date ? '（不是今天）' : ''} · 觸發價與追價上限 09:15 開盤 15 分鐘高點確定後才有值</p>}
     </div>

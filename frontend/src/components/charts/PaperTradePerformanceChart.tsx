@@ -2,7 +2,6 @@
 import {
   AreaSeries,
   ColorType,
-  HistogramSeries,
   LineSeries,
   LineStyle,
   createChart,
@@ -21,6 +20,7 @@ import {
   buildPaperTradePerformancePoints,
   periodMaxDrawdown,
   dateOnly,
+  gapBandData,
   periodRows,
   sortedSnapshots,
   type BenchmarkKey,
@@ -47,6 +47,7 @@ const PERIODS = [
   { key: 'ALL', label: 'ALL' },
 ] as const
 
+// 11/26 Wei 定案：只和大盤（TWII）與 0050 比；差距帶只畫 bot↔0050。
 // 基準線用中性系列色（不是漲跌、也不是狀態），避免和 bot 的紅綠混讀。
 const BENCHMARK_SERIES: Array<{
   key: BenchmarkKey
@@ -55,12 +56,11 @@ const BENCHMARK_SERIES: Array<{
   lineStyle: LineStyle
   width: 1 | 2
 }> = [
-  { key: '0050', label: '0050', color: '#818cf8', lineStyle: LineStyle.Dashed, width: 2 },
-  { key: 'TWII', label: 'TWII', color: '#a78bfa', lineStyle: LineStyle.Dotted, width: 1 },
-  { key: '00981A', label: '00981A', color: '#fbbf24', lineStyle: LineStyle.Solid, width: 1 },
-  { key: '00631L', label: '00631L', color: '#fb923c', lineStyle: LineStyle.Solid, width: 1 },
-  { key: '00403A', label: '00403A', color: '#38bdf8', lineStyle: LineStyle.Solid, width: 1 },
+  { key: '0050', label: '0050', color: '#a78bfa', lineStyle: LineStyle.Solid, width: 2 },
+  { key: 'TWII', label: '大盤 TWII', color: '#94a3b8', lineStyle: LineStyle.Dashed, width: 1 },
 ]
+const CHART_BG = '#0a0b0f'
+const CHART_HEIGHT = 280
 
 function executionTime(row: any): string | null {
   return dateOnly(row?.filled_at ?? row?.executed_at ?? row?.submitted_at ?? row?.created_at ?? row?.date ?? row?.trade_date)
@@ -103,19 +103,20 @@ function buildExecutionMarkers(orders: unknown = [], pendingBuys: unknown = [], 
 function chartOptions(width: number): DeepPartial<ChartOptions> {
   return {
     width,
-    height: 360,
+    height: CHART_HEIGHT,
     layout: {
-      background: { type: ColorType.Solid, color: '#0a0b0f' },
+      background: { type: ColorType.Solid, color: CHART_BG },
       textColor: '#8992a3',
       fontFamily: 'Segoe UI Variable, PingFang TC, Microsoft JhengHei, system-ui, sans-serif',
     },
+    // 差距帶的下緣用背景色蓋掉下方，格線會被蓋得一段一段，所以不畫格線。
     grid: {
-      vertLines: { color: 'rgba(255, 255, 255, 0.045)' },
-      horzLines: { color: 'rgba(255, 255, 255, 0.055)' },
+      vertLines: { visible: false },
+      horzLines: { visible: false },
     },
     rightPriceScale: {
       borderColor: 'rgba(255, 255, 255, 0.035)',
-      scaleMargins: { top: 0.08, bottom: 0.22 },
+      scaleMargins: { top: 0.08, bottom: 0.08 },
     },
     timeScale: {
       borderColor: 'rgba(255, 255, 255, 0.035)',
@@ -166,16 +167,11 @@ export default function PaperTradePerformanceChart({ pnl, orders = [], pendingBu
     const chart = createChart(container, chartOptions(container.clientWidth || 720))
     chartRef.current = chart
 
-    const botSeries = chart.addSeries(AreaSeries, {
-      lineColor: latest?.bot != null && latest.bot < 0 ? TW_COLORS.down : TW_COLORS.up,
-      topColor: latest?.bot != null && latest.bot < 0 ? 'rgba(34, 197, 94, 0.18)' : 'rgba(255, 77, 79, 0.18)',
-      bottomColor: 'rgba(10, 11, 15, 0)',
-      lineWidth: 2,
-      priceLineVisible: false,
-      title: 'bot',
-    })
-    botSeries.setData(botLineData(points))
-    if (markers.length) createSeriesMarkers(botSeries, markers)
+    // 先畫差距帶（較高者上色、較低者用背景色蓋掉），再把三條線疊在上面。
+    const band = gapBandData(points, '0050', { lead: 'rgba(255, 77, 79, 0.22)', lag: 'rgba(34, 197, 94, 0.22)', background: CHART_BG })
+    const bandOptions = { lineVisible: false, lastValueVisible: false, priceLineVisible: false, crosshairMarkerVisible: false } as const
+    chart.addSeries(AreaSeries, { ...bandOptions, topColor: 'transparent', bottomColor: 'transparent' }).setData(band.upper)
+    chart.addSeries(AreaSeries, { ...bandOptions, topColor: CHART_BG, bottomColor: CHART_BG }).setData(band.lower)
 
     for (const benchmark of visibleBenchmarks) {
       const series = chart.addSeries(LineSeries, {
@@ -189,21 +185,19 @@ export default function PaperTradePerformanceChart({ pnl, orders = [], pendingBu
       series.setData(benchmarkLineData(points, benchmark.key))
     }
 
-    const drawdownSeries = chart.addSeries(HistogramSeries, {
-      priceFormat: { type: 'volume' },
-      priceScaleId: '',
-      color: TW_COLORS.down,
-    }, 1)
-    drawdownSeries.setData(points.map((point) => point.drawdown == null ? { time: point.time } : ({
-      time: point.time,
-      value: point.drawdown,
-      color: point.drawdown < -5 ? TW_COLORS.down : 'rgba(148, 163, 184, 0.35)',
-    })))
+    const botSeries = chart.addSeries(LineSeries, {
+      color: latest?.bot != null && latest.bot < 0 ? TW_COLORS.down : TW_COLORS.up,
+      lineWidth: 2,
+      priceLineVisible: false,
+      title: '模擬帳戶',
+    })
+    botSeries.setData(botLineData(points))
+    if (markers.length) createSeriesMarkers(botSeries, markers)
 
     chart.timeScale().fitContent()
     const resizeObserver = new ResizeObserver((entries) => {
       const entry = entries[0]
-      if (entry) chart.applyOptions({ width: Math.max(320, Math.floor(entry.contentRect.width)), height: 360 })
+      if (entry) chart.applyOptions({ width: Math.max(320, Math.floor(entry.contentRect.width)), height: CHART_HEIGHT })
     })
     resizeObserver.observe(container)
 
@@ -239,29 +233,35 @@ export default function PaperTradePerformanceChart({ pnl, orders = [], pendingBu
         </div>
         <span className="text-muted-foreground" title="bot 與基準都從期間第一個資產紀錄日起算">起點 {start ? formatDateShort(start) : '—'}</span>
         <span className="inline-flex items-center gap-1">
-          <span className="h-2 w-2 rounded-full" style={{ backgroundColor: (latest?.bot ?? 0) < 0 ? TW_COLORS.down : TW_COLORS.up }} />
-          bot <b className={priceToneClass(latest?.bot)}>{formatSignedPct(latest?.bot)}</b>
+          <span className="h-0.5 w-3" style={{ backgroundColor: (latest?.bot ?? 0) < 0 ? TW_COLORS.down : TW_COLORS.up }} />
+          模擬帳戶 <b className={priceToneClass(latest?.bot)}>{formatSignedPct(latest?.bot)}</b>
         </span>
-        <span title="所選期間內 bot 總值從期間最高點的最大跌幅（不含期間之前的回撤）">期間 MDD <b className={maxDrawdown != null && maxDrawdown < 0 ? 'text-down' : 'text-muted-foreground'}>{maxDrawdown == null ? '—' : formatSignedPct(maxDrawdown)}</b></span>
         {BENCHMARK_SERIES.map((item) => {
           const value = latestBenchmarkReturn(points, item.key)
           const base = bases[item.key]
           const late = base && !base.aligned
+          const gap = value != null && latest?.bot != null && !late ? latest.bot - value : null
           return (
             <span
               key={item.key}
               className={`inline-flex items-center gap-1 ${value != null ? 'text-foreground' : 'text-muted-foreground'}`}
-              title={late ? `${item.label} 在起點日沒有資料，從 ${base.startDate} 起算，與 bot 不同區間` : `${item.label} 與 bot 同起點`}
+              title={late ? `${item.label} 在起點日沒有資料，從 ${base.startDate} 起算，與模擬帳戶不同區間，不算差距` : `${item.label} 與模擬帳戶同起點`}
             >
               <span className="h-0.5 w-3" style={{ backgroundColor: value != null ? item.color : '#475569' }} />
               {item.label} <b className={priceToneClass(value)}>{formatSignedPct(value)}</b>
+              {gap != null && <span className={priceToneClass(gap)}>（差 {gap >= 0 ? '+' : ''}{gap.toFixed(1)} pt）</span>}
               {late && <span className="text-warn">自 {formatDateShort(base.startDate)} 起算</span>}
             </span>
           )
         })}
+        <span className="ml-auto" title="所選期間內模擬帳戶總值從期間最高點的最大跌幅（不含期間之前的回撤）">期間 MDD <b className={maxDrawdown != null && maxDrawdown < 0 ? 'text-down' : 'text-muted-foreground'}>{maxDrawdown == null ? '—' : formatSignedPct(maxDrawdown)}</b></span>
       </header>
 
-      <div ref={containerRef} className="h-[360px] min-h-[360px] max-h-[360px] w-full overflow-hidden bg-[#0a0b0f]" />
+      <div ref={containerRef} className="h-[280px] min-h-[280px] max-h-[280px] w-full overflow-hidden bg-[#0a0b0f]" />
+      <div className="flex gap-3 px-3 py-1 text-[11px] text-muted-foreground">
+        <span className="inline-flex items-center gap-1"><i className="inline-block h-2 w-3 rounded-sm" style={{ background: 'rgba(255, 77, 79, 0.35)' }} />領先 0050</span>
+        <span className="inline-flex items-center gap-1"><i className="inline-block h-2 w-3 rounded-sm" style={{ background: 'rgba(34, 197, 94, 0.35)' }} />落後 0050</span>
+      </div>
     </section>
   )
 }

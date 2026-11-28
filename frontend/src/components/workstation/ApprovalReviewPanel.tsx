@@ -111,17 +111,17 @@ export function ApprovalReviewPanel({
                 {metric.value != null ? (
                   <div className="mt-2 sv-num text-lg text-[#fff1cf]">{metric.value}</div>
                 ) : (
-                  <div className="mt-2 grid grid-cols-3 gap-2 sv-num text-[12px]">
+                  <div className="mt-2 grid grid-cols-3 gap-2 break-all sv-num text-[12px]">
                     <div>
-                      <p className="text-[#657489]">candidate</p>
+                      <p className="text-[#657489]">候選</p>
                       <p className="mt-1 text-slate-100">{metric.candidate ?? '-'}</p>
                     </div>
                     <div>
-                      <p className="text-[#657489]">current</p>
+                      <p className="text-[#657489]">現行</p>
                       <p className="mt-1 text-slate-100">{metric.champion ?? '-'}</p>
                     </div>
                     <div>
-                      <p className="text-[#657489]">delta</p>
+                      <p className="text-[#657489]">差值</p>
                       <p className="mt-1 text-slate-100">{metric.delta ?? '-'}</p>
                     </div>
                   </div>
@@ -172,8 +172,9 @@ export function ApprovalReviewPanel({
         <div className="border-t border-[#263247] bg-[#071019] p-3">
           {blockers.length > 0 && (
             <div className="mb-3 border-l-2 border-warn p-2 text-xs leading-5 text-foreground">
-              <span className="inline-flex items-center gap-1 font-semibold text-warn"><WorkstationToneIcon tone="warn" />Blockers / 注意事項：</span>
-              <span>{blockers.map((item, index) => <span key={index}>{index > 0 ? '、' : ''}{item}</span>)}</span>
+              <span className="inline-flex items-center gap-1 font-semibold text-warn"><WorkstationToneIcon tone="warn" />Blockers / 注意事項</span>
+              {/* 一項一列：同一行串接的 inline span 換行時框會互相疊住。 */}
+              <ul className="mt-1 space-y-0.5 break-words">{blockers.map((item, index) => <li key={index}>{item}</li>)}</ul>
             </div>
           )}
           {nextAction && <p className="mb-3 text-xs leading-5 text-[#a7b4c7]">next: {nextAction}</p>}

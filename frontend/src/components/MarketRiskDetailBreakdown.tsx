@@ -284,7 +284,7 @@ export function MarketRiskDetailBreakdown({ risk }: { risk: any }) {
           </div>
           <div className="flex shrink-0 items-center gap-2">
             {view.preview && <StatusBadge tone="warn" title="部分欄位尚未入庫">資料不全</StatusBadge>}
-            <span className="text-[11px] text-muted-foreground" title={`來源：${view.source}`}>{humanSource(view.source, '期交所')}</span>
+            <span className="text-[11px] text-muted-foreground" title="資料來源">{humanSource(view.source, '期交所')}</span>
           </div>
         </div>
 

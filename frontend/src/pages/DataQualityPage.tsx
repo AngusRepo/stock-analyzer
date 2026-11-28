@@ -13,7 +13,7 @@ import {
 } from '@/components/workstation/WorkstationChrome'
 import { STATUS_CHIP, TW_COLORS } from '@/lib/colorTokens'
 import { StatusIcon } from '@/components/ui/status'
-import { humanStatus } from '@/lib/humanLabels'
+import { humanSource, humanStatus } from '@/lib/humanLabels'
 
 const DataQualityTrendChart = lazy(() => import('@/components/charts/DataQualityTrendChart'))
 
@@ -26,12 +26,12 @@ function statusTone(status?: string): WorkstationTone {
 
 const DQ_STATUS_LABEL: Record<string, string> = { ok: '通過', pass: '通過', warn: '注意', fail: '未通過', block: '阻擋', missing: '缺資料' }
 
-/** 資料品質狀態碼 → 中文短名；原始碼放 title。 */
+/** 資料品質狀態碼 → 中文短名；原始碼不進 tooltip（Wei 規則）。 */
 function DqStatusPill({ tone, raw }: { tone: WorkstationTone; raw?: string | null }) {
   const code = raw ?? 'missing'
   return (
     <WorkstationStatusPill tone={tone}>
-      <span title={code}>{DQ_STATUS_LABEL[code.toLowerCase()] ?? humanStatus(code)}</span>
+      <span>{DQ_STATUS_LABEL[code.toLowerCase()] ?? humanStatus(code)}</span>
     </WorkstationStatusPill>
   )
 }
@@ -42,11 +42,16 @@ function scoreFromChecks(checks: DataQualityCheck[]) {
   return Math.round((score / checks.length) * 100)
 }
 
+// 後端識別名（snake_case）換成空白分隔的字，畫面不露原碼、長名稱可換行。
+function plainId(value: unknown): string {
+  return String(value ?? '').replace(/_/g, ' ')
+}
+
 function metricSummary(check: DataQualityCheck): string {
   if (!check.metrics) return 'no metrics'
   return Object.entries(check.metrics)
     .slice(0, 4)
-    .map(([key, value]) => `${key}: ${typeof value === 'number' ? Number(value.toFixed(4)) : String(value)}`)
+    .map(([key, value]) => `${plainId(key)}: ${typeof value === 'number' ? Number(value.toFixed(4)) : plainId(typeof value === 'object' && value !== null ? '…' : value)}`)
     .join(' / ')
 }
 
@@ -70,7 +75,7 @@ function DataQualityMetric({ label, value, tone, detail }: { label: string; valu
         {value}
       </p>
       <MiniBar tone={tone} value={tone === 'error' ? 100 : tone === 'warn' ? 62 : 92} />
-      <p className="mt-2 truncate text-xs text-muted-foreground">{detail}</p>
+      <p className="mt-2 break-words text-xs text-muted-foreground">{detail}</p>
     </div>
   )
 }
@@ -111,15 +116,15 @@ function DataRuntimeSourcePanel({ runtime }: { runtime?: V41DataRuntimeStatus })
             return (
               <div key={source} className="bg-[#05070c] p-3">
                 <div className="flex items-center justify-between gap-2">
-                  <p className="sv-num text-[11px] normal-case text-slate-100">{source}</p>
+                  <p className="min-w-0 break-words sv-num text-[11px] normal-case text-slate-100">{plainId(source)}</p>
                   <DqStatusPill tone={tone} raw={row?.freshness_status} />
                 </div>
                 <MiniBar tone={tone} value={row ? Math.max(0, 100 - missing) : 0} />
                 <p className="mt-2 text-[10px] leading-4 text-muted-foreground">
                   rows {row?.rows ?? 0} / missing {missing}% / dup {duplicate}%
                 </p>
-                <p className="mt-1 truncate text-[10px] text-muted-foreground">{row?.role ?? 'not wired'} / {row?.decision_effect ?? 'no effect'}</p>
-                <p className="mt-1 truncate text-[10px] text-muted-foreground">{row?.latest_materialization ?? 'no materialization'}</p>
+                <p className="mt-1 break-words text-[10px] text-muted-foreground">{plainId(row?.role ?? 'not wired')} / {plainId(row?.decision_effect ?? 'no effect')}</p>
+                <p className="mt-1 break-all text-[10px] text-muted-foreground">{plainId(row?.latest_materialization ?? 'no materialization')}</p>
               </div>
             )
           })}
@@ -165,7 +170,7 @@ function MarketMaterializationPanel({ checks }: { checks: DataQualityCheck[] }) 
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <Database className="h-4 w-4 text-sky-300" />
-            <p className="text-sm font-semibold text-slate-100">{check?.summary ?? '尚未取得首頁資料匯入檢查'}</p>
+            <p className="text-sm font-semibold text-slate-100">{check?.summary ? plainId(check.summary) : '尚未取得首頁資料匯入檢查'}</p>
           </div>
           <DqStatusPill tone={tone} raw={check?.status} />
         </div>
@@ -173,7 +178,7 @@ function MarketMaterializationPanel({ checks }: { checks: DataQualityCheck[] }) 
       <div className="grid gap-px bg-[#263247] md:grid-cols-2 xl:grid-cols-4">
         {items.map((item) => {
           const itemTone = statusTone(item.status)
-          const freshness = item.lag_days == null ? 'lag n/a' : `lag ${item.lag_days}d`
+          const freshness = item.lag_days == null ? '落後天數未知' : `落後 ${item.lag_days} 天`
           const colorClass = itemTone === 'ok'
             ? 'text-ok'
             : itemTone === 'warn'
@@ -185,16 +190,16 @@ function MarketMaterializationPanel({ checks }: { checks: DataQualityCheck[] }) 
             <div key={item.key} className="min-w-0 bg-[#05070c] p-3">
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
-                  <p className="truncate text-sm font-semibold text-slate-100">{item.label}</p>
-                  <p className="mt-1 truncate text-[11px] text-muted-foreground">{item.scope}</p>
+                  <p className="break-words text-sm font-semibold text-slate-100">{item.label}</p>
+                  <p className="mt-1 break-words text-[11px] text-muted-foreground">{plainId(item.scope)}</p>
                 </div>
                 <DqStatusPill tone={itemTone} raw={item.status} />
               </div>
               <p className={`mt-3 sv-num text-xl font-semibold ${colorClass}`}>{item.rows}</p>
               <MiniBar tone={itemTone} value={itemTone === 'ok' ? 92 : itemTone === 'warn' ? 58 : 100} />
-              <p className="mt-2 truncate sv-num text-[11px] normal-case text-slate-400">{item.latest_date ?? 'no date'} / {freshness}</p>
-              <p className="mt-1 truncate text-[11px] text-muted-foreground">{item.source}</p>
-              {item.root_cause && <p className="mt-1 truncate text-[11px] text-warn" title={item.root_cause}>{item.root_cause}</p>}
+              <p className="mt-2 break-words sv-num text-[11px] normal-case text-slate-400">{item.latest_date ?? 'no date'} / {freshness}</p>
+              <p className="mt-1 break-words text-[11px] text-muted-foreground">{humanSource(item.source, '正式日資料')}</p>
+              {item.root_cause && <p className="mt-1 break-words text-[11px] text-warn">{humanStatus(item.root_cause, plainId(item.root_cause))}</p>}
             </div>
           )
         })}
@@ -211,7 +216,7 @@ function MarketMaterializationPanel({ checks }: { checks: DataQualityCheck[] }) 
 function CheckRow({ check, focused }: { check: DataQualityCheck; focused?: boolean }) {
   const tone = statusTone(check.status)
   return (
-    <div id={`dq-${check.id}`} className={`scroll-mt-24 grid gap-3 border-b p-3 text-xs last:border-0 lg:grid-cols-[0.8fr_1fr_0.8fr_auto] ${
+    <div id={`dq-${check.id}`} className={`scroll-mt-24 grid grid-cols-[minmax(0,1fr)] gap-3 border-b p-3 text-xs last:border-0 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1fr)_minmax(0,0.8fr)_auto] ${
       focused ? 'ring-1 ring-amber-300/60 ' : ''
     }${
       check.status === 'fail' ? 'border-fail/25 bg-fail/[0.06]'
@@ -219,15 +224,15 @@ function CheckRow({ check, focused }: { check: DataQualityCheck; focused?: boole
           : 'border-[#263247] bg-[#05070c]'
     }`}>
       <div className="min-w-0">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <DqStatusPill tone={tone} raw={check.status} />
-          <p className="truncate text-sm font-semibold text-slate-100">{check.label}</p>
+          <p className="min-w-0 break-words text-sm font-semibold text-slate-100">{check.label}</p>
         </div>
-        <p className="mt-1 sv-num text-[10px] normal-case text-muted-foreground">{check.id}</p>
+        <p className="mt-1 break-all sv-num text-[10px] normal-case text-muted-foreground">{plainId(check.id)}</p>
         <MiniBar tone={tone} value={check.status === 'ok' ? 96 : check.status === 'warn' ? 62 : 100} />
       </div>
-      <p className="line-clamp-2 leading-5 text-slate-400">{check.summary}</p>
-      <p className="sv-num text-[10px] leading-5 text-muted-foreground">{metricSummary(check)}</p>
+      <p className="break-words leading-5 text-slate-400">{plainId(check.summary)}</p>
+      <p className="break-all sv-num text-[10px] leading-5 text-muted-foreground">{metricSummary(check)}</p>
       <a href={`/data-quality?focus=${check.id}`} className="inline-flex items-start justify-end gap-1 sv-num text-[10px] normal-case text-sky-300 hover:text-sky-200">
         Inspect <ExternalLink className="h-3 w-3" />
       </a>

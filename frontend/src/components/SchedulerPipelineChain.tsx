@@ -1,3 +1,4 @@
+import { jobSummaryText } from '@/lib/humanLabels'
 import { ArrowRight } from 'lucide-react'
 import type { ReactNode } from 'react'
 import type { SchedulerJob } from '@/lib/api'
@@ -85,7 +86,7 @@ export function SchedulerStageCard({ id, title, job, timingJob, detail, onSelect
     <div className="mt-2"><WorkstationStatusPill tone={statusTone ?? (attentionSkipReason(job) ? 'warn' : tone(job?.lastStatus))}>{statusText || label(job?.lastStatus)}</WorkstationStatusPill></div>
     <p className="mt-2 text-[10px] text-[#8a92a6]">{stageReceiptDateLabel(id, job?.statusRunDate)}</p>
     {detail && <p className="mt-1 text-[10px] leading-4 text-[#8a92a6]">{detail}</p>}
-    {job?.summary && <p className="mt-2 line-clamp-2 break-words text-[10px] leading-4 text-[#70809b]" title={job.summary}>{job.summary}</p>}
+    {job?.summary && <p className="mt-2 break-all text-[10px] leading-4 text-[#70809b]">{jobSummaryText(job)}</p>}
     </>}
   </Element>
 }

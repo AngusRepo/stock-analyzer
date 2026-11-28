@@ -37,7 +37,7 @@ export default function ResearchValidationWorkbench() {
   return (
     <section className="rounded-2xl border border-slate-800 bg-slate-950/70 p-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2><span className="font-semibold text-slate-100">研究驗證工作台</span><span className="ml-3 text-xs text-slate-400">搜尋歷史 · 參數穩健區域 · 前視檢查 · 版本漂移</span></h2>
+        <h2 className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-0.5"><span className="font-semibold text-slate-100">研究驗證工作台</span><span className="text-xs text-slate-400">搜尋歷史 · 參數穩健區域 · 前視檢查 · 版本漂移</span></h2>
         <Button size="sm" variant="outline" disabled={loaded && (canonical.isFetching || runs.isFetching)} onClick={() => { if (loaded) { void canonical.refetch(); void runs.refetch() } else setLoaded(true) }}>
           {!loaded ? '載入驗證報告' : canonical.isFetching || runs.isFetching ? '讀取中…' : '重新讀取'}
         </Button>
@@ -72,19 +72,19 @@ export default function ResearchValidationWorkbench() {
             <h3 className="font-medium text-slate-200">最佳點附近是否也有好結果</h3>
             <p className="mt-2 text-sm text-slate-400">以驗證期鄰域的較差四分位評估平台。Holdout 只供查看，不參與選參數。至少需要 {robust?.minimum_neighbors ?? 5} 個同資料、同成本、同窗口鄰居。</p>
             <p className="mt-2 text-sm text-amber-200">{robust?.recommended_for_review ? `可優先審閱：${robust.recommended_for_review}（仍是診斷）` : '尚無可驗證的穩健平台，需補鄰域評估。'}</p>
-            <pre className="mt-2 overflow-auto text-xs text-slate-400">目前參數位置：{JSON.stringify(robust?.current_parameters ?? {})}</pre>
+            <pre className="mt-2 whitespace-pre-wrap break-all text-xs text-slate-400">目前參數位置：{JSON.stringify(robust?.current_parameters ?? {})}</pre>
           </div>
-          <div className="max-h-96 overflow-auto">
-            <table className="w-full text-left text-xs">
-              <thead className="sticky top-0 bg-slate-950 text-slate-400"><tr>{['Trial / 狀態', '參數', '驗證 Sharpe', 'Holdout Sharpe', '鄰域 / 現行距離', '成本 / 樣本 / 缺件'].map(h => <th key={h} className="p-2">{h}</th>)}</tr></thead>
+          <div>
+            <table className="sv-stack-table w-full text-left text-xs">
+              <thead className="bg-slate-950 text-slate-400"><tr>{['Trial / 狀態', '參數', '驗證 Sharpe', 'Holdout Sharpe', '鄰域 / 現行距離', '成本 / 樣本 / 缺件'].map(h => <th key={h} className="p-2">{h}</th>)}</tr></thead>
               <tbody>{trials.map(t => {
                 const neighbor = robust?.rows?.find((r: any) => r.trial_id === t.trial_id)
                 return <tr key={t.trial_id} className="border-t border-slate-800 text-slate-300">
-                  <td className="p-2 align-top"><div>{t.trial_id}</div><div className="text-muted-foreground">{t.state}</div><span className="cursor-help text-[11px] text-muted-foreground underline decoration-dotted" title={`${t.source.pointer}\n${t.receipt_id}`}>來源</span></td>
-                  <td className="max-w-60 p-2 align-top"><code className="break-all">{JSON.stringify(t.parameters ?? '原始參數缺失')}</code></td>
-                  <td className="p-2 align-top">{metric(t.validation?.sharpe)}</td><td className="p-2 align-top">{metric(t.holdout?.sharpe)}</td>
-                  <td className="p-2 align-top">{neighbor?.neighbor_count ?? 0} / {metric(neighbor?.current_distance)}<br />較差四分位 {metric(neighbor?.neighbor_lower_quartile)}</td>
-                  <td className="max-w-64 p-2 align-top">{JSON.stringify(t.cost)}<br />樣本 {t.sample_count ?? '未保留'}<br />成本壓力測試 {neighbor?.cost_stress ? '有紀錄' : '缺少證據'}<br /><span className="text-amber-200">{t.gaps.join(', ')}</span></td>
+                  <td data-label="Trial / 狀態" className="p-2 align-top"><div>{t.trial_id}</div><div className="text-muted-foreground">{t.state}</div><span className="cursor-help text-[11px] text-muted-foreground underline decoration-dotted" title={`${t.source.pointer}\n${t.receipt_id}`}>來源</span></td>
+                  <td data-label="參數" className="sv-stack-wide p-2 align-top md:max-w-60"><code className="break-all">{JSON.stringify(t.parameters ?? '原始參數缺失')}</code></td>
+                  <td data-label="驗證 Sharpe" className="p-2 align-top">{metric(t.validation?.sharpe)}</td><td data-label="Holdout Sharpe" className="p-2 align-top">{metric(t.holdout?.sharpe)}</td>
+                  <td data-label="鄰域 / 現行距離" className="p-2 align-top">{neighbor?.neighbor_count ?? 0} / {metric(neighbor?.current_distance)}<br />較差四分位 {metric(neighbor?.neighbor_lower_quartile)}</td>
+                  <td data-label="成本 / 樣本 / 缺件" className="sv-stack-wide p-2 align-top md:max-w-64">{JSON.stringify(t.cost)}<br />樣本 {t.sample_count ?? '未保留'}<br />成本壓力測試 {neighbor?.cost_stress ? '有紀錄' : '缺少證據'}<br /><span className="text-amber-200">{t.gaps.join(', ')}</span></td>
                 </tr>
               })}</tbody>
             </table>
@@ -104,11 +104,11 @@ export default function ResearchValidationWorkbench() {
           {audit && <div className="mt-3 space-y-3 text-sm text-slate-300">
             <p>前視檢查：<strong>{audit.causal_audit.status}</strong> · {audit.causal_audit.reason}</p>
             <p>過去決策樣本 {audit.causal_audit.decision_samples ?? 0}；尚未驗證上游指標重算。</p>
-            <table className="w-full text-left text-xs"><thead><tr><th>檢查</th><th>截止日期</th><th>過去決策一致</th></tr></thead><tbody>{(audit.causal_audit.checks ?? []).map((c: any) => <tr key={`${c.kind}:${c.cutoff}`}><td className="py-1">{c.kind}</td><td>{c.cutoff}</td><td>{c.passed ? '是' : '否'}</td></tr>)}</tbody></table>
+            <table className="sv-stack-table w-full text-left text-xs"><thead><tr><th>檢查</th><th>截止日期</th><th>過去決策一致</th></tr></thead><tbody>{(audit.causal_audit.checks ?? []).map((c: any) => <tr key={`${c.kind}:${c.cutoff}`}><td data-label="檢查" className="py-1">{c.kind}</td><td data-label="截止日期">{c.cutoff}</td><td data-label="過去決策一致">{c.passed ? '是' : '否'}</td></tr>)}</tbody></table>
             <div className="border-t border-slate-800 pt-3"><h4>整份驗證 bundle 的版本漂移</h4><p className="mt-1 text-slate-400">策略、模型、參數、資料語意、成本、執行版本逐項比對。每日新增資料不會單獨判定為漂移。</p>
               <p className="mt-2">{drift.isError ? '無法驗證現行版本' : drift.data?.drift?.status ?? '讀取現行版本中…'}</p>
               <ul className="mt-1">{(drift.data?.drift?.fields ?? []).map((f: any) => <li key={f.component} className="text-fail">{f.component} 已改變</li>)}</ul>
-              <div className="mt-2 border-t border-slate-800 pt-2"><p className="font-medium text-slate-300">不可變證據與全部版本</p><pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-all text-xs text-slate-400">{JSON.stringify({ receipt_id: audit.receipt_id, bundle: audit.validation_bundle, drift: drift.data?.drift }, null, 2)}</pre></div>
+              <div className="mt-2 border-t border-slate-800 pt-2"><p className="font-medium text-slate-300">不可變證據與全部版本</p><pre className="mt-1 whitespace-pre-wrap break-all text-xs text-slate-400">{JSON.stringify({ receipt_id: audit.receipt_id, bundle: audit.validation_bundle, drift: drift.data?.drift }, null, 2)}</pre></div>
             </div>
           </div>}
         </div>

@@ -329,13 +329,13 @@
   },
   {
    "type": "table",
-   "title": "要處理",
-   "description": "",
+   "title": "流程鏈（每日）",
+   "description": "每日鏈每一站的狀態，最嚴重的在上：失敗、中止／漏跑、逾時、卡住、被擋住、趕不上（截止）、應跑未跑、執行中、等待中；超過 6 站時最後一列寫還有幾站，已完成／略過與未開始的站各收成一列。失敗的站寫原因，執行中的站寫已跑多久。完整的流程圖在桌機版「今天」頁。",
    "gridPos": {
     "x": 0,
     "y": 3,
     "w": 24,
-    "h": 6
+    "h": 11
    },
    "datasource": {
     "type": "yesoreyeram-infinity-datasource",
@@ -347,22 +347,227 @@
      "type": "json",
      "parser": "backend",
      "format": "table",
-     "root_selector": "([rows.{ 'level': severity, 'item': $lookup({\"daily_readiness\":\"每日\",\"intraday_guard\":\"盤中\",\"weekly_research\":\"每週\",\"monthly_artifact\":\"每月\"}, chain_id ? chain_id : $$.chain_id) & '｜' & $lookup({\"market-close-refresh\":\"Close refresh\",\"finlab-v4-backfill\":\"FinLab canonical\",\"finlab-backfill-watchdog\":\"FinLab watchdog\",\"update\":\"Market update\",\"indicator-queue\":\"Indicator queue\",\"regime-compute\":\"HMM regime\",\"strategy-learning-mature-evidence\":\"成熟策略證據\",\"screener\":\"Screener\",\"allocator-ev-readiness\":\"Allocator EV\",\"pipeline\":\"Pipeline · 整體進度\",\"ml-predict\":\"ML Predict · L3 預測\",\"post-pipeline-chain\":\"Pipeline callback\",\"allocator-ev-feature-snapshot-backfill\":\"EV feature snapshot\",\"verify-v2\":\"Verify\",\"post-verify-chain\":\"Verify callback\",\"model-ic-rolling\":\"Model IC rolling\",\"linucb-reward-ledger\":\"Reward ledger\",\"adapt\":\"Adapt params\",\"daily-report\":\"Daily report\",\"paper-active-postmarket\":\"Paper active\",\"obsidian-sync\":\"Obsidian sync\",\"meta-learning-shadow\":\"Meta shadow\",\"strategy-learning\":\"Strategy learning\",\"evening-closure\":\"全鏈完成收據\",\"us-leading\":\"US leading\",\"news-analyst\":\"News analyst\",\"morning-setup\":\"Morning setup\",\"recommendation\":\"Recommendation · L4 推薦\",\"pre-market-warmup\":\"Pre-market\",\"premarket-evidence-watchdog\":\"盤前鏈監看\",\"dataset-snapshot-export\":\"Research snapshot\",\"active8-oof-daily\":\"Active-8 daily evidence\",\"allocator-ev-lifecycle-watchdog\":\"EV lifecycle\",\"intraday-check\":\"Intraday check\",\"eod-exit\":\"EOD exit\",\"post-close-price-refresh\":\"Close price\",\"daily-snapshot\":\"Daily snapshot\",\"rescore-10\":\"10:00 re-score\",\"rescore-11\":\"11:00 re-score\",\"rescore-12\":\"12:00 re-score\",\"rescore-1230\":\"12:30 re-score\",\"weekly-audit\":\"Weekly audit\",\"storage-integrity-audit\":\"Storage integrity\",\"model-ic-full-check\":\"Model IC full\",\"weekly-backtest\":\"Validation / MC\",\"alpha-quality\":\"Alpha quality\",\"active8-oof-weekly\":\"Active-8 weekly\",\"weekly-optuna\":\"Drift research\",\"sector-leaders\":\"Sector leaders\",\"adaptive-meta-policy-replay\":\"Meta replay\",\"s12-smcvwap-calibration\":\"S12 calibration\",\"linucb-multiplier-replay\":\"LinUCB replay\",\"weekly-cleanup\":\"Weekly cleanup\",\"weekly-readiness\":\"Weekly root\",\"monthly-strategy-mining\":\"Strategy mining\",\"monthly-optuna\":\"Monthly search\",\"active8-oof-monthly\":\"Active-8 monthly\",\"monthly-readiness\":\"Monthly root\"}, stage_id) & '｜' & $lookup({\"completed\":\"完成\",\"success\":\"完成\",\"noop\":\"無事可做\",\"retry_success\":\"重試後完成\",\"running\":\"執行中\",\"waiting\":\"等待中\",\"not_started\":\"未開始\",\"pending\":\"未開始\",\"out_of_window\":\"未到時段\",\"stale\":\"待確認\",\"skipped\":\"略過\",\"at_risk\":\"趕不上截止\",\"attention\":\"應跑未跑\",\"overdue\":\"逾時\",\"stuck\":\"卡住\",\"missed\":\"漏跑\",\"failed\":\"失敗\",\"error\":\"失敗\",\"blocked\":\"中止\",\"ready\":\"就緒\",\"ok\":\"正常\",\"warn\":\"注意\",\"fail\":\"未過\",\"critical\":\"重大\",\"warning\":\"注意\",\"healthy\":\"正常\",\"pending_maturity\":\"等待成熟\",\"pass\":\"通過\",\"collecting\":\"收集中\",\"not_applicable_no_real_intents\":\"不適用（沒有真實下單）\",\"owner_read_unavailable\":\"讀不到來源\",\"match\":\"一致\",\"drift\":\"漂移\",\"missing\":\"缺少\",\"invalid\":\"無效\",\"PASS\":\"通過\",\"FAIL\":\"未過\"}, kind), 'due': expected_by }])",
+     "root_selector": "([(\n  $label := {\"completed\":\"完成\",\"success\":\"完成\",\"noop\":\"無事可做\",\"retry_success\":\"重試後完成\",\"running\":\"執行中\",\"waiting\":\"等待中\",\"not_started\":\"未開始\",\"pending\":\"未開始\",\"out_of_window\":\"未到時段\",\"stale\":\"待確認\",\"skipped\":\"略過\",\"at_risk\":\"趕不上\",\"attention\":\"應跑未跑\",\"overdue\":\"逾時\",\"stuck\":\"卡住\",\"missed\":\"漏跑\",\"failed\":\"失敗\",\"error\":\"失敗\",\"blocked\":\"中止\",\"watcher_blocked\":\"被擋住\",\"ready\":\"就緒\",\"ok\":\"正常\",\"warn\":\"注意\",\"fail\":\"未過\",\"critical\":\"重大\",\"warning\":\"注意\",\"healthy\":\"正常\",\"pending_maturity\":\"等待成熟\",\"pass\":\"通過\",\"collecting\":\"收集中\",\"not_applicable_no_real_intents\":\"不適用（沒有真實下單）\",\"owner_read_unavailable\":\"讀不到來源\",\"match\":\"一致\",\"drift\":\"漂移\",\"missing\":\"缺少\",\"invalid\":\"無效\",\"PASS\":\"通過\",\"FAIL\":\"未過\"}; $tone := {\"completed\":\"ok\",\"success\":\"ok\",\"noop\":\"ok\",\"retry_success\":\"ok\",\"running\":\"run\",\"waiting\":\"idle\",\"not_started\":\"idle\",\"pending\":\"idle\",\"out_of_window\":\"idle\",\"stale\":\"idle\",\"skipped\":\"skip\",\"at_risk\":\"warn\",\"attention\":\"warn\",\"overdue\":\"warn\",\"stuck\":\"bad\",\"missed\":\"bad\",\"failed\":\"bad\",\"error\":\"bad\",\"blocked\":\"bad\",\"watcher_blocked\":\"warn\",\"ready\":\"ok\",\"ok\":\"ok\",\"warn\":\"warn\",\"fail\":\"bad\",\"critical\":\"bad\",\"warning\":\"warn\",\"healthy\":\"ok\",\"pending_maturity\":\"idle\",\"pass\":\"ok\",\"collecting\":\"run\",\"not_applicable_no_real_intents\":\"idle\",\"owner_read_unavailable\":\"warn\",\"match\":\"ok\",\"drift\":\"warn\",\"missing\":\"bad\",\"invalid\":\"bad\",\"PASS\":\"ok\",\"FAIL\":\"bad\"}; $rank := {\"failed\":1,\"error\":1,\"blocked\":2,\"missed\":2,\"overdue\":3,\"stuck\":4,\"watcher_blocked\":5,\"at_risk\":6,\"attention\":7,\"running\":8,\"waiting\":9}; $names := {\"market-close-refresh\":\"Close refresh\",\"finlab-acquire\":\"FinLab 資料取得\",\"finlab-validate\":\"FinLab 整理與驗證\",\"finlab-publish\":\"FinLab 發布與交接\",\"finlab-backfill-watchdog\":\"FinLab watchdog\",\"update\":\"Market update\",\"indicator-queue\":\"Indicator queue\",\"regime-compute\":\"HMM regime\",\"strategy-learning-mature-evidence\":\"成熟策略證據\",\"screener\":\"Screener\",\"allocator-ev-readiness\":\"Allocator EV\",\"pipeline-inputs\":\"輸入凍結\",\"pipeline-snapshot\":\"輸入快照匯出\",\"pipeline-feature-batches\":\"特徵批次\",\"pipeline-features\":\"特徵與推論輸入組裝\",\"pipeline-l2\":\"L2 特徵增強\",\"pipeline-l3\":\"L3 預測與封存\",\"post-pipeline-chain\":\"Pipeline callback\",\"allocator-ev-feature-snapshot-backfill\":\"EV snapshot\",\"verify-v2\":\"Verify\",\"post-verify-chain\":\"Verify callback\",\"model-ic-rolling\":\"Model IC rolling\",\"linucb-reward-ledger\":\"Reward ledger\",\"adapt\":\"Adapt params\",\"daily-report\":\"Daily report\",\"paper-active-postmarket\":\"Paper active\",\"obsidian-sync\":\"Obsidian sync\",\"meta-learning-shadow\":\"Meta shadow\",\"strategy-learning\":\"Strategy learning\",\"evening-closure\":\"全鏈完成收據\",\"us-leading\":\"US leading\",\"news-analyst\":\"News analyst\",\"morning-setup\":\"Morning setup\",\"recommendation\":\"L4 推薦\",\"pre-market-warmup\":\"Pre-market\",\"premarket-evidence-watchdog\":\"盤前鏈監看\",\"dataset-snapshot-export\":\"Research snapshot\",\"active8-oof-daily\":\"Active-8 daily\",\"allocator-ev-lifecycle-watchdog\":\"EV lifecycle\",\"finlab-v4-backfill\":\"FinLab canonical\",\"pipeline\":\"L3 Pipeline\",\"ml-predict\":\"ML Predict\",\"intraday-check\":\"Intraday check\",\"eod-exit\":\"EOD exit\",\"post-close-price-refresh\":\"Close price\",\"daily-snapshot\":\"Daily snapshot\",\"rescore-10\":\"10:00 re-score\",\"rescore-11\":\"11:00 re-score\",\"rescore-12\":\"12:00 re-score\",\"rescore-1230\":\"12:30 re-score\",\"weekly-audit\":\"Weekly audit\",\"storage-integrity-audit\":\"Storage integrity\",\"model-ic-full-check\":\"Model IC full\",\"weekly-backtest\":\"Validation / MC\",\"alpha-quality\":\"Alpha quality\",\"active8-oof-weekly\":\"Active-8 weekly\",\"weekly-optuna\":\"Drift research\",\"sector-leaders\":\"Sector leaders\",\"adaptive-meta-policy-replay\":\"Meta replay\",\"s12-smcvwap-calibration\":\"S12 calibration\",\"linucb-multiplier-replay\":\"LinUCB replay\",\"weekly-cleanup\":\"Weekly cleanup\",\"weekly-readiness\":\"Weekly root\",\"monthly-strategy-mining\":\"Strategy mining\",\"monthly-optuna\":\"Monthly search\",\"active8-oof-monthly\":\"Active-8 monthly\",\"monthly-readiness\":\"Monthly root\"};\n  $now := $toMillis($$.generated_at);\n  $watch := function($r) { $type($r.watcher) = 'boolean' ? $r.watcher : $r.stage_id in ['intraday-check'] };\n  $ds := function($r) { $r.display_status = 'blocked' and $watch($r) ? 'watcher_blocked' : $r.display_status };\n  $rk := function($r) {( $k := $lookup($rank, $ds($r)); $k ? $k : 99 )};\n  $pos := function($r) {( $p := $r.position; $type($p) = 'number' ? $p : 999 )};\n  $rows := $$.rows[active = true and stage_id];\n  $done := $rows[$ds($) in ['completed', 'success', 'noop', 'retry_success', 'skipped']];\n  $items := $sort($rows[$rk($) < 99], function($a, $b) { $rk($a) = $rk($b) ? $pos($a) > $pos($b) : $rk($a) > $rk($b) });\n  $todo := $count($rows) - $count($done) - $count($items);\n  $n := $count($items);\n  $word := function($r) {(\n    $s := $ds($r); $l := $lookup($label, $s); $t := $lookup($tone, $s); $l := $l ? $l : '狀態異常';\n    $b := $r.error_brief ? ($w := $lookup({\"資料庫過載\":\"資料庫過載\",\"執行逾時\":\"執行逾時\",\"上游資料未就緒\":\"上游未就緒\",\"外部服務額度用盡\":\"額度用盡\",\"服務暫時無法使用\":\"服務不可用\",\"執行錯誤，細節見 log\":\"細節見 log\"}, $r.error_brief); $w ? $w : '細節見 log') : $r.error ? '細節見 log' : '';\n    $m := $r.started_at ? ($now - $toMillis($r.started_at)) / 60000 : null;\n    ($t ? $t : 'idle') & '|' & (\n      $s in [\"failed\",\"error\",\"blocked\",\"missed\",\"stuck\"] and $b ? ($b = '細節見 log' ? $l & '（細節見 log）' : $l & '：' & $b)\n      : $s in [\"running\",\"stuck\",\"overdue\",\"at_risk\"] and $r.started_at and $not($r.completed_at) ? $l & '・已 ' & ($m != null ? ($m < 60 ? $string($round($m)) & ' 分' : $m < 1440 ? $string($round($m / 60, 1)) & ' h'\n  : $string($round($m / 1440, 1)) & ' 天') : '—')\n      : $l)\n  )};\n  $shown := ($n > 6 ? $items[[0..4]] : $items).{ 'stage': ($m := $lookup($names, stage_id); $m ? $m : label ? label : '其他站'), 'status': $word($) };\n  $out := $append($append($append($shown,\n    $n > 6 ? [{ 'stage': '另有 ' & $string($n - 5) & ' 站', 'status': 'idle|看完整版' }] : []),\n    $count($done) > 0 ? [{ 'stage': '其他 ' & $string($count($done)) & ' 站', 'status': 'ok|已完成／略過' }] : []),\n    $todo > 0 ? [{ 'stage': '其他 ' & $string($todo) & ' 站', 'status': 'idle|未開始' }] : []);\n  $count($out) > 0 ? $out : []\n)])",
      "columns": [
       {
-       "selector": "level",
-       "text": "級別",
+       "selector": "stage",
+       "text": "站",
        "type": "string"
       },
+      {
+       "selector": "status",
+       "text": "狀態",
+       "type": "string"
+      }
+     ],
+     "filters": [],
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-monitoring"
+     },
+     "source": "url",
+     "url": "/v1/chain/state",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
+    }
+   ],
+   "transformations": [
+    {
+     "id": "organize",
+     "options": {
+      "excludeByName": {},
+      "renameByName": {},
+      "indexByName": {
+       "站": 0,
+       "狀態": 1
+      }
+     }
+    }
+   ],
+   "options": {
+    "showHeader": true,
+    "cellHeight": "sm",
+    "footer": {
+     "show": false
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "align": "left",
+      "inspect": false
+     },
+     "noValue": "今天的流程鏈還沒有資料"
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byRegexp",
+       "options": ".*"
+      },
+      "properties": [
+       {
+        "id": "noValue",
+        "value": "—"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "站"
+      },
+      "properties": [
+       {
+        "id": "custom.width",
+        "value": 154
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "狀態"
+      },
+      "properties": [
+       {
+        "id": "custom.minWidth",
+        "value": 50
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "狀態"
+      },
+      "properties": [
+       {
+        "id": "custom.cellOptions",
+        "value": {
+         "type": "color-text"
+        }
+       },
+       {
+        "id": "mappings",
+        "value": [
+         {
+          "type": "regex",
+          "options": {
+           "pattern": "^bad\\|(.*)$",
+           "result": {
+            "text": "$1",
+            "color": "#ff7a8a",
+            "index": 0
+           }
+          }
+         },
+         {
+          "type": "regex",
+          "options": {
+           "pattern": "^warn\\|(.*)$",
+           "result": {
+            "text": "$1",
+            "color": "#ffb357",
+            "index": 1
+           }
+          }
+         },
+         {
+          "type": "regex",
+          "options": {
+           "pattern": "^run\\|(.*)$",
+           "result": {
+            "text": "$1",
+            "color": "#a8caff",
+            "index": 2
+           }
+          }
+         },
+         {
+          "type": "regex",
+          "options": {
+           "pattern": "^idle\\|(.*)$",
+           "result": {
+            "text": "$1",
+            "color": "#9a9ea8",
+            "index": 3
+           }
+          }
+         },
+         {
+          "type": "regex",
+          "options": {
+           "pattern": "^ok\\|(.*)$",
+           "result": {
+            "text": "$1",
+            "color": "#00c076",
+            "index": 4
+           }
+          }
+         },
+         {
+          "type": "regex",
+          "options": {
+           "pattern": "^skip\\|(.*)$",
+           "result": {
+            "text": "$1",
+            "color": "#7b808b",
+            "index": 5
+           }
+          }
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "id": 2
+  },
+  {
+   "type": "table",
+   "title": "要處理",
+   "description": "四條鏈裡失敗、逾時、卡住、漏跑的站，和過了 09:10 仍被擋住的盤中監控，最嚴重的在上；超過 5 筆時最後一列寫還有幾筆。日／盤／週／月＝每日、盤中、每週、每月鏈；狀況後＝這個狀況已經多久。點事項看原因與截止。",
+   "gridPos": {
+    "x": 0,
+    "y": 14,
+    "w": 24,
+    "h": 8
+   },
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "sv-monitoring"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "type": "json",
+     "parser": "backend",
+     "format": "table",
+     "root_selector": "([($all := $sort(rows, function($a, $b) {(\n        $ra := $lookup({\"failed\":1,\"missed\":2,\"stuck\":3,\"blocked\":4,\"overdue\":5}, $a.kind); $rb := $lookup({\"failed\":1,\"missed\":2,\"stuck\":3,\"blocked\":4,\"overdue\":5}, $b.kind); $ra := $ra ? $ra : 9; $rb := $rb ? $rb : 9;\n        $ra = $rb ? $a.failures_14d < $b.failures_14d : $ra > $rb )}).{ 'item': $lookup({\"daily_readiness\":\"日\",\"intraday_guard\":\"盤\",\"weekly_research\":\"週\",\"monthly_artifact\":\"月\"}, chain_id ? chain_id : $$.chain_id) & ' ' & ($n := $lookup({\"market-close-refresh\":\"Close refresh\",\"finlab-acquire\":\"FinLab 資料取得\",\"finlab-validate\":\"FinLab 整理與驗證\",\"finlab-publish\":\"FinLab 發布與交接\",\"finlab-backfill-watchdog\":\"FinLab watchdog\",\"update\":\"Market update\",\"indicator-queue\":\"Indicator queue\",\"regime-compute\":\"HMM regime\",\"strategy-learning-mature-evidence\":\"成熟策略證據\",\"screener\":\"Screener\",\"allocator-ev-readiness\":\"Allocator EV\",\"pipeline-inputs\":\"輸入凍結\",\"pipeline-snapshot\":\"輸入快照匯出\",\"pipeline-feature-batches\":\"特徵批次\",\"pipeline-features\":\"特徵與推論輸入組裝\",\"pipeline-l2\":\"L2 特徵增強\",\"pipeline-l3\":\"L3 預測與封存\",\"post-pipeline-chain\":\"Pipeline callback\",\"allocator-ev-feature-snapshot-backfill\":\"EV snapshot\",\"verify-v2\":\"Verify\",\"post-verify-chain\":\"Verify callback\",\"model-ic-rolling\":\"Model IC rolling\",\"linucb-reward-ledger\":\"Reward ledger\",\"adapt\":\"Adapt params\",\"daily-report\":\"Daily report\",\"paper-active-postmarket\":\"Paper active\",\"obsidian-sync\":\"Obsidian sync\",\"meta-learning-shadow\":\"Meta shadow\",\"strategy-learning\":\"Strategy learning\",\"evening-closure\":\"全鏈完成收據\",\"us-leading\":\"US leading\",\"news-analyst\":\"News analyst\",\"morning-setup\":\"Morning setup\",\"recommendation\":\"L4 推薦\",\"pre-market-warmup\":\"Pre-market\",\"premarket-evidence-watchdog\":\"盤前鏈監看\",\"dataset-snapshot-export\":\"Research snapshot\",\"active8-oof-daily\":\"Active-8 daily\",\"allocator-ev-lifecycle-watchdog\":\"EV lifecycle\",\"finlab-v4-backfill\":\"FinLab canonical\",\"pipeline\":\"L3 Pipeline\",\"ml-predict\":\"ML Predict\",\"intraday-check\":\"Intraday check\",\"eod-exit\":\"EOD exit\",\"post-close-price-refresh\":\"Close price\",\"daily-snapshot\":\"Daily snapshot\",\"rescore-10\":\"10:00 re-score\",\"rescore-11\":\"11:00 re-score\",\"rescore-12\":\"12:00 re-score\",\"rescore-1230\":\"12:30 re-score\",\"weekly-audit\":\"Weekly audit\",\"storage-integrity-audit\":\"Storage integrity\",\"model-ic-full-check\":\"Model IC full\",\"weekly-backtest\":\"Validation / MC\",\"alpha-quality\":\"Alpha quality\",\"active8-oof-weekly\":\"Active-8 weekly\",\"weekly-optuna\":\"Drift research\",\"sector-leaders\":\"Sector leaders\",\"adaptive-meta-policy-replay\":\"Meta replay\",\"s12-smcvwap-calibration\":\"S12 calibration\",\"linucb-multiplier-replay\":\"LinUCB replay\",\"weekly-cleanup\":\"Weekly cleanup\",\"weekly-readiness\":\"Weekly root\",\"monthly-strategy-mining\":\"Strategy mining\",\"monthly-optuna\":\"Monthly search\",\"active8-oof-monthly\":\"Active-8 monthly\",\"monthly-readiness\":\"Monthly root\"}, stage_id); $n ? $n : label ? label : '其他站'),\n        'state': ($k := (kind = 'blocked' ? 'watcher_blocked' : kind); $t := $lookup({\"failed\":\"bad\",\"missed\":\"bad\",\"stuck\":\"bad\",\"blocked\":\"warn\",\"overdue\":\"warn\"}, kind); ($t ? $t : 'warn') & '|' & $lookup({\"completed\":\"完成\",\"success\":\"完成\",\"noop\":\"無事可做\",\"retry_success\":\"重試後完成\",\"running\":\"執行中\",\"waiting\":\"等待中\",\"not_started\":\"未開始\",\"pending\":\"未開始\",\"out_of_window\":\"未到時段\",\"stale\":\"待確認\",\"skipped\":\"略過\",\"at_risk\":\"趕不上截止\",\"attention\":\"應跑未跑\",\"overdue\":\"逾時\",\"stuck\":\"卡住\",\"missed\":\"漏跑\",\"failed\":\"失敗\",\"error\":\"失敗\",\"blocked\":\"中止\",\"watcher_blocked\":\"被擋住\",\"ready\":\"就緒\",\"ok\":\"正常\",\"warn\":\"注意\",\"fail\":\"未過\",\"critical\":\"重大\",\"warning\":\"注意\",\"healthy\":\"正常\",\"pending_maturity\":\"等待成熟\",\"pass\":\"通過\",\"collecting\":\"收集中\",\"not_applicable_no_real_intents\":\"不適用（沒有真實下單）\",\"owner_read_unavailable\":\"讀不到來源\",\"match\":\"一致\",\"drift\":\"漂移\",\"missing\":\"缺少\",\"invalid\":\"無效\",\"PASS\":\"通過\",\"FAIL\":\"未過\"}, $k) & '・' & (minutes != null ? (minutes < 60 ? $string($round(minutes)) & ' 分' : minutes < 1440 ? $string($round(minutes / 60, 1)) & ' h'\n  : $string($round(minutes / 1440, 1)) & ' 天') : '—')),\n        'reason': '原因：' & (error_brief ? ($w := $lookup({\"資料庫過載\":\"資料庫過載\",\"執行逾時\":\"執行逾時\",\"上游資料未就緒\":\"上游未就緒\",\"外部服務額度用盡\":\"額度用盡\",\"服務暫時無法使用\":\"服務不可用\",\"執行錯誤，細節見 log\":\"細節見 log\"}, error_brief); $w ? $w : '細節見 log') : error ? '細節見 log' : '無訊息'), 'when': '業務日 ' & business_date & (expected_by ? '｜截止 ' & $fromMillis($toMillis(expected_by), '[M01]/[D01] [H01]:[m01]', '+0800') : '') }; $n := $count($all); $out := ($n > 5 ? $all[[0..3]] : $all);\n  $out := $n > 5 ? $append($out, [{ 'item': '另有 ' & $string($n - 4) & ' 筆', 'state': 'idle|看完整版', 'reason': '', 'when': '' }]) : $out; $count($out) > 0 ? $out : [])])",
+     "columns": [
       {
        "selector": "item",
        "text": "事項",
        "type": "string"
       },
       {
-       "selector": "due",
-       "text": "期限",
-       "type": "timestamp"
+       "selector": "state",
+       "text": "狀況",
+       "type": "string"
+      },
+      {
+       "selector": "reason",
+       "text": "原因",
+       "type": "string"
+      },
+      {
+       "selector": "when",
+       "text": "時間",
+       "type": "string"
       }
      ],
      "filters": [],
@@ -385,9 +590,10 @@
       "excludeByName": {},
       "renameByName": {},
       "indexByName": {
-       "級別": 0,
-       "事項": 1,
-       "期限": 2
+       "事項": 0,
+       "狀況": 1,
+       "原因": 2,
+       "時間": 3
       }
      }
     }
@@ -423,7 +629,78 @@
      {
       "matcher": {
        "id": "byName",
-       "options": "級別"
+       "options": "狀況"
+      },
+      "properties": [
+       {
+        "id": "custom.width",
+        "value": 130
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "事項"
+      },
+      "properties": [
+       {
+        "id": "custom.minWidth",
+        "value": 50
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "原因"
+      },
+      "properties": [
+       {
+        "id": "custom.hidden",
+        "value": true
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "時間"
+      },
+      "properties": [
+       {
+        "id": "custom.hidden",
+        "value": true
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "事項"
+      },
+      "properties": [
+       {
+        "id": "links",
+        "value": [
+         {
+          "title": "${__data.fields[\"原因\"]}",
+          "url": "/d/${__dashboard.uid}?${__url_time_range}",
+          "targetBlank": false
+         },
+         {
+          "title": "${__data.fields[\"時間\"]}",
+          "url": "/d/${__dashboard.uid}?${__url_time_range}",
+          "targetBlank": false
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "狀況"
       },
       "properties": [
        {
@@ -436,238 +713,78 @@
         "id": "mappings",
         "value": [
          {
-          "type": "value",
+          "type": "regex",
           "options": {
-           "completed": {
-            "text": "完成",
-            "color": "#00c076",
+           "pattern": "^bad\\|(.*)$",
+           "result": {
+            "text": "$1",
+            "color": "#ff7a8a",
             "index": 0
-           },
-           "success": {
-            "text": "完成",
-            "color": "#00c076",
+           }
+          }
+         },
+         {
+          "type": "regex",
+          "options": {
+           "pattern": "^warn\\|(.*)$",
+           "result": {
+            "text": "$1",
+            "color": "#ffb357",
             "index": 1
-           },
-           "noop": {
-            "text": "無事可做",
-            "color": "#00c076",
+           }
+          }
+         },
+         {
+          "type": "regex",
+          "options": {
+           "pattern": "^run\\|(.*)$",
+           "result": {
+            "text": "$1",
+            "color": "#a8caff",
             "index": 2
-           },
-           "retry_success": {
-            "text": "重試後完成",
-            "color": "#00c076",
+           }
+          }
+         },
+         {
+          "type": "regex",
+          "options": {
+           "pattern": "^idle\\|(.*)$",
+           "result": {
+            "text": "$1",
+            "color": "#9a9ea8",
             "index": 3
-           },
-           "running": {
-            "text": "執行中",
-            "color": "#a8caff",
+           }
+          }
+         },
+         {
+          "type": "regex",
+          "options": {
+           "pattern": "^ok\\|(.*)$",
+           "result": {
+            "text": "$1",
+            "color": "#00c076",
             "index": 4
-           },
-           "waiting": {
-            "text": "等待中",
-            "color": "#9a9ea8",
-            "index": 5
-           },
-           "not_started": {
-            "text": "未開始",
-            "color": "#9a9ea8",
-            "index": 6
-           },
-           "pending": {
-            "text": "未開始",
-            "color": "#9a9ea8",
-            "index": 7
-           },
-           "out_of_window": {
-            "text": "未到時段",
-            "color": "#9a9ea8",
-            "index": 8
-           },
-           "stale": {
-            "text": "待確認",
-            "color": "#9a9ea8",
-            "index": 9
-           },
-           "skipped": {
-            "text": "略過",
+           }
+          }
+         },
+         {
+          "type": "regex",
+          "options": {
+           "pattern": "^skip\\|(.*)$",
+           "result": {
+            "text": "$1",
             "color": "#7b808b",
-            "index": 10
-           },
-           "at_risk": {
-            "text": "趕不上截止",
-            "color": "#ffb357",
-            "index": 11
-           },
-           "attention": {
-            "text": "應跑未跑",
-            "color": "#ffb357",
-            "index": 12
-           },
-           "overdue": {
-            "text": "逾時",
-            "color": "#ffb357",
-            "index": 13
-           },
-           "stuck": {
-            "text": "卡住",
-            "color": "#ff7a8a",
-            "index": 14
-           },
-           "missed": {
-            "text": "漏跑",
-            "color": "#ff7a8a",
-            "index": 15
-           },
-           "failed": {
-            "text": "失敗",
-            "color": "#ff7a8a",
-            "index": 16
-           },
-           "error": {
-            "text": "失敗",
-            "color": "#ff7a8a",
-            "index": 17
-           },
-           "blocked": {
-            "text": "中止",
-            "color": "#ff7a8a",
-            "index": 18
-           },
-           "ready": {
-            "text": "就緒",
-            "color": "#00c076",
-            "index": 19
-           },
-           "ok": {
-            "text": "正常",
-            "color": "#00c076",
-            "index": 20
-           },
-           "warn": {
-            "text": "注意",
-            "color": "#ffb357",
-            "index": 21
-           },
-           "fail": {
-            "text": "未過",
-            "color": "#ff7a8a",
-            "index": 22
-           },
-           "critical": {
-            "text": "重大",
-            "color": "#ff7a8a",
-            "index": 23
-           },
-           "warning": {
-            "text": "注意",
-            "color": "#ffb357",
-            "index": 24
-           },
-           "healthy": {
-            "text": "正常",
-            "color": "#00c076",
-            "index": 25
-           },
-           "pending_maturity": {
-            "text": "等待成熟",
-            "color": "#9a9ea8",
-            "index": 26
-           },
-           "pass": {
-            "text": "通過",
-            "color": "#00c076",
-            "index": 27
-           },
-           "collecting": {
-            "text": "收集中",
-            "color": "#a8caff",
-            "index": 28
-           },
-           "not_applicable_no_real_intents": {
-            "text": "不適用（沒有真實下單）",
-            "color": "#9a9ea8",
-            "index": 29
-           },
-           "owner_read_unavailable": {
-            "text": "讀不到來源",
-            "color": "#ffb357",
-            "index": 30
-           },
-           "match": {
-            "text": "一致",
-            "color": "#00c076",
-            "index": 31
-           },
-           "drift": {
-            "text": "漂移",
-            "color": "#ffb357",
-            "index": 32
-           },
-           "missing": {
-            "text": "缺少",
-            "color": "#ff7a8a",
-            "index": 33
-           },
-           "invalid": {
-            "text": "無效",
-            "color": "#ff7a8a",
-            "index": 34
-           },
-           "PASS": {
-            "text": "通過",
-            "color": "#00c076",
-            "index": 35
-           },
-           "FAIL": {
-            "text": "未過",
-            "color": "#ff7a8a",
-            "index": 36
+            "index": 5
            }
           }
          }
         ]
        }
       ]
-     },
-     {
-      "matcher": {
-       "id": "byName",
-       "options": "期限"
-      },
-      "properties": [
-       {
-        "id": "unit",
-        "value": "time:MM/DD HH:mm"
-       }
-      ]
-     },
-     {
-      "matcher": {
-       "id": "byName",
-       "options": "級別"
-      },
-      "properties": [
-       {
-        "id": "custom.width",
-        "value": 76
-       }
-      ]
-     },
-     {
-      "matcher": {
-       "id": "byName",
-       "options": "期限"
-      },
-      "properties": [
-       {
-        "id": "custom.width",
-        "value": 100
-       }
-      ]
      }
     ]
    },
-   "id": 2
+   "id": 3
   },
   {
    "type": "table",
@@ -675,7 +792,7 @@
    "description": "預估＝這條鏈的起點＋該階段近 14 天的典型完成時間（至少 3 天樣本），不早於現在；樣本不足的階段不列。負值＝預估會超過截止。",
    "gridPos": {
     "x": 0,
-    "y": 9,
+    "y": 22,
     "w": 24,
     "h": 8
    },
@@ -900,17 +1017,17 @@
      }
     ]
    },
-   "id": 3
+   "id": 4
   },
   {
    "type": "table",
    "title": "資料就緒：只列有問題的",
-   "description": "",
+   "description": "沒到齊的資料集，缺漏在前；狀態後＝最新一筆資料的日期；超過 4 項時最後一列寫還有幾項。點項目看說明。",
    "gridPos": {
     "x": 0,
-    "y": 17,
+    "y": 30,
     "w": 24,
-    "h": 5
+    "h": 7
    },
    "datasource": {
     "type": "yesoreyeram-infinity-datasource",
@@ -922,75 +1039,20 @@
      "type": "json",
      "parser": "backend",
      "format": "table",
-     "root_selector": "([rows[status != 'ok' and status != 'ready'].{ 'rank': $lookup({\"fail\":0,\"blocked\":0,\"warn\":1,\"waiting\":1,\"pending\":2,\"running\":2,\"ready\":3,\"ok\":3}, status), 'label': label, 'status': status, 'latest': latestDate,\n      'detail': value & '；' & detail }])",
+     "root_selector": "([($all := $sort($append(\n        rows[status != 'ok' and status != 'ready'].{ 'rank': $lookup({\"fail\":0,\"blocked\":0,\"warn\":1,\"waiting\":1,\"pending\":2,\"running\":2,\"ready\":3,\"ok\":3}, status), 'name': label, 'state': ($v := $lookup({\"ready\":\"ok|正常\",\"ok\":\"ok|正常\",\"waiting\":\"warn|遲到\",\"warn\":\"warn|遲到\",\"blocked\":\"bad|缺漏\",\"fail\":\"bad|缺漏\",\"pending\":\"idle|未到\",\"running\":\"idle|未到\"}, status);\n    ($v ? $v : 'warn|異常') & (latestDate ? '・' & $replace($substring(latestDate, 5), '-', '/') : '')),\n          'note': (value ? $replace(value, ' rows', ' 列') : '—') & '｜' & (detail ? ($c := $lookup({\"fresh\":\"正常\",\"ok\":\"正常\",\"ready\":\"正常\",\"freshness_lag\":\"資料落後\",\"stale_materialization\":\"資料過期\",\"not_materialized\":\"尚未寫入\",\"formal_shadow_fetch_failed\":\"正式抓取失敗\"}, detail); $c ? $c\n  : $contains(detail, /^[A-Za-z0-9_:-]+$/) ? '狀態異常' : $replace(detail, /\\s*\\/?\\s*lag (\\d+)d/, '｜落後 $1 天')) : '—') },\n        checks[status != 'ok' and status != 'ready' and id != 'market_dashboard_materialization'].{ 'rank': $lookup({\"fail\":0,\"blocked\":0,\"warn\":1,\"waiting\":1,\"pending\":2,\"running\":2,\"ready\":3,\"ok\":3}, status), 'name': ($n := $lookup({\"price_freshness\":\"價格資料\",\"chip_freshness\":\"籌碼資料\",\"technical_indicator_freshness\":\"技術指標\",\"market_dashboard_materialization\":\"首頁行情資料\"}, id); $n ? $n : label),\n          'state': ($v := $lookup({\"ready\":\"ok|正常\",\"ok\":\"ok|正常\",\"waiting\":\"warn|遲到\",\"warn\":\"warn|遲到\",\"blocked\":\"bad|缺漏\",\"fail\":\"bad|缺漏\",\"pending\":\"idle|未到\",\"running\":\"idle|未到\"}, status);\n    ($v ? $v : 'warn|異常') & (latest_date ? '・' & $replace($substring(latest_date, 5), '-', '/') : '')), 'note': (latest_date ? '最新 ' & latest_date & '｜落後 ' & (lag_days != null ? $string(lag_days) : '—') & ' 天'\n  & (rows_on_latest != null ? '｜' & $string(rows_on_latest) & ' 列' : '') : $lookup({\"ready\":\"正常\",\"ok\":\"正常\",\"waiting\":\"遲到\",\"warn\":\"遲到\",\"blocked\":\"缺漏\",\"fail\":\"缺漏\",\"pending\":\"未到\",\"running\":\"未到\"}, status)) }),\n      function($a, $b) { ($type($a.rank) = 'number' ? $a.rank : 9) > ($type($b.rank) = 'number' ? $b.rank : 9) }); $n := $count($all); $out := ($n > 4 ? $all[[0..2]] : $all);\n  $out := $n > 4 ? $append($out, [{ 'name': '另有 ' & $string($n - 3) & ' 項', 'state': 'idle|看完整版', 'note': '' }]) : $out; $count($out) > 0 ? $out : [])])",
      "columns": [
       {
-       "selector": "rank",
-       "text": "序",
-       "type": "number"
-      },
-      {
-       "selector": "label",
+       "selector": "name",
        "text": "項目",
        "type": "string"
       },
       {
-       "selector": "status",
+       "selector": "state",
        "text": "狀態",
        "type": "string"
       },
       {
-       "selector": "latest",
-       "text": "最新日期",
-       "type": "string"
-      },
-      {
-       "selector": "detail",
-       "text": "說明",
-       "type": "string"
-      }
-     ],
-     "filters": [],
-     "datasource": {
-      "type": "yesoreyeram-infinity-datasource",
-      "uid": "sv-monitoring"
-     },
-     "source": "url",
-     "url": "/v1/data-readiness",
-     "url_options": {
-      "method": "GET",
-      "data": ""
-     }
-    },
-    {
-     "refId": "B",
-     "type": "json",
-     "parser": "backend",
-     "format": "table",
-     "root_selector": "([checks[status != 'ok' and status != 'ready'].{ 'rank': $lookup({\"fail\":0,\"blocked\":0,\"warn\":1,\"waiting\":1,\"pending\":2,\"running\":2,\"ready\":3,\"ok\":3}, status), 'label': ($n := $lookup({\"price_freshness\":\"價格資料\",\"chip_freshness\":\"籌碼資料\",\"technical_indicator_freshness\":\"技術指標\",\"market_dashboard_materialization\":\"首頁行情資料\"}, id); $n ? $n : label),\n      'status': status, 'latest': latest_date, 'detail': summary }])",
-     "columns": [
-      {
-       "selector": "rank",
-       "text": "序",
-       "type": "number"
-      },
-      {
-       "selector": "label",
-       "text": "項目",
-       "type": "string"
-      },
-      {
-       "selector": "status",
-       "text": "狀態",
-       "type": "string"
-      },
-      {
-       "selector": "latest",
-       "text": "最新日期",
-       "type": "string"
-      },
-      {
-       "selector": "detail",
+       "selector": "note",
        "text": "說明",
        "type": "string"
       }
@@ -1010,35 +1072,14 @@
    ],
    "transformations": [
     {
-     "id": "merge",
-     "options": {}
-    },
-    {
-     "id": "sortBy",
-     "options": {
-      "fields": {},
-      "sort": [
-       {
-        "field": "序",
-        "desc": false
-       }
-      ]
-     }
-    },
-    {
      "id": "organize",
      "options": {
-      "excludeByName": {
-       "序": true,
-       "最新日期": true
-      },
+      "excludeByName": {},
       "renameByName": {},
       "indexByName": {
-       "序": 5,
-       "項目": 6,
-       "狀態": 7,
-       "最新日期": 8,
-       "說明": 9
+       "項目": 0,
+       "狀態": 1,
+       "說明": 2
       }
      }
     }
@@ -1078,58 +1119,48 @@
       },
       "properties": [
        {
-        "id": "custom.cellOptions",
-        "value": {
-         "type": "color-text"
-        }
-       },
+        "id": "custom.width",
+        "value": 104
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "項目"
+      },
+      "properties": [
        {
-        "id": "mappings",
+        "id": "custom.minWidth",
+        "value": 50
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "說明"
+      },
+      "properties": [
+       {
+        "id": "custom.hidden",
+        "value": true
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "項目"
+      },
+      "properties": [
+       {
+        "id": "links",
         "value": [
          {
-          "type": "value",
-          "options": {
-           "ready": {
-            "text": "正常",
-            "color": "#00c076",
-            "index": 0
-           },
-           "ok": {
-            "text": "正常",
-            "color": "#00c076",
-            "index": 1
-           },
-           "waiting": {
-            "text": "遲到",
-            "color": "#ffb357",
-            "index": 2
-           },
-           "warn": {
-            "text": "遲到",
-            "color": "#ffb357",
-            "index": 3
-           },
-           "blocked": {
-            "text": "缺漏",
-            "color": "#ff7a8a",
-            "index": 4
-           },
-           "fail": {
-            "text": "缺漏",
-            "color": "#ff7a8a",
-            "index": 5
-           },
-           "pending": {
-            "text": "未到",
-            "color": "#9a9ea8",
-            "index": 6
-           },
-           "running": {
-            "text": "未到",
-            "color": "#9a9ea8",
-            "index": 7
-           }
-          }
+          "title": "${__data.fields[\"說明\"]}",
+          "url": "/d/${__dashboard.uid}?${__url_time_range}",
+          "targetBlank": false
          }
         ]
        }
@@ -1142,36 +1173,97 @@
       },
       "properties": [
        {
-        "id": "custom.width",
-        "value": 64
-       }
-      ]
-     },
-     {
-      "matcher": {
-       "id": "byName",
-       "options": "最新日期"
-      },
-      "properties": [
+        "id": "custom.cellOptions",
+        "value": {
+         "type": "color-text"
+        }
+       },
        {
-        "id": "custom.width",
-        "value": 100
+        "id": "mappings",
+        "value": [
+         {
+          "type": "regex",
+          "options": {
+           "pattern": "^bad\\|(.*)$",
+           "result": {
+            "text": "$1",
+            "color": "#ff7a8a",
+            "index": 0
+           }
+          }
+         },
+         {
+          "type": "regex",
+          "options": {
+           "pattern": "^warn\\|(.*)$",
+           "result": {
+            "text": "$1",
+            "color": "#ffb357",
+            "index": 1
+           }
+          }
+         },
+         {
+          "type": "regex",
+          "options": {
+           "pattern": "^run\\|(.*)$",
+           "result": {
+            "text": "$1",
+            "color": "#a8caff",
+            "index": 2
+           }
+          }
+         },
+         {
+          "type": "regex",
+          "options": {
+           "pattern": "^idle\\|(.*)$",
+           "result": {
+            "text": "$1",
+            "color": "#9a9ea8",
+            "index": 3
+           }
+          }
+         },
+         {
+          "type": "regex",
+          "options": {
+           "pattern": "^ok\\|(.*)$",
+           "result": {
+            "text": "$1",
+            "color": "#00c076",
+            "index": 4
+           }
+          }
+         },
+         {
+          "type": "regex",
+          "options": {
+           "pattern": "^skip\\|(.*)$",
+           "result": {
+            "text": "$1",
+            "color": "#7b808b",
+            "index": 5
+           }
+          }
+         }
+        ]
        }
       ]
      }
     ]
    },
-   "id": 4
+   "id": 5
   },
   {
    "type": "table",
-   "title": "失敗中的階段（次數＝近 14 天第幾次）",
-   "description": "",
+   "title": "失敗中的階段",
+   "description": "失敗中的階段，近 14 天失敗最多的在上；原因後＝近 14 天第幾次（2 次起紅字）；超過 4 站時最後一列寫還有幾站。日／盤／週／月＝每日、盤中、每週、每月鏈。",
    "gridPos": {
     "x": 0,
-    "y": 22,
+    "y": 37,
     "w": 24,
-    "h": 6
+    "h": 7
    },
    "datasource": {
     "type": "yesoreyeram-infinity-datasource",
@@ -1183,7 +1275,7 @@
      "type": "json",
      "parser": "backend",
      "format": "table",
-     "root_selector": "([rows[kind = 'failed'].{ 'stage': $lookup({\"daily_readiness\":\"每日\",\"intraday_guard\":\"盤中\",\"weekly_research\":\"每週\",\"monthly_artifact\":\"每月\"}, chain_id ? chain_id : $$.chain_id) & '｜' & $lookup({\"market-close-refresh\":\"Close refresh\",\"finlab-v4-backfill\":\"FinLab canonical\",\"finlab-backfill-watchdog\":\"FinLab watchdog\",\"update\":\"Market update\",\"indicator-queue\":\"Indicator queue\",\"regime-compute\":\"HMM regime\",\"strategy-learning-mature-evidence\":\"成熟策略證據\",\"screener\":\"Screener\",\"allocator-ev-readiness\":\"Allocator EV\",\"pipeline\":\"Pipeline · 整體進度\",\"ml-predict\":\"ML Predict · L3 預測\",\"post-pipeline-chain\":\"Pipeline callback\",\"allocator-ev-feature-snapshot-backfill\":\"EV feature snapshot\",\"verify-v2\":\"Verify\",\"post-verify-chain\":\"Verify callback\",\"model-ic-rolling\":\"Model IC rolling\",\"linucb-reward-ledger\":\"Reward ledger\",\"adapt\":\"Adapt params\",\"daily-report\":\"Daily report\",\"paper-active-postmarket\":\"Paper active\",\"obsidian-sync\":\"Obsidian sync\",\"meta-learning-shadow\":\"Meta shadow\",\"strategy-learning\":\"Strategy learning\",\"evening-closure\":\"全鏈完成收據\",\"us-leading\":\"US leading\",\"news-analyst\":\"News analyst\",\"morning-setup\":\"Morning setup\",\"recommendation\":\"Recommendation · L4 推薦\",\"pre-market-warmup\":\"Pre-market\",\"premarket-evidence-watchdog\":\"盤前鏈監看\",\"dataset-snapshot-export\":\"Research snapshot\",\"active8-oof-daily\":\"Active-8 daily evidence\",\"allocator-ev-lifecycle-watchdog\":\"EV lifecycle\",\"intraday-check\":\"Intraday check\",\"eod-exit\":\"EOD exit\",\"post-close-price-refresh\":\"Close price\",\"daily-snapshot\":\"Daily snapshot\",\"rescore-10\":\"10:00 re-score\",\"rescore-11\":\"11:00 re-score\",\"rescore-12\":\"12:00 re-score\",\"rescore-1230\":\"12:30 re-score\",\"weekly-audit\":\"Weekly audit\",\"storage-integrity-audit\":\"Storage integrity\",\"model-ic-full-check\":\"Model IC full\",\"weekly-backtest\":\"Validation / MC\",\"alpha-quality\":\"Alpha quality\",\"active8-oof-weekly\":\"Active-8 weekly\",\"weekly-optuna\":\"Drift research\",\"sector-leaders\":\"Sector leaders\",\"adaptive-meta-policy-replay\":\"Meta replay\",\"s12-smcvwap-calibration\":\"S12 calibration\",\"linucb-multiplier-replay\":\"LinUCB replay\",\"weekly-cleanup\":\"Weekly cleanup\",\"weekly-readiness\":\"Weekly root\",\"monthly-strategy-mining\":\"Strategy mining\",\"monthly-optuna\":\"Monthly search\",\"active8-oof-monthly\":\"Active-8 monthly\",\"monthly-readiness\":\"Monthly root\"}, stage_id), 'times': failures_14d, 'error': error ? error : summary }])",
+     "root_selector": "([($all := $sort(rows[kind = 'failed'],\n        function($a, $b) { $a.failures_14d < $b.failures_14d }).{ 'stage': $lookup({\"daily_readiness\":\"日\",\"intraday_guard\":\"盤\",\"weekly_research\":\"週\",\"monthly_artifact\":\"月\"}, chain_id ? chain_id : $$.chain_id) & ' ' & ($n := $lookup({\"market-close-refresh\":\"Close refresh\",\"finlab-acquire\":\"FinLab 資料取得\",\"finlab-validate\":\"FinLab 整理與驗證\",\"finlab-publish\":\"FinLab 發布與交接\",\"finlab-backfill-watchdog\":\"FinLab watchdog\",\"update\":\"Market update\",\"indicator-queue\":\"Indicator queue\",\"regime-compute\":\"HMM regime\",\"strategy-learning-mature-evidence\":\"成熟策略證據\",\"screener\":\"Screener\",\"allocator-ev-readiness\":\"Allocator EV\",\"pipeline-inputs\":\"輸入凍結\",\"pipeline-snapshot\":\"輸入快照匯出\",\"pipeline-feature-batches\":\"特徵批次\",\"pipeline-features\":\"特徵與推論輸入組裝\",\"pipeline-l2\":\"L2 特徵增強\",\"pipeline-l3\":\"L3 預測與封存\",\"post-pipeline-chain\":\"Pipeline callback\",\"allocator-ev-feature-snapshot-backfill\":\"EV snapshot\",\"verify-v2\":\"Verify\",\"post-verify-chain\":\"Verify callback\",\"model-ic-rolling\":\"Model IC rolling\",\"linucb-reward-ledger\":\"Reward ledger\",\"adapt\":\"Adapt params\",\"daily-report\":\"Daily report\",\"paper-active-postmarket\":\"Paper active\",\"obsidian-sync\":\"Obsidian sync\",\"meta-learning-shadow\":\"Meta shadow\",\"strategy-learning\":\"Strategy learning\",\"evening-closure\":\"全鏈完成收據\",\"us-leading\":\"US leading\",\"news-analyst\":\"News analyst\",\"morning-setup\":\"Morning setup\",\"recommendation\":\"L4 推薦\",\"pre-market-warmup\":\"Pre-market\",\"premarket-evidence-watchdog\":\"盤前鏈監看\",\"dataset-snapshot-export\":\"Research snapshot\",\"active8-oof-daily\":\"Active-8 daily\",\"allocator-ev-lifecycle-watchdog\":\"EV lifecycle\",\"finlab-v4-backfill\":\"FinLab canonical\",\"pipeline\":\"L3 Pipeline\",\"ml-predict\":\"ML Predict\",\"intraday-check\":\"Intraday check\",\"eod-exit\":\"EOD exit\",\"post-close-price-refresh\":\"Close price\",\"daily-snapshot\":\"Daily snapshot\",\"rescore-10\":\"10:00 re-score\",\"rescore-11\":\"11:00 re-score\",\"rescore-12\":\"12:00 re-score\",\"rescore-1230\":\"12:30 re-score\",\"weekly-audit\":\"Weekly audit\",\"storage-integrity-audit\":\"Storage integrity\",\"model-ic-full-check\":\"Model IC full\",\"weekly-backtest\":\"Validation / MC\",\"alpha-quality\":\"Alpha quality\",\"active8-oof-weekly\":\"Active-8 weekly\",\"weekly-optuna\":\"Drift research\",\"sector-leaders\":\"Sector leaders\",\"adaptive-meta-policy-replay\":\"Meta replay\",\"s12-smcvwap-calibration\":\"S12 calibration\",\"linucb-multiplier-replay\":\"LinUCB replay\",\"weekly-cleanup\":\"Weekly cleanup\",\"weekly-readiness\":\"Weekly root\",\"monthly-strategy-mining\":\"Strategy mining\",\"monthly-optuna\":\"Monthly search\",\"active8-oof-monthly\":\"Active-8 monthly\",\"monthly-readiness\":\"Monthly root\"}, stage_id); $n ? $n : label ? label : '其他站'),\n        'reason': ($t := failures_14d >= 2 ? 'bad|' : 'warn|'; $t & (error_brief ? ($w := $lookup({\"資料庫過載\":\"資料庫過載\",\"執行逾時\":\"執行逾時\",\"上游資料未就緒\":\"上游未就緒\",\"外部服務額度用盡\":\"額度用盡\",\"服務暫時無法使用\":\"服務不可用\",\"執行錯誤，細節見 log\":\"細節見 log\"}, error_brief); $w ? $w : '細節見 log') : error ? '細節見 log' : '無訊息') & '・' & $string(failures_14d) & ' 次') }; $n := $count($all); $out := ($n > 4 ? $all[[0..2]] : $all);\n  $out := $n > 4 ? $append($out, [{ 'stage': '另有 ' & $string($n - 3) & ' 站', 'reason': 'idle|看完整版' }]) : $out; $count($out) > 0 ? $out : [])])",
      "columns": [
       {
        "selector": "stage",
@@ -1191,13 +1283,8 @@
        "type": "string"
       },
       {
-       "selector": "times",
-       "text": "次數",
-       "type": "number"
-      },
-      {
-       "selector": "error",
-       "text": "錯誤",
+       "selector": "reason",
+       "text": "原因",
        "type": "string"
       }
      ],
@@ -1222,8 +1309,7 @@
       "renameByName": {},
       "indexByName": {
        "階段": 0,
-       "次數": 1,
-       "錯誤": 2
+       "原因": 1
       }
      }
     }
@@ -1259,7 +1345,31 @@
      {
       "matcher": {
        "id": "byName",
-       "options": "次數"
+       "options": "原因"
+      },
+      "properties": [
+       {
+        "id": "custom.width",
+        "value": 150
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "階段"
+      },
+      "properties": [
+       {
+        "id": "custom.minWidth",
+        "value": 50
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "原因"
       },
       "properties": [
        {
@@ -1269,60 +1379,81 @@
         }
        },
        {
-        "id": "thresholds",
-        "value": {
-         "mode": "absolute",
-         "steps": [
-          {
-           "color": "#e8e9ec",
-           "value": null
-          },
-          {
-           "color": "#f2495c",
-           "value": 2
-          }
-         ]
-        }
-       },
-       {
-        "id": "color",
-        "value": {
-         "mode": "thresholds"
-        }
-       },
-       {
         "id": "mappings",
         "value": [
          {
-          "type": "special",
+          "type": "regex",
           "options": {
-           "match": "null",
+           "pattern": "^bad\\|(.*)$",
            "result": {
-            "text": "—",
-            "color": "#a9abb3",
+            "text": "$1",
+            "color": "#ff7a8a",
             "index": 0
+           }
+          }
+         },
+         {
+          "type": "regex",
+          "options": {
+           "pattern": "^warn\\|(.*)$",
+           "result": {
+            "text": "$1",
+            "color": "#ffb357",
+            "index": 1
+           }
+          }
+         },
+         {
+          "type": "regex",
+          "options": {
+           "pattern": "^run\\|(.*)$",
+           "result": {
+            "text": "$1",
+            "color": "#a8caff",
+            "index": 2
+           }
+          }
+         },
+         {
+          "type": "regex",
+          "options": {
+           "pattern": "^idle\\|(.*)$",
+           "result": {
+            "text": "$1",
+            "color": "#9a9ea8",
+            "index": 3
+           }
+          }
+         },
+         {
+          "type": "regex",
+          "options": {
+           "pattern": "^ok\\|(.*)$",
+           "result": {
+            "text": "$1",
+            "color": "#00c076",
+            "index": 4
+           }
+          }
+         },
+         {
+          "type": "regex",
+          "options": {
+           "pattern": "^skip\\|(.*)$",
+           "result": {
+            "text": "$1",
+            "color": "#7b808b",
+            "index": 5
            }
           }
          }
         ]
        }
       ]
-     },
-     {
-      "matcher": {
-       "id": "byName",
-       "options": "次數"
-      },
-      "properties": [
-       {
-        "id": "custom.width",
-        "value": 56
-       }
-      ]
      }
     ]
    },
-   "id": 5
+   "id": 6
   }
  ]
 }

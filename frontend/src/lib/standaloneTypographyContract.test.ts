@@ -11,7 +11,8 @@ const css = fs.readFileSync('src/components/observability/StandaloneJobRegistry.
 assert(css.includes('.obs-standalone__group-header p { margin: 0; color: var(--foreground); font-size: .9375rem; font-weight: 600;'), 'group headings must use the homepage-aligned title role')
 assert(css.includes('.obs-standalone__identity strong { display: block; overflow: hidden; color: var(--foreground); font-size: .9375rem; font-weight: 600;'), 'job names must use the homepage-aligned title role')
 assert(css.includes('.obs-standalone__status { display: flex; flex: none; align-items: center; gap: 5px; color: var(--muted-foreground); font-size: .8125rem; font-weight: 600;'), 'job status must remain readable at the secondary-text size')
-assert(css.includes('.obs-standalone__summary { display: -webkit-box; min-height: 44px; max-height: 44px;'), 'summary height must accommodate the enlarged two-line body')
+// 11/28 Wei 不收合規則：摘要全文換行，不截兩行。
+assert(css.includes('.obs-standalone__summary { display: block; min-height: 44px;') && !/obs-standalone__summary[^}]*(line-clamp|max-height)/.test(css), 'summary shows the whole text, no two-line clamp')
 assert(css.includes('font-size: .8125rem; line-height: 22px;'), 'summary body must use the readable 13px/22px role')
 assert(css.includes('.obs-standalone__group-header > div > span { display: block; margin-top: 2px; color: var(--muted-foreground); font-size: .8125rem;'), 'group metadata must use the homepage secondary-text role')
 assert(css.includes('.obs-standalone__identity span { display: block; margin-top: 2px; overflow: hidden; color: var(--muted-foreground); font-size: .8125rem;'), 'job ids must use the homepage secondary-text role')

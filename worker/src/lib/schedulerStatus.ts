@@ -17,6 +17,7 @@ import { getNextRunApproxWithPolicy } from './schedulerPolicy'
 import { getSchedulerDependencySpec } from './schedulerDependencyMap'
 import { eodExitSchedule, manifestRepeatingWindow, schedulerGovernanceSummary, schedulerJobAccounting } from './schedulerManifestGovernance'
 import { databaseForDataDomain } from './dataDomainRegistry'
+import { schedulerLastErrorZh, schedulerSummaryZh } from './schedulerSummaryZh'
 import {
   loadSchedulerExecutionTickets,
   schedulerTicketClosureDefect,
@@ -1510,7 +1511,7 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string, now
     const successCount = history7d.filter((item) => item === 'success').length
     const totalCount = history7d.filter((item) => SLO_COUNTED_CELLS.has(item)).length
 
-    return {
+    const row = {
       id: def.id,
       name: def.name,
       schedule: def.schedule,
@@ -1571,6 +1572,12 @@ export async function getSchedulerStatus(env: Bindings, anchorDate?: string, now
       // never by the ticket runId, which differs from the canonical run whenever a ticket owns the display.
       canonicalRunId: durableState?.canonical_run_id ?? null,
       finlabRunId: def.id === 'finlab-v4-backfill' ? displayLog?.run_id ?? null : null,
+    }
+    // FE-SUMMARY-KV-LABELS: the display sentence is parsed from the final summary/lastError at read time; no extra reads.
+    return {
+      ...row,
+      summaryZh: schedulerSummaryZh(row.id, row.summary),
+      lastErrorZh: schedulerLastErrorZh(row.id, row.lastError),
     }
   }
   const jobs = await Promise.all(JOB_DEFS.map((def) => deriveJob(def, allLogs)))

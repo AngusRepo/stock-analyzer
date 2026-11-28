@@ -10,7 +10,7 @@ import { chainStageIds } from './judgment/chainPhases'
 import { STAGES as STAGES_DAG } from './judgment/executionChainDag'
 import { FINLAB_STAGE_CARDS } from './judgment/finlabStageCards'
 import { PIPELINE_STAGE_CARDS } from './judgment/pipelineStageCards'
-import { createMonitoringHandler, P4_ROUTES, ROUTES, SLOW_TTL_S, TIMELINE_TTL_S } from './index'
+import { createMonitoringHandler, P4_ROUTES, ROUTES, SLOW_TTL_S, TIMELINE_TTL_S, V6_ROUTES } from './index'
 import { kvCache } from './kvCache'
 import { day, finishedProgress, insertRows, midRunProgress, seedStageProgress, startFixture, tableScans, tempSorts, weekdays, type Fixture } from './monitoringFixture.testSupport'
 import type { ExecutedQuery } from './readOnlyD1'
@@ -267,7 +267,12 @@ test('/v1/chain/history?days=14: final state per stage per day, repeat failures;
       ['finlab-backfill-watchdog', 1, false, X, X],
     ])
     assert.equal(body.repeat_failures[0].last_error, 'FinLab margin dates missing')
+    // The panels show the short reason (errorBrief), never the raw error.
+    assert.deepEqual(body.repeat_failures.map((item: any) => item.last_error_brief), ['上游資料未就緒', '執行錯誤，細節見 log'])
     const alerts = await endpoint('/v1/chain/alerts?chain=daily_readiness', HISTORY_MAX_ROWS_READ)
+    assert.deepEqual(Object.fromEntries(alerts.rows.map((row: any) => [`${row.stage_id}:${row.kind}`, row.error_brief])), {
+      'finlab-v4-backfill:failed': '上游資料未就緒', 'finlab-backfill-watchdog:failed': '執行錯誤，細節見 log', 'regime-compute:overdue': null, 'update:stuck': null,
+    })
     assert.deepEqual(Object.fromEntries(alerts.rows.map((row: any) => [`${row.stage_id}:${row.kind}`, row.failures_14d])), {
       'finlab-v4-backfill:failed': 3, 'finlab-backfill-watchdog:failed': 1, 'regime-compute:overdue': 0, 'update:stuck': 0,
     })
@@ -449,8 +454,8 @@ test('/v1/chain/state: the 9 sub-stage cards from pipeline_stage_runs, only for 
     const failed = await stateAt(NOW)
     assert.deepEqual(cardsOf(failed, X, 'finlab-v4-backfill').map((row: any) => [row.status, row.visual_status, row.display_status, row.completed_at]), [
       ['success', 'completed', 'completed', '2026-11-24T14:45:00.000Z'], ['error', 'blocked', 'failed', '2026-11-24T14:55:00.000Z'], ['pending', 'waiting', 'waiting', null]])
-    assert.deepEqual(cardsOf(failed, X, 'pipeline').slice(4).map((row: any) => [row.stage_id, row.status, row.visual_status, row.display_status, row.error]), [
-      ['pipeline-l2', 'error', 'blocked', 'failed', 'pipeline_l2_failed'], ['pipeline-l3', 'blocked', 'blocked', 'blocked', null]])
+    assert.deepEqual(cardsOf(failed, X, 'pipeline').slice(4).map((row: any) => [row.stage_id, row.status, row.visual_status, row.display_status, row.error, row.error_brief]), [
+      ['pipeline-l2', 'error', 'blocked', 'failed', 'pipeline_l2_failed', '執行錯誤，細節見 log'], ['pipeline-l3', 'blocked', 'blocked', 'blocked', null, null]])
     assert.equal(failed.current[0].failed, 2, 'the pipeline row and the watchdog row; no card')
     await set("UPDATE ops_chain_stage_state_v1 SET status = 'running', error = NULL WHERE business_date = ? AND stage_id = 'pipeline'", X)
 
@@ -1105,8 +1110,8 @@ test('every query the endpoints ran is read-only and EXPLAINs without a table SC
     // A temp B-tree bills every sorted row twice; the one left is the RFS latest-observed_at tie-break (a handful of rows).
     if (!/FROM rfs_sparse_comparisons_v1/.test(query.sql)) assert.deepEqual(sorts, [], `temp sort: ${query.sql.replace(/\s+/g, ' ').slice(0, 160)}`)
   }
-  // Every route was exercised (the p4 routes in monitoringP4Endpoints.test.ts).
-  for (const path of Object.keys(ROUTES).filter((path) => !(path in P4_ROUTES))) assert.ok(path === '/v1/trading-day' || measured[path] != null || measured[`${path}?days=14`] != null
+  // Every route was exercised (the p4 routes in monitoringP4Endpoints.test.ts, the v6 routes in monitoringV6Endpoints.test.ts).
+  for (const path of Object.keys(ROUTES).filter((path) => !(path in P4_ROUTES) && !(path in V6_ROUTES))) assert.ok(path === '/v1/trading-day' || measured[path] != null || measured[`${path}?days=14`] != null
     || Object.keys(measured).some((key) => key.startsWith(path)), path)
   console.log('monitoring rows_read', JSON.stringify(measured))
 })

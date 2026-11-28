@@ -17,6 +17,7 @@ export const stocksApi = {
   remove:      (id: number) => del<any>(`/stocks/${id}`),
   refresh:     (id: number) => post<any>(`/stocks/${id}/refresh`),
   prices:      (id: number, days = 365) => get<any[]>(`/stocks/${id}/prices?days=${days}`),
+  dailyBars:   (symbols: string[], limit = 20) => get<{ since: string; bars: Record<string, Array<{ date: string; open: number; high: number; low: number; close: number }>> }>(`/stocks/daily-bars?symbols=${encodeURIComponent(symbols.join(','))}&limit=${limit}`),
   indicators:  (id: number, days = 365) => get<any[]>(`/stocks/${id}/indicators?days=${days}`),
   financials:  (id: number, limit = 12, asOf?: string) => {
     const params = new URLSearchParams({ limit: String(limit) })
@@ -333,6 +334,8 @@ export type SchedulerJob = {
   durationConcern?: 'expected_short' | 'suspicious_short' | null
   durationConcernReason?: string
   lastError?: string
+  /** FE-SUMMARY-KV-LABELS：Worker 依 job 把 lastError 解析成的中文句；認不得時沒有此欄。 */
+  lastErrorZh?: string
   runId?: string | null
   attemptId?: string | null
   attemptCount?: number | null
@@ -343,6 +346,8 @@ export type SchedulerJob = {
   history7d: SchedulerHistoryCell[]
   rate7d: string
   summary: string
+  /** FE-SUMMARY-KV-LABELS：Worker 依 job 把 summary 解析成的中文句；畫面優先顯示，沒有才退回 humanJobSummary(summary)。 */
+  summaryZh?: string
   details?: string[]
   accounting: {
     schedulerJobId: string | null
@@ -379,6 +384,7 @@ export type SchedulerJob = {
     requiredBeforeDisable: string[]
     operatorRisk: 'low' | 'medium' | 'high'
     recommendation: string
+    suggestionZh?: string
   } | null
 }
 

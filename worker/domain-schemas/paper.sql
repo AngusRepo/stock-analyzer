@@ -412,6 +412,9 @@ CREATE INDEX IF NOT EXISTS idx_paper_positions_account_symbol_shares
 CREATE INDEX IF NOT EXISTS idx_paper_execution_events_account_created
   ON paper_execution_events(account_id, created_at DESC);
 
+CREATE INDEX IF NOT EXISTS idx_paper_execution_events_account_type_date
+  ON paper_execution_events(account_id, event_type, trade_date);
+
 CREATE INDEX IF NOT EXISTS idx_paper_challenger_candidates_state
   ON paper_challenger_candidates(current_state, updated_at DESC);
 

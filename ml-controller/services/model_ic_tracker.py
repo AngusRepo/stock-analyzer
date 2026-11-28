@@ -99,6 +99,25 @@ def prediction_artifact_identity(row: dict[str, Any]) -> dict[str, str | None]:
     }
 
 
+CHALLENGER_SUFFIX = "::challenger"
+ARTIFACT_IDENTITY_POLICY = "challenger_exact_match;champion_exact_match_when_row_attests_identity"
+# Order is the gate order in compute_weekly_ic_from_rows and breaks count ties.
+_LINEAGE_REJECTION_CAUSES = (
+    "artifact_version_mismatch",
+    "prediction_target_semantic_mismatch",
+    "artifact_identity_mismatch",
+)
+
+
+def _row_must_match_identity(model_name: str, identity: dict[str, str | None]) -> bool:
+    """Challengers always prove identity; champions only when the row attests one."""
+    return (
+        model_name.endswith(CHALLENGER_SUFFIX)
+        or bool(identity.get("artifact_id"))
+        or bool(identity.get("checksum"))
+    )
+
+
 def market_segment_from_prediction_row(row: dict[str, Any]) -> str:
     forecast = _safe_json(row.get("forecast_data"))
     stock_meta = forecast.get("stock_meta")
@@ -217,7 +236,128 @@ def compute_weekly_ic_from_rows(
     expected_artifact_versions: dict[str, str] | None = None,
     expected_artifact_identities: dict[str, dict[str, str]] | None = None,
 ) -> dict[str, dict[str, Any]]:
-    rows, duplicate_rows_dropped = _dedupe_prediction_rows(rows)
+    """Gate track (serving version only) plus a diagnostics-only `ic_by_version` per model.
+
+    `ic_by_version` reuses the same deduplicated rows in memory (no extra read) and
+    the same label/target/identity/min_dates rules. No gate, promotion or registry
+    writer reads it: those consume only the gate-track fields.
+    """
+    deduped_rows, duplicate_rows_dropped = _dedupe_prediction_rows(rows)
+    # Parse forecast_data once; every reader below goes through _safe_json, which
+    # returns a dict unchanged, so the gate track's result is identical.
+    deduped_rows = [_with_parsed_forecast(row) for row in deduped_rows]
+    out = _compute_ic(
+        (deduped_rows, duplicate_rows_dropped),
+        min_samples=min_samples,
+        min_dates=min_dates,
+        all_tracked=all_tracked,
+        expected_artifact_versions=expected_artifact_versions,
+        expected_artifact_identities=expected_artifact_identities,
+    )
+    # One pass groups the same rows by (model, row artifact_version).
+    groups: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for row in deduped_rows:
+        name = str(row.get("model_name") or "")
+        if name not in out:
+            continue
+        version = prediction_artifact_lineage(row)[0]
+        if version:
+            groups.setdefault(name, {}).setdefault(version, []).append(row)
+    for name, info in out.items():
+        info["ic_by_version"] = _ic_by_version(
+            groups.get(name, {}),
+            name,
+            gate=info if expected_artifact_versions is not None else None,
+            min_samples=min_samples,
+            min_dates=min_dates,
+            serving_version=(expected_artifact_versions or {}).get(name),
+            serving_identity=(expected_artifact_identities or {}).get(name),
+        )
+    return out
+
+
+def _with_parsed_forecast(row: dict[str, Any]) -> dict[str, Any]:
+    """Keep only the forecast fields IC reads (the router's compact shape), parsed once."""
+    forecast = row.get("forecast_data")
+    if isinstance(forecast, dict):
+        return row
+    parsed = _safe_json(forecast)
+    signal = parsed.get("model_signal")
+    stock_meta = parsed.get("stock_meta")
+    compact: dict[str, Any] = {
+        "rank_score": parsed.get("rank_score"),
+        "model_signal": {
+            key: signal.get(key)
+            for key in ("artifact_version", "target_semantic_version", "artifact_id", "artifact_checksum")
+        } if isinstance(signal, dict) else {},
+    }
+    if isinstance(stock_meta, dict):
+        compact["stock_meta"] = {"market_segment": stock_meta.get("market_segment")}
+    return {**row, "forecast_data": compact}
+
+
+# An identity no row can match: outside the serving version there is no expected
+# identity, so rows that must prove one (challengers, attesting champions) cannot.
+_UNVERIFIABLE_IDENTITY = {"artifact_id": "", "checksum": ""}
+_IC_BY_VERSION_FIELDS = ("status", "root_cause", "ic", "icir", "n_samples", "n_dates", "daily_ic")
+
+
+def _ic_by_version(
+    by_version: dict[str, list[dict[str, Any]]],
+    name: str,
+    *,
+    gate: dict[str, Any] | None,
+    min_samples: int,
+    min_dates: int,
+    serving_version: str | None,
+    serving_identity: dict[str, str] | None,
+) -> dict[str, dict[str, Any]]:
+    serving = str(serving_version or "").strip()
+    out: dict[str, dict[str, Any]] = {}
+    for version, version_rows in sorted(by_version.items()):
+        is_serving = bool(serving) and version == serving
+        if is_serving and gate is not None and gate.get("root_cause") not in _LINEAGE_REJECTION_CAUSES:
+            # The gate track already evaluated exactly these rows under the same rules. A lineage
+            # root cause was decided over all of the model's rows, so that case is recomputed below.
+            contract = gate.get("evaluation_contract") or {}
+            out[version] = {
+                **{key: gate.get(key) for key in _IC_BY_VERSION_FIELDS},
+                "first_date": contract.get("observed_start_date"),
+                "last_date": contract.get("observed_end_date"),
+                "serving_version": True,
+            }
+            if isinstance(out[version]["daily_ic"], dict):
+                out[version]["daily_ic"] = dict(out[version]["daily_ic"])
+            continue
+        identity = (serving_identity if is_serving else _UNVERIFIABLE_IDENTITY)
+        info = _compute_ic(
+            (version_rows, {}),
+            min_samples=min_samples,
+            min_dates=min_dates,
+            all_tracked=(name,),
+            expected_artifact_versions={name: version},
+            expected_artifact_identities={name: identity} if identity is not None else {},
+        )[name]
+        contract = info.get("evaluation_contract") or {}
+        out[version] = {
+            **{key: info.get(key) for key in _IC_BY_VERSION_FIELDS},
+            "first_date": contract.get("observed_start_date"),
+            "last_date": contract.get("observed_end_date"),
+            "serving_version": is_serving,
+        }
+    return out
+
+
+def _compute_ic(
+    deduped: tuple[list[dict[str, Any]], dict[str, int]],
+    *,
+    min_samples: int,
+    min_dates: int = 1,
+    all_tracked: tuple[str, ...] | None = None,
+    expected_artifact_versions: dict[str, str] | None = None,
+    expected_artifact_identities: dict[str, dict[str, str]] | None = None,
+) -> dict[str, dict[str, Any]]:
+    rows, duplicate_rows_dropped = deduped
     tracked = all_tracked or tracked_model_names()
     by_model: dict[str, list[tuple[float, float]]] = {name: [] for name in tracked}
     by_model_segment: dict[str, dict[str, list[tuple[float, float]]]] = {name: {} for name in tracked}
@@ -242,10 +382,12 @@ def compute_weekly_ic_from_rows(
             "duplicate_rows_dropped": int(duplicate_rows_dropped.get(name, 0)),
             "artifact_version_mismatch_rows": 0,
             "artifact_identity_mismatch_rows": 0,
+            "artifact_identity_unattested_rows": 0,
             "prediction_target_semantic_mismatch_rows": 0,
         }
         for name in tracked
     }
+    observed_versions: dict[str, dict[str, int]] = {name: {} for name in tracked}
 
     for row in rows:
         model_name = str(row.get("model_name") or "")
@@ -255,6 +397,8 @@ def compute_weekly_ic_from_rows(
         diag["raw_rows"] += 1
         artifact_identity = prediction_artifact_identity(row)
         artifact_version = artifact_identity["version"]
+        version_key = artifact_version or "missing"
+        observed_versions[model_name][version_key] = observed_versions[model_name].get(version_key, 0) + 1
         prediction_target_semantic = artifact_identity["target_semantic_version"]
         expected_version = str((expected_artifact_versions or {}).get(model_name) or "").strip()
         if expected_artifact_versions is not None:
@@ -265,7 +409,11 @@ def compute_weekly_ic_from_rows(
                 diag["prediction_target_semantic_mismatch_rows"] += 1
                 continue
         expected_identity = (expected_artifact_identities or {}).get(model_name)
-        if expected_identity is not None:
+        if expected_identity is not None and not _row_must_match_identity(model_name, artifact_identity):
+            # Champion rows have never carried artifact_id/checksum (only the
+            # challenger writer does); version + target semantic stay the gate.
+            diag["artifact_identity_unattested_rows"] += 1
+        elif expected_identity is not None:
             expected_artifact_id = str(expected_identity.get("artifact_id") or "").strip()
             expected_checksum = str(expected_identity.get("checksum") or "").strip().lower()
             if (
@@ -348,8 +496,15 @@ def compute_weekly_ic_from_rows(
             }
         diag = diagnostics[name]
         root_cause = "ok"
+        lineage_rejections = {
+            cause: diag[f"{cause}_rows"] for cause in _LINEAGE_REJECTION_CAUSES
+        }
         if diag["raw_rows"] == 0:
             root_cause = "prediction_missing"
+        elif sum(lineage_rejections.values()) == diag["raw_rows"]:
+            # Every row was rejected before verification was looked at; name the
+            # lineage gate instead of reporting it as missing verification.
+            root_cause = max(_LINEAGE_REJECTION_CAUSES, key=lambda cause: lineage_rejections[cause])
         elif diag["verified_rows"] == 0:
             root_cause = "verification_missing"
         elif diag["outcome_rows"] == 0:
@@ -374,6 +529,7 @@ def compute_weekly_ic_from_rows(
             "artifact_version": (expected_artifact_versions or {}).get(name),
             "artifact_identity": (expected_artifact_identities or {}).get(name),
             "artifact_version_policy": "current_champion_or_registry_candidate_exact_match",
+            "artifact_identity_policy": ARTIFACT_IDENTITY_POLICY,
             "min_samples": int(min_samples),
             "min_dates": max(1, int(min_dates)),
             "n_samples": len(pairs),
@@ -397,6 +553,7 @@ def compute_weekly_ic_from_rows(
                 "evaluation_contract": evaluation_contract,
                 **{key: value for key, value in cross_sectional.items() if key != "ic"},
                 "diagnostics": diag,
+                "observed_artifact_versions": observed_versions[name],
                 "score_sources": score_sources[name],
                 "segments": segment_diag,
             }
@@ -411,6 +568,7 @@ def compute_weekly_ic_from_rows(
                 "evaluation_contract": evaluation_contract,
                 **{key: value for key, value in cross_sectional.items() if key != "ic"},
                 "diagnostics": diag,
+                "observed_artifact_versions": observed_versions[name],
                 "score_sources": score_sources[name],
                 "segments": segment_diag,
                 "error": "rank_score_or_actual_return_has_zero_cross_sectional_variance",
@@ -424,6 +582,7 @@ def compute_weekly_ic_from_rows(
                 "evaluation_contract": evaluation_contract,
                 **{key: value for key, value in cross_sectional.items() if key != "ic"},
                 "diagnostics": diag,
+                "observed_artifact_versions": observed_versions[name],
                 "score_sources": score_sources[name],
                 "segments": segment_diag,
             }
@@ -436,6 +595,7 @@ def compute_weekly_ic_from_rows(
             "evaluation_contract": evaluation_contract,
             **{key: value for key, value in cross_sectional.items() if key != "ic"},
             "diagnostics": diag,
+            "observed_artifact_versions": observed_versions[name],
             "score_sources": score_sources[name],
             "segments": segment_diag,
         }

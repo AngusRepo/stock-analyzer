@@ -571,3 +571,250 @@ def test_challenger_weekly_ic_requires_exact_artifact_id_and_checksum():
     assert info["n_samples"] == 2
     assert info["diagnostics"]["artifact_identity_mismatch_rows"] == 2
     assert info["evaluation_contract"]["artifact_identity"]["artifact_id"] == expected_id
+
+
+# 2026-11-26: champion rows never carried artifact_id/checksum (only the challenger
+# writer does), so requiring them turned every champion IC into
+# artifact_identity_mismatch -> insufficient_samples from a8ea12e0 (8/27) on.
+_CHAMPION_ID = "LightGBM:vServed:oof_full_fit_release"
+_CHAMPION_CHECKSUM = "sha256:" + "a" * 64
+
+
+def _lineage_row(model: str, stock_id: int, day: str, rank: float, actual: float, *,
+                 version: str = "vServed", artifact_id: str | None = None,
+                 checksum: str | None = None) -> dict:
+    signal = {"artifact_version": version, "target_semantic_version": IC_TARGET_SEMANTIC_VERSION}
+    if artifact_id is not None:
+        signal["artifact_id"] = artifact_id
+    if checksum is not None:
+        signal["artifact_checksum"] = checksum
+    return {
+        "stock_id": stock_id,
+        "model_name": model,
+        "prediction_date": day,
+        "generated_at": f"{day}T13:00:{stock_id:02d}Z",
+        "actual_return_pct": actual,
+        "forecast_data": json.dumps({"rank_score": rank, "model_signal": signal}),
+    }
+
+
+def _two_day_rows(model: str, **identity) -> list[dict]:
+    rows = []
+    for day in ("2026-11-02", "2026-11-03"):
+        for stock_id, (rank, actual) in enumerate(((0.1, -0.02), (0.5, 0.01), (0.9, 0.03)), start=1):
+            rows.append(_lineage_row(model, stock_id, day, rank, actual, **identity))
+    return rows
+
+
+def _ic_for(model: str, rows: list[dict], *, version: str = "vServed") -> dict:
+    return compute_weekly_ic_from_rows(
+        rows,
+        min_samples=4,
+        min_dates=2,
+        all_tracked=(model,),
+        expected_artifact_versions={model: version},
+        expected_artifact_identities={model: {"artifact_id": _CHAMPION_ID, "checksum": _CHAMPION_CHECKSUM}},
+    )[model]
+
+
+def test_champion_rows_without_identity_compute_on_version_and_target():
+    info = _ic_for("LightGBM", _two_day_rows("LightGBM"))
+
+    assert info["status"] == "computed"
+    assert info["root_cause"] == "ok"
+    assert info["ic"] == 1.0
+    assert info["n_samples"] == 6
+    assert info["diagnostics"]["artifact_identity_mismatch_rows"] == 0
+    assert info["diagnostics"]["artifact_identity_unattested_rows"] == 6
+    assert info["observed_artifact_versions"] == {"vServed": 6}
+    assert info["evaluation_contract"]["artifact_identity_policy"] == (
+        "challenger_exact_match;champion_exact_match_when_row_attests_identity")
+
+
+def test_challenger_rows_without_identity_stay_identity_mismatch():
+    info = _ic_for("LightGBM::challenger", _two_day_rows("LightGBM::challenger"))
+
+    assert info["status"] == "insufficient_samples"
+    assert info["root_cause"] == "artifact_identity_mismatch"
+    assert info["n_samples"] == 0
+    assert info["diagnostics"]["artifact_identity_mismatch_rows"] == 6
+    assert info["diagnostics"]["artifact_identity_unattested_rows"] == 0
+
+
+def test_champion_rows_with_wrong_identity_are_mismatched():
+    wrong_id = _two_day_rows("LightGBM", artifact_id="LightGBM:vOther:oof_full_fit_release",
+                             checksum=_CHAMPION_CHECKSUM)
+    # A row attesting only a checksum is still held to the full identity.
+    checksum_only = _two_day_rows("LightGBM", checksum="sha256:" + "b" * 64)
+    for rows in (wrong_id, checksum_only):
+        info = _ic_for("LightGBM", rows)
+        assert info["status"] == "insufficient_samples"
+        assert info["root_cause"] == "artifact_identity_mismatch"
+        assert info["diagnostics"]["artifact_identity_mismatch_rows"] == 6
+        assert info["diagnostics"]["artifact_identity_unattested_rows"] == 0
+
+
+def test_champion_rows_with_matching_identity_compute():
+    rows = _two_day_rows("LightGBM", artifact_id=_CHAMPION_ID, checksum=_CHAMPION_CHECKSUM.upper())
+    info = _ic_for("LightGBM", rows)
+
+    assert info["status"] == "computed"
+    assert info["diagnostics"]["artifact_identity_unattested_rows"] == 0
+
+
+def test_champion_rows_of_a_previous_version_report_version_mismatch():
+    # 11/24 promotion: the pool serves vNew while every labeled row in the window is vOld.
+    rows = _two_day_rows("LightGBM", version="vOld")
+    info = _ic_for("LightGBM", rows, version="vNew")
+
+    assert info["status"] == "insufficient_samples"
+    assert info["root_cause"] == "artifact_version_mismatch"
+    assert info["diagnostics"]["artifact_version_mismatch_rows"] == 6
+    assert info["observed_artifact_versions"] == {"vOld": 6}
+    assert info["evaluation_contract"]["artifact_version"] == "vNew"
+
+
+def test_mixed_versions_compute_only_the_served_version_and_report_both():
+    rows = _two_day_rows("LightGBM") + [
+        _lineage_row("LightGBM", 10 + i, "2026-11-04", 0.5, 0.0, version="vOld") for i in range(3)
+    ]
+    info = _ic_for("LightGBM", rows)
+
+    assert info["status"] == "computed"
+    assert info["n_samples"] == 6
+    assert info["diagnostics"]["artifact_version_mismatch_rows"] == 3
+    assert info["observed_artifact_versions"] == {"vServed": 6, "vOld": 3}
+
+
+def test_model_outside_the_serving_pool_reports_version_mismatch():
+    rows = _two_day_rows("XGBoost")
+    info = compute_weekly_ic_from_rows(
+        rows, min_samples=4, min_dates=2, all_tracked=("XGBoost",),
+        expected_artifact_versions={}, expected_artifact_identities={},
+    )["XGBoost"]
+
+    assert info["status"] == "insufficient_samples"
+    assert info["root_cause"] == "artifact_version_mismatch"
+    assert info["evaluation_contract"]["artifact_version"] is None
+
+
+# Dual track (Wei 11/26): the gate track stays serving-version only; ic_by_version is
+# a diagnostics-only regrouping of the same rows by the version each row carries.
+_GATE_KEYS = ("status", "root_cause", "ic", "n_samples", "n_dates", "icir", "daily_ic", "diagnostics")
+
+
+def test_prior_version_ic_is_reported_while_the_serving_version_has_no_labels():
+    rows = _two_day_rows("LightGBM", version="vOld")
+    info = _ic_for("LightGBM", rows, version="vNew")
+
+    assert info["status"] == "insufficient_samples"
+    assert info["root_cause"] == "artifact_version_mismatch"
+    assert "ic" not in info
+    old = info["ic_by_version"]["vOld"]
+    assert old["status"] == "computed" and old["ic"] == 1.0
+    assert old["n_samples"] == 6 and old["n_dates"] == 2
+    assert (old["first_date"], old["last_date"]) == ("2026-11-02", "2026-11-03")
+    assert old["serving_version"] is False
+    assert set(old["daily_ic"]) == {"2026-11-02", "2026-11-03"}
+    assert set(info["ic_by_version"]) == {"vOld"}
+
+
+def test_two_computed_versions_group_separately_and_gate_takes_the_serving_one():
+    serving = _two_day_rows("LightGBM")  # rank and return agree: IC 1.0
+    prior = [
+        _lineage_row("LightGBM", stock_id + 20, day, rank, actual, version="vOld")
+        for day in ("2026-10-27", "2026-10-28")
+        for stock_id, (rank, actual) in enumerate(((0.1, 0.03), (0.5, 0.01), (0.9, -0.02)), start=1)
+    ]  # rank and return disagree: IC -1.0
+    info = _ic_for("LightGBM", serving + prior)
+    gate_only = _ic_for("LightGBM", serving)
+
+    assert info["status"] == "computed" and info["ic"] == 1.0 and info["n_samples"] == 6
+    assert {key: info[key] for key in _GATE_KEYS if key != "diagnostics"} == {
+        key: gate_only[key] for key in _GATE_KEYS if key != "diagnostics"}
+    assert info["diagnostics"]["artifact_version_mismatch_rows"] == 6
+    by_version = info["ic_by_version"]
+    assert by_version["vServed"]["ic"] == 1.0 and by_version["vServed"]["serving_version"] is True
+    assert by_version["vOld"]["ic"] == -1.0 and by_version["vOld"]["serving_version"] is False
+    assert by_version["vOld"]["first_date"] == "2026-10-27"
+    for key in ("status", "ic", "n_samples", "n_dates", "icir"):
+        assert by_version["vServed"][key] == info[key]
+
+
+def test_serving_group_reports_its_own_root_cause_not_the_whole_model_one():
+    # Serving-version rows attest a different artifact; the prior version has more rows, so the
+    # gate (decided over all of the model's rows) reports artifact_version_mismatch.
+    serving = _two_day_rows("LightGBM", artifact_id="LightGBM:vServed:other", checksum=_CHAMPION_CHECKSUM)
+    prior = [
+        _lineage_row("LightGBM", stock_id + 20 * week, day, rank, actual, version="vOld")
+        for week, days in enumerate((("2026-10-27", "2026-10-28"), ("2026-10-20", "2026-10-21")), start=1)
+        for day in days
+        for stock_id, (rank, actual) in enumerate(((0.1, -0.02), (0.5, 0.01), (0.9, 0.03)), start=1)
+    ]
+    info = _ic_for("LightGBM", serving + prior)
+    alone = _ic_for("LightGBM", serving)
+
+    assert info["status"] == "insufficient_samples"
+    assert info["root_cause"] == "artifact_version_mismatch"
+    group = info["ic_by_version"]["vServed"]
+    assert group["serving_version"] is True
+    assert group["root_cause"] == alone["root_cause"] == "artifact_identity_mismatch"
+    for key in ("status", "n_samples", "n_dates"):
+        assert group[key] == alone[key]
+    assert info["ic_by_version"]["vOld"]["status"] == "computed"
+
+
+def test_serving_group_daily_ic_is_a_copy_of_the_gate_series():
+    info = _ic_for("LightGBM", _two_day_rows("LightGBM"))
+    group = info["ic_by_version"]["vServed"]
+
+    assert group["daily_ic"] == info["daily_ic"]
+    assert group["daily_ic"] is not info["daily_ic"]
+    group["daily_ic"]["2026-11-02"] = 0.0
+    assert info["daily_ic"]["2026-11-02"] == 1.0
+
+
+def test_ic_by_version_keeps_challenger_identity_strict():
+    expected = {"artifact_id": _CHAMPION_ID, "checksum": _CHAMPION_CHECKSUM}
+    attested = _two_day_rows("LightGBM::challenger", artifact_id=_CHAMPION_ID, checksum=_CHAMPION_CHECKSUM)
+    unattested = [dict(r, stock_id=r["stock_id"] + 30) for r in _two_day_rows("LightGBM::challenger", version="vOther")]
+    other_attested = [dict(r, stock_id=r["stock_id"] + 50) for r in _two_day_rows(
+        "LightGBM::challenger", version="vPrior", artifact_id="LightGBM:vPrior:x", checksum=_CHAMPION_CHECKSUM)]
+    info = compute_weekly_ic_from_rows(
+        attested + unattested + other_attested, min_samples=4, min_dates=2,
+        all_tracked=("LightGBM::challenger",),
+        expected_artifact_versions={"LightGBM::challenger": "vServed"},
+        expected_artifact_identities={"LightGBM::challenger": expected},
+    )["LightGBM::challenger"]
+
+    assert info["status"] == "computed"
+    by_version = info["ic_by_version"]
+    assert by_version["vServed"]["status"] == "computed"
+    # Outside the candidate there is no expected identity, so challenger rows cannot prove one.
+    for version in ("vOther", "vPrior"):
+        assert by_version[version]["status"] == "insufficient_samples"
+        assert by_version[version]["root_cause"] == "artifact_identity_mismatch"
+
+
+def test_ic_by_version_champion_rows_attesting_a_non_serving_identity_are_rejected():
+    rows = _two_day_rows("LightGBM", version="vOld", artifact_id="LightGBM:vOld:x", checksum=_CHAMPION_CHECKSUM)
+    old = _ic_for("LightGBM", rows, version="vNew")["ic_by_version"]["vOld"]
+
+    assert old["status"] == "insufficient_samples"
+    assert old["root_cause"] == "artifact_identity_mismatch"
+
+
+def test_live_gate_decision_ignores_ic_by_version():
+    from services.model_artifact_registry import _live_gate_decision
+
+    rows = _two_day_rows("LightGBM", version="vOld")
+    per_model = compute_weekly_ic_from_rows(
+        rows, min_samples=4, min_dates=2, all_tracked=("LightGBM", "LightGBM::challenger"),
+        expected_artifact_versions={"LightGBM": "vNew"}, expected_artifact_identities={})
+    stripped = {name: {k: v for k, v in info.items() if k != "ic_by_version"} for name, info in per_model.items()}
+
+    assert per_model["LightGBM"]["ic_by_version"]["vOld"]["status"] == "computed"
+    with_track = _live_gate_decision(model_name="LightGBM", per_model_ic=per_model, min_samples=4)
+    without = _live_gate_decision(model_name="LightGBM", per_model_ic=stripped, min_samples=4)
+    assert with_track == without
+    assert with_track["metrics"]["production_ic"] is None

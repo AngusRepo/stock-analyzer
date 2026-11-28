@@ -380,6 +380,15 @@ function statusRingClass(tone: WorkstationTone) {
   return 'border-slate-500/35 bg-slate-500/10 text-slate-200'
 }
 
+// 11/28 Wei：OBS 不再整頁等最慢的 API；各區塊只等自己的資料來源。
+function SectionLoading({ sources }: { sources: string }) {
+  return (
+    <div className="flex items-center gap-2 border-t border-border p-4 text-xs text-slate-400">
+      <Loader2 className="h-4 w-4 animate-spin text-sky-300" /> Loading OBS evidence · {sources}
+    </div>
+  )
+}
+
 function ReadinessGauge({ score, tone }: { score: number; tone: WorkstationTone }) {
   const clamped = Math.max(0, Math.min(100, Number.isFinite(score) ? score : 0))
   const color = toneColor(tone)
@@ -1632,7 +1641,6 @@ export default function ObservabilityPage() {
   const dqChecks = dataQuality.data?.checks ?? []
   const schedulerScore = Number(scheduler.data?.stats?.successRate7d ?? 0)
   const schedulerApiError = errorMessage(scheduler.error)
-  const initialLoading = [scheduler, dataQuality, deployGate, system, observability].some((query) => query.isLoading)
   const readinessStages = READINESS_STAGES.map((stage) => stageFromDefinition(stage, jobs))
   const readinessScore = Math.round(schedulerScore)
   const readinessTone: WorkstationTone = schedulerApiError
@@ -1644,28 +1652,23 @@ export default function ObservabilityPage() {
 
   return (
     <AppShell>
-      <div className="sv-stockintelli-page relative min-h-[70vh] p-4 lg:p-5">
-        {initialLoading && (
-          <div className="absolute inset-0 z-20 flex items-center justify-center bg-[#05070c]/95 backdrop-blur-sm">
-            <div className="rounded-xl border border-[#263247] bg-[#070a10] px-5 py-4 text-center shadow-xl">
-              <Loader2 className="mx-auto h-6 w-6 animate-spin text-sky-300" />
-              <p className="mt-3 sv-num text-xs normal-case text-sky-200">Loading OBS evidence</p>
-              <p className="mt-1 text-xs text-muted-foreground">scheduler / data quality / deploy gate / model events</p>
-            </div>
-          </div>
-        )}
-        <div className={`space-y-4 ${initialLoading ? 'pointer-events-none opacity-0' : 'opacity-100 transition-opacity duration-300'}`}>
+      <div className="sv-stockintelli-page min-h-[70vh] p-4 lg:p-5">
+        <div className="space-y-4">
         <WorkstationPageTitle
           kicker="Observability"
           title="OBS 可觀測中心"
           description="用事件、時間、count、SLO 與 drilldown CTA 回答：哪裡壞、多久了、影響哪一層。"
           action={
             <div className="flex flex-wrap items-center gap-3">
-              <ReadinessGauge score={readinessScore} tone={readinessTone} />
+              {scheduler.isLoading ? (
+                <div className="grid h-20 w-20 shrink-0 place-items-center rounded-full border border-[#2b3a49] bg-[#070a10]">
+                  <Loader2 className="h-5 w-5 animate-spin text-sky-300" aria-label="Loading readiness" />
+                </div>
+              ) : <ReadinessGauge score={readinessScore} tone={readinessTone} />}
               <div className="flex max-w-xs flex-wrap gap-2">
-                <WorkstationStatusPill tone={statusTone(deployGate.data?.decision)}>Gate <StatusCode raw={deployGate.data?.decision} /></WorkstationStatusPill>
-                <WorkstationStatusPill tone={severityTone(observability.data?.overall)}>OBS <StatusCode raw={observability.data?.overall} /></WorkstationStatusPill>
-                <WorkstationStatusPill tone={system.error ? 'error' : 'ok'}>System {system.error ? '異常' : '連線中'}</WorkstationStatusPill>
+                <WorkstationStatusPill tone={deployGate.isLoading ? 'neutral' : statusTone(deployGate.data?.decision)}>Gate {deployGate.isLoading ? '載入中' : <StatusCode raw={deployGate.data?.decision} />}</WorkstationStatusPill>
+                <WorkstationStatusPill tone={observability.isLoading ? 'neutral' : severityTone(observability.data?.overall)}>OBS {observability.isLoading ? '載入中' : <StatusCode raw={observability.data?.overall} />}</WorkstationStatusPill>
+                <WorkstationStatusPill tone={system.isLoading ? 'neutral' : system.error ? 'error' : 'ok'}>System {system.isLoading ? '載入中' : system.error ? '異常' : '連線中'}</WorkstationStatusPill>
                 <span className="w-full sv-num text-xs normal-case text-muted-foreground">Readiness-gated Chain Control</span>
               </div>
             </div>
@@ -1673,7 +1676,7 @@ export default function ObservabilityPage() {
         />
 
         <WorkstationPanel title="Operational Drilldown / 維運追蹤" kicker="full rows, not fake tabs">
-          <OperationalReadinessDeck
+          {scheduler.isLoading || dataQuality.isLoading ? <SectionLoading sources="scheduler / data quality" /> : <OperationalReadinessDeck
             jobs={jobs}
             checks={dqChecks}
             schedulerApiError={schedulerApiError}
@@ -1683,7 +1686,7 @@ export default function ObservabilityPage() {
             capacityReport={capacity.data}
             capacityLoading={capacity.isLoading}
             capacityError={errorMessage(capacity.error)}
-          />
+          />}
           <div className="border-b border-[#263247] p-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <p className="text-xs leading-5 text-slate-400">
@@ -1698,9 +1701,15 @@ export default function ObservabilityPage() {
           </div>
         </WorkstationPanel>
 
-        <ExecutionChainPanel jobs={jobs} isFetching={scheduler.isFetching}
-          dataUpdatedAt={scheduler.dataUpdatedAt} apiError={schedulerApiError}
-          governance={scheduler.data?.governance} />
+        {scheduler.isLoading ? (
+          <WorkstationPanel title="Execution chain" kicker="scheduler">
+            <SectionLoading sources="scheduler" />
+          </WorkstationPanel>
+        ) : (
+          <ExecutionChainPanel jobs={jobs} isFetching={scheduler.isFetching}
+            dataUpdatedAt={scheduler.dataUpdatedAt} apiError={schedulerApiError}
+            governance={scheduler.data?.governance} />
+        )}
 
         <section>
           <EvidenceClockPanel
@@ -1711,12 +1720,16 @@ export default function ObservabilityPage() {
         </section>
 
         <section>
-          <AdaptiveMetaPanel
+          {observability.isLoading ? (
+            <WorkstationPanel title="Adaptive / Meta Evidence" kicker="threshold, bandit, GA">
+              <SectionLoading sources="model events" />
+            </WorkstationPanel>
+          ) : <AdaptiveMetaPanel
             events={events}
             onGaReview={(action, level) => gaReview.mutate({ action, level })}
             gaReviewPending={gaReview.isPending}
             gaReviewError={gaReview.error ? (gaReview.error as Error).message : null}
-          />
+          />}
         </section>
         </div>
       </div>

@@ -127,6 +127,8 @@ const overridesFor = (o) => {
     { id: 'mappings', value: [{ type: 'special', options: { match: 'null', result: { text: '—', color: C.sub, index: 0 } } }] }] })
   for (const [name, unit] of Object.entries(o.unit ?? {})) out.push({ matcher: { id: 'byName', options: name }, properties: [{ id: 'unit', value: unit }] })
   for (const [name, width] of Object.entries(o.wd ?? {})) out.push({ matcher: { id: 'byName', options: name }, properties: [{ id: 'custom.width', value: width }] })
+  // A floor, not a fixed width: the column still takes its share of a wide panel, and its header never truncates on a phone.
+  for (const [name, width] of Object.entries(o.mw ?? {})) out.push({ matcher: { id: 'byName', options: name }, properties: [{ id: 'custom.minWidth', value: width }] })
   // Detail columns stay in the frame for the links but are not drawn; the links' titles are the detail.
   for (const name of o.hidden ?? []) out.push({ matcher: { id: 'byName', options: name }, properties: [{ id: 'custom.hidden', value: true }] })
   for (const [name, fields] of Object.entries(o.details ?? {})) out.push({ matcher: { id: 'byName', options: name }, properties: [{ id: 'links', value: detailLinks(fields) }] })
@@ -154,7 +156,7 @@ export function table(title, target, x, y, w, h, o = {}) {
   return { type: 'table', title, description: o.desc ?? '', gridPos: gp(x, y, w, h), datasource: targets[0].datasource, targets,
     transformations: [...(targets.length > 1 ? [{ id: 'merge', options: {} }] : []), ...sort, declaredOrder(targets, o.hide)],
     options: { showHeader: true, cellHeight: 'sm', footer: { show: false } },
-    fieldConfig: { defaults: { custom: { align: 'left', inspect: false }, noValue: o.empty ?? NO_SOURCE }, overrides: overridesFor(o) } }
+    fieldConfig: { defaults: { custom: { align: 'left', inspect: false, ...(o.minWidth ? { minWidth: o.minWidth } : {}) }, noValue: o.empty ?? NO_SOURCE }, overrides: overridesFor(o) } }
 }
 
 /** The join key of a multi-query KPI strip: each query's selector returns `'k': 1` and lists this column. */
@@ -297,6 +299,23 @@ export function lcd(title, target, nameField, valueField, x, y, w, h, o = {}) {
     fieldConfig: { defaults: { unit: o.unit ?? 'percent', decimals: o.dec ?? 0, min: 0, max: o.max ?? 100,
       noValue: o.empty ?? NO_SOURCE, color: { mode: 'thresholds' }, thresholds: o.th ?? th([C.ok, null], [C.warn, 80], [C.bad, 90]) },
     overrides: [rowName(valueField, nameField)] } }
+}
+
+/** Horizontal bars, one per row in the query's order (the first on top), named by `nameField`. Unlike a bar gauge, whose
+ * noValue is drawn as a grey bar with the words at its end, an empty result here is the panel's noValue centred:
+ * Grafana's barchart hands PanelDataErrorView an empty warning when every frame has no rows, and that view then shows
+ * fieldConfig.defaults.noValue. `o.colorBy`: a sibling field whose colour (thresholds or value mappings) fills each bar. */
+export function hbars(title, target, nameField, x, y, w, h, o = {}) {
+  return { type: 'barchart', title, description: o.desc ?? '', gridPos: gp(x, y, w, h), datasource: target.datasource, targets: [target],
+    transformations: [declaredOrder([target])],
+    options: { xField: nameField, orientation: 'horizontal', stacking: 'none', showValue: 'always', barWidth: 0.75, groupWidth: 0.7, barRadius: 0,
+      xTickLabelRotation: 0, xTickLabelSpacing: 0, xTickLabelMaxLength: o.labelMax ?? 24, fullHighlight: false, tooltip: { mode: 'single' },
+      ...(o.colorBy ? { colorByField: o.colorBy } : {}), text: { valueSize: 12 },
+      legend: { showLegend: false, displayMode: 'list', placement: 'bottom', calcs: [] } },
+    fieldConfig: { defaults: { unit: o.unit ?? 'none', decimals: o.dec ?? 0, noValue: o.empty ?? NO_SOURCE, color: { mode: 'thresholds' },
+      thresholds: o.th ?? th([C.txt, null]), custom: { fillOpacity: 90, lineWidth: 0, gradientMode: 'none', axisPlacement: 'auto',
+        ...(o.softMin != null ? { axisSoftMin: o.softMin } : {}), ...(o.softMax != null ? { axisSoftMax: o.softMax } : {}) } },
+    overrides: o.overrides ?? [] } }
 }
 
 /** Stacked bars over a string x field: one query per series, joined on `xField`. `series`: [[field name, colour]].

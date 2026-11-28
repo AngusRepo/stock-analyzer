@@ -2,8 +2,20 @@
  * side stages (watchdogs, fan-out work that does not gate the lane) on a second row. Positions come from dag.json.
  * A box shows its name and one short value; border = status, fill = slack to the deadline. Everything else (start,
  * finish, deadline, attempt, error) is in the box's tooltip: Canvas shows an element's name and its bound text field
- * on hover, so a transparent overlay per box carries the detail as its (invisible) text. */
+ * on hover, so a transparent overlay per box carries the detail as its (invisible) text. That text field's name is the
+ * tooltip's row label, so it is the stage's display name (TIP_FIELDS), never its id; the text itself is kept to a status
+ * word and a short reason (the Worker's error_brief), so the overlay stays inside its box. */
+import { readFileSync } from 'node:fs'
 import { C, COOL, READINESS_VOCAB, STATUS, STATUS_LABELS_JSONATA, TONE, gp } from './lib.mjs'
+
+/** Tooltip field per stage id, every chain: the dag.json display name (unique across all 64 stages; checked here). */
+const DAG = JSON.parse(readFileSync(new URL('./dag.json', import.meta.url), 'utf8'))
+export const TIP_FIELDS = Object.fromEntries([DAG.stages, ...Object.values(DAG.other_chains).map((chain) => chain.stages)]
+  .flatMap((stages) => Object.entries(stages).map(([id, stage]) => [id, stage.label])))
+if (new Set(Object.values(TIP_FIELDS)).size !== Object.keys(TIP_FIELDS).length) throw new Error('dag.json: two stages share a display name')
+const tipField = (id) => TIP_FIELDS[id] ?? id
+/** The reason a failed box shows: the Worker's error_brief; a Worker that does not send it gets the generic one, never the raw error. */
+export const ERROR_FALLBACK = '執行錯誤，細節見 log'
 
 const SLOTS = 13
 const SLOT_W = 100 / SLOTS
@@ -35,6 +47,8 @@ const DONE = JSON.stringify(Object.entries(STATUS).filter(([, [, toneName]]) => 
 /** Data-readiness dots beside the stage that writes the dataset: [stage, readiness check id, name]. */
 const DOTS = [['market-close-refresh', 'price_freshness', '價格資料'], ['update', 'chip_freshness', '籌碼資料'],
   ['indicator-queue', 'technical_indicator_freshness', '技術指標']]
+/** A dot's tooltip field: the dataset's name (the check id is internal). */
+const DOT_FIELDS = Object.fromEntries(DOTS.map(([, check, name]) => [check, name]))
 
 /** Names that would wrap in a box, shortened; the tooltip's title keeps the full name. */
 export const SHORT_LABELS = { 'active8-oof-daily': 'Active-8 daily', recommendation: 'L4 推薦', 'allocator-ev-feature-snapshot-backfill': 'EV snapshot',
@@ -79,7 +93,7 @@ function node(id, stage, left, top, next, w = NODE_W, h = NODE_H, [markW, markH]
     // Slower than usual (SLOW_PIVOT): a small cool tag at the end of the value line; amber stays for deadlines.
     ...(slow ? [{ ...label(`x_${id}`, '', place(left + w * 0.7, top + h * 0.52, w * 0.27, h * 0.4)),
       config: { align: 'right', valign: 'middle', size: 8, color: { fixed: SLOW }, text: { mode: 'field', field: `x_${id}`, fixed: NBSP } } }] : []),
-    hover('rectangle', stage.label, box, id, 'transparent', slow ? TIP_LINES + 1 : TIP_LINES),
+    hover('rectangle', stage.label, box, tipField(id), 'transparent', slow ? TIP_LINES + 1 : TIP_LINES),
   ]
 }
 
@@ -112,16 +126,20 @@ const CARD = { fill: '#15161c', edge: '#292c37', name: '#e8ecf3' }
 const CARD_EDGE = { warn: C.warn, bad: C.bad }
 
 /** One card per data-readiness item, worst first (`items`: JSONata for the sorted items, each { name, status, short,
- * detail, source }); card i reads k<i> (present), re<i> (edge), m<i> (dot), n<i> (name), v<i> (status word and date),
- * rc<i> (its colour), t<i> and t<i>~1 (tooltip). Slots beyond the items stay invisible. */
+ * note, source }); card i reads k<i> (present), re<i> (edge), m<i> (dot), n<i> (name), v<i> (status word and date),
+ * rc<i> (its colour), 第 <i+1> 項 (the tooltip's status word) and its ~1 (note) and ~2 (source) lines. Slots beyond the items stay invisible. */
 export const readinessPivot = (items) => `(
   $words := ${JSON.stringify(Object.fromEntries(Object.entries(READINESS_VOCAB).map(([key, [word]]) => [key, word])))};
+  $tip := function($i) { '第 ' & $string($i + 1) & ' 項' };
   $merge($map(${items}, function($v, $i) {{
     'k' & $i: 'card', 're' & $i: 're_' & $v.status, 'm' & $i: 'm_' & $v.status, 'rc' & $i: 'rc_' & $v.status,
     'n' & $i: $v.name, 'v' & $i: $lookup($words, $v.status) & '・' & $v.short,
-    't' & $i: $v.name & '：' & $v.detail, 't' & $i & '~1': $v.source
+    $tip($i): $lookup($words, $v.status), $tip($i) & '~1': $v.note, $tip($i) & '~2': $v.source
   }}))
 )`
+
+/** A readiness card's tooltip field: its slot as words (第 1 項), the row label the tooltip prints. */
+const readinessTip = (i) => `第 ${i + 1} 項`
 
 export function readinessElements(slots, cols = slots, [dotW, dotH] = markSize(24, 4).map((size) => size * 8 / 18)) {
   const rows = Math.ceil(slots / cols)
@@ -147,8 +165,8 @@ export function readinessElements(slots, cols = slots, [dotW, dotH] = markSize(2
       text(`value${i}`, `v${i}`, 0.58, 0.32, 10, { field: `rc${i}`, fixed: C.sub }, 0.17),
       { type: 'rectangle', name: '資料就緒', placement: place(left, top, w, h), constraint: scale,
         background: fixed('transparent'), border: { ...fixed('transparent'), width: 0 },
-        config: { align: 'center', valign: 'middle', size: 8, color: { fixed: 'transparent' }, text: { mode: 'field', field: `t${i}`, fixed: NBSP } }, connections: [],
-        links: [{ title: `\${__data.fields["t${i}~1"]}`, url: '' }] })
+        config: { align: 'center', valign: 'middle', size: 8, color: { fixed: 'transparent' }, text: { mode: 'field', field: readinessTip(i), fixed: NBSP } }, connections: [],
+        links: [1, 2].map((line) => ({ title: `\${__data.fields["${readinessTip(i)}~${line}"]}`, url: '' })) })
   }
   return elements
 }
@@ -191,7 +209,7 @@ export function chainElements(dag) {
   for (const [stage, check, name] of DOTS) {
     const box = boxes.get(stage)
     if (!box) throw new Error(`readiness dot: ${stage} is not on the chain`)
-    elements.push(hover('ellipse', `${name}就緒`, place(box.left + NODE_W - 1.1, box.top + 1.2, 0.7, 2.2), check, `r_${check}`))
+    elements.push(hover('ellipse', `${name}就緒`, place(box.left + NODE_W - 1.1, box.top + 1.2, 0.7, 2.2), DOT_FIELDS[check], `r_${check}`, 2))
   }
   // One swatch per border colour; the tooltip names the exact status.
   const legend = [['completed', '完成'], ['running', '執行中'], ['not_started', '未開始／等待'], ['at_risk', '趕不上／逾時'], ['failed', '失敗'],
@@ -233,6 +251,7 @@ export const PARKED = `/waits? for the after-close dispatch|status=waiting|await
  * Times are measured to the response's generated_at, so a cached answer stays consistent. */
 export const CHAIN_PIVOT = `(
   $label := ${STATUS_LABELS_JSONATA};
+  $tipKey := function($s) {( $k := $lookup(${JSON.stringify(TIP_FIELDS)}, $s); $k ? $k : $s )};
   $now := $toMillis($$.generated_at);
   $rows := $$.rows[active = true];
   $hm := function($t) { $t ? $fromMillis($toMillis($t), '[H01]:[m01]', '+0800') : '' };
@@ -265,7 +284,8 @@ export const CHAIN_PIVOT = `(
       : ($sl := $slack($r); $sl != null ? '餘 ' & $dur($sl) : '${NBSP}')
   )};
   $tip := function($r) {
-    $name($ds($r)) & ($r.attempt > 1 ? '・第 ' & $string($r.attempt) & ' 次' : '') & ($r.error ? '：' & $r.error : '')
+    $name($ds($r)) & ($r.attempt > 1 ? '・第 ' & $string($r.attempt) & ' 次' : '')
+      & ($r.error_brief ? '：' & $r.error_brief : $r.error ? '：${ERROR_FALLBACK}' : '')
   };
   $lines := function($r) {(
     $d := $due($r); $sl := $slack($r);
@@ -316,8 +336,8 @@ export const CHAIN_PIVOT = `(
     'b_' & stage_id: $p ? 'f_none' : $fill($),
     'c_' & stage_id: $p ? 'c_waiting' : 'c_' & $ds($),
     'd_' & stage_id: $p ? $until($) : $short($),
-    stage_id: $p ? '排定的等待（不算耗時）：' & ($r := $; $r.summary ? $r.summary : $until($r)) : $tip($),
-    ${Array.from({ length: TIP_LINES }, (_, i) => `stage_id & '~${i + 1}': $lines($)[${i}]`).join(',\n    ')}
+    $tipKey(stage_id): $p ? '排定的等待（不算耗時），' & $until($) : $tip($),
+    ${Array.from({ length: TIP_LINES }, (_, i) => `$tipKey(stage_id) & '~${i + 1}': $lines($)[${i}]`).join(',\n    ')}
   })))
 )`
 
@@ -346,15 +366,18 @@ export const slowPivot = (ids) => `(
     $med := $n ? ($n % 2 = 1 ? $u[$floor($n / 2)] : ($u[$n / 2 - 1] + $u[$n / 2]) / 2);
     $tn := $n ? $run($s, $today, true);
     { 'x_' & $s: $tn and $tn > $med * 1.5 and $tn - $med > 5 ? '+' & $dur($tn - $med) : '${NBSP}',
-      $s & '~5': $n ? '平常 ' & $dur($med) : '平常 —' })))
+      $lookup(${JSON.stringify(TIP_FIELDS)}, $s) & '~5': $n ? '平常 ' & $dur($med) : '平常 —' })))
 )`
 
 const READINESS_WORDS = JSON.stringify(Object.fromEntries(Object.entries(READINESS_VOCAB).map(([key, [word]]) => [key, word])))
 /** The readiness dots (second query, /v1/data-readiness): r_<check> (status → dot colour) and <check> (the tooltip). */
 export const DOTS_PIVOT = `$merge($append({ 'one': 1 }, checks[id in ${JSON.stringify(DOTS.map(([, check]) => check))}].{
   'r_' & id: 'm_' & status,
-  id: $join([$lookup(${READINESS_WORDS}, status), latest_date ? '最新 ' & latest_date, lag_days != null ? '落後 ' & $string(lag_days) & ' 天',
-    rows_on_latest != null ? $string(rows_on_latest) & ' 列'], '｜')
+  /* The dot is tiny: its overlay text is the status word only, the detail goes on the tooltip's link lines. */
+  $lookup(${JSON.stringify(DOT_FIELDS)}, id): $lookup(${READINESS_WORDS}, status),
+  $lookup(${JSON.stringify(DOT_FIELDS)}, id) & '~1': latest_date ? '最新 ' & latest_date : '最新 —',
+  $lookup(${JSON.stringify(DOT_FIELDS)}, id) & '~2': $join([lag_days != null ? '落後 ' & $string(lag_days) & ' 天' : '落後 —',
+    rows_on_latest != null ? $string(rows_on_latest) & ' 列' : '列數 —'], '｜')
 }))`
 
 /** Slots a one-band chain needs: each phase as wide as its longer row, half a slot between phases. */

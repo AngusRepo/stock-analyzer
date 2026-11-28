@@ -80,7 +80,7 @@
  "panels": [
   {
    "type": "gauge",
-   "title": "必要階段完成",
+   "title": "必要階段",
    "description": "指針＝這一輪已完成的必要階段數，滿格＝必要階段總數；全部完成時轉青。",
    "gridPos": {
     "x": 0,
@@ -210,7 +210,7 @@
   },
   {
    "type": "stat",
-   "title": "L3 收尾（14 日）",
+   "title": "L3 收尾",
    "description": "最近一晚 L3 Pipeline 全部完成的時間（隔天早上）；折線＝近 14 天每晚，往上＝越跑越晚。截止前 15 分起轉琥珀（晚到不算失敗，所以不轉紅）。",
    "gridPos": {
     "x": 4,
@@ -386,8 +386,8 @@
   },
   {
    "type": "stat",
-   "title": "每晚失敗站次（14 日）",
-   "description": "這個業務日失敗或中止的站數；折線＝近 14 天每天。",
+   "title": "失敗站次",
+   "description": "每晚失敗或中止的站數（14 日）：數字＝這個業務日，折線＝近 14 天每天。",
    "gridPos": {
     "x": 8,
     "y": 0,
@@ -485,7 +485,7 @@
   {
    "type": "timeseries",
    "title": "",
-   "description": "這個業務日失敗或中止的站數；折線＝近 14 天每天。",
+   "description": "每晚失敗或中止的站數（14 日）：數字＝這個業務日，折線＝近 14 天每天。",
    "transparent": true,
    "gridPos": {
     "x": 8,
@@ -927,7 +927,7 @@
   },
   {
    "type": "stat",
-   "title": "D1 overloaded（24h）",
+   "title": "D1 過載",
    "gridPos": {
     "x": 20,
     "y": 0,
@@ -958,7 +958,7 @@
       "uid": "grafanacloud-infinity"
      },
      "source": "inline",
-     "data": "{\"generated_at\":\"2026-11-26T13:52:04.654Z\",\"rows_read\":0,\"queries\":0,\"cache_ttl_s\":300,\"hours\":24,\"since\":\"2026-11-25T13:52:04.654Z\",\"tickets_read\":40,\"summary\":{\"count\":3,\"tasks\":2,\"last_at\":\"2026-11-26T11:52:04.654Z\"},\"by_task\":[{\"task\":\"daily-snapshot\",\"count\":2,\"last_at\":\"2026-11-26T11:52:04.654Z\"},{\"task\":\"strategy-learning-watchdog\",\"count\":1,\"last_at\":\"2026-11-26T04:52:04.654Z\"}],\"rows\":[{\"ticket_id\":\"t-0\",\"job_id\":\"daily-snapshot\",\"task\":\"daily-snapshot\",\"business_date\":\"2026-11-26\",\"status\":\"error\",\"error\":\"Error: D1_ERROR: D1 DB is overloaded. Too many resources consumed within a 10 second window.\",\"updated_at\":\"2026-11-26T11:52:04.654Z\"},{\"ticket_id\":\"t-1\",\"job_id\":\"daily-snapshot\",\"task\":\"daily-snapshot\",\"business_date\":\"2026-11-26\",\"status\":\"error\",\"error\":\"Error: D1_ERROR: D1 DB is overloaded. Too many resources consumed within a 10 second window.\",\"updated_at\":\"2026-11-26T08:52:04.654Z\"},{\"ticket_id\":\"t-2\",\"job_id\":\"strategy-learning-watchdog\",\"task\":\"strategy-learning-watchdog\",\"business_date\":\"2026-11-26\",\"status\":\"error\",\"error\":\"Error: D1_ERROR: D1 DB is overloaded. Too many resources consumed within a 10 second window.\",\"updated_at\":\"2026-11-26T04:52:04.654Z\"}]}"
+     "data": "{\"generated_at\":\"2026-11-27T22:21:07.484Z\",\"rows_read\":0,\"queries\":0,\"cache_ttl_s\":300,\"hours\":24,\"since\":\"2026-11-26T22:21:07.484Z\",\"tickets_read\":40,\"summary\":{\"count\":3,\"tasks\":2,\"last_at\":\"2026-11-27T20:21:07.484Z\"},\"by_task\":[{\"task\":\"daily-snapshot\",\"count\":2,\"last_at\":\"2026-11-27T20:21:07.484Z\"},{\"task\":\"strategy-learning-watchdog\",\"count\":1,\"last_at\":\"2026-11-27T13:21:07.484Z\"}],\"rows\":[{\"ticket_id\":\"t-0\",\"job_id\":\"daily-snapshot\",\"task\":\"daily-snapshot\",\"business_date\":\"2026-11-28\",\"status\":\"error\",\"error\":\"Error: D1_ERROR: D1 DB is overloaded. Too many resources consumed within a 10 second window.\",\"updated_at\":\"2026-11-27T20:21:07.484Z\"},{\"ticket_id\":\"t-1\",\"job_id\":\"daily-snapshot\",\"task\":\"daily-snapshot\",\"business_date\":\"2026-11-28\",\"status\":\"error\",\"error\":\"Error: D1_ERROR: D1 DB is overloaded. Too many resources consumed within a 10 second window.\",\"updated_at\":\"2026-11-27T17:21:07.484Z\"},{\"ticket_id\":\"t-2\",\"job_id\":\"strategy-learning-watchdog\",\"task\":\"strategy-learning-watchdog\",\"business_date\":\"2026-11-28\",\"status\":\"error\",\"error\":\"Error: D1_ERROR: D1 DB is overloaded. Too many resources consumed within a 10 second window.\",\"updated_at\":\"2026-11-27T13:21:07.484Z\"}]}"
     }
    ],
    "transformations": [
@@ -1057,12 +1057,12 @@
      }
     ]
    },
-   "description": "近 24 小時以 D1 overloaded（或 Requests queued for too long）結束的排程 ticket 數（scheduler_execution_tickets_v1 的 last_error／last_summary，不另外寫 D1）。任務內部重試後成功的不算。0＝青、≥1 琥珀、≥5 紅。",
+   "description": "D1 overloaded（24 小時）：近 24 小時以 D1 overloaded（或 Requests queued for too long）結束的排程 ticket 數（讀排程執行紀錄的最後錯誤與摘要，不另外寫 D1）。任務內部重試後成功的不算。0＝青、≥1 琥珀、≥5 紅。",
    "id": 7
   },
   {
    "type": "stat",
-   "title": "serving guard（T+5）",
+   "title": "T+5 guard",
    "gridPos": {
     "x": 20,
     "y": 2,
@@ -1093,7 +1093,7 @@
       "uid": "grafanacloud-infinity"
      },
      "source": "inline",
-     "data": "{\"generated_at\":\"2026-11-26T13:52:04.654Z\",\"rows_read\":0,\"queries\":0,\"cache_ttl_s\":900,\"thresholds\":{\"degraded_streak_to_bypass\":3,\"pass_streak_to_recover\":3,\"min_evaluable_dates\":5},\"definitions\":{},\"summary\":{\"status\":\"not_applicable\",\"state\":null,\"degraded_streak\":null,\"recovery_streak\":null,\"evaluable_date_count\":null,\"last_prediction_date\":null,\"model_version\":null,\"reason\":null,\"updated_at\":null},\"rows\":[]}"
+     "data": "{\"generated_at\":\"2026-11-27T22:21:07.484Z\",\"rows_read\":0,\"queries\":0,\"cache_ttl_s\":900,\"thresholds\":{\"degraded_streak_to_bypass\":3,\"pass_streak_to_recover\":3,\"min_evaluable_dates\":5},\"definitions\":{},\"summary\":{\"status\":\"not_applicable\",\"state\":null,\"degraded_streak\":null,\"recovery_streak\":null,\"evaluable_date_count\":null,\"last_prediction_date\":null,\"model_version\":null,\"reason\":null,\"updated_at\":null},\"rows\":[]}"
     }
    ],
    "transformations": [
@@ -1255,7 +1255,7 @@
      }
     ]
    },
-   "description": "Fusion artifact 上線後的 T+5 前向檢查（expected_return_forward_guard_state）：連續 3 個預測日 IC 與價差都輸 L4 就旁路 residual，旁路後要連續 3 日通過才恢復（至少 5 個可評估日）。未啟用＝目前沒有 Fusion residual 在服務，不需要這道保護（灰）；正常＝青；惡化中＝琥珀；已旁路＝紅；版本不符＝guard 綁的 artifact／fingerprint 不是目前服務中的 Fusion（紅，日數不顯示）。",
+   "description": "Fusion artifact 上線後的 T+5 前向檢查：連續 3 個預測日 IC 與價差都輸 L4 就旁路 residual，旁路後要連續 3 日通過才恢復（至少 5 個可評估日）。未啟用＝目前沒有 Fusion residual 在服務，不需要這道保護（灰）；正常＝青；惡化中＝琥珀；已旁路＝紅；版本不符＝guard 綁的 artifact／fingerprint 不是目前服務中的 Fusion（紅，日數不顯示）。",
    "id": 8
   },
   {
@@ -1278,7 +1278,7 @@
      "type": "json",
      "parser": "backend",
      "format": "table",
-     "root_selector": "([(\n  $label := {\"completed\":\"完成\",\"success\":\"完成\",\"noop\":\"無事可做\",\"retry_success\":\"重試後完成\",\"running\":\"執行中\",\"waiting\":\"等待中\",\"not_started\":\"未開始\",\"pending\":\"未開始\",\"out_of_window\":\"未到時段\",\"stale\":\"待確認\",\"skipped\":\"略過\",\"at_risk\":\"趕不上截止\",\"attention\":\"應跑未跑\",\"overdue\":\"逾時\",\"stuck\":\"卡住\",\"missed\":\"漏跑\",\"failed\":\"失敗\",\"error\":\"失敗\",\"blocked\":\"中止\",\"watcher_blocked\":\"被擋住\",\"ready\":\"就緒\",\"ok\":\"正常\",\"warn\":\"注意\",\"fail\":\"未過\",\"critical\":\"重大\",\"warning\":\"注意\",\"healthy\":\"正常\",\"pending_maturity\":\"等待成熟\",\"pass\":\"通過\",\"collecting\":\"收集中\",\"not_applicable_no_real_intents\":\"不適用（沒有真實下單）\",\"owner_read_unavailable\":\"讀不到來源\",\"match\":\"一致\",\"drift\":\"漂移\",\"missing\":\"缺少\",\"invalid\":\"無效\",\"PASS\":\"通過\",\"FAIL\":\"未過\"};\n  $now := $toMillis($$.generated_at);\n  $rows := $$.rows[active = true];\n  $hm := function($t) { $t ? $fromMillis($toMillis($t), '[H01]:[m01]', '+0800') : '' };\n  $dur := function($m) {( $a := $floor($abs($m)); $a >= 60 ? $string($floor($a / 60)) & 'h' & ($a % 60 > 0 ? $string($a % 60) & 'm' : '') : $string($a) & 'm' )};\n  $name := function($s) {( $l := $lookup($label, $s); $l ? $l : $s )};\n  $parent := function($r) { $r.parent_stage_id ? $rows[stage_id = $r.parent_stage_id][0] : null };\n  $watch := function($r) { $type($r.watcher) = 'boolean' ? $r.watcher : $r.stage_id in ['intraday-check'] };\n  /* The status a box is drawn with: a watcher's blocked is the amber 被擋住 (Wei 11/26), a chain stage's stays 中止. */\n  $ds := function($r) { $r.display_status = 'blocked' and $watch($r) ? 'watcher_blocked' : $r.display_status };\n  $due := function($r) { $watch($r) ? null : $r.expected_by ? $r.expected_by : $parent($r).expected_by };\n  $slack := function($r) {(\n    $d := $due($r);\n    $m := $r.eta_margin_min != null ? $r.eta_margin_min : $parent($r).eta_margin_min;\n    $ds($r) = 'at_risk' ? -1\n      : $r.completed_at ? ($d ? ($toMillis($d) - $toMillis($r.completed_at)) / 60000 : null)\n      : $watch($r) ? null\n      : $m != null ? $m\n      : $d ? ($toMillis($d) - $now) / 60000 : null\n  )};\n  $bucket := function($s) { $s != null ? ($s < 0 ? 'f_late' : $s < 10 ? 'f_tight' : $s < 30 ? 'f_mid' : 'f_wide') : 'f_none' };\n  /* Amber means \"will miss it or already has\": a stage that finished in time takes the plain fill whatever its margin\n     (the margin is in the tooltip); one that finished late keeps the late fill. Not finished: the slack bucket. */\n  $fill := function($r) {( $s := $slack($r); $r.completed_at ? ($s = null ? 'f_none' : $s < 0 ? 'f_late' : 'f_wide') : $bucket($s) )};\n  $short := function($r) {(\n    $s := $ds($r);\n    $s in ['failed', 'error', 'blocked', 'watcher_blocked', 'stuck', 'missed', 'overdue', 'at_risk', 'waiting', 'skipped'] ? $name($s)\n      : $r.started_at and $not($r.completed_at) ? ($s in ['running', 'stuck', 'overdue', 'at_risk'] ? '已 ' & $dur(($now - $toMillis($r.started_at)) / 60000) : ' ')\n      : $r.started_at and $r.completed_at ? $dur(($toMillis($r.completed_at) - $toMillis($r.started_at)) / 60000)\n      : $r.completed_at ? ' '\n      : ($sl := $slack($r); $sl != null ? '餘 ' & $dur($sl) : ' ')\n  )};\n  $tip := function($r) {\n    $name($ds($r)) & ($r.attempt > 1 ? '・第 ' & $string($r.attempt) & ' 次' : '') & ($r.error ? '：' & $r.error : '')\n  };\n  $lines := function($r) {(\n    $d := $due($r); $sl := $slack($r);\n    [\n      '開始 ' & ($r.started_at ? $hm($r.started_at) : '—'),\n      $r.completed_at ? '完成 ' & $hm($r.completed_at) : $r.eta ? '預估完成 ' & $hm($r.eta) : '完成 —',\n      '截止 ' & ($d ? $hm($d) : '—'),\n      $sl != null ? ($sl < 0 ? '超過 ' : '餘裕 ') & $dur($sl) : '餘裕 —'\n    ]\n  )};\n  /* The dispatch a fallback wait names: status=waiting wait_until=<ISO>, or the after-close dispatch in Taiwan time, read\n     as a Z stamp less 8 h (Infinity reads an offset stamp as its date's UTC midnight, see DAY_TIME in build.mjs). No\n     dispatch time: undefined, never a null literal. */\n  $untilMs := function($r) {(\n    $iso := $match($r.summary, /^status=waiting wait_until=(\\S+)/);\n    $tw := $match($r.summary, /dispatch at (\\d{4}-\\d{2}-\\d{2}) (\\d{2}:\\d{2})/);\n    $iso ? $toMillis($iso[0].groups[0]) : $tw ? $toMillis($tw[0].groups[0] & 'T' & $tw[0].groups[1] & ':00.000Z') - 28800000\n  )};\n  /* Infinity's Go JSONata evaluates both sides of and / or, so every guard here is a conditional: nothing that needs the\n     guard (a comparison with a missing time, a match on a missing summary) is reached without it, and a missing field is\n     tested by truth ($not(undefined) and undefined != 'x' are not true). A row that raises\n     an alert or is at risk is never parked, as on the KPI strip. */\n  $parked := function($r) {(\n    $s := $ds($r);\n    $r.status != 'running' ? false\n      : $s in ['failed', 'overdue', 'stuck', 'blocked', 'watcher_blocked'] ? false\n      : $s = 'at_risk' ? false\n      : $type($r.waiting) = 'boolean' ? $r.waiting\n      : $r.summary ? ($contains($r.summary, /waits? for the after-close dispatch|status=waiting|awaiting_late_lane/i) ? ($u := $untilMs($r); $type($u) = 'number' ? $u > $now : true) : false)\n      : false\n  )};\n  $until := function($r) {(\n    $u := $r.wait_until ? $toMillis($r.wait_until) : $untilMs($r);\n    $u ? '等 ' & $fromMillis($u, '[H01]:[m01]', '+0800') : '等待中'\n  )};\n  $shown := $rows[display_position != null];\n  /* Per phase: required stages done / required stages (p_<phase>), green once all are (pc_<phase>). */\n  $phaseCount := function($p) {(\n    $req := $shown[phase = $p and optional != true];\n    $done := $count($req[$ds($) in [\"completed\",\"success\",\"noop\",\"retry_success\",\"ready\",\"ok\",\"healthy\",\"pass\",\"match\",\"PASS\"]]);\n    { 'p_' & $p: $string($done) & '/' & $string($count($req)), 'pc_' & $p: $done = $count($req) ? 'pc_done' : 'pc_part' }\n  )};\n  /* one: the key the daily chain joins its three queries on (state, readiness dots, slow tags). */\n  $merge($append($append({ 'one': 1 }, $distinct($shown[phase].phase).$phaseCount($)), $shown.($p := $parked($); {\n    's_' & stage_id: $p ? 'waiting' : $ds($),\n    'k_' & stage_id: $p ? 'mk_parked' : 'mk_' & $ds($),\n    'g_' & stage_id: $p ? '…' : $lookup({\"completed\":\"✓\",\"success\":\"✓\",\"noop\":\"✓\",\"retry_success\":\"✓\",\"running\":\"…\",\"waiting\":\" \",\"not_started\":\" \",\"pending\":\" \",\"out_of_window\":\" \",\"stale\":\" \",\"skipped\":\" \",\"at_risk\":\"!\",\"attention\":\"!\",\"overdue\":\"!\",\"stuck\":\"✕\",\"missed\":\"✕\",\"failed\":\"✕\",\"error\":\"✕\",\"blocked\":\"✕\",\"watcher_blocked\":\"!\",\"ready\":\"✓\",\"ok\":\"✓\",\"warn\":\"!\",\"fail\":\"✕\",\"critical\":\"✕\",\"warning\":\"!\",\"healthy\":\"✓\",\"pending_maturity\":\" \",\"pass\":\"✓\",\"collecting\":\"…\",\"not_applicable_no_real_intents\":\" \",\"owner_read_unavailable\":\"!\",\"match\":\"✓\",\"drift\":\"!\",\"missing\":\"✕\",\"invalid\":\"✕\",\"PASS\":\"✓\",\"FAIL\":\"✕\"}, $ds($)),\n    'b_' & stage_id: $p ? 'f_none' : $fill($),\n    'c_' & stage_id: $p ? 'c_waiting' : 'c_' & $ds($),\n    'd_' & stage_id: $p ? $until($) : $short($),\n    stage_id: $p ? '排定的等待（不算耗時）：' & ($r := $; $r.summary ? $r.summary : $until($r)) : $tip($),\n    stage_id & '~1': $lines($)[0],\n    stage_id & '~2': $lines($)[1],\n    stage_id & '~3': $lines($)[2],\n    stage_id & '~4': $lines($)[3]\n  })))\n)])",
+     "root_selector": "([(\n  $label := {\"completed\":\"完成\",\"success\":\"完成\",\"noop\":\"無事可做\",\"retry_success\":\"重試後完成\",\"running\":\"執行中\",\"waiting\":\"等待中\",\"not_started\":\"未開始\",\"pending\":\"未開始\",\"out_of_window\":\"未到時段\",\"stale\":\"待確認\",\"skipped\":\"略過\",\"at_risk\":\"趕不上截止\",\"attention\":\"應跑未跑\",\"overdue\":\"逾時\",\"stuck\":\"卡住\",\"missed\":\"漏跑\",\"failed\":\"失敗\",\"error\":\"失敗\",\"blocked\":\"中止\",\"watcher_blocked\":\"被擋住\",\"ready\":\"就緒\",\"ok\":\"正常\",\"warn\":\"注意\",\"fail\":\"未過\",\"critical\":\"重大\",\"warning\":\"注意\",\"healthy\":\"正常\",\"pending_maturity\":\"等待成熟\",\"pass\":\"通過\",\"collecting\":\"收集中\",\"not_applicable_no_real_intents\":\"不適用（沒有真實下單）\",\"owner_read_unavailable\":\"讀不到來源\",\"match\":\"一致\",\"drift\":\"漂移\",\"missing\":\"缺少\",\"invalid\":\"無效\",\"PASS\":\"通過\",\"FAIL\":\"未過\"};\n  $tipKey := function($s) {( $k := $lookup({\"market-close-refresh\":\"Close refresh\",\"finlab-acquire\":\"FinLab 資料取得\",\"finlab-validate\":\"FinLab 整理與驗證\",\"finlab-publish\":\"FinLab 發布與交接\",\"finlab-backfill-watchdog\":\"FinLab watchdog\",\"update\":\"Market update\",\"indicator-queue\":\"Indicator queue\",\"regime-compute\":\"HMM regime\",\"strategy-learning-mature-evidence\":\"成熟策略證據\",\"screener\":\"Screener\",\"allocator-ev-readiness\":\"Allocator EV\",\"pipeline-inputs\":\"輸入凍結\",\"pipeline-snapshot\":\"輸入快照匯出\",\"pipeline-feature-batches\":\"特徵批次\",\"pipeline-features\":\"特徵與推論輸入組裝\",\"pipeline-l2\":\"L2 特徵增強\",\"pipeline-l3\":\"L3 預測與封存\",\"post-pipeline-chain\":\"Pipeline callback\",\"allocator-ev-feature-snapshot-backfill\":\"EV feature snapshot\",\"verify-v2\":\"Verify\",\"post-verify-chain\":\"Verify callback\",\"model-ic-rolling\":\"Model IC rolling\",\"linucb-reward-ledger\":\"Reward ledger\",\"adapt\":\"Adapt params\",\"daily-report\":\"Daily report\",\"paper-active-postmarket\":\"Paper active\",\"obsidian-sync\":\"Obsidian sync\",\"meta-learning-shadow\":\"Meta shadow\",\"strategy-learning\":\"Strategy learning\",\"evening-closure\":\"全鏈完成收據\",\"us-leading\":\"US leading\",\"news-analyst\":\"News analyst\",\"morning-setup\":\"Morning setup\",\"recommendation\":\"Recommendation · L4 推薦\",\"pre-market-warmup\":\"Pre-market\",\"premarket-evidence-watchdog\":\"盤前鏈監看\",\"dataset-snapshot-export\":\"Research snapshot\",\"active8-oof-daily\":\"Active-8 daily evidence\",\"allocator-ev-lifecycle-watchdog\":\"EV lifecycle\",\"intraday-check\":\"Intraday check\",\"eod-exit\":\"EOD exit\",\"post-close-price-refresh\":\"Close price\",\"daily-snapshot\":\"Daily snapshot\",\"rescore-10\":\"10:00 re-score\",\"rescore-11\":\"11:00 re-score\",\"rescore-12\":\"12:00 re-score\",\"rescore-1230\":\"12:30 re-score\",\"weekly-audit\":\"Weekly audit\",\"storage-integrity-audit\":\"Storage integrity\",\"model-ic-full-check\":\"Model IC full\",\"weekly-backtest\":\"Validation / MC\",\"alpha-quality\":\"Alpha quality\",\"active8-oof-weekly\":\"Active-8 weekly cohort / validation-release\",\"weekly-optuna\":\"Drift research\",\"sector-leaders\":\"Sector leaders\",\"adaptive-meta-policy-replay\":\"Meta replay\",\"s12-smcvwap-calibration\":\"S12 calibration\",\"linucb-multiplier-replay\":\"LinUCB replay\",\"weekly-cleanup\":\"Weekly cleanup\",\"weekly-readiness\":\"Weekly root\",\"monthly-strategy-mining\":\"Strategy mining\",\"monthly-optuna\":\"Monthly search\",\"active8-oof-monthly\":\"Active-8 monthly release / validation\",\"monthly-readiness\":\"Monthly root\"}, $s); $k ? $k : $s )};\n  $now := $toMillis($$.generated_at);\n  $rows := $$.rows[active = true];\n  $hm := function($t) { $t ? $fromMillis($toMillis($t), '[H01]:[m01]', '+0800') : '' };\n  $dur := function($m) {( $a := $floor($abs($m)); $a >= 60 ? $string($floor($a / 60)) & 'h' & ($a % 60 > 0 ? $string($a % 60) & 'm' : '') : $string($a) & 'm' )};\n  $name := function($s) {( $l := $lookup($label, $s); $l ? $l : $s )};\n  $parent := function($r) { $r.parent_stage_id ? $rows[stage_id = $r.parent_stage_id][0] : null };\n  $watch := function($r) { $type($r.watcher) = 'boolean' ? $r.watcher : $r.stage_id in ['intraday-check'] };\n  /* The status a box is drawn with: a watcher's blocked is the amber 被擋住 (Wei 11/26), a chain stage's stays 中止. */\n  $ds := function($r) { $r.display_status = 'blocked' and $watch($r) ? 'watcher_blocked' : $r.display_status };\n  $due := function($r) { $watch($r) ? null : $r.expected_by ? $r.expected_by : $parent($r).expected_by };\n  $slack := function($r) {(\n    $d := $due($r);\n    $m := $r.eta_margin_min != null ? $r.eta_margin_min : $parent($r).eta_margin_min;\n    $ds($r) = 'at_risk' ? -1\n      : $r.completed_at ? ($d ? ($toMillis($d) - $toMillis($r.completed_at)) / 60000 : null)\n      : $watch($r) ? null\n      : $m != null ? $m\n      : $d ? ($toMillis($d) - $now) / 60000 : null\n  )};\n  $bucket := function($s) { $s != null ? ($s < 0 ? 'f_late' : $s < 10 ? 'f_tight' : $s < 30 ? 'f_mid' : 'f_wide') : 'f_none' };\n  /* Amber means \"will miss it or already has\": a stage that finished in time takes the plain fill whatever its margin\n     (the margin is in the tooltip); one that finished late keeps the late fill. Not finished: the slack bucket. */\n  $fill := function($r) {( $s := $slack($r); $r.completed_at ? ($s = null ? 'f_none' : $s < 0 ? 'f_late' : 'f_wide') : $bucket($s) )};\n  $short := function($r) {(\n    $s := $ds($r);\n    $s in ['failed', 'error', 'blocked', 'watcher_blocked', 'stuck', 'missed', 'overdue', 'at_risk', 'waiting', 'skipped'] ? $name($s)\n      : $r.started_at and $not($r.completed_at) ? ($s in ['running', 'stuck', 'overdue', 'at_risk'] ? '已 ' & $dur(($now - $toMillis($r.started_at)) / 60000) : ' ')\n      : $r.started_at and $r.completed_at ? $dur(($toMillis($r.completed_at) - $toMillis($r.started_at)) / 60000)\n      : $r.completed_at ? ' '\n      : ($sl := $slack($r); $sl != null ? '餘 ' & $dur($sl) : ' ')\n  )};\n  $tip := function($r) {\n    $name($ds($r)) & ($r.attempt > 1 ? '・第 ' & $string($r.attempt) & ' 次' : '')\n      & ($r.error_brief ? '：' & $r.error_brief : $r.error ? '：執行錯誤，細節見 log' : '')\n  };\n  $lines := function($r) {(\n    $d := $due($r); $sl := $slack($r);\n    [\n      '開始 ' & ($r.started_at ? $hm($r.started_at) : '—'),\n      $r.completed_at ? '完成 ' & $hm($r.completed_at) : $r.eta ? '預估完成 ' & $hm($r.eta) : '完成 —',\n      '截止 ' & ($d ? $hm($d) : '—'),\n      $sl != null ? ($sl < 0 ? '超過 ' : '餘裕 ') & $dur($sl) : '餘裕 —'\n    ]\n  )};\n  /* The dispatch a fallback wait names: status=waiting wait_until=<ISO>, or the after-close dispatch in Taiwan time, read\n     as a Z stamp less 8 h (Infinity reads an offset stamp as its date's UTC midnight, see DAY_TIME in build.mjs). No\n     dispatch time: undefined, never a null literal. */\n  $untilMs := function($r) {(\n    $iso := $match($r.summary, /^status=waiting wait_until=(\\S+)/);\n    $tw := $match($r.summary, /dispatch at (\\d{4}-\\d{2}-\\d{2}) (\\d{2}:\\d{2})/);\n    $iso ? $toMillis($iso[0].groups[0]) : $tw ? $toMillis($tw[0].groups[0] & 'T' & $tw[0].groups[1] & ':00.000Z') - 28800000\n  )};\n  /* Infinity's Go JSONata evaluates both sides of and / or, so every guard here is a conditional: nothing that needs the\n     guard (a comparison with a missing time, a match on a missing summary) is reached without it, and a missing field is\n     tested by truth ($not(undefined) and undefined != 'x' are not true). A row that raises\n     an alert or is at risk is never parked, as on the KPI strip. */\n  $parked := function($r) {(\n    $s := $ds($r);\n    $r.status != 'running' ? false\n      : $s in ['failed', 'overdue', 'stuck', 'blocked', 'watcher_blocked'] ? false\n      : $s = 'at_risk' ? false\n      : $type($r.waiting) = 'boolean' ? $r.waiting\n      : $r.summary ? ($contains($r.summary, /waits? for the after-close dispatch|status=waiting|awaiting_late_lane/i) ? ($u := $untilMs($r); $type($u) = 'number' ? $u > $now : true) : false)\n      : false\n  )};\n  $until := function($r) {(\n    $u := $r.wait_until ? $toMillis($r.wait_until) : $untilMs($r);\n    $u ? '等 ' & $fromMillis($u, '[H01]:[m01]', '+0800') : '等待中'\n  )};\n  $shown := $rows[display_position != null];\n  /* Per phase: required stages done / required stages (p_<phase>), green once all are (pc_<phase>). */\n  $phaseCount := function($p) {(\n    $req := $shown[phase = $p and optional != true];\n    $done := $count($req[$ds($) in [\"completed\",\"success\",\"noop\",\"retry_success\",\"ready\",\"ok\",\"healthy\",\"pass\",\"match\",\"PASS\"]]);\n    { 'p_' & $p: $string($done) & '/' & $string($count($req)), 'pc_' & $p: $done = $count($req) ? 'pc_done' : 'pc_part' }\n  )};\n  /* one: the key the daily chain joins its three queries on (state, readiness dots, slow tags). */\n  $merge($append($append({ 'one': 1 }, $distinct($shown[phase].phase).$phaseCount($)), $shown.($p := $parked($); {\n    's_' & stage_id: $p ? 'waiting' : $ds($),\n    'k_' & stage_id: $p ? 'mk_parked' : 'mk_' & $ds($),\n    'g_' & stage_id: $p ? '…' : $lookup({\"completed\":\"✓\",\"success\":\"✓\",\"noop\":\"✓\",\"retry_success\":\"✓\",\"running\":\"…\",\"waiting\":\" \",\"not_started\":\" \",\"pending\":\" \",\"out_of_window\":\" \",\"stale\":\" \",\"skipped\":\" \",\"at_risk\":\"!\",\"attention\":\"!\",\"overdue\":\"!\",\"stuck\":\"✕\",\"missed\":\"✕\",\"failed\":\"✕\",\"error\":\"✕\",\"blocked\":\"✕\",\"watcher_blocked\":\"!\",\"ready\":\"✓\",\"ok\":\"✓\",\"warn\":\"!\",\"fail\":\"✕\",\"critical\":\"✕\",\"warning\":\"!\",\"healthy\":\"✓\",\"pending_maturity\":\" \",\"pass\":\"✓\",\"collecting\":\"…\",\"not_applicable_no_real_intents\":\" \",\"owner_read_unavailable\":\"!\",\"match\":\"✓\",\"drift\":\"!\",\"missing\":\"✕\",\"invalid\":\"✕\",\"PASS\":\"✓\",\"FAIL\":\"✕\"}, $ds($)),\n    'b_' & stage_id: $p ? 'f_none' : $fill($),\n    'c_' & stage_id: $p ? 'c_waiting' : 'c_' & $ds($),\n    'd_' & stage_id: $p ? $until($) : $short($),\n    $tipKey(stage_id): $p ? '排定的等待（不算耗時），' & $until($) : $tip($),\n    $tipKey(stage_id) & '~1': $lines($)[0],\n    $tipKey(stage_id) & '~2': $lines($)[1],\n    $tipKey(stage_id) & '~3': $lines($)[2],\n    $tipKey(stage_id) & '~4': $lines($)[3]\n  })))\n)])",
      "columns": [],
      "filters": [],
      "datasource": {
@@ -1297,7 +1297,7 @@
      "type": "json",
      "parser": "backend",
      "format": "table",
-     "root_selector": "([$merge($append({ 'one': 1 }, checks[id in [\"price_freshness\",\"chip_freshness\",\"technical_indicator_freshness\"]].{\n  'r_' & id: 'm_' & status,\n  id: $join([$lookup({\"ready\":\"正常\",\"ok\":\"正常\",\"waiting\":\"遲到\",\"warn\":\"遲到\",\"blocked\":\"缺漏\",\"fail\":\"缺漏\",\"pending\":\"未到\",\"running\":\"未到\"}, status), latest_date ? '最新 ' & latest_date, lag_days != null ? '落後 ' & $string(lag_days) & ' 天',\n    rows_on_latest != null ? $string(rows_on_latest) & ' 列'], '｜')\n}))])",
+     "root_selector": "([$merge($append({ 'one': 1 }, checks[id in [\"price_freshness\",\"chip_freshness\",\"technical_indicator_freshness\"]].{\n  'r_' & id: 'm_' & status,\n  /* The dot is tiny: its overlay text is the status word only, the detail goes on the tooltip's link lines. */\n  $lookup({\"price_freshness\":\"價格資料\",\"chip_freshness\":\"籌碼資料\",\"technical_indicator_freshness\":\"技術指標\"}, id): $lookup({\"ready\":\"正常\",\"ok\":\"正常\",\"waiting\":\"遲到\",\"warn\":\"遲到\",\"blocked\":\"缺漏\",\"fail\":\"缺漏\",\"pending\":\"未到\",\"running\":\"未到\"}, status),\n  $lookup({\"price_freshness\":\"價格資料\",\"chip_freshness\":\"籌碼資料\",\"technical_indicator_freshness\":\"技術指標\"}, id) & '~1': latest_date ? '最新 ' & latest_date : '最新 —',\n  $lookup({\"price_freshness\":\"價格資料\",\"chip_freshness\":\"籌碼資料\",\"technical_indicator_freshness\":\"技術指標\"}, id) & '~2': $join([lag_days != null ? '落後 ' & $string(lag_days) & ' 天' : '落後 —',\n    rows_on_latest != null ? $string(rows_on_latest) & ' 列' : '列數 —'], '｜')\n}))])",
      "columns": [],
      "filters": [],
      "datasource": {
@@ -1316,7 +1316,7 @@
      "type": "json",
      "parser": "backend",
      "format": "table",
-     "root_selector": "([(\n  $now := $toMillis($$.generated_at);\n  $all := $$.rows[transition_at and business_date];\n  $dates := $sort($distinct($all.business_date));\n  $today := $dates[-1];\n  $enough := $count($dates) >= 2;\n  $dur := function($m) {( $a := $floor($abs($m)); $a >= 60 ? $string($floor($a / 60)) & 'h' & ($a % 60 > 0 ? $string($a % 60) & 'm' : '') : $string($a) & 'm' )};\n  $run := function($s, $d, $open) {(\n    $t := $all[stage_id = $s and business_date = $d];\n    $held := $count($t[summary and $contains(summary, /waits? for the after-close dispatch|status=waiting|awaiting_late_lane/i)]) > 0;\n    $a := $min($t[to_status = 'running'].$toMillis(transition_at));\n    $b := $max($t[to_status = 'success'].$toMillis(transition_at));\n    $not($held) and $a ? ($b and $b > $a ? ($b - $a) / 60000 : $open ? ($now - $a) / 60000)\n  )};\n  $merge($append({ 'one': 1 }, [\"market-close-refresh\",\"finlab-acquire\",\"finlab-validate\",\"finlab-publish\",\"finlab-backfill-watchdog\",\"update\",\"indicator-queue\",\"regime-compute\",\"strategy-learning-mature-evidence\",\"screener\",\"allocator-ev-readiness\",\"pipeline-inputs\",\"pipeline-snapshot\",\"pipeline-feature-batches\",\"pipeline-features\",\"pipeline-l2\",\"pipeline-l3\",\"post-pipeline-chain\",\"allocator-ev-feature-snapshot-backfill\",\"verify-v2\",\"post-verify-chain\",\"model-ic-rolling\",\"linucb-reward-ledger\",\"adapt\",\"daily-report\",\"paper-active-postmarket\",\"obsidian-sync\",\"meta-learning-shadow\",\"strategy-learning\",\"evening-closure\",\"us-leading\",\"news-analyst\",\"morning-setup\",\"recommendation\",\"pre-market-warmup\",\"premarket-evidence-watchdog\",\"dataset-snapshot-export\",\"active8-oof-daily\",\"allocator-ev-lifecycle-watchdog\"].($s := $;\n    $u := $enough ? $sort($dates[$ != $today].($run($s, $, false)));\n    $n := $count($u);\n    $med := $n ? ($n % 2 = 1 ? $u[$floor($n / 2)] : ($u[$n / 2 - 1] + $u[$n / 2]) / 2);\n    $tn := $n ? $run($s, $today, true);\n    { 'x_' & $s: $tn and $tn > $med * 1.5 and $tn - $med > 5 ? '+' & $dur($tn - $med) : ' ',\n      $s & '~5': $n ? '平常 ' & $dur($med) : '平常 —' })))\n)])",
+     "root_selector": "([(\n  $now := $toMillis($$.generated_at);\n  $all := $$.rows[transition_at and business_date];\n  $dates := $sort($distinct($all.business_date));\n  $today := $dates[-1];\n  $enough := $count($dates) >= 2;\n  $dur := function($m) {( $a := $floor($abs($m)); $a >= 60 ? $string($floor($a / 60)) & 'h' & ($a % 60 > 0 ? $string($a % 60) & 'm' : '') : $string($a) & 'm' )};\n  $run := function($s, $d, $open) {(\n    $t := $all[stage_id = $s and business_date = $d];\n    $held := $count($t[summary and $contains(summary, /waits? for the after-close dispatch|status=waiting|awaiting_late_lane/i)]) > 0;\n    $a := $min($t[to_status = 'running'].$toMillis(transition_at));\n    $b := $max($t[to_status = 'success'].$toMillis(transition_at));\n    $not($held) and $a ? ($b and $b > $a ? ($b - $a) / 60000 : $open ? ($now - $a) / 60000)\n  )};\n  $merge($append({ 'one': 1 }, [\"market-close-refresh\",\"finlab-acquire\",\"finlab-validate\",\"finlab-publish\",\"finlab-backfill-watchdog\",\"update\",\"indicator-queue\",\"regime-compute\",\"strategy-learning-mature-evidence\",\"screener\",\"allocator-ev-readiness\",\"pipeline-inputs\",\"pipeline-snapshot\",\"pipeline-feature-batches\",\"pipeline-features\",\"pipeline-l2\",\"pipeline-l3\",\"post-pipeline-chain\",\"allocator-ev-feature-snapshot-backfill\",\"verify-v2\",\"post-verify-chain\",\"model-ic-rolling\",\"linucb-reward-ledger\",\"adapt\",\"daily-report\",\"paper-active-postmarket\",\"obsidian-sync\",\"meta-learning-shadow\",\"strategy-learning\",\"evening-closure\",\"us-leading\",\"news-analyst\",\"morning-setup\",\"recommendation\",\"pre-market-warmup\",\"premarket-evidence-watchdog\",\"dataset-snapshot-export\",\"active8-oof-daily\",\"allocator-ev-lifecycle-watchdog\"].($s := $;\n    $u := $enough ? $sort($dates[$ != $today].($run($s, $, false)));\n    $n := $count($u);\n    $med := $n ? ($n % 2 = 1 ? $u[$floor($n / 2)] : ($u[$n / 2 - 1] + $u[$n / 2]) / 2);\n    $tn := $n ? $run($s, $today, true);\n    { 'x_' & $s: $tn and $tn > $med * 1.5 and $tn - $med > 5 ? '+' & $dur($tn - $med) : ' ',\n      $lookup({\"market-close-refresh\":\"Close refresh\",\"finlab-acquire\":\"FinLab 資料取得\",\"finlab-validate\":\"FinLab 整理與驗證\",\"finlab-publish\":\"FinLab 發布與交接\",\"finlab-backfill-watchdog\":\"FinLab watchdog\",\"update\":\"Market update\",\"indicator-queue\":\"Indicator queue\",\"regime-compute\":\"HMM regime\",\"strategy-learning-mature-evidence\":\"成熟策略證據\",\"screener\":\"Screener\",\"allocator-ev-readiness\":\"Allocator EV\",\"pipeline-inputs\":\"輸入凍結\",\"pipeline-snapshot\":\"輸入快照匯出\",\"pipeline-feature-batches\":\"特徵批次\",\"pipeline-features\":\"特徵與推論輸入組裝\",\"pipeline-l2\":\"L2 特徵增強\",\"pipeline-l3\":\"L3 預測與封存\",\"post-pipeline-chain\":\"Pipeline callback\",\"allocator-ev-feature-snapshot-backfill\":\"EV feature snapshot\",\"verify-v2\":\"Verify\",\"post-verify-chain\":\"Verify callback\",\"model-ic-rolling\":\"Model IC rolling\",\"linucb-reward-ledger\":\"Reward ledger\",\"adapt\":\"Adapt params\",\"daily-report\":\"Daily report\",\"paper-active-postmarket\":\"Paper active\",\"obsidian-sync\":\"Obsidian sync\",\"meta-learning-shadow\":\"Meta shadow\",\"strategy-learning\":\"Strategy learning\",\"evening-closure\":\"全鏈完成收據\",\"us-leading\":\"US leading\",\"news-analyst\":\"News analyst\",\"morning-setup\":\"Morning setup\",\"recommendation\":\"Recommendation · L4 推薦\",\"pre-market-warmup\":\"Pre-market\",\"premarket-evidence-watchdog\":\"盤前鏈監看\",\"dataset-snapshot-export\":\"Research snapshot\",\"active8-oof-daily\":\"Active-8 daily evidence\",\"allocator-ev-lifecycle-watchdog\":\"EV lifecycle\",\"intraday-check\":\"Intraday check\",\"eod-exit\":\"EOD exit\",\"post-close-price-refresh\":\"Close price\",\"daily-snapshot\":\"Daily snapshot\",\"rescore-10\":\"10:00 re-score\",\"rescore-11\":\"11:00 re-score\",\"rescore-12\":\"12:00 re-score\",\"rescore-1230\":\"12:30 re-score\",\"weekly-audit\":\"Weekly audit\",\"storage-integrity-audit\":\"Storage integrity\",\"model-ic-full-check\":\"Model IC full\",\"weekly-backtest\":\"Validation / MC\",\"alpha-quality\":\"Alpha quality\",\"active8-oof-weekly\":\"Active-8 weekly cohort / validation-release\",\"weekly-optuna\":\"Drift research\",\"sector-leaders\":\"Sector leaders\",\"adaptive-meta-policy-replay\":\"Meta replay\",\"s12-smcvwap-calibration\":\"S12 calibration\",\"linucb-multiplier-replay\":\"LinUCB replay\",\"weekly-cleanup\":\"Weekly cleanup\",\"weekly-readiness\":\"Weekly root\",\"monthly-strategy-mining\":\"Strategy mining\",\"monthly-optuna\":\"Monthly search\",\"active8-oof-monthly\":\"Active-8 monthly release / validation\",\"monthly-readiness\":\"Monthly root\"}, $s) & '~5': $n ? '平常 ' & $dur($med) : '平常 —' })))\n)])",
      "columns": [],
      "filters": [],
      "datasource": {
@@ -1696,30 +1696,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "market-close-refresh",
+         "field": "Close refresh",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"market-close-refresh~1\"]}",
+         "title": "${__data.fields[\"Close refresh~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"market-close-refresh~2\"]}",
+         "title": "${__data.fields[\"Close refresh~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"market-close-refresh~3\"]}",
+         "title": "${__data.fields[\"Close refresh~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"market-close-refresh~4\"]}",
+         "title": "${__data.fields[\"Close refresh~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"market-close-refresh~5\"]}",
+         "title": "${__data.fields[\"Close refresh~5\"]}",
          "url": ""
         }
        ]
@@ -1978,30 +1978,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "finlab-acquire",
+         "field": "FinLab 資料取得",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"finlab-acquire~1\"]}",
+         "title": "${__data.fields[\"FinLab 資料取得~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"finlab-acquire~2\"]}",
+         "title": "${__data.fields[\"FinLab 資料取得~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"finlab-acquire~3\"]}",
+         "title": "${__data.fields[\"FinLab 資料取得~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"finlab-acquire~4\"]}",
+         "title": "${__data.fields[\"FinLab 資料取得~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"finlab-acquire~5\"]}",
+         "title": "${__data.fields[\"FinLab 資料取得~5\"]}",
          "url": ""
         }
        ]
@@ -2260,30 +2260,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "finlab-validate",
+         "field": "FinLab 整理與驗證",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"finlab-validate~1\"]}",
+         "title": "${__data.fields[\"FinLab 整理與驗證~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"finlab-validate~2\"]}",
+         "title": "${__data.fields[\"FinLab 整理與驗證~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"finlab-validate~3\"]}",
+         "title": "${__data.fields[\"FinLab 整理與驗證~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"finlab-validate~4\"]}",
+         "title": "${__data.fields[\"FinLab 整理與驗證~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"finlab-validate~5\"]}",
+         "title": "${__data.fields[\"FinLab 整理與驗證~5\"]}",
          "url": ""
         }
        ]
@@ -2542,30 +2542,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "finlab-publish",
+         "field": "FinLab 發布與交接",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"finlab-publish~1\"]}",
+         "title": "${__data.fields[\"FinLab 發布與交接~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"finlab-publish~2\"]}",
+         "title": "${__data.fields[\"FinLab 發布與交接~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"finlab-publish~3\"]}",
+         "title": "${__data.fields[\"FinLab 發布與交接~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"finlab-publish~4\"]}",
+         "title": "${__data.fields[\"FinLab 發布與交接~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"finlab-publish~5\"]}",
+         "title": "${__data.fields[\"FinLab 發布與交接~5\"]}",
          "url": ""
         }
        ]
@@ -2824,30 +2824,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "update",
+         "field": "Market update",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"update~1\"]}",
+         "title": "${__data.fields[\"Market update~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"update~2\"]}",
+         "title": "${__data.fields[\"Market update~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"update~3\"]}",
+         "title": "${__data.fields[\"Market update~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"update~4\"]}",
+         "title": "${__data.fields[\"Market update~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"update~5\"]}",
+         "title": "${__data.fields[\"Market update~5\"]}",
          "url": ""
         }
        ]
@@ -3106,30 +3106,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "indicator-queue",
+         "field": "Indicator queue",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"indicator-queue~1\"]}",
+         "title": "${__data.fields[\"Indicator queue~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"indicator-queue~2\"]}",
+         "title": "${__data.fields[\"Indicator queue~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"indicator-queue~3\"]}",
+         "title": "${__data.fields[\"Indicator queue~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"indicator-queue~4\"]}",
+         "title": "${__data.fields[\"Indicator queue~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"indicator-queue~5\"]}",
+         "title": "${__data.fields[\"Indicator queue~5\"]}",
          "url": ""
         }
        ]
@@ -3388,30 +3388,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "regime-compute",
+         "field": "HMM regime",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"regime-compute~1\"]}",
+         "title": "${__data.fields[\"HMM regime~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"regime-compute~2\"]}",
+         "title": "${__data.fields[\"HMM regime~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"regime-compute~3\"]}",
+         "title": "${__data.fields[\"HMM regime~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"regime-compute~4\"]}",
+         "title": "${__data.fields[\"HMM regime~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"regime-compute~5\"]}",
+         "title": "${__data.fields[\"HMM regime~5\"]}",
          "url": ""
         }
        ]
@@ -3670,30 +3670,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "strategy-learning-mature-evidence",
+         "field": "成熟策略證據",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"strategy-learning-mature-evidence~1\"]}",
+         "title": "${__data.fields[\"成熟策略證據~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"strategy-learning-mature-evidence~2\"]}",
+         "title": "${__data.fields[\"成熟策略證據~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"strategy-learning-mature-evidence~3\"]}",
+         "title": "${__data.fields[\"成熟策略證據~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"strategy-learning-mature-evidence~4\"]}",
+         "title": "${__data.fields[\"成熟策略證據~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"strategy-learning-mature-evidence~5\"]}",
+         "title": "${__data.fields[\"成熟策略證據~5\"]}",
          "url": ""
         }
        ]
@@ -3930,30 +3930,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "screener",
+         "field": "Screener",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"screener~1\"]}",
+         "title": "${__data.fields[\"Screener~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"screener~2\"]}",
+         "title": "${__data.fields[\"Screener~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"screener~3\"]}",
+         "title": "${__data.fields[\"Screener~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"screener~4\"]}",
+         "title": "${__data.fields[\"Screener~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"screener~5\"]}",
+         "title": "${__data.fields[\"Screener~5\"]}",
          "url": ""
         }
        ]
@@ -4190,30 +4190,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "finlab-backfill-watchdog",
+         "field": "FinLab watchdog",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"finlab-backfill-watchdog~1\"]}",
+         "title": "${__data.fields[\"FinLab watchdog~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"finlab-backfill-watchdog~2\"]}",
+         "title": "${__data.fields[\"FinLab watchdog~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"finlab-backfill-watchdog~3\"]}",
+         "title": "${__data.fields[\"FinLab watchdog~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"finlab-backfill-watchdog~4\"]}",
+         "title": "${__data.fields[\"FinLab watchdog~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"finlab-backfill-watchdog~5\"]}",
+         "title": "${__data.fields[\"FinLab watchdog~5\"]}",
          "url": ""
         }
        ]
@@ -4450,30 +4450,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "allocator-ev-readiness",
+         "field": "Allocator EV",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"allocator-ev-readiness~1\"]}",
+         "title": "${__data.fields[\"Allocator EV~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"allocator-ev-readiness~2\"]}",
+         "title": "${__data.fields[\"Allocator EV~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"allocator-ev-readiness~3\"]}",
+         "title": "${__data.fields[\"Allocator EV~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"allocator-ev-readiness~4\"]}",
+         "title": "${__data.fields[\"Allocator EV~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"allocator-ev-readiness~5\"]}",
+         "title": "${__data.fields[\"Allocator EV~5\"]}",
          "url": ""
         }
        ]
@@ -4848,30 +4848,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "pipeline-inputs",
+         "field": "輸入凍結",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"pipeline-inputs~1\"]}",
+         "title": "${__data.fields[\"輸入凍結~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"pipeline-inputs~2\"]}",
+         "title": "${__data.fields[\"輸入凍結~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"pipeline-inputs~3\"]}",
+         "title": "${__data.fields[\"輸入凍結~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"pipeline-inputs~4\"]}",
+         "title": "${__data.fields[\"輸入凍結~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"pipeline-inputs~5\"]}",
+         "title": "${__data.fields[\"輸入凍結~5\"]}",
          "url": ""
         }
        ]
@@ -5130,30 +5130,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "pipeline-snapshot",
+         "field": "輸入快照匯出",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"pipeline-snapshot~1\"]}",
+         "title": "${__data.fields[\"輸入快照匯出~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"pipeline-snapshot~2\"]}",
+         "title": "${__data.fields[\"輸入快照匯出~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"pipeline-snapshot~3\"]}",
+         "title": "${__data.fields[\"輸入快照匯出~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"pipeline-snapshot~4\"]}",
+         "title": "${__data.fields[\"輸入快照匯出~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"pipeline-snapshot~5\"]}",
+         "title": "${__data.fields[\"輸入快照匯出~5\"]}",
          "url": ""
         }
        ]
@@ -5412,30 +5412,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "pipeline-feature-batches",
+         "field": "特徵批次",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"pipeline-feature-batches~1\"]}",
+         "title": "${__data.fields[\"特徵批次~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"pipeline-feature-batches~2\"]}",
+         "title": "${__data.fields[\"特徵批次~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"pipeline-feature-batches~3\"]}",
+         "title": "${__data.fields[\"特徵批次~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"pipeline-feature-batches~4\"]}",
+         "title": "${__data.fields[\"特徵批次~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"pipeline-feature-batches~5\"]}",
+         "title": "${__data.fields[\"特徵批次~5\"]}",
          "url": ""
         }
        ]
@@ -5694,30 +5694,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "pipeline-features",
+         "field": "特徵與推論輸入組裝",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"pipeline-features~1\"]}",
+         "title": "${__data.fields[\"特徵與推論輸入組裝~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"pipeline-features~2\"]}",
+         "title": "${__data.fields[\"特徵與推論輸入組裝~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"pipeline-features~3\"]}",
+         "title": "${__data.fields[\"特徵與推論輸入組裝~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"pipeline-features~4\"]}",
+         "title": "${__data.fields[\"特徵與推論輸入組裝~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"pipeline-features~5\"]}",
+         "title": "${__data.fields[\"特徵與推論輸入組裝~5\"]}",
          "url": ""
         }
        ]
@@ -5976,30 +5976,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "pipeline-l2",
+         "field": "L2 特徵增強",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"pipeline-l2~1\"]}",
+         "title": "${__data.fields[\"L2 特徵增強~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"pipeline-l2~2\"]}",
+         "title": "${__data.fields[\"L2 特徵增強~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"pipeline-l2~3\"]}",
+         "title": "${__data.fields[\"L2 特徵增強~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"pipeline-l2~4\"]}",
+         "title": "${__data.fields[\"L2 特徵增強~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"pipeline-l2~5\"]}",
+         "title": "${__data.fields[\"L2 特徵增強~5\"]}",
          "url": ""
         }
        ]
@@ -6236,30 +6236,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "pipeline-l3",
+         "field": "L3 預測與封存",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"pipeline-l3~1\"]}",
+         "title": "${__data.fields[\"L3 預測與封存~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"pipeline-l3~2\"]}",
+         "title": "${__data.fields[\"L3 預測與封存~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"pipeline-l3~3\"]}",
+         "title": "${__data.fields[\"L3 預測與封存~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"pipeline-l3~4\"]}",
+         "title": "${__data.fields[\"L3 預測與封存~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"pipeline-l3~5\"]}",
+         "title": "${__data.fields[\"L3 預測與封存~5\"]}",
          "url": ""
         }
        ]
@@ -6496,30 +6496,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "dataset-snapshot-export",
+         "field": "Research snapshot",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"dataset-snapshot-export~1\"]}",
+         "title": "${__data.fields[\"Research snapshot~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"dataset-snapshot-export~2\"]}",
+         "title": "${__data.fields[\"Research snapshot~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"dataset-snapshot-export~3\"]}",
+         "title": "${__data.fields[\"Research snapshot~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"dataset-snapshot-export~4\"]}",
+         "title": "${__data.fields[\"Research snapshot~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"dataset-snapshot-export~5\"]}",
+         "title": "${__data.fields[\"Research snapshot~5\"]}",
          "url": ""
         }
        ]
@@ -6756,30 +6756,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "allocator-ev-feature-snapshot-backfill",
+         "field": "EV feature snapshot",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"allocator-ev-feature-snapshot-backfill~1\"]}",
+         "title": "${__data.fields[\"EV feature snapshot~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"allocator-ev-feature-snapshot-backfill~2\"]}",
+         "title": "${__data.fields[\"EV feature snapshot~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"allocator-ev-feature-snapshot-backfill~3\"]}",
+         "title": "${__data.fields[\"EV feature snapshot~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"allocator-ev-feature-snapshot-backfill~4\"]}",
+         "title": "${__data.fields[\"EV feature snapshot~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"allocator-ev-feature-snapshot-backfill~5\"]}",
+         "title": "${__data.fields[\"EV feature snapshot~5\"]}",
          "url": ""
         }
        ]
@@ -7154,30 +7154,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "us-leading",
+         "field": "US leading",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"us-leading~1\"]}",
+         "title": "${__data.fields[\"US leading~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"us-leading~2\"]}",
+         "title": "${__data.fields[\"US leading~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"us-leading~3\"]}",
+         "title": "${__data.fields[\"US leading~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"us-leading~4\"]}",
+         "title": "${__data.fields[\"US leading~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"us-leading~5\"]}",
+         "title": "${__data.fields[\"US leading~5\"]}",
          "url": ""
         }
        ]
@@ -7436,30 +7436,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "news-analyst",
+         "field": "News analyst",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"news-analyst~1\"]}",
+         "title": "${__data.fields[\"News analyst~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"news-analyst~2\"]}",
+         "title": "${__data.fields[\"News analyst~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"news-analyst~3\"]}",
+         "title": "${__data.fields[\"News analyst~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"news-analyst~4\"]}",
+         "title": "${__data.fields[\"News analyst~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"news-analyst~5\"]}",
+         "title": "${__data.fields[\"News analyst~5\"]}",
          "url": ""
         }
        ]
@@ -7718,30 +7718,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "morning-setup",
+         "field": "Morning setup",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"morning-setup~1\"]}",
+         "title": "${__data.fields[\"Morning setup~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"morning-setup~2\"]}",
+         "title": "${__data.fields[\"Morning setup~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"morning-setup~3\"]}",
+         "title": "${__data.fields[\"Morning setup~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"morning-setup~4\"]}",
+         "title": "${__data.fields[\"Morning setup~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"morning-setup~5\"]}",
+         "title": "${__data.fields[\"Morning setup~5\"]}",
          "url": ""
         }
        ]
@@ -8000,30 +8000,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "recommendation",
+         "field": "Recommendation · L4 推薦",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"recommendation~1\"]}",
+         "title": "${__data.fields[\"Recommendation · L4 推薦~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"recommendation~2\"]}",
+         "title": "${__data.fields[\"Recommendation · L4 推薦~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"recommendation~3\"]}",
+         "title": "${__data.fields[\"Recommendation · L4 推薦~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"recommendation~4\"]}",
+         "title": "${__data.fields[\"Recommendation · L4 推薦~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"recommendation~5\"]}",
+         "title": "${__data.fields[\"Recommendation · L4 推薦~5\"]}",
          "url": ""
         }
        ]
@@ -8260,30 +8260,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "pre-market-warmup",
+         "field": "Pre-market",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"pre-market-warmup~1\"]}",
+         "title": "${__data.fields[\"Pre-market~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"pre-market-warmup~2\"]}",
+         "title": "${__data.fields[\"Pre-market~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"pre-market-warmup~3\"]}",
+         "title": "${__data.fields[\"Pre-market~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"pre-market-warmup~4\"]}",
+         "title": "${__data.fields[\"Pre-market~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"pre-market-warmup~5\"]}",
+         "title": "${__data.fields[\"Pre-market~5\"]}",
          "url": ""
         }
        ]
@@ -8520,30 +8520,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "premarket-evidence-watchdog",
+         "field": "盤前鏈監看",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"premarket-evidence-watchdog~1\"]}",
+         "title": "${__data.fields[\"盤前鏈監看~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"premarket-evidence-watchdog~2\"]}",
+         "title": "${__data.fields[\"盤前鏈監看~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"premarket-evidence-watchdog~3\"]}",
+         "title": "${__data.fields[\"盤前鏈監看~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"premarket-evidence-watchdog~4\"]}",
+         "title": "${__data.fields[\"盤前鏈監看~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"premarket-evidence-watchdog~5\"]}",
+         "title": "${__data.fields[\"盤前鏈監看~5\"]}",
          "url": ""
         }
        ]
@@ -8918,30 +8918,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "post-pipeline-chain",
+         "field": "Pipeline callback",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"post-pipeline-chain~1\"]}",
+         "title": "${__data.fields[\"Pipeline callback~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"post-pipeline-chain~2\"]}",
+         "title": "${__data.fields[\"Pipeline callback~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"post-pipeline-chain~3\"]}",
+         "title": "${__data.fields[\"Pipeline callback~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"post-pipeline-chain~4\"]}",
+         "title": "${__data.fields[\"Pipeline callback~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"post-pipeline-chain~5\"]}",
+         "title": "${__data.fields[\"Pipeline callback~5\"]}",
          "url": ""
         }
        ]
@@ -9200,30 +9200,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "verify-v2",
+         "field": "Verify",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"verify-v2~1\"]}",
+         "title": "${__data.fields[\"Verify~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"verify-v2~2\"]}",
+         "title": "${__data.fields[\"Verify~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"verify-v2~3\"]}",
+         "title": "${__data.fields[\"Verify~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"verify-v2~4\"]}",
+         "title": "${__data.fields[\"Verify~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"verify-v2~5\"]}",
+         "title": "${__data.fields[\"Verify~5\"]}",
          "url": ""
         }
        ]
@@ -9482,30 +9482,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "post-verify-chain",
+         "field": "Verify callback",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"post-verify-chain~1\"]}",
+         "title": "${__data.fields[\"Verify callback~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"post-verify-chain~2\"]}",
+         "title": "${__data.fields[\"Verify callback~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"post-verify-chain~3\"]}",
+         "title": "${__data.fields[\"Verify callback~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"post-verify-chain~4\"]}",
+         "title": "${__data.fields[\"Verify callback~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"post-verify-chain~5\"]}",
+         "title": "${__data.fields[\"Verify callback~5\"]}",
          "url": ""
         }
        ]
@@ -9764,30 +9764,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "strategy-learning",
+         "field": "Strategy learning",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"strategy-learning~1\"]}",
+         "title": "${__data.fields[\"Strategy learning~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"strategy-learning~2\"]}",
+         "title": "${__data.fields[\"Strategy learning~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"strategy-learning~3\"]}",
+         "title": "${__data.fields[\"Strategy learning~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"strategy-learning~4\"]}",
+         "title": "${__data.fields[\"Strategy learning~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"strategy-learning~5\"]}",
+         "title": "${__data.fields[\"Strategy learning~5\"]}",
          "url": ""
         }
        ]
@@ -10024,30 +10024,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "evening-closure",
+         "field": "全鏈完成收據",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"evening-closure~1\"]}",
+         "title": "${__data.fields[\"全鏈完成收據~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"evening-closure~2\"]}",
+         "title": "${__data.fields[\"全鏈完成收據~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"evening-closure~3\"]}",
+         "title": "${__data.fields[\"全鏈完成收據~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"evening-closure~4\"]}",
+         "title": "${__data.fields[\"全鏈完成收據~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"evening-closure~5\"]}",
+         "title": "${__data.fields[\"全鏈完成收據~5\"]}",
          "url": ""
         }
        ]
@@ -10284,30 +10284,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "active8-oof-daily",
+         "field": "Active-8 daily evidence",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"active8-oof-daily~1\"]}",
+         "title": "${__data.fields[\"Active-8 daily evidence~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"active8-oof-daily~2\"]}",
+         "title": "${__data.fields[\"Active-8 daily evidence~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"active8-oof-daily~3\"]}",
+         "title": "${__data.fields[\"Active-8 daily evidence~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"active8-oof-daily~4\"]}",
+         "title": "${__data.fields[\"Active-8 daily evidence~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"active8-oof-daily~5\"]}",
+         "title": "${__data.fields[\"Active-8 daily evidence~5\"]}",
          "url": ""
         }
        ]
@@ -10544,30 +10544,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "allocator-ev-lifecycle-watchdog",
+         "field": "EV lifecycle",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"allocator-ev-lifecycle-watchdog~1\"]}",
+         "title": "${__data.fields[\"EV lifecycle~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"allocator-ev-lifecycle-watchdog~2\"]}",
+         "title": "${__data.fields[\"EV lifecycle~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"allocator-ev-lifecycle-watchdog~3\"]}",
+         "title": "${__data.fields[\"EV lifecycle~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"allocator-ev-lifecycle-watchdog~4\"]}",
+         "title": "${__data.fields[\"EV lifecycle~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"allocator-ev-lifecycle-watchdog~5\"]}",
+         "title": "${__data.fields[\"EV lifecycle~5\"]}",
          "url": ""
         }
        ]
@@ -10804,30 +10804,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "model-ic-rolling",
+         "field": "Model IC rolling",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"model-ic-rolling~1\"]}",
+         "title": "${__data.fields[\"Model IC rolling~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"model-ic-rolling~2\"]}",
+         "title": "${__data.fields[\"Model IC rolling~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"model-ic-rolling~3\"]}",
+         "title": "${__data.fields[\"Model IC rolling~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"model-ic-rolling~4\"]}",
+         "title": "${__data.fields[\"Model IC rolling~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"model-ic-rolling~5\"]}",
+         "title": "${__data.fields[\"Model IC rolling~5\"]}",
          "url": ""
         }
        ]
@@ -11064,30 +11064,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "linucb-reward-ledger",
+         "field": "Reward ledger",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"linucb-reward-ledger~1\"]}",
+         "title": "${__data.fields[\"Reward ledger~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"linucb-reward-ledger~2\"]}",
+         "title": "${__data.fields[\"Reward ledger~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"linucb-reward-ledger~3\"]}",
+         "title": "${__data.fields[\"Reward ledger~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"linucb-reward-ledger~4\"]}",
+         "title": "${__data.fields[\"Reward ledger~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"linucb-reward-ledger~5\"]}",
+         "title": "${__data.fields[\"Reward ledger~5\"]}",
          "url": ""
         }
        ]
@@ -11324,30 +11324,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "adapt",
+         "field": "Adapt params",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"adapt~1\"]}",
+         "title": "${__data.fields[\"Adapt params~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"adapt~2\"]}",
+         "title": "${__data.fields[\"Adapt params~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"adapt~3\"]}",
+         "title": "${__data.fields[\"Adapt params~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"adapt~4\"]}",
+         "title": "${__data.fields[\"Adapt params~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"adapt~5\"]}",
+         "title": "${__data.fields[\"Adapt params~5\"]}",
          "url": ""
         }
        ]
@@ -11584,30 +11584,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "daily-report",
+         "field": "Daily report",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"daily-report~1\"]}",
+         "title": "${__data.fields[\"Daily report~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"daily-report~2\"]}",
+         "title": "${__data.fields[\"Daily report~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"daily-report~3\"]}",
+         "title": "${__data.fields[\"Daily report~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"daily-report~4\"]}",
+         "title": "${__data.fields[\"Daily report~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"daily-report~5\"]}",
+         "title": "${__data.fields[\"Daily report~5\"]}",
          "url": ""
         }
        ]
@@ -11844,30 +11844,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "paper-active-postmarket",
+         "field": "Paper active",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"paper-active-postmarket~1\"]}",
+         "title": "${__data.fields[\"Paper active~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"paper-active-postmarket~2\"]}",
+         "title": "${__data.fields[\"Paper active~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"paper-active-postmarket~3\"]}",
+         "title": "${__data.fields[\"Paper active~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"paper-active-postmarket~4\"]}",
+         "title": "${__data.fields[\"Paper active~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"paper-active-postmarket~5\"]}",
+         "title": "${__data.fields[\"Paper active~5\"]}",
          "url": ""
         }
        ]
@@ -12104,30 +12104,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "obsidian-sync",
+         "field": "Obsidian sync",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"obsidian-sync~1\"]}",
+         "title": "${__data.fields[\"Obsidian sync~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"obsidian-sync~2\"]}",
+         "title": "${__data.fields[\"Obsidian sync~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"obsidian-sync~3\"]}",
+         "title": "${__data.fields[\"Obsidian sync~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"obsidian-sync~4\"]}",
+         "title": "${__data.fields[\"Obsidian sync~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"obsidian-sync~5\"]}",
+         "title": "${__data.fields[\"Obsidian sync~5\"]}",
          "url": ""
         }
        ]
@@ -12364,30 +12364,30 @@
         },
         "text": {
          "mode": "field",
-         "field": "meta-learning-shadow",
+         "field": "Meta shadow",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"meta-learning-shadow~1\"]}",
+         "title": "${__data.fields[\"Meta shadow~1\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"meta-learning-shadow~2\"]}",
+         "title": "${__data.fields[\"Meta shadow~2\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"meta-learning-shadow~3\"]}",
+         "title": "${__data.fields[\"Meta shadow~3\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"meta-learning-shadow~4\"]}",
+         "title": "${__data.fields[\"Meta shadow~4\"]}",
          "url": ""
         },
         {
-         "title": "${__data.fields[\"meta-learning-shadow~5\"]}",
+         "title": "${__data.fields[\"Meta shadow~5\"]}",
          "url": ""
         }
        ]
@@ -12464,11 +12464,21 @@
         },
         "text": {
          "mode": "field",
-         "field": "price_freshness",
+         "field": "價格資料",
          "fixed": " "
         }
        },
-       "connections": []
+       "connections": [],
+       "links": [
+        {
+         "title": "${__data.fields[\"價格資料~1\"]}",
+         "url": ""
+        },
+        {
+         "title": "${__data.fields[\"價格資料~2\"]}",
+         "url": ""
+        }
+       ]
       },
       {
        "type": "ellipse",
@@ -12504,11 +12514,21 @@
         },
         "text": {
          "mode": "field",
-         "field": "chip_freshness",
+         "field": "籌碼資料",
          "fixed": " "
         }
        },
-       "connections": []
+       "connections": [],
+       "links": [
+        {
+         "title": "${__data.fields[\"籌碼資料~1\"]}",
+         "url": ""
+        },
+        {
+         "title": "${__data.fields[\"籌碼資料~2\"]}",
+         "url": ""
+        }
+       ]
       },
       {
        "type": "ellipse",
@@ -12544,11 +12564,21 @@
         },
         "text": {
          "mode": "field",
-         "field": "technical_indicator_freshness",
+         "field": "技術指標",
          "fixed": " "
         }
        },
-       "connections": []
+       "connections": [],
+       "links": [
+        {
+         "title": "${__data.fields[\"技術指標~1\"]}",
+         "url": ""
+        },
+        {
+         "title": "${__data.fields[\"技術指標~2\"]}",
+         "url": ""
+        }
+       ]
       },
       {
        "type": "text",
@@ -13780,9 +13810,9 @@
    "id": 10
   },
   {
-   "type": "bargauge",
+   "type": "barchart",
    "title": "今晚各站耗時 ÷ 平常（最慢在上）",
-   "description": "耗時倍數＝這一站這天的耗時 ÷ 近 14 天其他業務日成功時的中位數耗時（至少 3 天樣本才算）。深藍＝比平常快（< 0.8×）、暗青＝平常（0.8–1.2×）、灰藍＝偏慢（1.2–1.5×）、琥珀＝慢一半以上（≥ 1.5×）。耗時不到 1 分鐘的站不列。執行中的站算到現在，所以還沒跑完就能看出變慢。名稱後＝今晚已用分鐘。",
+   "description": "耗時倍數＝這一站這天的耗時 ÷ 近 14 天其他業務日成功時的中位數耗時（至少 3 個其他業務日的紀錄才算；流程鏈狀態表 11/25 起寫入，之前顯示「樣本不足」）。深藍＝比平常快（< 0.8×）、暗青＝平常（0.8–1.2×）、灰藍＝偏慢（1.2–1.5×）、琥珀＝慢一半以上（≥ 1.5×）。耗時不到 1 分鐘的站不列。執行中的站算到現在，所以還沒跑完就能看出變慢。名稱後＝今晚已用分鐘。",
    "gridPos": {
     "x": 15,
     "y": 22,
@@ -13825,34 +13855,49 @@
      }
     }
    ],
+   "transformations": [
+    {
+     "id": "organize",
+     "options": {
+      "excludeByName": {},
+      "renameByName": {},
+      "indexByName": {
+       "stage": 0,
+       "倍數": 1
+      }
+     }
+    }
+   ],
    "options": {
-    "reduceOptions": {
-     "values": true,
-     "calcs": [],
-     "fields": "/^(?!(?:stage)$).+$/",
-     "limit": 40
-    },
+    "xField": "stage",
     "orientation": "horizontal",
-    "displayMode": "gradient",
-    "valueMode": "color",
-    "showUnfilled": true,
-    "namePlacement": "left",
-    "minVizHeight": 10,
-    "minVizWidth": 8,
-    "maxVizHeight": 18,
-    "sizing": "auto",
+    "stacking": "none",
+    "showValue": "always",
+    "barWidth": 0.75,
+    "groupWidth": 0.7,
+    "barRadius": 0,
+    "xTickLabelRotation": 0,
+    "xTickLabelSpacing": 0,
+    "xTickLabelMaxLength": 22,
+    "fullHighlight": false,
+    "tooltip": {
+     "mode": "single"
+    },
     "text": {
-     "titleSize": 12,
-     "valueSize": 14
+     "valueSize": 12
+    },
+    "legend": {
+     "showLegend": false,
+     "displayMode": "list",
+     "placement": "bottom",
+     "calcs": []
     }
    },
    "fieldConfig": {
     "defaults": {
      "unit": "suffix:×",
      "decimals": 1,
-     "min": 0,
-     "max": 3,
-     "noValue": "平常耗時要至少 3 個其他業務日的紀錄（流程鏈狀態表 11/25 起寫入）",
+     "noValue": "樣本不足：需 3 個其他業務日",
      "color": {
       "mode": "thresholds"
      },
@@ -13876,22 +13921,17 @@
         "value": 1.5
        }
       ]
+     },
+     "custom": {
+      "fillOpacity": 90,
+      "lineWidth": 0,
+      "gradientMode": "none",
+      "axisPlacement": "auto",
+      "axisSoftMin": 0,
+      "axisSoftMax": 3
      }
     },
-    "overrides": [
-     {
-      "matcher": {
-       "id": "byName",
-       "options": "倍數"
-      },
-      "properties": [
-       {
-        "id": "displayName",
-        "value": "${__data.fields.stage}"
-       }
-      ]
-     }
-    ]
+    "overrides": []
    },
    "id": 11
   },
@@ -13902,8 +13942,8 @@
    "gridPos": {
     "x": 0,
     "y": 36,
-    "w": 8,
-    "h": 6
+    "w": 10,
+    "h": 8
    },
    "datasource": {
     "type": "yesoreyeram-infinity-datasource",
@@ -13915,7 +13955,7 @@
      "type": "json",
      "parser": "backend",
      "format": "table",
-     "root_selector": "([($hm := function($t) { $t ? $fromMillis($toMillis($t), '[M01]/[D01] [H01]:[m01]', '+0800') : '' }; rows.{ 'chain': $lookup({\"daily_readiness\":\"每日\",\"intraday_guard\":\"盤中\",\"weekly_research\":\"每週\",\"monthly_artifact\":\"每月\"}, chain_id ? chain_id : $$.chain_id), 'stage': $lookup({\"market-close-refresh\":\"Close refresh\",\"finlab-v4-backfill\":\"FinLab canonical\",\"finlab-backfill-watchdog\":\"FinLab watchdog\",\"update\":\"Market update\",\"indicator-queue\":\"Indicator queue\",\"regime-compute\":\"HMM regime\",\"strategy-learning-mature-evidence\":\"成熟策略證據\",\"screener\":\"Screener\",\"allocator-ev-readiness\":\"Allocator EV\",\"pipeline\":\"Pipeline · 整體進度\",\"ml-predict\":\"ML Predict · L3 預測\",\"post-pipeline-chain\":\"Pipeline callback\",\"allocator-ev-feature-snapshot-backfill\":\"EV feature snapshot\",\"verify-v2\":\"Verify\",\"post-verify-chain\":\"Verify callback\",\"model-ic-rolling\":\"Model IC rolling\",\"linucb-reward-ledger\":\"Reward ledger\",\"adapt\":\"Adapt params\",\"daily-report\":\"Daily report\",\"paper-active-postmarket\":\"Paper active\",\"obsidian-sync\":\"Obsidian sync\",\"meta-learning-shadow\":\"Meta shadow\",\"strategy-learning\":\"Strategy learning\",\"evening-closure\":\"全鏈完成收據\",\"us-leading\":\"US leading\",\"news-analyst\":\"News analyst\",\"morning-setup\":\"Morning setup\",\"recommendation\":\"Recommendation · L4 推薦\",\"pre-market-warmup\":\"Pre-market\",\"premarket-evidence-watchdog\":\"盤前鏈監看\",\"dataset-snapshot-export\":\"Research snapshot\",\"active8-oof-daily\":\"Active-8 daily evidence\",\"allocator-ev-lifecycle-watchdog\":\"EV lifecycle\",\"intraday-check\":\"Intraday check\",\"eod-exit\":\"EOD exit\",\"post-close-price-refresh\":\"Close price\",\"daily-snapshot\":\"Daily snapshot\",\"rescore-10\":\"10:00 re-score\",\"rescore-11\":\"11:00 re-score\",\"rescore-12\":\"12:00 re-score\",\"rescore-1230\":\"12:30 re-score\",\"weekly-audit\":\"Weekly audit\",\"storage-integrity-audit\":\"Storage integrity\",\"model-ic-full-check\":\"Model IC full\",\"weekly-backtest\":\"Validation / MC\",\"alpha-quality\":\"Alpha quality\",\"active8-oof-weekly\":\"Active-8 weekly\",\"weekly-optuna\":\"Drift research\",\"sector-leaders\":\"Sector leaders\",\"adaptive-meta-policy-replay\":\"Meta replay\",\"s12-smcvwap-calibration\":\"S12 calibration\",\"linucb-multiplier-replay\":\"LinUCB replay\",\"weekly-cleanup\":\"Weekly cleanup\",\"weekly-readiness\":\"Weekly root\",\"monthly-strategy-mining\":\"Strategy mining\",\"monthly-optuna\":\"Monthly search\",\"active8-oof-monthly\":\"Active-8 monthly\",\"monthly-readiness\":\"Monthly root\"}, stage_id), 'kind': (kind = 'blocked' ? 'watcher_blocked' : kind),\n        'minutes': minutes, 'times': failures_14d, 'error': error ? error : summary ? summary : '沒有錯誤訊息',\n        'when': $join(['業務日 ' & business_date, since ? '開始 ' & $hm(since), expected_by ? '截止 ' & $hm(expected_by), attempt ? '第 ' & $string(attempt) & ' 次',\n          run_id ? 'run ' & run_id], '｜') })])",
+     "root_selector": "([($hm := function($t) { $t ? $fromMillis($toMillis($t), '[M01]/[D01] [H01]:[m01]', '+0800') : '' }; $rank := function($r) { ($k := $lookup({\"failed\":1,\"missed\":2,\"stuck\":3,\"blocked\":4,\"overdue\":5}, $r.kind); $k ? $k : 9) };\n        $all := $sort(rows, function($a, $b) { $rank($a) = $rank($b) ? $a.failures_14d < $b.failures_14d : $rank($a) > $rank($b) });\n        $n := $count($all); $out := ($n > 5 ? $all[[0..3]] : $all).{ 'chain': $lookup({\"daily_readiness\":\"每日\",\"intraday_guard\":\"盤中\",\"weekly_research\":\"每週\",\"monthly_artifact\":\"每月\"}, chain_id ? chain_id : $$.chain_id),\n        'stage': $lookup({\"market-close-refresh\":\"Close refresh\",\"finlab-v4-backfill\":\"FinLab canonical\",\"finlab-backfill-watchdog\":\"FinLab watchdog\",\"update\":\"Market update\",\"indicator-queue\":\"Indicator queue\",\"regime-compute\":\"HMM regime\",\"strategy-learning-mature-evidence\":\"成熟策略證據\",\"screener\":\"Screener\",\"allocator-ev-readiness\":\"Allocator EV\",\"pipeline\":\"Pipeline · 整體進度\",\"ml-predict\":\"ML Predict · L3 預測\",\"post-pipeline-chain\":\"Pipeline callback\",\"allocator-ev-feature-snapshot-backfill\":\"EV feature snapshot\",\"verify-v2\":\"Verify\",\"post-verify-chain\":\"Verify callback\",\"model-ic-rolling\":\"Model IC rolling\",\"linucb-reward-ledger\":\"Reward ledger\",\"adapt\":\"Adapt params\",\"daily-report\":\"Daily report\",\"paper-active-postmarket\":\"Paper active\",\"obsidian-sync\":\"Obsidian sync\",\"meta-learning-shadow\":\"Meta shadow\",\"strategy-learning\":\"Strategy learning\",\"evening-closure\":\"全鏈完成收據\",\"us-leading\":\"US leading\",\"news-analyst\":\"News analyst\",\"morning-setup\":\"Morning setup\",\"recommendation\":\"Recommendation · L4 推薦\",\"pre-market-warmup\":\"Pre-market\",\"premarket-evidence-watchdog\":\"盤前鏈監看\",\"dataset-snapshot-export\":\"Research snapshot\",\"active8-oof-daily\":\"Active-8 daily evidence\",\"allocator-ev-lifecycle-watchdog\":\"EV lifecycle\",\"intraday-check\":\"Intraday check\",\"eod-exit\":\"EOD exit\",\"post-close-price-refresh\":\"Close price\",\"daily-snapshot\":\"Daily snapshot\",\"rescore-10\":\"10:00 re-score\",\"rescore-11\":\"11:00 re-score\",\"rescore-12\":\"12:00 re-score\",\"rescore-1230\":\"12:30 re-score\",\"weekly-audit\":\"Weekly audit\",\"storage-integrity-audit\":\"Storage integrity\",\"model-ic-full-check\":\"Model IC full\",\"weekly-backtest\":\"Validation / MC\",\"alpha-quality\":\"Alpha quality\",\"active8-oof-weekly\":\"Active-8 weekly\",\"weekly-optuna\":\"Drift research\",\"sector-leaders\":\"Sector leaders\",\"adaptive-meta-policy-replay\":\"Meta replay\",\"s12-smcvwap-calibration\":\"S12 calibration\",\"linucb-multiplier-replay\":\"LinUCB replay\",\"weekly-cleanup\":\"Weekly cleanup\",\"weekly-readiness\":\"Weekly root\",\"monthly-strategy-mining\":\"Strategy mining\",\"monthly-optuna\":\"Monthly search\",\"active8-oof-monthly\":\"Active-8 monthly\",\"monthly-readiness\":\"Monthly root\"}, stage_id), 'kind': (kind = 'blocked' ? 'watcher_blocked' : kind),\n        'minutes': (minutes != null ? (minutes < 60 ? $string($round(minutes)) & ' 分' : minutes < 1440 ? $string($round(minutes / 60, 1)) & ' h'\n  : $string($round(minutes / 1440, 1)) & ' 天') : '—'), 'times': failures_14d, 'reason': (error_brief ? error_brief : error ? '執行錯誤，細節見 log' : '沒有錯誤訊息'),\n        'when': $join(['業務日 ' & business_date, since ? '開始 ' & $hm(since), expected_by ? '截止 ' & $hm(expected_by), attempt ? '第 ' & $string(attempt) & ' 次'], '｜') };\n        $n > 5 ? $append($out, [{ 'chain': '', 'stage': '另有 ' & $string($n - 4) & ' 筆', 'kind': '', 'minutes': '', 'reason': '', 'when': '' }]) : $out)])",
      "columns": [
       {
        "selector": "chain",
@@ -13935,7 +13975,7 @@
       {
        "selector": "minutes",
        "text": "持續",
-       "type": "number"
+       "type": "string"
       },
       {
        "selector": "times",
@@ -13943,7 +13983,7 @@
        "type": "number"
       },
       {
-       "selector": "error",
+       "selector": "reason",
        "text": "錯誤",
        "type": "string"
       },
@@ -14281,24 +14321,12 @@
      {
       "matcher": {
        "id": "byName",
-       "options": "持續"
-      },
-      "properties": [
-       {
-        "id": "unit",
-        "value": "m"
-       }
-      ]
-     },
-     {
-      "matcher": {
-       "id": "byName",
        "options": "鏈"
       },
       "properties": [
        {
         "id": "custom.width",
-        "value": 52
+        "value": 64
        }
       ]
      },
@@ -14310,7 +14338,7 @@
       "properties": [
        {
         "id": "custom.width",
-        "value": 64
+        "value": 66
        }
       ]
      },
@@ -14322,7 +14350,7 @@
       "properties": [
        {
         "id": "custom.width",
-        "value": 64
+        "value": 70
        }
       ]
      },
@@ -14334,7 +14362,19 @@
       "properties": [
        {
         "id": "custom.width",
-        "value": 52
+        "value": 78
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "階段"
+      },
+      "properties": [
+       {
+        "id": "custom.minWidth",
+        "value": 50
        }
       ]
      },
@@ -14394,10 +14434,10 @@
    "title": "資料就緒",
    "description": "每個資料集一格，有問題的排前面。格子下方＝狀態與最新資料日（或落後天數），顏色：正常＝青、遲到＝琥珀、缺漏＝紅、未到＝灰；遲到與缺漏的格子另加同色外框。滑鼠停在格子上看說明與來源。",
    "gridPos": {
-    "x": 8,
+    "x": 10,
     "y": 36,
-    "w": 16,
-    "h": 6
+    "w": 14,
+    "h": 8
    },
    "datasource": {
     "type": "yesoreyeram-infinity-datasource",
@@ -14409,7 +14449,7 @@
      "type": "json",
      "parser": "backend",
      "format": "table",
-     "root_selector": "([(\n  $words := {\"ready\":\"正常\",\"ok\":\"正常\",\"waiting\":\"遲到\",\"warn\":\"遲到\",\"blocked\":\"缺漏\",\"fail\":\"缺漏\",\"pending\":\"未到\",\"running\":\"未到\"};\n  $merge($map($sort($append(\n    rows.{ 'rank': $lookup({\"fail\":0,\"blocked\":0,\"warn\":1,\"waiting\":1,\"pending\":2,\"running\":2,\"ready\":3,\"ok\":3}, status), 'name': label, 'status': status, 'short': latestDate ? $replace($substring(latestDate, 5), '-', '/') : '—',\n      'detail': value & '｜' & detail, 'source': '來源：' & source },\n    checks[id != 'market_dashboard_materialization'].{ 'rank': $lookup({\"fail\":0,\"blocked\":0,\"warn\":1,\"waiting\":1,\"pending\":2,\"running\":2,\"ready\":3,\"ok\":3}, status), 'name': $lookup({\"price_freshness\":\"價格資料\",\"chip_freshness\":\"籌碼資料\",\"technical_indicator_freshness\":\"技術指標\",\"market_dashboard_materialization\":\"首頁行情資料\"}, id), 'status': status,\n      'short': lag_days ? '落後 ' & $string(lag_days) & ' 天' : latest_date ? $replace($substring(latest_date, 5), '-', '/') : '—',\n      'detail': summary, 'source': '寫入：' & $lookup({\"price_freshness\":\"Close refresh\",\"chip_freshness\":\"Market update\",\"technical_indicator_freshness\":\"Indicator queue\"}, id) }\n  ), function($a, $b) { $a.rank > $b.rank }), function($v, $i) {{\n    'k' & $i: 'card', 're' & $i: 're_' & $v.status, 'm' & $i: 'm_' & $v.status, 'rc' & $i: 'rc_' & $v.status,\n    'n' & $i: $v.name, 'v' & $i: $lookup($words, $v.status) & '・' & $v.short,\n    't' & $i: $v.name & '：' & $v.detail, 't' & $i & '~1': $v.source\n  }}))\n)])",
+     "root_selector": "([(\n  $words := {\"ready\":\"正常\",\"ok\":\"正常\",\"waiting\":\"遲到\",\"warn\":\"遲到\",\"blocked\":\"缺漏\",\"fail\":\"缺漏\",\"pending\":\"未到\",\"running\":\"未到\"};\n  $tip := function($i) { '第 ' & $string($i + 1) & ' 項' };\n  $merge($map($sort($append(\n    rows.{ 'rank': $lookup({\"fail\":0,\"blocked\":0,\"warn\":1,\"waiting\":1,\"pending\":2,\"running\":2,\"ready\":3,\"ok\":3}, status), 'name': label, 'status': status, 'short': latestDate ? $replace($substring(latestDate, 5), '-', '/') : '—',\n      'note': (value ? $replace(value, ' rows', ' 列') : '—') & '｜' & (detail ? ($c := $lookup({\"fresh\":\"正常\",\"ok\":\"正常\",\"ready\":\"正常\",\"freshness_lag\":\"資料落後\",\"stale_materialization\":\"資料過期\",\"not_materialized\":\"尚未寫入\",\"formal_shadow_fetch_failed\":\"正式抓取失敗\"}, detail); $c ? $c\n  : $contains(detail, /^[A-Za-z0-9_:-]+$/) ? '狀態異常' : $replace(detail, /\\s*\\/?\\s*lag (\\d+)d/, '｜落後 $1 天')) : '—'), 'source': '來源：' & source },\n    checks[id != 'market_dashboard_materialization'].{ 'rank': $lookup({\"fail\":0,\"blocked\":0,\"warn\":1,\"waiting\":1,\"pending\":2,\"running\":2,\"ready\":3,\"ok\":3}, status), 'name': $lookup({\"price_freshness\":\"價格資料\",\"chip_freshness\":\"籌碼資料\",\"technical_indicator_freshness\":\"技術指標\",\"market_dashboard_materialization\":\"首頁行情資料\"}, id), 'status': status,\n      'short': lag_days ? '落後 ' & $string(lag_days) & ' 天' : latest_date ? $replace($substring(latest_date, 5), '-', '/') : '—',\n      'note': (latest_date ? '最新 ' & latest_date & '｜落後 ' & (lag_days != null ? $string(lag_days) : '—') & ' 天'\n  & (rows_on_latest != null ? '｜' & $string(rows_on_latest) & ' 列' : '') : $lookup({\"ready\":\"正常\",\"ok\":\"正常\",\"waiting\":\"遲到\",\"warn\":\"遲到\",\"blocked\":\"缺漏\",\"fail\":\"缺漏\",\"pending\":\"未到\",\"running\":\"未到\"}, status)), 'source': '寫入：' & $lookup({\"price_freshness\":\"Close refresh\",\"chip_freshness\":\"Market update\",\"technical_indicator_freshness\":\"Indicator queue\"}, id) }\n  ), function($a, $b) { $a.rank > $b.rank }), function($v, $i) {{\n    'k' & $i: 'card', 're' & $i: 're_' & $v.status, 'm' & $i: 'm_' & $v.status, 'rc' & $i: 'rc_' & $v.status,\n    'n' & $i: $v.name, 'v' & $i: $lookup($words, $v.status) & '・' & $v.short,\n    $tip($i): $lookup($words, $v.status), $tip($i) & '~1': $v.note, $tip($i) & '~2': $v.source\n  }}))\n)])",
      "columns": [],
      "filters": [],
      "datasource": {
@@ -14542,9 +14582,9 @@
        "name": "dot0",
        "placement": {
         "left": 0.816,
-        "top": 33.51280898876404,
-        "right": 98.46462944923192,
-        "bottom": 61.99280898876404
+        "top": 34.1851968503937,
+        "right": 98.31047861692447,
+        "bottom": 62.66519685039369
        },
        "constraint": {
         "horizontal": "scale",
@@ -14649,14 +14689,18 @@
         },
         "text": {
          "mode": "field",
-         "field": "t0",
+         "field": "第 1 項",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"t0~1\"]}",
+         "title": "${__data.fields[\"第 1 項~1\"]}",
+         "url": ""
+        },
+        {
+         "title": "${__data.fields[\"第 1 項~2\"]}",
          "url": ""
         }
        ]
@@ -14746,9 +14790,9 @@
        "name": "dot1",
        "placement": {
         "left": 15.216000000000001,
-        "top": 33.51280898876404,
-        "right": 84.06462944923192,
-        "bottom": 61.99280898876404
+        "top": 34.1851968503937,
+        "right": 83.91047861692446,
+        "bottom": 62.66519685039369
        },
        "constraint": {
         "horizontal": "scale",
@@ -14853,14 +14897,18 @@
         },
         "text": {
          "mode": "field",
-         "field": "t1",
+         "field": "第 2 項",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"t1~1\"]}",
+         "title": "${__data.fields[\"第 2 項~1\"]}",
+         "url": ""
+        },
+        {
+         "title": "${__data.fields[\"第 2 項~2\"]}",
          "url": ""
         }
        ]
@@ -14950,9 +14998,9 @@
        "name": "dot2",
        "placement": {
         "left": 29.616,
-        "top": 33.51280898876404,
-        "right": 69.66462944923192,
-        "bottom": 61.99280898876404
+        "top": 34.1851968503937,
+        "right": 69.51047861692447,
+        "bottom": 62.66519685039369
        },
        "constraint": {
         "horizontal": "scale",
@@ -15057,14 +15105,18 @@
         },
         "text": {
          "mode": "field",
-         "field": "t2",
+         "field": "第 3 項",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"t2~1\"]}",
+         "title": "${__data.fields[\"第 3 項~1\"]}",
+         "url": ""
+        },
+        {
+         "title": "${__data.fields[\"第 3 項~2\"]}",
          "url": ""
         }
        ]
@@ -15154,9 +15206,9 @@
        "name": "dot3",
        "placement": {
         "left": 44.016000000000005,
-        "top": 33.51280898876404,
-        "right": 55.26462944923192,
-        "bottom": 61.99280898876404
+        "top": 34.1851968503937,
+        "right": 55.110478616924475,
+        "bottom": 62.66519685039369
        },
        "constraint": {
         "horizontal": "scale",
@@ -15261,14 +15313,18 @@
         },
         "text": {
          "mode": "field",
-         "field": "t3",
+         "field": "第 4 項",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"t3~1\"]}",
+         "title": "${__data.fields[\"第 4 項~1\"]}",
+         "url": ""
+        },
+        {
+         "title": "${__data.fields[\"第 4 項~2\"]}",
          "url": ""
         }
        ]
@@ -15358,9 +15414,9 @@
        "name": "dot4",
        "placement": {
         "left": 58.416000000000004,
-        "top": 33.51280898876404,
-        "right": 40.86462944923192,
-        "bottom": 61.99280898876404
+        "top": 34.1851968503937,
+        "right": 40.710478616924476,
+        "bottom": 62.66519685039369
        },
        "constraint": {
         "horizontal": "scale",
@@ -15465,14 +15521,18 @@
         },
         "text": {
          "mode": "field",
-         "field": "t4",
+         "field": "第 5 項",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"t4~1\"]}",
+         "title": "${__data.fields[\"第 5 項~1\"]}",
+         "url": ""
+        },
+        {
+         "title": "${__data.fields[\"第 5 項~2\"]}",
          "url": ""
         }
        ]
@@ -15562,9 +15622,9 @@
        "name": "dot5",
        "placement": {
         "left": 72.816,
-        "top": 33.51280898876404,
-        "right": 26.46462944923192,
-        "bottom": 61.99280898876404
+        "top": 34.1851968503937,
+        "right": 26.310478616924474,
+        "bottom": 62.66519685039369
        },
        "constraint": {
         "horizontal": "scale",
@@ -15669,14 +15729,18 @@
         },
         "text": {
          "mode": "field",
-         "field": "t5",
+         "field": "第 6 項",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"t5~1\"]}",
+         "title": "${__data.fields[\"第 6 項~1\"]}",
+         "url": ""
+        },
+        {
+         "title": "${__data.fields[\"第 6 項~2\"]}",
          "url": ""
         }
        ]
@@ -15766,9 +15830,9 @@
        "name": "dot6",
        "placement": {
         "left": 87.21600000000001,
-        "top": 33.51280898876404,
-        "right": 12.064629449231914,
-        "bottom": 61.99280898876404
+        "top": 34.1851968503937,
+        "right": 11.910478616924468,
+        "bottom": 62.66519685039369
        },
        "constraint": {
         "horizontal": "scale",
@@ -15873,14 +15937,18 @@
         },
         "text": {
          "mode": "field",
-         "field": "t6",
+         "field": "第 7 項",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"t6~1\"]}",
+         "title": "${__data.fields[\"第 7 項~1\"]}",
+         "url": ""
+        },
+        {
+         "title": "${__data.fields[\"第 7 項~2\"]}",
          "url": ""
         }
        ]
@@ -15970,9 +16038,9 @@
        "name": "dot7",
        "placement": {
         "left": 0.816,
-        "top": 85.51280898876404,
-        "right": 98.46462944923192,
-        "bottom": 9.992808988764054
+        "top": 86.1851968503937,
+        "right": 98.31047861692447,
+        "bottom": 10.665196850393707
        },
        "constraint": {
         "horizontal": "scale",
@@ -16077,14 +16145,18 @@
         },
         "text": {
          "mode": "field",
-         "field": "t7",
+         "field": "第 8 項",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"t7~1\"]}",
+         "title": "${__data.fields[\"第 8 項~1\"]}",
+         "url": ""
+        },
+        {
+         "title": "${__data.fields[\"第 8 項~2\"]}",
          "url": ""
         }
        ]
@@ -16174,9 +16246,9 @@
        "name": "dot8",
        "placement": {
         "left": 15.216000000000001,
-        "top": 85.51280898876404,
-        "right": 84.06462944923192,
-        "bottom": 9.992808988764054
+        "top": 86.1851968503937,
+        "right": 83.91047861692446,
+        "bottom": 10.665196850393707
        },
        "constraint": {
         "horizontal": "scale",
@@ -16281,14 +16353,18 @@
         },
         "text": {
          "mode": "field",
-         "field": "t8",
+         "field": "第 9 項",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"t8~1\"]}",
+         "title": "${__data.fields[\"第 9 項~1\"]}",
+         "url": ""
+        },
+        {
+         "title": "${__data.fields[\"第 9 項~2\"]}",
          "url": ""
         }
        ]
@@ -16378,9 +16454,9 @@
        "name": "dot9",
        "placement": {
         "left": 29.616,
-        "top": 85.51280898876404,
-        "right": 69.66462944923192,
-        "bottom": 9.992808988764054
+        "top": 86.1851968503937,
+        "right": 69.51047861692447,
+        "bottom": 10.665196850393707
        },
        "constraint": {
         "horizontal": "scale",
@@ -16485,14 +16561,18 @@
         },
         "text": {
          "mode": "field",
-         "field": "t9",
+         "field": "第 10 項",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"t9~1\"]}",
+         "title": "${__data.fields[\"第 10 項~1\"]}",
+         "url": ""
+        },
+        {
+         "title": "${__data.fields[\"第 10 項~2\"]}",
          "url": ""
         }
        ]
@@ -16582,9 +16662,9 @@
        "name": "dot10",
        "placement": {
         "left": 44.016000000000005,
-        "top": 85.51280898876404,
-        "right": 55.26462944923192,
-        "bottom": 9.992808988764054
+        "top": 86.1851968503937,
+        "right": 55.110478616924475,
+        "bottom": 10.665196850393707
        },
        "constraint": {
         "horizontal": "scale",
@@ -16689,14 +16769,18 @@
         },
         "text": {
          "mode": "field",
-         "field": "t10",
+         "field": "第 11 項",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"t10~1\"]}",
+         "title": "${__data.fields[\"第 11 項~1\"]}",
+         "url": ""
+        },
+        {
+         "title": "${__data.fields[\"第 11 項~2\"]}",
          "url": ""
         }
        ]
@@ -16786,9 +16870,9 @@
        "name": "dot11",
        "placement": {
         "left": 58.416000000000004,
-        "top": 85.51280898876404,
-        "right": 40.86462944923192,
-        "bottom": 9.992808988764054
+        "top": 86.1851968503937,
+        "right": 40.710478616924476,
+        "bottom": 10.665196850393707
        },
        "constraint": {
         "horizontal": "scale",
@@ -16893,14 +16977,18 @@
         },
         "text": {
          "mode": "field",
-         "field": "t11",
+         "field": "第 12 項",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"t11~1\"]}",
+         "title": "${__data.fields[\"第 12 項~1\"]}",
+         "url": ""
+        },
+        {
+         "title": "${__data.fields[\"第 12 項~2\"]}",
          "url": ""
         }
        ]
@@ -16990,9 +17078,9 @@
        "name": "dot12",
        "placement": {
         "left": 72.816,
-        "top": 85.51280898876404,
-        "right": 26.46462944923192,
-        "bottom": 9.992808988764054
+        "top": 86.1851968503937,
+        "right": 26.310478616924474,
+        "bottom": 10.665196850393707
        },
        "constraint": {
         "horizontal": "scale",
@@ -17097,14 +17185,18 @@
         },
         "text": {
          "mode": "field",
-         "field": "t12",
+         "field": "第 13 項",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"t12~1\"]}",
+         "title": "${__data.fields[\"第 13 項~1\"]}",
+         "url": ""
+        },
+        {
+         "title": "${__data.fields[\"第 13 項~2\"]}",
          "url": ""
         }
        ]
@@ -17194,9 +17286,9 @@
        "name": "dot13",
        "placement": {
         "left": 87.21600000000001,
-        "top": 85.51280898876404,
-        "right": 12.064629449231914,
-        "bottom": 9.992808988764054
+        "top": 86.1851968503937,
+        "right": 11.910478616924468,
+        "bottom": 10.665196850393707
        },
        "constraint": {
         "horizontal": "scale",
@@ -17301,14 +17393,18 @@
         },
         "text": {
          "mode": "field",
-         "field": "t13",
+         "field": "第 14 項",
          "fixed": " "
         }
        },
        "connections": [],
        "links": [
         {
-         "title": "${__data.fields[\"t13~1\"]}",
+         "title": "${__data.fields[\"第 14 項~1\"]}",
+         "url": ""
+        },
+        {
+         "title": "${__data.fields[\"第 14 項~2\"]}",
          "url": ""
         }
        ]

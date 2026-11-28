@@ -7,6 +7,7 @@
 import { schedulerTicketClosureDefect, type SchedulerExecutionTicketKind, type SchedulerExecutionTicketStatus } from '../lib/schedulerExecutionTickets'
 import { classifySchedulerRunSummary } from '../lib/schedulerRunLogger'
 import { addDays, twDate, type MonitoringEnv } from './env'
+import { D1_OVERLOAD_MARKERS } from '../lib/d1CapacityErrors'
 
 /** Step 1 cap: ~500 rows for 14 days today; a watchdog failing every 30 min adds 48 a day. */
 export const FAILURE_TICKET_LIMIT = 1500
@@ -189,7 +190,7 @@ export const D1_OVERLOAD_DAYS_BACK = 7
 export const D1_OVERLOAD_DAYS_AHEAD = 3
 /** Cap on tickets read per request (error and blocked tickets updated in 24 h: ~50 on 11/26). */
 export const D1_OVERLOAD_TICKET_LIMIT = 500
-export const D1_OVERLOAD_MARKERS = ['D1 DB is overloaded', 'Requests queued for too long'] as const
+export { D1_OVERLOAD_MARKERS }
 const overloadMatch = (column: string) => D1_OVERLOAD_MARKERS.map(() => `instr(IFNULL(${column}, ''), ?) > 0`).join(' OR ')
 const d1OverloadSql = (dates: number) => `SELECT ticket_id, scheduler_job_id, task, business_date, status,
        substr(COALESCE(NULLIF(last_error, ''), last_summary), 1, 200) AS error, updated_at,

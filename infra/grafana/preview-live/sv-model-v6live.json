@@ -116,7 +116,7 @@
       "uid": "grafanacloud-infinity"
      },
      "source": "inline",
-     "data": "{\"generated_at\":\"2026-11-26T13:52:04.654Z\",\"rows_read\":0,\"queries\":0,\"cache_ttl_s\":900,\"today\":\"2026-11-26\",\"expected_known_date\":\"2026-11-25\",\"last_closure_date\":\"2026-11-26\",\"definitions\":{},\"summary\":{\"ledger_last_known_date\":\"2026-11-18\",\"lag_trading_days\":6,\"lag_capped\":false,\"current_context_identity\":\"ctx-current\",\"current_context_since\":\"2026-11-24\",\"current_context_rows\":0,\"current_context_last_known_date\":null,\"current_context_lag_trading_days\":null,\"current_context_lag_capped\":false,\"latest_plan_signal_date\":\"2026-11-25\"},\"rows\":[{\"ledger\":\"all_contexts\",\"last_known_date\":\"2026-11-18\",\"lag_trading_days\":6},{\"ledger\":\"current_context\",\"last_known_date\":null,\"lag_trading_days\":null}]}"
+     "data": "{\"generated_at\":\"2026-11-27T22:21:07.484Z\",\"rows_read\":0,\"queries\":0,\"cache_ttl_s\":900,\"today\":\"2026-11-28\",\"expected_known_date\":\"2026-11-26\",\"last_closure_date\":\"2026-11-28\",\"definitions\":{},\"summary\":{\"ledger_last_known_date\":\"2026-11-19\",\"lag_trading_days\":6,\"lag_capped\":false,\"current_context_identity\":\"ctx-current\",\"current_context_since\":\"2026-11-25\",\"current_context_rows\":0,\"current_context_last_known_date\":null,\"current_context_lag_trading_days\":null,\"current_context_lag_capped\":false,\"latest_plan_signal_date\":\"2026-11-26\"},\"rows\":[{\"ledger\":\"all_contexts\",\"last_known_date\":\"2026-11-19\",\"lag_trading_days\":6},{\"ledger\":\"current_context\",\"last_known_date\":null,\"lag_trading_days\":null}]}"
     }
    ],
    "transformations": [
@@ -259,7 +259,7 @@
      }
     ]
    },
-   "description": "OPB v2 只從 arm replay 帳本（l4_opb_arm_replay_v1）學。落後交易日＝帳本最新的 known_date 距「最近一次盤後收尾能補到的日期」（收尾日的前一個交易日）幾個交易日：0＝即時、≥2 琥珀（最多算到 20；落後不是失敗，所以不轉紅）；帳本沒有任何 replay 或算不出參考日＝「帳本無資料」（琥珀）。目前 context 樣本＝最新計畫的 context 已有幾筆 replay；0＝這個 context 還沒學到東西（換 L3 版本或風控設定會換 context，要等 5 個交易日後才有第一筆）。",
+   "description": "OPB v2 只從 arm replay 帳本學。落後交易日＝帳本最新的 reward 可知日距「最近一次盤後收尾能補到的日期」（收尾日的前一個交易日）幾個交易日：0＝即時、≥2 琥珀（最多算到 20；落後不是失敗，所以不轉紅）；帳本沒有任何 replay 或算不出參考日＝「帳本無資料」（琥珀）。目前 context 樣本＝最新計畫的 context 已有幾筆 replay；0＝這個 context 還沒學到東西（換 L3 版本或風控設定會換 context，要等 5 個交易日後才有第一筆）。",
    "id": 1
   },
   {
@@ -305,7 +305,7 @@
       "uid": "grafanacloud-infinity"
      },
      "source": "inline",
-     "data": "{\"generated_at\":\"2026-11-26T13:52:04.654Z\",\"rows_read\":0,\"queries\":0,\"cache_ttl_s\":300,\"account_id\":1,\"today\":\"2026-11-26\",\"since\":\"2026-11-13\",\"days\":14,\"definitions\":{},\"summary\":{\"today_trading\":true,\"today_status\":\"sealed\",\"today_sealed_at\":\"2026-11-25T23:29:00.000Z\",\"today_cutoff_at\":\"2026-11-26T00:45:00.000Z\",\"trading_days\":10,\"sealed_days\":9,\"missing_days\":1,\"latest_missing_date\":\"2026-11-20\"},\"rows\":[{\"date\":\"2026-11-13\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-13\",\"sealed_at\":\"2026-11-12T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-13T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-16\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-16\",\"sealed_at\":\"2026-11-15T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-16T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-17\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-17\",\"sealed_at\":\"2026-11-16T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-17T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-18\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-18\",\"sealed_at\":\"2026-11-17T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-18T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-19\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-19\",\"sealed_at\":\"2026-11-18T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-19T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-20\",\"status\":\"missing\",\"plan_id\":null,\"sealed_at\":null,\"revised_at\":null,\"revision\":null,\"cutoff_at\":\"2026-11-20T00:45:00.000Z\",\"minutes_before_cutoff\":null},{\"date\":\"2026-11-23\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-23\",\"sealed_at\":\"2026-11-22T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-23T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-24\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-24\",\"sealed_at\":\"2026-11-23T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-24T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-25\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-25\",\"sealed_at\":\"2026-11-24T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-25T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-26\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-26\",\"sealed_at\":\"2026-11-25T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-26T00:45:00.000Z\",\"minutes_before_cutoff\":76}]}"
+     "data": "{\"generated_at\":\"2026-11-27T22:21:07.484Z\",\"rows_read\":0,\"queries\":0,\"cache_ttl_s\":300,\"account_id\":1,\"today\":\"2026-11-28\",\"since\":\"2026-11-15\",\"days\":14,\"definitions\":{},\"summary\":{\"today_trading\":false,\"today_status\":\"not_trading\",\"today_sealed_at\":null,\"today_cutoff_at\":null,\"trading_days\":10,\"sealed_days\":9,\"missing_days\":1,\"latest_missing_date\":\"2026-11-23\"},\"rows\":[{\"date\":\"2026-11-16\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-16\",\"sealed_at\":\"2026-11-15T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-16T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-17\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-17\",\"sealed_at\":\"2026-11-16T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-17T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-18\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-18\",\"sealed_at\":\"2026-11-17T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-18T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-19\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-19\",\"sealed_at\":\"2026-11-18T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-19T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-20\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-20\",\"sealed_at\":\"2026-11-19T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-20T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-23\",\"status\":\"missing\",\"plan_id\":null,\"sealed_at\":null,\"revised_at\":null,\"revision\":null,\"cutoff_at\":\"2026-11-23T00:45:00.000Z\",\"minutes_before_cutoff\":null},{\"date\":\"2026-11-24\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-24\",\"sealed_at\":\"2026-11-23T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-24T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-25\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-25\",\"sealed_at\":\"2026-11-24T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-25T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-26\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-26\",\"sealed_at\":\"2026-11-25T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-26T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-27\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-27\",\"sealed_at\":\"2026-11-26T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-27T00:45:00.000Z\",\"minutes_before_cutoff\":76}]}"
     }
    ],
    "transformations": [
@@ -533,7 +533,7 @@
      }
     ]
    },
-   "description": "今天的正式計畫（paper_daily_plan_heads_v1）有沒有在盤前 08:45 cutoff 前封存：已封存＝青、cutoff 前還沒有＝灰（等待中）、過了 cutoff 還沒有＝紅；休市日不算。14 日未封存＝近 14 天的交易日裡沒封存的天數。",
+   "description": "今天的正式計畫有沒有在盤前 08:45 cutoff 前封存：已封存＝青、cutoff 前還沒有＝灰（等待中）、過了 cutoff 還沒有＝紅；休市日不算。14 日未封存＝近 14 天的交易日裡沒封存的天數。",
    "id": 2
   },
   {
@@ -584,7 +584,7 @@
       "uid": "grafanacloud-infinity"
      },
      "source": "inline",
-     "data": "{\"generated_at\":\"2026-11-26T13:52:04.654Z\",\"rows_read\":0,\"queries\":0,\"cache_ttl_s\":900,\"thresholds\":{\"degraded_streak_to_bypass\":3,\"pass_streak_to_recover\":3,\"min_evaluable_dates\":5},\"definitions\":{},\"summary\":{\"status\":\"not_applicable\",\"state\":null,\"degraded_streak\":null,\"recovery_streak\":null,\"evaluable_date_count\":null,\"last_prediction_date\":null,\"model_version\":null,\"reason\":null,\"updated_at\":null},\"rows\":[]}"
+     "data": "{\"generated_at\":\"2026-11-27T22:21:07.484Z\",\"rows_read\":0,\"queries\":0,\"cache_ttl_s\":900,\"thresholds\":{\"degraded_streak_to_bypass\":3,\"pass_streak_to_recover\":3,\"min_evaluable_dates\":5},\"definitions\":{},\"summary\":{\"status\":\"not_applicable\",\"state\":null,\"degraded_streak\":null,\"recovery_streak\":null,\"evaluable_date_count\":null,\"last_prediction_date\":null,\"model_version\":null,\"reason\":null,\"updated_at\":null},\"rows\":[]}"
     }
    ],
    "transformations": [
@@ -886,11 +886,11 @@
      }
     ]
    },
-   "description": "Fusion artifact 上線後的 T+5 前向檢查（expected_return_forward_guard_state）：連續 3 個預測日 IC 與價差都輸 L4 就旁路 residual，旁路後要連續 3 日通過才恢復（至少 5 個可評估日）。未啟用＝目前沒有 Fusion residual 在服務，不需要這道保護（灰）；正常＝青；惡化中＝琥珀；已旁路＝紅；版本不符＝guard 綁的 artifact／fingerprint 不是目前服務中的 Fusion（紅，日數不顯示）。連續惡化／恢復＝最近連續幾個預測日。",
+   "description": "Fusion artifact 上線後的 T+5 前向檢查：連續 3 個預測日 IC 與價差都輸 L4 就旁路 residual，旁路後要連續 3 日通過才恢復（至少 5 個可評估日）。未啟用＝目前沒有 Fusion residual 在服務，不需要這道保護（灰）；正常＝青；惡化中＝琥珀；已旁路＝紅；版本不符＝guard 綁的 artifact／fingerprint 不是目前服務中的 Fusion（紅，日數不顯示）。連續惡化／恢復＝最近連續幾個預測日。",
    "id": 3
   },
   {
-   "type": "status-history",
+   "type": "state-timeline",
    "title": "封存紀錄（14 日）",
    "description": "每個交易日一格：青＝盤前已封存（滑鼠停在格子上看封存時間）、紅＝過了 cutoff 沒有封存、灰＝今天還在 cutoff 前。",
    "gridPos": {
@@ -933,7 +933,7 @@
       "uid": "grafanacloud-infinity"
      },
      "source": "inline",
-     "data": "{\"generated_at\":\"2026-11-26T13:52:04.654Z\",\"rows_read\":0,\"queries\":0,\"cache_ttl_s\":300,\"account_id\":1,\"today\":\"2026-11-26\",\"since\":\"2026-11-13\",\"days\":14,\"definitions\":{},\"summary\":{\"today_trading\":true,\"today_status\":\"sealed\",\"today_sealed_at\":\"2026-11-25T23:29:00.000Z\",\"today_cutoff_at\":\"2026-11-26T00:45:00.000Z\",\"trading_days\":10,\"sealed_days\":9,\"missing_days\":1,\"latest_missing_date\":\"2026-11-20\"},\"rows\":[{\"date\":\"2026-11-13\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-13\",\"sealed_at\":\"2026-11-12T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-13T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-16\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-16\",\"sealed_at\":\"2026-11-15T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-16T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-17\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-17\",\"sealed_at\":\"2026-11-16T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-17T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-18\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-18\",\"sealed_at\":\"2026-11-17T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-18T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-19\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-19\",\"sealed_at\":\"2026-11-18T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-19T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-20\",\"status\":\"missing\",\"plan_id\":null,\"sealed_at\":null,\"revised_at\":null,\"revision\":null,\"cutoff_at\":\"2026-11-20T00:45:00.000Z\",\"minutes_before_cutoff\":null},{\"date\":\"2026-11-23\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-23\",\"sealed_at\":\"2026-11-22T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-23T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-24\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-24\",\"sealed_at\":\"2026-11-23T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-24T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-25\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-25\",\"sealed_at\":\"2026-11-24T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-25T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-26\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-26\",\"sealed_at\":\"2026-11-25T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-26T00:45:00.000Z\",\"minutes_before_cutoff\":76}]}"
+     "data": "{\"generated_at\":\"2026-11-27T22:21:07.484Z\",\"rows_read\":0,\"queries\":0,\"cache_ttl_s\":300,\"account_id\":1,\"today\":\"2026-11-28\",\"since\":\"2026-11-15\",\"days\":14,\"definitions\":{},\"summary\":{\"today_trading\":false,\"today_status\":\"not_trading\",\"today_sealed_at\":null,\"today_cutoff_at\":null,\"trading_days\":10,\"sealed_days\":9,\"missing_days\":1,\"latest_missing_date\":\"2026-11-23\"},\"rows\":[{\"date\":\"2026-11-16\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-16\",\"sealed_at\":\"2026-11-15T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-16T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-17\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-17\",\"sealed_at\":\"2026-11-16T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-17T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-18\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-18\",\"sealed_at\":\"2026-11-17T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-18T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-19\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-19\",\"sealed_at\":\"2026-11-18T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-19T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-20\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-20\",\"sealed_at\":\"2026-11-19T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-20T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-23\",\"status\":\"missing\",\"plan_id\":null,\"sealed_at\":null,\"revised_at\":null,\"revision\":null,\"cutoff_at\":\"2026-11-23T00:45:00.000Z\",\"minutes_before_cutoff\":null},{\"date\":\"2026-11-24\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-24\",\"sealed_at\":\"2026-11-23T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-24T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-25\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-25\",\"sealed_at\":\"2026-11-24T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-25T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-26\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-26\",\"sealed_at\":\"2026-11-25T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-26T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-27\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-27\",\"sealed_at\":\"2026-11-26T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-27T00:45:00.000Z\",\"minutes_before_cutoff\":76}]}"
     }
    ],
    "timeFrom": "14d",
@@ -963,7 +963,7 @@
     },
     "showValue": "never",
     "rowHeight": 0.8,
-    "colWidth": 0.85
+    "mergeValues": false
    },
    "fieldConfig": {
     "defaults": {
@@ -2132,7 +2132,7 @@
   {
    "type": "state-timeline",
    "title": "每天選到的 OPB arm",
-   "description": "每個 signal date 的計畫用了哪個 arm；灰＝風控把所有 arm 壓成同一組（arm_inert），那天學不到差別。顏色與右下泡泡圖的 arm 圖例相同。",
+   "description": "每個 signal date 的計畫用了哪個 arm；灰＝風控把所有 arm 壓成同一組，那天學不到差別。顏色與右下 OPB arm 長條相同。",
    "gridPos": {
     "x": 14,
     "y": 8,
@@ -2216,32 +2216,32 @@
        "type": "value",
        "options": {
         "base": {
-         "text": "base",
+         "text": "基準",
          "color": "#199cb8",
          "index": 0
         },
         "diversified_alpha": {
-         "text": "diversified_alpha",
+         "text": "分散・alpha",
          "color": "#035ede",
          "index": 1
         },
         "diversified_all_eligible": {
-         "text": "diversified_all_eligible",
+         "text": "分散・全合格",
          "color": "#a573fe",
          "index": 2
         },
         "liquidity_diversified": {
-         "text": "liquidity_diversified",
+         "text": "流動性分散",
          "color": "#ac27ae",
          "index": 3
         },
         "conservative_diversified": {
-         "text": "conservative_diversified",
+         "text": "保守分散",
          "color": "#dcdfe4",
          "index": 4
         },
         "high_score_conservative": {
-         "text": "high_score_conservative",
+         "text": "高分保守",
          "color": "#dcdfe4",
          "index": 5
         },
@@ -2275,13 +2275,18 @@
    "id": 15
   },
   {
-   "type": "xychart",
+   "type": "barchart",
    "title": "OPB arm：樣本數 × 平均 reward",
+   "description": "一條＝一個 arm：長度＝平均 reward（往右＝正、往左＝負），名稱後＝累積樣本數與近 60 天被選用的比例，顏色同左邊「每天選到的 OPB arm」。有在學的話，樣本多、選用比例高的 arm 會是 reward 較高的那幾條；每條都差不多長＝沒有在分辨 arm。樣本與 reward 取最新一筆有 arm 統計的計畫（所有 arm 被壓成同一組的那天不存統計）；換 context 後各 arm 還沒有 reward 時不畫，顯示「目前 context 還沒有 reward 樣本」。",
    "gridPos": {
     "x": 14,
     "y": 12,
     "w": 10,
     "h": 6
+   },
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "sv-monitoring"
    },
    "targets": [
     {
@@ -2289,12 +2294,12 @@
      "type": "json",
      "parser": "backend",
      "format": "table",
-     "root_selector": "([($s := arm_share[arm_id = 'base'][0].share; latest_arm_statistics[arm_id = 'base'].{ 'samples': samples, 'reward': mean, 'share': $s ? $s : 0 })])",
+     "root_selector": "([($names := {\"base\":\"基準\",\"diversified_alpha\":\"分散・alpha\",\"diversified_all_eligible\":\"分散・全合格\",\"liquidity_diversified\":\"流動性分散\",\"conservative_diversified\":\"保守分散\",\"high_score_conservative\":\"高分保守\",\"arm_inert\":\"被風控壓成一組\"}; $order := [\"base\",\"diversified_alpha\",\"diversified_all_eligible\",\"liquidity_diversified\",\"conservative_diversified\",\"high_score_conservative\"]; $stats := latest_arm_statistics[$type(mean) = 'number']; $share := arm_share;\n      $out := $order.($id := $; $st := $stats[arm_id = $id][0]; $s := $share[arm_id = $id][0].share;\n        $st ? { 'name': $lookup($names, $id) & '｜' & $string($st.samples) & ' 樣本｜選用 ' & $string($round(($s ? $s : 0) * 100)) & '%', 'reward': $st.mean, 'arm': $id });\n      $count($out) > 0 ? $out : [])])",
      "columns": [
       {
-       "selector": "samples",
-       "text": "樣本數",
-       "type": "number"
+       "selector": "name",
+       "text": "name",
+       "type": "string"
       },
       {
        "selector": "reward",
@@ -2302,184 +2307,9 @@
        "type": "number"
       },
       {
-       "selector": "share",
-       "text": "選用比例",
-       "type": "number"
-      }
-     ],
-     "filters": [],
-     "datasource": {
-      "type": "yesoreyeram-infinity-datasource",
-      "uid": "sv-monitoring"
-     },
-     "source": "url",
-     "url": "/v1/opb?days=60",
-     "url_options": {
-      "method": "GET",
-      "data": ""
-     }
-    },
-    {
-     "refId": "B",
-     "type": "json",
-     "parser": "backend",
-     "format": "table",
-     "root_selector": "([($s := arm_share[arm_id = 'diversified_alpha'][0].share; latest_arm_statistics[arm_id = 'diversified_alpha'].{ 'samples': samples, 'reward': mean, 'share': $s ? $s : 0 })])",
-     "columns": [
-      {
-       "selector": "samples",
-       "text": "樣本數",
-       "type": "number"
-      },
-      {
-       "selector": "reward",
-       "text": "平均 reward",
-       "type": "number"
-      },
-      {
-       "selector": "share",
-       "text": "選用比例",
-       "type": "number"
-      }
-     ],
-     "filters": [],
-     "datasource": {
-      "type": "yesoreyeram-infinity-datasource",
-      "uid": "sv-monitoring"
-     },
-     "source": "url",
-     "url": "/v1/opb?days=60",
-     "url_options": {
-      "method": "GET",
-      "data": ""
-     }
-    },
-    {
-     "refId": "C",
-     "type": "json",
-     "parser": "backend",
-     "format": "table",
-     "root_selector": "([($s := arm_share[arm_id = 'diversified_all_eligible'][0].share; latest_arm_statistics[arm_id = 'diversified_all_eligible'].{ 'samples': samples, 'reward': mean, 'share': $s ? $s : 0 })])",
-     "columns": [
-      {
-       "selector": "samples",
-       "text": "樣本數",
-       "type": "number"
-      },
-      {
-       "selector": "reward",
-       "text": "平均 reward",
-       "type": "number"
-      },
-      {
-       "selector": "share",
-       "text": "選用比例",
-       "type": "number"
-      }
-     ],
-     "filters": [],
-     "datasource": {
-      "type": "yesoreyeram-infinity-datasource",
-      "uid": "sv-monitoring"
-     },
-     "source": "url",
-     "url": "/v1/opb?days=60",
-     "url_options": {
-      "method": "GET",
-      "data": ""
-     }
-    },
-    {
-     "refId": "D",
-     "type": "json",
-     "parser": "backend",
-     "format": "table",
-     "root_selector": "([($s := arm_share[arm_id = 'liquidity_diversified'][0].share; latest_arm_statistics[arm_id = 'liquidity_diversified'].{ 'samples': samples, 'reward': mean, 'share': $s ? $s : 0 })])",
-     "columns": [
-      {
-       "selector": "samples",
-       "text": "樣本數",
-       "type": "number"
-      },
-      {
-       "selector": "reward",
-       "text": "平均 reward",
-       "type": "number"
-      },
-      {
-       "selector": "share",
-       "text": "選用比例",
-       "type": "number"
-      }
-     ],
-     "filters": [],
-     "datasource": {
-      "type": "yesoreyeram-infinity-datasource",
-      "uid": "sv-monitoring"
-     },
-     "source": "url",
-     "url": "/v1/opb?days=60",
-     "url_options": {
-      "method": "GET",
-      "data": ""
-     }
-    },
-    {
-     "refId": "E",
-     "type": "json",
-     "parser": "backend",
-     "format": "table",
-     "root_selector": "([($s := arm_share[arm_id = 'conservative_diversified'][0].share; latest_arm_statistics[arm_id = 'conservative_diversified'].{ 'samples': samples, 'reward': mean, 'share': $s ? $s : 0 })])",
-     "columns": [
-      {
-       "selector": "samples",
-       "text": "樣本數",
-       "type": "number"
-      },
-      {
-       "selector": "reward",
-       "text": "平均 reward",
-       "type": "number"
-      },
-      {
-       "selector": "share",
-       "text": "選用比例",
-       "type": "number"
-      }
-     ],
-     "filters": [],
-     "datasource": {
-      "type": "yesoreyeram-infinity-datasource",
-      "uid": "sv-monitoring"
-     },
-     "source": "url",
-     "url": "/v1/opb?days=60",
-     "url_options": {
-      "method": "GET",
-      "data": ""
-     }
-    },
-    {
-     "refId": "F",
-     "type": "json",
-     "parser": "backend",
-     "format": "table",
-     "root_selector": "([($s := arm_share[arm_id = 'high_score_conservative'][0].share; latest_arm_statistics[arm_id = 'high_score_conservative'].{ 'samples': samples, 'reward': mean, 'share': $s ? $s : 0 })])",
-     "columns": [
-      {
-       "selector": "samples",
-       "text": "樣本數",
-       "type": "number"
-      },
-      {
-       "selector": "reward",
-       "text": "平均 reward",
-       "type": "number"
-      },
-      {
-       "selector": "share",
-       "text": "選用比例",
-       "type": "number"
+       "selector": "arm",
+       "text": "arm",
+       "type": "string"
       }
      ],
      "filters": [],
@@ -2495,359 +2325,140 @@
      }
     }
    ],
-   "description": "一個泡泡＝一個 arm：橫軸＝累積樣本數，縱軸＝平均 reward，泡泡大小＝近 60 天被選用的比例。有在學的話，大泡泡會落在右上（樣本多、reward 高）；泡泡都擠在一起或大小一樣＝沒有在分辨 arm。樣本與 reward 取最新一筆有 arm_statistics 的計畫（arm_inert 那天不存統計）。",
-   "options": {
-    "mapping": "manual",
-    "series": [
-     {
-      "name": {
-       "fixed": "base"
-      },
-      "frame": {
-       "matcher": {
-        "id": "byIndex",
-        "options": 0
-       }
-      },
-      "x": {
-       "matcher": {
-        "id": "byName",
-        "options": "樣本數"
-       }
-      },
-      "y": {
-       "matcher": {
-        "id": "byName",
-        "options": "平均 reward"
-       }
-      },
-      "size": {
-       "matcher": {
-        "id": "byName",
-        "options": "選用比例"
-       }
-      }
-     },
-     {
-      "name": {
-       "fixed": "diversified_alpha"
-      },
-      "frame": {
-       "matcher": {
-        "id": "byIndex",
-        "options": 1
-       }
-      },
-      "x": {
-       "matcher": {
-        "id": "byName",
-        "options": "樣本數"
-       }
-      },
-      "y": {
-       "matcher": {
-        "id": "byName",
-        "options": "平均 reward"
-       }
-      },
-      "size": {
-       "matcher": {
-        "id": "byName",
-        "options": "選用比例"
-       }
-      }
-     },
-     {
-      "name": {
-       "fixed": "diversified_all_eligible"
-      },
-      "frame": {
-       "matcher": {
-        "id": "byIndex",
-        "options": 2
-       }
-      },
-      "x": {
-       "matcher": {
-        "id": "byName",
-        "options": "樣本數"
-       }
-      },
-      "y": {
-       "matcher": {
-        "id": "byName",
-        "options": "平均 reward"
-       }
-      },
-      "size": {
-       "matcher": {
-        "id": "byName",
-        "options": "選用比例"
-       }
-      }
-     },
-     {
-      "name": {
-       "fixed": "liquidity_diversified"
-      },
-      "frame": {
-       "matcher": {
-        "id": "byIndex",
-        "options": 3
-       }
-      },
-      "x": {
-       "matcher": {
-        "id": "byName",
-        "options": "樣本數"
-       }
-      },
-      "y": {
-       "matcher": {
-        "id": "byName",
-        "options": "平均 reward"
-       }
-      },
-      "size": {
-       "matcher": {
-        "id": "byName",
-        "options": "選用比例"
-       }
-      }
-     },
-     {
-      "name": {
-       "fixed": "conservative_diversified"
-      },
-      "frame": {
-       "matcher": {
-        "id": "byIndex",
-        "options": 4
-       }
-      },
-      "x": {
-       "matcher": {
-        "id": "byName",
-        "options": "樣本數"
-       }
-      },
-      "y": {
-       "matcher": {
-        "id": "byName",
-        "options": "平均 reward"
-       }
-      },
-      "size": {
-       "matcher": {
-        "id": "byName",
-        "options": "選用比例"
-       }
-      }
-     },
-     {
-      "name": {
-       "fixed": "high_score_conservative"
-      },
-      "frame": {
-       "matcher": {
-        "id": "byIndex",
-        "options": 5
-       }
-      },
-      "x": {
-       "matcher": {
-        "id": "byName",
-        "options": "樣本數"
-       }
-      },
-      "y": {
-       "matcher": {
-        "id": "byName",
-        "options": "平均 reward"
-       }
-      },
-      "size": {
-       "matcher": {
-        "id": "byName",
-        "options": "選用比例"
-       }
+   "transformations": [
+    {
+     "id": "organize",
+     "options": {
+      "excludeByName": {},
+      "renameByName": {},
+      "indexByName": {
+       "name": 0,
+       "平均 reward": 1,
+       "arm": 2
       }
      }
-    ],
-    "legend": {
-     "showLegend": true,
-     "displayMode": "list",
-     "placement": "right",
-     "calcs": []
-    },
+    }
+   ],
+   "options": {
+    "xField": "name",
+    "orientation": "horizontal",
+    "stacking": "none",
+    "showValue": "always",
+    "barWidth": 0.75,
+    "groupWidth": 0.7,
+    "barRadius": 0,
+    "xTickLabelRotation": 0,
+    "xTickLabelSpacing": 0,
+    "xTickLabelMaxLength": 20,
+    "fullHighlight": false,
     "tooltip": {
      "mode": "single"
+    },
+    "colorByField": "arm",
+    "text": {
+     "valueSize": 12
+    },
+    "legend": {
+     "showLegend": false,
+     "displayMode": "list",
+     "placement": "bottom",
+     "calcs": []
     }
    },
    "fieldConfig": {
     "defaults": {
-     "unit": "none",
-     "decimals": 0,
-     "noValue": "尚未接資料",
+     "unit": "percentunit",
+     "decimals": 2,
+     "noValue": "目前 context 還沒有 reward 樣本",
      "color": {
-      "mode": "palette-classic"
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#e8e9ec",
+        "value": null
+       }
+      ]
      },
      "custom": {
-      "show": "points",
-      "pointShape": "circle",
-      "pointSize": {
-       "fixed": 10,
-       "min": 8,
-       "max": 34
-      },
-      "pointStrokeWidth": 1,
-      "fillOpacity": 55,
-      "lineWidth": 1,
-      "lineStyle": {
-       "fill": "solid"
-      },
-      "axisPlacement": "auto",
-      "scaleDistribution": {
-       "type": "linear"
-      },
-      "hideFrom": {
-       "legend": false,
-       "tooltip": false,
-       "viz": false
-      }
+      "fillOpacity": 90,
+      "lineWidth": 0,
+      "gradientMode": "none",
+      "axisPlacement": "auto"
      }
     },
     "overrides": [
      {
       "matcher": {
-       "id": "byFrameRefID",
-       "options": "A"
-      },
-      "properties": [
-       {
-        "id": "color",
-        "value": {
-         "mode": "fixed",
-         "fixedColor": "#199cb8"
-        }
-       }
-      ]
-     },
-     {
-      "matcher": {
-       "id": "byFrameRefID",
-       "options": "B"
-      },
-      "properties": [
-       {
-        "id": "color",
-        "value": {
-         "mode": "fixed",
-         "fixedColor": "#035ede"
-        }
-       }
-      ]
-     },
-     {
-      "matcher": {
-       "id": "byFrameRefID",
-       "options": "C"
-      },
-      "properties": [
-       {
-        "id": "color",
-        "value": {
-         "mode": "fixed",
-         "fixedColor": "#a573fe"
-        }
-       }
-      ]
-     },
-     {
-      "matcher": {
-       "id": "byFrameRefID",
-       "options": "D"
-      },
-      "properties": [
-       {
-        "id": "color",
-        "value": {
-         "mode": "fixed",
-         "fixedColor": "#ac27ae"
-        }
-       }
-      ]
-     },
-     {
-      "matcher": {
-       "id": "byFrameRefID",
-       "options": "E"
-      },
-      "properties": [
-       {
-        "id": "color",
-        "value": {
-         "mode": "fixed",
-         "fixedColor": "#dcdfe4"
-        }
-       }
-      ]
-     },
-     {
-      "matcher": {
-       "id": "byFrameRefID",
-       "options": "F"
-      },
-      "properties": [
-       {
-        "id": "color",
-        "value": {
-         "mode": "fixed",
-         "fixedColor": "#dcdfe4"
-        }
-       }
-      ]
-     },
-     {
-      "matcher": {
        "id": "byName",
-       "options": "平均 reward"
+       "options": "arm"
       },
       "properties": [
        {
-        "id": "unit",
-        "value": "percentunit"
+        "id": "mappings",
+        "value": [
+         {
+          "type": "value",
+          "options": {
+           "base": {
+            "text": "基準",
+            "color": "#199cb8",
+            "index": 0
+           },
+           "diversified_alpha": {
+            "text": "分散・alpha",
+            "color": "#035ede",
+            "index": 1
+           },
+           "diversified_all_eligible": {
+            "text": "分散・全合格",
+            "color": "#a573fe",
+            "index": 2
+           },
+           "liquidity_diversified": {
+            "text": "流動性分散",
+            "color": "#ac27ae",
+            "index": 3
+           },
+           "conservative_diversified": {
+            "text": "保守分散",
+            "color": "#dcdfe4",
+            "index": 4
+           },
+           "high_score_conservative": {
+            "text": "高分保守",
+            "color": "#dcdfe4",
+            "index": 5
+           },
+           "arm_inert": {
+            "text": "被風控壓成一組",
+            "color": "#464a52",
+            "index": 6
+           }
+          }
+         }
+        ]
        },
        {
-        "id": "decimals",
-        "value": 2
-       }
-      ]
-     },
-     {
-      "matcher": {
-       "id": "byName",
-       "options": "選用比例"
-      },
-      "properties": [
-       {
-        "id": "unit",
-        "value": "percentunit"
+        "id": "custom.hideFrom",
+        "value": {
+         "legend": true,
+         "tooltip": true,
+         "viz": false
+        }
        }
       ]
      }
     ]
    },
-   "id": 16,
-   "datasource": {
-    "type": "yesoreyeram-infinity-datasource",
-    "uid": "sv-monitoring"
-   }
+   "id": 16
   },
   {
    "type": "table",
    "title": "模型名冊",
-   "description": "上線中的 alpha roster 與各模型最近一次月訓的離線閘門。OOS IC 的格子照該模型自己的閘門門檻上色：紅＝不高於 min 門檻（未過），琥珀＝低於弱門檻（弱通過），青＝達弱門檻以上；灰＝沒有門檻。點模型名稱看門檻、版本與訓練 run。",
+   "description": "上線中的 alpha roster 與各模型最近一次月訓的離線閘門。IC＝OOS IC，格子照該模型自己的閘門門檻上色：紅＝不高於 min 門檻（未過），琥珀＝低於弱門檻（弱通過），青＝達弱門檻以上；灰＝沒有門檻。狀態＝registry 狀態（上線＝production）。點模型名稱看門檻、版本與訓練資料日。",
    "gridPos": {
     "x": 0,
     "y": 18,
@@ -2864,7 +2475,7 @@
      "type": "json",
      "parser": "backend",
      "format": "table",
-     "root_selector": "([rows.{ 'model': model_name, 'gate': gate_decision, 'ic': ($ic := oos_ic; $lo := min_oos_ic_mean; $weak := weak_oos_ic_mean;\n  $tier := $type($ic) != 'number' ? '' : $type($lo) = 'number' and $type($weak) = 'number' ? ($ic <= $lo ? 'bad' : $ic < $weak ? 'warn' : 'ok') : 'none';\n  $tier ? $tier & '|' & $string($round($ic, 3)) : null), 'state': state,\n      'min': 'IC 門檻 ' & $string(min_oos_ic_mean) & '（弱 ' & $string(weak_oos_ic_mean) & '，強 ' & $string(strong_oos_ic_mean) & '）', 'version': '版本 ' & champion_version,\n      'run': '訓練 ' & gate_training_run_id & '（' & source_run_date & '）' }])",
+     "root_selector": "([rows.{ 'model': model_name, 'gate': gate_decision, 'ic': ($ic := oos_ic; $lo := min_oos_ic_mean; $weak := weak_oos_ic_mean;\n  $tier := $type($ic) != 'number' ? '' : $type($lo) = 'number' and $type($weak) = 'number' ? ($ic <= $lo ? 'bad' : $ic < $weak ? 'warn' : 'ok') : 'none';\n  $tier ? $tier & '|' & $string($round($ic, 3)) : null),\n      'state': ($w := $lookup({\"production\":\"上線\",\"approved\":\"已核准\",\"archived\":\"已封存\",\"shadowing\":\"影子中\",\"approval_required\":\"待核准\",\"rejected\":\"被拒\",\"offline_failed\":\"離線未過\",\"registration_failed\":\"註冊失敗\"}, state); $w ? $w : state ? state : '—'),\n      'min': 'IC 門檻 ' & $string(min_oos_ic_mean) & '（弱 ' & $string(weak_oos_ic_mean) & '，強 ' & $string(strong_oos_ic_mean) & '）', 'version': '版本 ' & champion_version,\n      'run': source_run_date ? '訓練資料 ' & source_run_date : '訓練資料 —' }])",
      "columns": [
       {
        "selector": "model",
@@ -2878,7 +2489,7 @@
       },
       {
        "selector": "ic",
-       "text": "OOS IC",
+       "text": "IC",
        "type": "string"
       },
       {
@@ -2924,7 +2535,7 @@
       "indexByName": {
        "模型": 0,
        "閘門": 1,
-       "OOS IC": 2,
+       "IC": 2,
        "狀態": 3,
        "IC 門檻": 4,
        "版本": 5,
@@ -3018,6 +2629,18 @@
       "properties": [
        {
         "id": "custom.width",
+        "value": 70
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "IC"
+      },
+      "properties": [
+       {
+        "id": "custom.width",
         "value": 64
        }
       ]
@@ -3030,7 +2653,19 @@
       "properties": [
        {
         "id": "custom.width",
-        "value": 96
+        "value": 78
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "模型"
+      },
+      "properties": [
+       {
+        "id": "custom.minWidth",
+        "value": 50
        }
       ]
      },
@@ -3101,7 +2736,7 @@
      {
       "matcher": {
        "id": "byName",
-       "options": "OOS IC"
+       "options": "IC"
       },
       "properties": [
        {
@@ -3167,7 +2802,7 @@
    "id": 17
   },
   {
-   "type": "status-history",
+   "type": "state-timeline",
    "title": "訓練與研究 Job（每天）",
    "description": "每個 Cloud Run Job 一列、每天一格：青＝當天的執行都成功，紅＝當天有失敗，空白＝當天沒跑。滑鼠停在格子上看當天跑了幾次、共幾分鐘。尚未接資料：每個 Job 每天的成敗要監控 Worker 新增一條 route（資料來源待查），目前畫的是示範資料。",
    "gridPos": {
@@ -3186,7 +2821,7 @@
      "type": "json",
      "parser": "backend",
      "format": "table",
-     "root_selector": "([rows.{ 'time': time, 'job': job, 'cell': cell }])",
+     "root_selector": "([($days := $sort($distinct(rows.time)); $distinct(rows.job).($j := $;\n        $n := $lookup({\"pipeline-v2\":\"夜間 Pipeline\",\"screener-v2\":\"選股篩選\",\"verify-v2\":\"預測驗證\",\"active8-oof-materialize\":\"Active-8 證據產出\",\"dataset-snapshot-export\":\"研究快照匯出\",\"realtime-runtime\":\"盤中即時執行\",\"weekly-backtest-research\":\"每週回測研究\",\"optuna-research-sweep\":\"Optuna 參數搜尋\",\"l4-distribution-refresh\":\"L4 分布更新\",\"s12-structure-batch\":\"S12 結構研究\",\"strategy-mining-research\":\"策略探勘研究\",\"ml-controller-min-0\":\"Controller 縮到 0\",\"ml-controller-min-1\":\"Controller 保溫 1 台\",\"ml-controller-monthly-min-0\":\"月訓 Controller 縮到 0\",\"ml-controller-monthly-min-1\":\"月訓 Controller 保溫 1 台\",\"realtime-runtime-min-0\":\"盤中執行縮到 0\",\"realtime-runtime-min-1\":\"盤中執行保溫 1 台\"}, $j); $days.($d := $; $c := $$.rows[job = $j and time = $d][0].cell; { 'time': $d, 'job': $n ? $n : '其他 Job', 'cell': $c ? $c : 'none|沒跑' })))])",
      "columns": [
       {
        "selector": "time",
@@ -3210,7 +2845,7 @@
       "uid": "grafanacloud-infinity"
      },
      "source": "inline",
-     "data": "{\"rows\":[{\"time\":\"2026-11-12T16:00:00.000Z\",\"job\":\"pipeline-v2\",\"cell\":\"fail|失敗 1／2 次・93 分\"},{\"time\":\"2026-11-12T16:00:00.000Z\",\"job\":\"screener-v2\",\"cell\":\"ok|成功 1 次・9 分\"},{\"time\":\"2026-11-12T16:00:00.000Z\",\"job\":\"verify-v2\",\"cell\":\"ok|成功 1 次・7 分\"},{\"time\":\"2026-11-12T16:00:00.000Z\",\"job\":\"active8-oof-materialize\",\"cell\":\"ok|成功 1 次・18 分\"},{\"time\":\"2026-11-12T16:00:00.000Z\",\"job\":\"dataset-snapshot-export\",\"cell\":\"ok|成功 1 次・4 分\"},{\"time\":\"2026-11-12T16:00:00.000Z\",\"job\":\"realtime-runtime\",\"cell\":\"ok|成功 1 次・265 分\"},{\"time\":\"2026-11-14T16:00:00.000Z\",\"job\":\"weekly-backtest-research\",\"cell\":\"ok|成功 1 次・115 分\"},{\"time\":\"2026-11-15T16:00:00.000Z\",\"job\":\"pipeline-v2\",\"cell\":\"ok|成功 1 次・48 分\"},{\"time\":\"2026-11-15T16:00:00.000Z\",\"job\":\"screener-v2\",\"cell\":\"ok|成功 1 次・11 分\"},{\"time\":\"2026-11-15T16:00:00.000Z\",\"job\":\"verify-v2\",\"cell\":\"ok|成功 1 次・5 分\"},{\"time\":\"2026-11-15T16:00:00.000Z\",\"job\":\"active8-oof-materialize\",\"cell\":\"ok|成功 1 次・20 分\"},{\"time\":\"2026-11-15T16:00:00.000Z\",\"job\":\"dataset-snapshot-export\",\"cell\":\"ok|成功 2 次・10 分\"},{\"time\":\"2026-11-15T16:00:00.000Z\",\"job\":\"realtime-runtime\",\"cell\":\"ok|成功 1 次・267 分\"},{\"time\":\"2026-11-15T16:00:00.000Z\",\"job\":\"optuna-research-sweep\",\"cell\":\"ok|成功 1 次・109 分\"},{\"time\":\"2026-11-16T16:00:00.000Z\",\"job\":\"pipeline-v2\",\"cell\":\"ok|成功 1 次・34 分\"},{\"time\":\"2026-11-16T16:00:00.000Z\",\"job\":\"screener-v2\",\"cell\":\"ok|成功 1 次・10 分\"},{\"time\":\"2026-11-16T16:00:00.000Z\",\"job\":\"verify-v2\",\"cell\":\"ok|成功 1 次・7 分\"},{\"time\":\"2026-11-16T16:00:00.000Z\",\"job\":\"active8-oof-materialize\",\"cell\":\"ok|成功 2 次・38 分\"},{\"time\":\"2026-11-16T16:00:00.000Z\",\"job\":\"dataset-snapshot-export\",\"cell\":\"ok|成功 1 次・5 分\"},{\"time\":\"2026-11-16T16:00:00.000Z\",\"job\":\"realtime-runtime\",\"cell\":\"ok|成功 1 次・266 分\"},{\"time\":\"2026-11-17T16:00:00.000Z\",\"job\":\"pipeline-v2\",\"cell\":\"ok|成功 1 次・44 分\"},{\"time\":\"2026-11-17T16:00:00.000Z\",\"job\":\"screener-v2\",\"cell\":\"ok|成功 1 次・10 分\"},{\"time\":\"2026-11-17T16:00:00.000Z\",\"job\":\"verify-v2\",\"cell\":\"ok|成功 2 次・13 分\"},{\"time\":\"2026-11-17T16:00:00.000Z\",\"job\":\"active8-oof-materialize\",\"cell\":\"ok|成功 1 次・20 分\"},{\"time\":\"2026-11-17T16:00:00.000Z\",\"job\":\"dataset-snapshot-export\",\"cell\":\"ok|成功 1 次・4 分\"},{\"time\":\"2026-11-17T16:00:00.000Z\",\"job\":\"realtime-runtime\",\"cell\":\"ok|成功 1 次・297 分\"},{\"time\":\"2026-11-18T16:00:00.000Z\",\"job\":\"pipeline-v2\",\"cell\":\"ok|成功 1 次・46 分\"},{\"time\":\"2026-11-18T16:00:00.000Z\",\"job\":\"screener-v2\",\"cell\":\"ok|成功 2 次・16 分\"},{\"time\":\"2026-11-18T16:00:00.000Z\",\"job\":\"verify-v2\",\"cell\":\"ok|成功 1 次・7 分\"},{\"time\":\"2026-11-18T16:00:00.000Z\",\"job\":\"active8-oof-materialize\",\"cell\":\"ok|成功 1 次・18 分\"},{\"time\":\"2026-11-18T16:00:00.000Z\",\"job\":\"dataset-snapshot-export\",\"cell\":\"ok|成功 1 次・4 分\"},{\"time\":\"2026-11-18T16:00:00.000Z\",\"job\":\"realtime-runtime\",\"cell\":\"ok|成功 1 次・250 分\"},{\"time\":\"2026-11-18T16:00:00.000Z\",\"job\":\"optuna-research-sweep\",\"cell\":\"ok|成功 1 次・106 分\"},{\"time\":\"2026-11-19T16:00:00.000Z\",\"job\":\"pipeline-v2\",\"cell\":\"ok|成功 2 次・97 分\"},{\"time\":\"2026-11-19T16:00:00.000Z\",\"job\":\"screener-v2\",\"cell\":\"fail|失敗 1／2 次・17 分\"},{\"time\":\"2026-11-19T16:00:00.000Z\",\"job\":\"verify-v2\",\"cell\":\"ok|成功 1 次・5 分\"},{\"time\":\"2026-11-19T16:00:00.000Z\",\"job\":\"active8-oof-materialize\",\"cell\":\"ok|成功 1 次・16 分\"},{\"time\":\"2026-11-19T16:00:00.000Z\",\"job\":\"dataset-snapshot-export\",\"cell\":\"ok|成功 1 次・4 分\"},{\"time\":\"2026-11-19T16:00:00.000Z\",\"job\":\"realtime-runtime\",\"cell\":\"ok|成功 1 次・235 分\"},{\"time\":\"2026-11-21T16:00:00.000Z\",\"job\":\"weekly-backtest-research\",\"cell\":\"ok|成功 1 次・151 分\"},{\"time\":\"2026-11-22T16:00:00.000Z\",\"job\":\"pipeline-v2\",\"cell\":\"ok|成功 1 次・50 分\"},{\"time\":\"2026-11-22T16:00:00.000Z\",\"job\":\"screener-v2\",\"cell\":\"ok|成功 1 次・10 分\"},{\"time\":\"2026-11-22T16:00:00.000Z\",\"job\":\"verify-v2\",\"cell\":\"ok|成功 1 次・7 分\"},{\"time\":\"2026-11-22T16:00:00.000Z\",\"job\":\"active8-oof-materialize\",\"cell\":\"ok|成功 1 次・19 分\"},{\"time\":\"2026-11-22T16:00:00.000Z\",\"job\":\"dataset-snapshot-export\",\"cell\":\"ok|成功 2 次・9 分\"},{\"time\":\"2026-11-22T16:00:00.000Z\",\"job\":\"realtime-runtime\",\"cell\":\"ok|成功 1 次・256 分\"},{\"time\":\"2026-11-22T16:00:00.000Z\",\"job\":\"optuna-research-sweep\",\"cell\":\"ok|成功 1 次・85 分\"},{\"time\":\"2026-11-23T16:00:00.000Z\",\"job\":\"pipeline-v2\",\"cell\":\"ok|成功 1 次・36 分\"},{\"time\":\"2026-11-23T16:00:00.000Z\",\"job\":\"screener-v2\",\"cell\":\"ok|成功 1 次・10 分\"},{\"time\":\"2026-11-23T16:00:00.000Z\",\"job\":\"verify-v2\",\"cell\":\"ok|成功 1 次・7 分\"},{\"time\":\"2026-11-23T16:00:00.000Z\",\"job\":\"active8-oof-materialize\",\"cell\":\"ok|成功 2 次・35 分\"},{\"time\":\"2026-11-23T16:00:00.000Z\",\"job\":\"dataset-snapshot-export\",\"cell\":\"ok|成功 1 次・4 分\"},{\"time\":\"2026-11-23T16:00:00.000Z\",\"job\":\"realtime-runtime\",\"cell\":\"ok|成功 1 次・244 分\"},{\"time\":\"2026-11-24T16:00:00.000Z\",\"job\":\"pipeline-v2\",\"cell\":\"ok|成功 1 次・38 分\"},{\"time\":\"2026-11-24T16:00:00.000Z\",\"job\":\"screener-v2\",\"cell\":\"ok|成功 1 次・7 分\"},{\"time\":\"2026-11-24T16:00:00.000Z\",\"job\":\"verify-v2\",\"cell\":\"ok|成功 2 次・10 分\"},{\"time\":\"2026-11-24T16:00:00.000Z\",\"job\":\"active8-oof-materialize\",\"cell\":\"ok|成功 1 次・18 分\"},{\"time\":\"2026-11-24T16:00:00.000Z\",\"job\":\"dataset-snapshot-export\",\"cell\":\"ok|成功 1 次・4 分\"},{\"time\":\"2026-11-24T16:00:00.000Z\",\"job\":\"realtime-runtime\",\"cell\":\"ok|成功 1 次・269 分\"},{\"time\":\"2026-11-25T16:00:00.000Z\",\"job\":\"pipeline-v2\",\"cell\":\"ok|成功 1 次・40 分\"},{\"time\":\"2026-11-25T16:00:00.000Z\",\"job\":\"screener-v2\",\"cell\":\"ok|成功 2 次・20 分\"},{\"time\":\"2026-11-25T16:00:00.000Z\",\"job\":\"verify-v2\",\"cell\":\"ok|成功 1 次・6 分\"},{\"time\":\"2026-11-25T16:00:00.000Z\",\"job\":\"active8-oof-materialize\",\"cell\":\"ok|成功 1 次・15 分\"},{\"time\":\"2026-11-25T16:00:00.000Z\",\"job\":\"dataset-snapshot-export\",\"cell\":\"ok|成功 1 次・4 分\"},{\"time\":\"2026-11-25T16:00:00.000Z\",\"job\":\"realtime-runtime\",\"cell\":\"ok|成功 1 次・299 分\"},{\"time\":\"2026-11-25T16:00:00.000Z\",\"job\":\"optuna-research-sweep\",\"cell\":\"ok|成功 1 次・111 分\"}]}"
+     "data": "{\"rows\":[{\"time\":\"2026-11-14T16:00:00.000Z\",\"job\":\"weekly-backtest-research\",\"cell\":\"fail|失敗 1／2 次・290 分\"},{\"time\":\"2026-11-15T16:00:00.000Z\",\"job\":\"pipeline-v2\",\"cell\":\"ok|成功 1 次・46 分\"},{\"time\":\"2026-11-15T16:00:00.000Z\",\"job\":\"screener-v2\",\"cell\":\"ok|成功 1 次・9 分\"},{\"time\":\"2026-11-15T16:00:00.000Z\",\"job\":\"verify-v2\",\"cell\":\"ok|成功 1 次・6 分\"},{\"time\":\"2026-11-15T16:00:00.000Z\",\"job\":\"active8-oof-materialize\",\"cell\":\"ok|成功 1 次・18 分\"},{\"time\":\"2026-11-15T16:00:00.000Z\",\"job\":\"dataset-snapshot-export\",\"cell\":\"ok|成功 1 次・3 分\"},{\"time\":\"2026-11-15T16:00:00.000Z\",\"job\":\"realtime-runtime\",\"cell\":\"ok|成功 1 次・306 分\"},{\"time\":\"2026-11-15T16:00:00.000Z\",\"job\":\"optuna-research-sweep\",\"cell\":\"ok|成功 2 次・227 分\"},{\"time\":\"2026-11-16T16:00:00.000Z\",\"job\":\"pipeline-v2\",\"cell\":\"ok|成功 1 次・36 分\"},{\"time\":\"2026-11-16T16:00:00.000Z\",\"job\":\"screener-v2\",\"cell\":\"ok|成功 1 次・10 分\"},{\"time\":\"2026-11-16T16:00:00.000Z\",\"job\":\"verify-v2\",\"cell\":\"ok|成功 1 次・7 分\"},{\"time\":\"2026-11-16T16:00:00.000Z\",\"job\":\"active8-oof-materialize\",\"cell\":\"fail|失敗 1／2 次・36 分\"},{\"time\":\"2026-11-16T16:00:00.000Z\",\"job\":\"dataset-snapshot-export\",\"cell\":\"ok|成功 1 次・5 分\"},{\"time\":\"2026-11-16T16:00:00.000Z\",\"job\":\"realtime-runtime\",\"cell\":\"ok|成功 2 次・437 分\"},{\"time\":\"2026-11-17T16:00:00.000Z\",\"job\":\"pipeline-v2\",\"cell\":\"ok|成功 1 次・45 分\"},{\"time\":\"2026-11-17T16:00:00.000Z\",\"job\":\"screener-v2\",\"cell\":\"ok|成功 1 次・10 分\"},{\"time\":\"2026-11-17T16:00:00.000Z\",\"job\":\"verify-v2\",\"cell\":\"ok|成功 1 次・6 分\"},{\"time\":\"2026-11-17T16:00:00.000Z\",\"job\":\"active8-oof-materialize\",\"cell\":\"ok|成功 1 次・20 分\"},{\"time\":\"2026-11-17T16:00:00.000Z\",\"job\":\"dataset-snapshot-export\",\"cell\":\"ok|成功 2 次・8 分\"},{\"time\":\"2026-11-17T16:00:00.000Z\",\"job\":\"realtime-runtime\",\"cell\":\"ok|成功 1 次・283 分\"},{\"time\":\"2026-11-18T16:00:00.000Z\",\"job\":\"pipeline-v2\",\"cell\":\"ok|成功 1 次・46 分\"},{\"time\":\"2026-11-18T16:00:00.000Z\",\"job\":\"screener-v2\",\"cell\":\"ok|成功 1 次・10 分\"},{\"time\":\"2026-11-18T16:00:00.000Z\",\"job\":\"verify-v2\",\"cell\":\"ok|成功 1 次・7 分\"},{\"time\":\"2026-11-18T16:00:00.000Z\",\"job\":\"active8-oof-materialize\",\"cell\":\"ok|成功 2 次・34 分\"},{\"time\":\"2026-11-18T16:00:00.000Z\",\"job\":\"dataset-snapshot-export\",\"cell\":\"ok|成功 1 次・4 分\"},{\"time\":\"2026-11-18T16:00:00.000Z\",\"job\":\"realtime-runtime\",\"cell\":\"ok|成功 1 次・295 分\"},{\"time\":\"2026-11-18T16:00:00.000Z\",\"job\":\"optuna-research-sweep\",\"cell\":\"fail|失敗 1／2 次・164 分\"},{\"time\":\"2026-11-19T16:00:00.000Z\",\"job\":\"pipeline-v2\",\"cell\":\"ok|成功 1 次・48 分\"},{\"time\":\"2026-11-19T16:00:00.000Z\",\"job\":\"screener-v2\",\"cell\":\"ok|成功 1 次・9 分\"},{\"time\":\"2026-11-19T16:00:00.000Z\",\"job\":\"verify-v2\",\"cell\":\"ok|成功 2 次・11 分\"},{\"time\":\"2026-11-19T16:00:00.000Z\",\"job\":\"active8-oof-materialize\",\"cell\":\"ok|成功 1 次・17 分\"},{\"time\":\"2026-11-19T16:00:00.000Z\",\"job\":\"dataset-snapshot-export\",\"cell\":\"ok|成功 1 次・4 分\"},{\"time\":\"2026-11-19T16:00:00.000Z\",\"job\":\"realtime-runtime\",\"cell\":\"ok|成功 1 次・310 分\"},{\"time\":\"2026-11-21T16:00:00.000Z\",\"job\":\"weekly-backtest-research\",\"cell\":\"ok|成功 2 次・263 分\"},{\"time\":\"2026-11-22T16:00:00.000Z\",\"job\":\"pipeline-v2\",\"cell\":\"ok|成功 1 次・34 分\"},{\"time\":\"2026-11-22T16:00:00.000Z\",\"job\":\"screener-v2\",\"cell\":\"ok|成功 1 次・8 分\"},{\"time\":\"2026-11-22T16:00:00.000Z\",\"job\":\"verify-v2\",\"cell\":\"ok|成功 1 次・7 分\"},{\"time\":\"2026-11-22T16:00:00.000Z\",\"job\":\"active8-oof-materialize\",\"cell\":\"ok|成功 1 次・16 分\"},{\"time\":\"2026-11-22T16:00:00.000Z\",\"job\":\"dataset-snapshot-export\",\"cell\":\"ok|成功 1 次・4 分\"},{\"time\":\"2026-11-22T16:00:00.000Z\",\"job\":\"realtime-runtime\",\"cell\":\"ok|成功 1 次・320 分\"},{\"time\":\"2026-11-22T16:00:00.000Z\",\"job\":\"optuna-research-sweep\",\"cell\":\"ok|成功 2 次・209 分\"},{\"time\":\"2026-11-23T16:00:00.000Z\",\"job\":\"pipeline-v2\",\"cell\":\"ok|成功 1 次・50 分\"},{\"time\":\"2026-11-23T16:00:00.000Z\",\"job\":\"screener-v2\",\"cell\":\"ok|成功 1 次・9 分\"},{\"time\":\"2026-11-23T16:00:00.000Z\",\"job\":\"verify-v2\",\"cell\":\"ok|成功 1 次・7 分\"},{\"time\":\"2026-11-23T16:00:00.000Z\",\"job\":\"active8-oof-materialize\",\"cell\":\"ok|成功 1 次・17 分\"},{\"time\":\"2026-11-23T16:00:00.000Z\",\"job\":\"dataset-snapshot-export\",\"cell\":\"fail|失敗 1／2 次・7 分\"},{\"time\":\"2026-11-23T16:00:00.000Z\",\"job\":\"realtime-runtime\",\"cell\":\"ok|成功 2 次・468 分\"},{\"time\":\"2026-11-24T16:00:00.000Z\",\"job\":\"pipeline-v2\",\"cell\":\"ok|成功 1 次・49 分\"},{\"time\":\"2026-11-24T16:00:00.000Z\",\"job\":\"screener-v2\",\"cell\":\"ok|成功 1 次・10 分\"},{\"time\":\"2026-11-24T16:00:00.000Z\",\"job\":\"verify-v2\",\"cell\":\"ok|成功 1 次・6 分\"},{\"time\":\"2026-11-24T16:00:00.000Z\",\"job\":\"active8-oof-materialize\",\"cell\":\"ok|成功 1 次・19 分\"},{\"time\":\"2026-11-24T16:00:00.000Z\",\"job\":\"dataset-snapshot-export\",\"cell\":\"ok|成功 2 次・7 分\"},{\"time\":\"2026-11-24T16:00:00.000Z\",\"job\":\"realtime-runtime\",\"cell\":\"ok|成功 1 次・245 分\"},{\"time\":\"2026-11-25T16:00:00.000Z\",\"job\":\"pipeline-v2\",\"cell\":\"ok|成功 1 次・35 分\"},{\"time\":\"2026-11-25T16:00:00.000Z\",\"job\":\"screener-v2\",\"cell\":\"ok|成功 1 次・7 分\"},{\"time\":\"2026-11-25T16:00:00.000Z\",\"job\":\"verify-v2\",\"cell\":\"ok|成功 1 次・6 分\"},{\"time\":\"2026-11-25T16:00:00.000Z\",\"job\":\"active8-oof-materialize\",\"cell\":\"ok|成功 2 次・38 分\"},{\"time\":\"2026-11-25T16:00:00.000Z\",\"job\":\"dataset-snapshot-export\",\"cell\":\"ok|成功 1 次・4 分\"},{\"time\":\"2026-11-25T16:00:00.000Z\",\"job\":\"realtime-runtime\",\"cell\":\"ok|成功 1 次・255 分\"},{\"time\":\"2026-11-25T16:00:00.000Z\",\"job\":\"optuna-research-sweep\",\"cell\":\"ok|成功 1 次・108 分\"},{\"time\":\"2026-11-26T16:00:00.000Z\",\"job\":\"pipeline-v2\",\"cell\":\"ok|成功 1 次・44 分\"},{\"time\":\"2026-11-26T16:00:00.000Z\",\"job\":\"screener-v2\",\"cell\":\"ok|成功 1 次・7 分\"},{\"time\":\"2026-11-26T16:00:00.000Z\",\"job\":\"verify-v2\",\"cell\":\"ok|成功 2 次・13 分\"},{\"time\":\"2026-11-26T16:00:00.000Z\",\"job\":\"active8-oof-materialize\",\"cell\":\"ok|成功 1 次・20 分\"},{\"time\":\"2026-11-26T16:00:00.000Z\",\"job\":\"dataset-snapshot-export\",\"cell\":\"ok|成功 1 次・5 分\"},{\"time\":\"2026-11-26T16:00:00.000Z\",\"job\":\"realtime-runtime\",\"cell\":\"ok|成功 1 次・251 分\"}]}"
     }
    ],
    "timeFrom": "14d",
@@ -3240,7 +2875,7 @@
     },
     "showValue": "never",
     "rowHeight": 0.8,
-    "colWidth": 0.85
+    "mergeValues": false
    },
    "fieldConfig": {
     "defaults": {
@@ -3266,6 +2901,17 @@
          "text": "$1",
          "color": "#f2495c",
          "index": 1
+        }
+       }
+      },
+      {
+       "type": "regex",
+       "options": {
+        "pattern": "^none\\|(.*)$",
+        "result": {
+         "text": "$1",
+         "color": "#2B2D33",
+         "index": 2
         }
        }
       }
@@ -3311,7 +2957,7 @@
      "type": "json",
      "parser": "backend",
      "format": "table",
-     "root_selector": "([$sort(rows, function($a, $b) { $a.business_date > $b.business_date }).($r := $; ['trading:config', 'trading:risk_config'].($k := $string($);\n        { 'time': $fromMillis($toMillis($r.business_date & 'T00:00:00.000Z') - 28800000), 'key': $k, 'status': $lookup($r, $k) }))])",
+     "root_selector": "([$sort(rows, function($a, $b) { $a.business_date > $b.business_date }).($r := $; ['trading:config', 'trading:risk_config'].($k := $string($);\n        { 'time': $fromMillis($toMillis($r.business_date & 'T00:00:00.000Z') - 28800000), 'key': $lookup({\"trading:config\":\"交易基準設定\",\"trading:risk_config\":\"風控設定\"}, $k), 'status': $lookup($r, $k) }))])",
      "columns": [
       {
        "selector": "time",
@@ -3425,7 +3071,7 @@
   {
    "type": "gauge",
    "title": "證據累積（距 20 日門檻）",
-   "description": "各影子機制已累積的證據日數，滿 20 日轉青（可以下判斷）。Execution parity 要有真實下單才會開始累積。RFS allocator 的證據日數、被擋的收據與滿 20 日的日數要等 rfs_sparse_comparisons_v1(policy_identity) 加上 D1 索引後 Worker 才提供（目前固定回 0／null），所以這一格先停在 0。",
+   "description": "各影子機制已累積的證據日數，滿 20 日轉青（可以下判斷）。影子 A＝Shadow A；RFS 配置＝RFS allocator；執行一致＝Execution parity，要有真實下單才會開始累積。RFS allocator 的證據日數、被擋的收據與滿 20 日的日數要等 RFS 比較表加上 D1 索引後 Worker 才提供（目前固定回 0／null），所以這一格先停在 0。",
    "gridPos": {
     "x": 12,
     "y": 25,
@@ -3442,7 +3088,7 @@
      "type": "json",
      "parser": "backend",
      "format": "table",
-     "root_selector": "([rows.{ 'name': $lookup({\"shadow_a\":\"Shadow A\",\"rfs_allocator\":\"RFS allocator\",\"execution_parity\":\"Execution parity\"}, mechanism), 'days': distinct_dates }])",
+     "root_selector": "([rows.{ 'name': $lookup({\"shadow_a\":\"影子 A\",\"rfs_allocator\":\"RFS 配置\",\"execution_parity\":\"執行一致\"}, mechanism), 'days': distinct_dates }])",
      "columns": [
       {
        "selector": "name",
@@ -3530,7 +3176,7 @@
   {
    "type": "state-timeline",
    "title": "模型服務狀態（14 日）",
-   "description": "上線 roster 的每個模型一列、每個交易日一段：青＝當天有預測（predictions 有該模型該日的列）、藍＝當天換了 champion 版本（model_champion_history）、紅＝那天的夜間流程已結束卻沒有預測、灰＝今晚的流程還沒跑完。滑鼠停在色帶上看版本。",
+   "description": "上線 roster 的每個模型一列、每個交易日一段：青＝當天有預測（predictions 有該模型該日的列）、藍＝當天換了 champion 版本、紅＝那天的夜間流程已結束卻沒有預測、灰＝今晚的流程還沒跑完。滑鼠停在色帶上看版本。",
    "gridPos": {
     "x": 0,
     "y": 29,
@@ -3571,7 +3217,7 @@
       "uid": "grafanacloud-infinity"
      },
      "source": "inline",
-     "data": "{\"generated_at\":\"2026-11-26T13:52:04.654Z\",\"rows_read\":0,\"queries\":0,\"cache_ttl_s\":900,\"today\":\"2026-11-26\",\"since\":\"2026-11-13\",\"days\":14,\"models\":[\"LightGBM\",\"ExtraTrees\",\"TabM\",\"GNN\"],\"definitions\":{},\"summary\":{\"model_count\":4,\"trading_days\":10,\"latest_finished_date\":\"2026-11-25\",\"missing_cells\":1,\"latest_missing_models\":[]},\"rows\":[{\"date\":\"2026-11-13\",\"model_name\":\"LightGBM\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-13\",\"model_name\":\"ExtraTrees\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-13\",\"model_name\":\"TabM\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-13\",\"model_name\":\"GNN\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-16\",\"model_name\":\"LightGBM\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-16\",\"model_name\":\"ExtraTrees\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-16\",\"model_name\":\"TabM\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-16\",\"model_name\":\"GNN\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-17\",\"model_name\":\"LightGBM\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-17\",\"model_name\":\"ExtraTrees\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-17\",\"model_name\":\"TabM\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-17\",\"model_name\":\"GNN\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-18\",\"model_name\":\"LightGBM\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-18\",\"model_name\":\"ExtraTrees\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-18\",\"model_name\":\"TabM\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-18\",\"model_name\":\"GNN\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-19\",\"model_name\":\"LightGBM\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-19\",\"model_name\":\"ExtraTrees\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-19\",\"model_name\":\"TabM\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-19\",\"model_name\":\"GNN\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-20\",\"model_name\":\"LightGBM\",\"state\":\"switched\",\"version\":\"v20261109102955\",\"cell\":\"switched|v20261109102955\"},{\"date\":\"2026-11-20\",\"model_name\":\"ExtraTrees\",\"state\":\"switched\",\"version\":\"v20261109102955\",\"cell\":\"switched|v20261109102955\"},{\"date\":\"2026-11-20\",\"model_name\":\"TabM\",\"state\":\"missing\",\"version\":\"v20261109102955\",\"cell\":\"missing|v20261109102955\"},{\"date\":\"2026-11-20\",\"model_name\":\"GNN\",\"state\":\"switched\",\"version\":\"v20261109102955\",\"cell\":\"switched|v20261109102955\"},{\"date\":\"2026-11-23\",\"model_name\":\"LightGBM\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-23\",\"model_name\":\"ExtraTrees\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-23\",\"model_name\":\"TabM\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-23\",\"model_name\":\"GNN\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-24\",\"model_name\":\"LightGBM\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-24\",\"model_name\":\"ExtraTrees\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-24\",\"model_name\":\"TabM\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-24\",\"model_name\":\"GNN\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-25\",\"model_name\":\"LightGBM\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-25\",\"model_name\":\"ExtraTrees\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-25\",\"model_name\":\"TabM\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-25\",\"model_name\":\"GNN\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-26\",\"model_name\":\"LightGBM\",\"state\":\"pending\",\"version\":\"v20261109102955\",\"cell\":\"pending|v20261109102955\"},{\"date\":\"2026-11-26\",\"model_name\":\"ExtraTrees\",\"state\":\"pending\",\"version\":\"v20261109102955\",\"cell\":\"pending|v20261109102955\"},{\"date\":\"2026-11-26\",\"model_name\":\"TabM\",\"state\":\"pending\",\"version\":\"v20261109102955\",\"cell\":\"pending|v20261109102955\"},{\"date\":\"2026-11-26\",\"model_name\":\"GNN\",\"state\":\"pending\",\"version\":\"v20261109102955\",\"cell\":\"pending|v20261109102955\"}]}"
+     "data": "{\"generated_at\":\"2026-11-27T22:21:07.484Z\",\"rows_read\":0,\"queries\":0,\"cache_ttl_s\":900,\"today\":\"2026-11-28\",\"since\":\"2026-11-15\",\"days\":14,\"models\":[\"LightGBM\",\"ExtraTrees\",\"TabM\",\"GNN\"],\"definitions\":{},\"summary\":{\"model_count\":4,\"trading_days\":10,\"latest_finished_date\":\"2026-11-26\",\"missing_cells\":1,\"latest_missing_models\":[]},\"rows\":[{\"date\":\"2026-11-16\",\"model_name\":\"LightGBM\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-16\",\"model_name\":\"ExtraTrees\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-16\",\"model_name\":\"TabM\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-16\",\"model_name\":\"GNN\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-17\",\"model_name\":\"LightGBM\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-17\",\"model_name\":\"ExtraTrees\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-17\",\"model_name\":\"TabM\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-17\",\"model_name\":\"GNN\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-18\",\"model_name\":\"LightGBM\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-18\",\"model_name\":\"ExtraTrees\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-18\",\"model_name\":\"TabM\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-18\",\"model_name\":\"GNN\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-19\",\"model_name\":\"LightGBM\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-19\",\"model_name\":\"ExtraTrees\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-19\",\"model_name\":\"TabM\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-19\",\"model_name\":\"GNN\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-20\",\"model_name\":\"LightGBM\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-20\",\"model_name\":\"ExtraTrees\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-20\",\"model_name\":\"TabM\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-20\",\"model_name\":\"GNN\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-23\",\"model_name\":\"LightGBM\",\"state\":\"switched\",\"version\":\"v20261109102955\",\"cell\":\"switched|v20261109102955\"},{\"date\":\"2026-11-23\",\"model_name\":\"ExtraTrees\",\"state\":\"switched\",\"version\":\"v20261109102955\",\"cell\":\"switched|v20261109102955\"},{\"date\":\"2026-11-23\",\"model_name\":\"TabM\",\"state\":\"missing\",\"version\":\"v20261109102955\",\"cell\":\"missing|v20261109102955\"},{\"date\":\"2026-11-23\",\"model_name\":\"GNN\",\"state\":\"switched\",\"version\":\"v20261109102955\",\"cell\":\"switched|v20261109102955\"},{\"date\":\"2026-11-24\",\"model_name\":\"LightGBM\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-24\",\"model_name\":\"ExtraTrees\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-24\",\"model_name\":\"TabM\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-24\",\"model_name\":\"GNN\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-25\",\"model_name\":\"LightGBM\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-25\",\"model_name\":\"ExtraTrees\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-25\",\"model_name\":\"TabM\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-25\",\"model_name\":\"GNN\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-26\",\"model_name\":\"LightGBM\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-26\",\"model_name\":\"ExtraTrees\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-26\",\"model_name\":\"TabM\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-26\",\"model_name\":\"GNN\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-27\",\"model_name\":\"LightGBM\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-27\",\"model_name\":\"ExtraTrees\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-27\",\"model_name\":\"TabM\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-27\",\"model_name\":\"GNN\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"}]}"
     }
    ],
    "timeFrom": "14d",
@@ -3699,7 +3345,7 @@
   {
    "type": "table",
    "title": "最近一次月訓結果",
-   "description": "最近一次月訓（model_artifact_registry 近 62 天最新的 oof_full_fit_release run）每個模型的離線閘門：閘門 青＝通過、琥珀＝弱通過、紅＝未過；OOS IC 照該模型自己的門檻上色；未過的閘門＝被拒原因（offline_gate_failed_gates）；狀態＝registry 狀態；上線＝這個 run 是不是目前 ensemble 的 run。點模型名稱看訓練 run 與版本。",
+   "description": "最近一次月訓（模型登錄表近 62 天最新的一次正式月訓）每個模型的離線閘門：閘門 青＝通過、琥珀＝弱通過、紅＝未過；IC＝OOS IC，照該模型自己的門檻上色；上線＝這個 run 是不是目前 ensemble 的 run。點模型名稱看未過的閘門（被拒原因）、registry 狀態、訓練資料日與版本。",
    "gridPos": {
     "x": 14,
     "y": 29,
@@ -3716,7 +3362,7 @@
      "type": "json",
      "parser": "backend",
      "format": "table",
-     "root_selector": "([($run := latest_monthly_run; $run.models.{ 'model': model_name, 'gate': gate_decision, 'ic': ($ic := oos_ic; $lo := min_oos_ic_mean; $weak := weak_oos_ic_mean;\n  $tier := $type($ic) != 'number' ? '' : $type($lo) = 'number' and $type($weak) = 'number' ? ($ic <= $lo ? 'bad' : $ic < $weak ? 'warn' : 'ok') : 'none';\n  $tier ? $tier & '|' & $string($round($ic, 3)) : null),\n      'failed': $type(failed_gates) = 'array' and $count(failed_gates) > 0 ? $join(failed_gates, '、') : '—', 'state': state, 'live': $run.is_live ? '上線中' : '未上線',\n      'run': '訓練 ' & $run.training_run_id & '（' & $run.source_run_date & '）', 'version': '版本 ' & version })])",
+     "root_selector": "([($run := latest_monthly_run; $run.models.{ 'model': model_name, 'gate': gate_decision, 'ic': ($ic := oos_ic; $lo := min_oos_ic_mean; $weak := weak_oos_ic_mean;\n  $tier := $type($ic) != 'number' ? '' : $type($lo) = 'number' and $type($weak) = 'number' ? ($ic <= $lo ? 'bad' : $ic < $weak ? 'warn' : 'ok') : 'none';\n  $tier ? $tier & '|' & $string($round($ic, 3)) : null),\n      'failed': $type(failed_gates) = 'array' and $count(failed_gates) > 0 ? $join([failed_gates.($w := $lookup({\"artifact_registration_failed\":\"註冊失敗\",\"model_cpcv_failed\":\"CPCV 未過\",\"oos_ic_below_policy_floor\":\"OOS IC 低於門檻\"}, $); $w ? $w : '其他閘門')], '、') : '—',\n      'state': ($w := $lookup({\"production\":\"上線\",\"approved\":\"已核准\",\"archived\":\"已封存\",\"shadowing\":\"影子中\",\"approval_required\":\"待核准\",\"rejected\":\"被拒\",\"offline_failed\":\"離線未過\",\"registration_failed\":\"註冊失敗\"}, state); $w ? $w : state ? state : '—'), 'live': $run.is_live ? '上線中' : '未上線',\n      'run': $run.source_run_date ? '訓練資料 ' & $run.source_run_date : '訓練資料 —', 'version': '版本 ' & version })])",
      "columns": [
       {
        "selector": "model",
@@ -3730,7 +3376,7 @@
       },
       {
        "selector": "ic",
-       "text": "OOS IC",
+       "text": "IC",
        "type": "string"
       },
       {
@@ -3781,7 +3427,7 @@
       "indexByName": {
        "模型": 0,
        "閘門": 1,
-       "OOS IC": 2,
+       "IC": 2,
        "未過的閘門": 3,
        "狀態": 4,
        "上線": 5,
@@ -3827,19 +3473,19 @@
       "properties": [
        {
         "id": "custom.width",
-        "value": 64
+        "value": 70
        }
       ]
      },
      {
       "matcher": {
        "id": "byName",
-       "options": "OOS IC"
+       "options": "IC"
       },
       "properties": [
        {
         "id": "custom.width",
-        "value": 72
+        "value": 64
        }
       ]
      },
@@ -3851,7 +3497,43 @@
       "properties": [
        {
         "id": "custom.width",
-        "value": 64
+        "value": 78
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "模型"
+      },
+      "properties": [
+       {
+        "id": "custom.minWidth",
+        "value": 50
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "未過的閘門"
+      },
+      "properties": [
+       {
+        "id": "custom.hidden",
+        "value": true
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "狀態"
+      },
+      "properties": [
+       {
+        "id": "custom.hidden",
+        "value": true
        }
       ]
      },
@@ -3888,6 +3570,16 @@
        {
         "id": "links",
         "value": [
+         {
+          "title": "${__data.fields[\"未過的閘門\"]}",
+          "url": "/d/${__dashboard.uid}?${__url_time_range}",
+          "targetBlank": false
+         },
+         {
+          "title": "${__data.fields[\"狀態\"]}",
+          "url": "/d/${__dashboard.uid}?${__url_time_range}",
+          "targetBlank": false
+         },
          {
           "title": "${__data.fields[\"訓練\"]}",
           "url": "/d/${__dashboard.uid}?${__url_time_range}",
@@ -3955,7 +3647,7 @@
      {
       "matcher": {
        "id": "byName",
-       "options": "OOS IC"
+       "options": "IC"
       },
       "properties": [
        {

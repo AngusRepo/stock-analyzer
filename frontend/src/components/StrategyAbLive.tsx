@@ -26,7 +26,7 @@ export default function StrategyAbLive({ data, date }: { data?: PairedNavShadowR
     <h2 className="text-lg font-semibold text-slate-100">A 主方案 vs B 挑戰方案 · 每日完整鏈路</h2>
     <p className="mt-2 text-sm leading-6 text-slate-300">A：價格 TimeXer＋三頭。B：外生特徵 TimeXer＋三頭＋EV 殘差 MLP。兩邊各自持倉、現金與 OPB，固定八組 ML；以下讀取每日配對帳本。</p>
     <p className="mt-2 text-xs leading-5 text-slate-400">A 為指定 Paper 主方案，以明確試驗資格啟用；NAV 持續審查績效。B 與 A 使用同起點的配對模擬帳本比較，不自動切換策略。</p>
-    {groups.length > 1 && <label className="mt-3 block text-sm">比較版本 <select className="ml-2 rounded bg-slate-900 p-2" value={selected} onChange={e => setExperiment(e.target.value)}>{groups.map(id => <option key={id} value={id}>{id.slice(0, 12)}</option>)}</select></label>}
+    {groups.length > 1 && <label className="mt-3 block text-sm">比較版本 <select className="ml-2 rounded bg-slate-900 p-2" value={selected} onChange={e => setExperiment(e.target.value)}>{groups.map(id => <option key={id} value={id}>{id}</option>)}</select></label>}
     {!data || data.status === 'unavailable' ? <p role="status" className="mt-4 text-amber-200">每日來源尚未取得或驗證失敗。</p>
       : (!primaryPair && as.length !== 1) || bs.length !== 1 ? <p role="status" className="mt-4 text-slate-400">尚未形成同一實驗的 A/B 完整帳本。下方歷史研究不會填入每日績效。</p>
         : (!primaryPair && a.isError) || b.isError ? <p role="alert" className="mt-4 text-amber-200">A/B 帳本讀取失敗，請重新整理。</p>

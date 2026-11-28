@@ -103,7 +103,11 @@
 .simroom .legend span { display: inline-flex; align-items: center; gap: 4px; }
 .simroom .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; }
 .simroom .allocbar { display: flex; height: 20px; border-radius: 5px; overflow: hidden; margin: 0 0 8px; font-size: 11px; }
-.simroom .allocbar div { display: flex; align-items: center; justify-content: center; white-space: nowrap; overflow: hidden; color: #fff; border-right: 1px solid #090a0d; }
+.simroom .allocbar div { border-right: 1px solid #090a0d; }
+.simroom .alloclegend { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 6px 8px 8px; padding: 0; list-style: none; font-size: 11px; color: var(--sr-sub); }
+.simroom .alloclegend li { display: inline-flex; align-items: center; gap: 4px; overflow-wrap: anywhere; }
+.simroom .alloclegend i { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+.simroom .sr-note { margin: 6px 10px 8px; font-size: 11px; line-height: 1.5; color: var(--sr-sub); }
 .simroom .sr-up { color: var(--up); } .simroom .sr-down { color: var(--down); }
 
 @media (max-width: 1420px) { .simroom .sr-main { grid-template-columns: minmax(0, 1fr); } }

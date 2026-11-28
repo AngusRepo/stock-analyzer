@@ -1121,12 +1121,12 @@ function summarizeLearnedPolicy(policy: Record<string, unknown>) {
   const risk = asRecord(policy.riskOverlay)
   const scoring = asRecord(policy.scoring)
   const parts = [
-    bull.trend_following != null ? `bull trend=${fmtNumber(bull.trend_following, 2)}` : null,
-    bull.breakout_volatility_expansion != null ? `breakout=${fmtNumber(bull.breakout_volatility_expansion, 2)}` : null,
-    risk.highVolThreshold != null ? `highVol=${fmtNumber(risk.highVolThreshold, 3)}` : null,
-    scoring.buyThreshold != null ? `buy=${fmtNumber(scoring.buyThreshold, 2)}` : null,
+    bull.trend_following != null ? `多頭時趨勢追蹤權重 ${fmtNumber(bull.trend_following, 2)}` : null,
+    bull.breakout_volatility_expansion != null ? `突破量能擴張權重 ${fmtNumber(bull.breakout_volatility_expansion, 2)}` : null,
+    risk.highVolThreshold != null ? `高波動門檻 ${fmtNumber(risk.highVolThreshold, 3)}` : null,
+    scoring.buyThreshold != null ? `買進分數門檻 ${fmtNumber(scoring.buyThreshold, 2)}` : null,
   ].filter(Boolean)
-  return parts.length ? parts.join(' / ') : 'learned params not exposed'
+  return parts.length ? parts.join('、') : '候選未提供參數'
 }
 
 function EvidenceClockPanel({
@@ -1381,9 +1381,9 @@ function AdaptiveMetaPanel({
   ]
   const gaCandidateSummary = (
     <>
-      <div>candidate: {plainCode(gaEvidence.best_candidate_id ?? 'best GA policy')}</div>
-      <div>learned policy: {summarizeLearnedPolicy(learnedPolicy)}</div>
-      <div>requested: {pendingApprovalLevel || (canRequestNextLevel ? `${nextLevel} ready for approval` : 'none')}</div>
+      <div>候選：{plainCode(gaEvidence.best_candidate_id ?? '最佳 GA 政策')}</div>
+      <div>學到的參數：{summarizeLearnedPolicy(learnedPolicy)}</div>
+      <div>已申請：{pendingApprovalLevel || (canRequestNextLevel ? `${nextLevel} 可申請核准` : '無')}</div>
     </>
   )
   const gaCurrentSummary = (

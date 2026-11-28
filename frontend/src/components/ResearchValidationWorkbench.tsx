@@ -80,7 +80,7 @@ export default function ResearchValidationWorkbench() {
               <tbody>{trials.map(t => {
                 const neighbor = robust?.rows?.find((r: any) => r.trial_id === t.trial_id)
                 return <tr key={t.trial_id} className="border-t border-slate-800 text-slate-300">
-                  <td data-label="Trial / 狀態" className="p-2 align-top"><div>{t.trial_id}</div><div className="text-muted-foreground">{t.state}</div><span className="cursor-help text-[11px] text-muted-foreground underline decoration-dotted" title={`${t.source.pointer}\n${t.receipt_id}`}>來源</span></td>
+                  <td data-label="Trial / 狀態" className="p-2 align-top"><div>{t.trial_id}</div><div className="text-muted-foreground">{t.state}</div><div className="mt-1 text-[11px] text-muted-foreground [overflow-wrap:anywhere]">來源 {t.source.pointer}<br />收據 {t.receipt_id}</div></td>
                   <td data-label="參數" className="sv-stack-wide p-2 align-top md:max-w-60"><code className="break-all">{JSON.stringify(t.parameters ?? '原始參數缺失')}</code></td>
                   <td data-label="驗證 Sharpe" className="p-2 align-top">{metric(t.validation?.sharpe)}</td><td data-label="Holdout Sharpe" className="p-2 align-top">{metric(t.holdout?.sharpe)}</td>
                   <td data-label="鄰域 / 現行距離" className="p-2 align-top">{neighbor?.neighbor_count ?? 0} / {metric(neighbor?.current_distance)}<br />較差四分位 {metric(neighbor?.neighbor_lower_quartile)}</td>

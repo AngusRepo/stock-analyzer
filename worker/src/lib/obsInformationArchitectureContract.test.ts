@@ -67,8 +67,8 @@ assert(
 }`),
   'only paused or manual-only disable-candidate jobs may be hidden as retired',
 )
-assert(standaloneJobs.includes('Standalone root') && standaloneJobs.includes('Unmapped dependency'), 'registry must distinguish independent jobs from true topology gaps')
-assert(standaloneJobs.includes('Dependency reviewed') && standaloneJobs.includes('Internal logical ticket'), 'governed dependencies and logical tickets must not be labeled as missing topology')
+assert(standaloneJobs.includes("label: '獨立根工作'") && standaloneJobs.includes("label: '相依未對應'"), 'registry must distinguish independent jobs from true topology gaps')
+assert(standaloneJobs.includes("label: '相依已審查'") && standaloneJobs.includes("label: '內部邏輯票據'"), 'governed dependencies and logical tickets must not be labeled as missing topology')
 assert(standaloneJobs.includes('logical accounted') && standaloneJobs.includes('physical'), 'OBS must account for the full scheduler API universe')
 assert(standaloneJobsCss.includes('.obs-standalone__group-card') && standaloneJobsCss.includes('.obs-standalone__job-grid') && !standaloneJobsCss.includes('.obs-standalone__rows'), 'standalone registry must preserve the grouped-card presentation')
 assert(standaloneJobs.includes("['weekly', 'daily', 'pipeline_chain', 'intraday', 'monthly']") && standaloneJobs.includes('data-group={group}') &&

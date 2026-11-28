@@ -622,9 +622,10 @@
     display: none;
   }
 
+  /* flex-wrap 而非 grid：最後一列只剩一兩格時會撐滿整列，不留空欄（767px 附近 grid 會空 4 格）。 */
   table.sv-stack-table > tbody > tr {
-    display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(7.5rem, 1fr));
+    display: flex;
+    flex-wrap: wrap;
     gap: 0.375rem 0.75rem;
     /* 表格貼著卡片邊時，在 <table> 設 [--sv-stack-pad-x:1rem] 補左右留白。 */
     padding: 0.5rem var(--sv-stack-pad-x, 0);
@@ -632,6 +633,7 @@
 
   table.sv-stack-table > tbody > tr > :is(td, th) {
     display: block;
+    flex: 1 1 7.5rem;
     min-width: 0;
     padding: 0;
     text-align: left;
@@ -650,6 +652,6 @@
   }
 
   table.sv-stack-table > tbody > tr > .sv-stack-wide {
-    grid-column: 1 / -1;
+    flex-basis: 100%;
   }
 }

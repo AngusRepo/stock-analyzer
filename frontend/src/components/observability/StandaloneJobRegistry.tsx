@@ -22,13 +22,13 @@ export function isRetiredRegistryJob(job: SchedulerJob): boolean {
 }
 
 const STATUS_LABEL: Record<SchedulerJob['lastStatus'], string> = {
-  success: 'Completed',
-  failed: 'Failed',
-  blocked: 'Blocked by upstream',
-  running: 'Running',
-  waiting: 'Waiting',
-  sleep: 'Not in window',
-  skip: 'No action',
+  success: '已完成',
+  failed: '失敗',
+  blocked: '被上游擋住',
+  running: '執行中',
+  waiting: '等待中',
+  sleep: '不在執行時段',
+  skip: '無需動作',
 }
 
 const STATUS_ORDER: Record<SchedulerJob['lastStatus'], number> = {
@@ -51,15 +51,15 @@ function dependencyEvidence(job: SchedulerJob) {
   const hasDependency = upstream.length > 0 || downstream.length > 0 || typeof job.chainIndex === 'number'
   const accountingClass = job.accounting?.accountingClass ?? 'unmapped_dependency'
   if (accountingClass === 'unmapped_dependency') {
-    return { upstream, downstream, hasDependency, isTopologyGap: true, label: 'Unmapped dependency' }
+    return { upstream, downstream, hasDependency, isTopologyGap: true, label: '相依未對應' }
   }
   if (accountingClass === 'standalone_root') {
-    return { upstream, downstream, hasDependency: false, isTopologyGap: false, label: 'Standalone root' }
+    return { upstream, downstream, hasDependency: false, isTopologyGap: false, label: '獨立根工作' }
   }
   if (accountingClass === 'internal_chain') {
-    return { upstream, downstream, hasDependency: true, isTopologyGap: false, label: 'Internal logical ticket' }
+    return { upstream, downstream, hasDependency: true, isTopologyGap: false, label: '內部邏輯票據' }
   }
-  return { upstream, downstream, hasDependency: true, isTopologyGap: false, label: 'Dependency reviewed' }
+  return { upstream, downstream, hasDependency: true, isTopologyGap: false, label: '相依已審查' }
 }
 
 function statusCount(jobs: SchedulerJob[], status: SchedulerJob['lastStatus']) {
@@ -140,7 +140,7 @@ export default function StandaloneJobRegistry({
                           </div>
                           <div className="obs-standalone__status">
                             <CircleDot aria-hidden="true" />
-                            <span>{attention ? 'Skipped · 未正式執行' : STATUS_LABEL[job.lastStatus]}</span>
+                            <span>{attention ? '略過 · 未正式執行' : STATUS_LABEL[job.lastStatus]}</span>
                           </div>
                         </div>
 

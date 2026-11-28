@@ -433,12 +433,18 @@ export function SimRoom({ clock, closed, rows, view, onViewChange, kpis, status,
         {weightSum > 0 && (
           <div className="allocbar" style={{ margin: '8px 8px 0' }}>
             {sorted.filter((r) => r.weight).map((r, i) => (
-              <div key={r.symbol} style={{ width: `${(r.weight ?? 0) * 100}%`, background: ALLOC_PALETTE[i % ALLOC_PALETTE.length] }} title={`${r.symbol} ${r.name} · ${formatNumber((r.weight ?? 0) * 100, 1)}% · ${formatTwd(r.allocValue)}`}>
-                {r.symbol} {formatNumber((r.weight ?? 0) * 100, 0)}%
-              </div>
+              <div key={r.symbol} style={{ width: `${(r.weight ?? 0) * 100}%`, background: ALLOC_PALETTE[i % ALLOC_PALETTE.length] }} aria-hidden="true" />
             ))}
-            <div style={{ flex: 1, background: 'var(--sr-muted)', color: 'var(--sr-sub)' }} title="現金保留">現金</div>
+            <div style={{ flex: 1, background: 'var(--sr-muted)' }} aria-hidden="true" />
           </div>
+        )}
+        {weightSum > 0 && (
+          <ul className="alloclegend" aria-label="配置比例">
+            {sorted.filter((r) => r.weight).map((r, i) => (
+              <li key={r.symbol}><i style={{ background: ALLOC_PALETTE[i % ALLOC_PALETTE.length] }} />{r.symbol} {r.name} · {formatNumber((r.weight ?? 0) * 100, 1)}% · {formatTwd(r.allocValue)}</li>
+            ))}
+            <li><i style={{ background: 'var(--sr-muted)' }} />現金保留 {formatNumber(Math.max(0, 1 - weightSum) * 100, 1)}%</li>
+          </ul>
         )}
         <div className="sr-scroll">
           <div className="sr-ttl"><b>今日計畫</b><span>開盤前 · 點列看 K 線</span></div>
@@ -446,11 +452,11 @@ export function SimRoom({ clock, closed, rows, view, onViewChange, kpis, status,
             <thead><tr>
               <th className="l">狀態</th>
               <th className="l">標的</th>
-              <th title="前一交易日收盤（當日基準評估後才有）">昨收</th>
+              <th>昨收</th>
               <th>選股參考價</th>
               <th className="l">權重 · 配置</th>
-              <th title="配置 ÷ 參考價；含零股、未扣手續費；參考價差 >20% 時不算">預估股數</th>
-              <th className="l" title="近 20 日 K 線：紅＝收高於開、綠＝收低於開">20 日 K 線</th>
+              <th>預估股數</th>
+              <th className="l">20 日 K 線</th>
               <th className="l">20 日區間 · 距高點</th>
               <th className="l"><GateHeader groups={groups} /></th>
             </tr></thead>
@@ -470,6 +476,7 @@ export function SimRoom({ clock, closed, rows, view, onViewChange, kpis, status,
               ))}
             </tbody>
           </table>
+          <p className="sr-note">昨收：前一交易日收盤（當日基準評估後才有）。預估股數：配置 ÷ 參考價，含零股、未扣手續費，參考價差超過 20% 時不算。20 日 K 線：紅＝收高於開、綠＝收低於開。</p>
         </div>
       </>
     )
@@ -484,7 +491,7 @@ export function SimRoom({ clock, closed, rows, view, onViewChange, kpis, status,
             <th className="l">{post ? '結果' : '狀態'}</th>
             <th className="l">標的</th>
             <th>{post ? '最後價 · 漲跌' : '現價 · 漲跌'}</th>
-            <th className="l" title="▏參考價 ┃觸發價（ORH） ░到追價上限 │VWAP ● 現價">{post ? '價格梯' : '價格梯 · 距觸發'}</th>
+            <th className="l">{post ? '價格梯' : '價格梯 · 距觸發'}</th>
             {post && <th>成交</th>}
             <th className="l"><GateHeader /></th>
             <th>配置</th>
@@ -510,6 +517,7 @@ export function SimRoom({ clock, closed, rows, view, onViewChange, kpis, status,
             })}
           </tbody>
         </table>
+        <p className="sr-note">價格梯：▏參考價　┃觸發價（ORH）　░到追價上限　│VWAP　● 現價</p>
       </div>
     )
   }

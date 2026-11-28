@@ -85,7 +85,7 @@ export default function L4DistributionPanel({ data }: {
         </ul>
       </>}
       {rows.length > 0 && !hasLossDistribution && <p className="mt-2 text-xs text-slate-400">目前 L4{meanPolicy ? `（${meanPolicy}）` : ''}只輸出五日預期收益，不提供虧損機率與獲利／虧損幅度。</p>}
-      <p className="mt-2 text-xs text-slate-400"><span title={plan.model_checksum}>模型版本 {plan.model_checksum.slice(0,12)}</span> · <span title={plan.plan_id}>配置 {plan.plan_id.slice(0,12)}</span>。表格顯示目標；實際持倉與成交請見交易室。</p>
+      <p className="mt-2 text-xs text-slate-400 [overflow-wrap:anywhere]">模型版本 {plan.model_checksum} · 配置 {plan.plan_id}。表格顯示目標；實際持倉與成交請見交易室。</p>
     </>}
   </section>
 }

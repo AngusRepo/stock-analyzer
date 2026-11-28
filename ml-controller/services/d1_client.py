@@ -168,6 +168,18 @@ def _is_retryable_d1_response(status_code: int, text: str) -> bool:
     return "d1 db is overloaded" in lowered or "requests queued for too long" in lowered
 
 
+def _response_excerpt(resp, fallback: str) -> str:
+    """First 200 characters of the response body (the error code tells D1 7429 from an API limit).
+
+    Only the response body: never request headers. A token echoed back is masked anyway.
+    """
+    text = getattr(resp, "text", None)
+    body = text if isinstance(text, str) and text else fallback or ""
+    if CF_API_TOKEN:
+        body = body.replace(CF_API_TOKEN, "[redacted]")
+    return body[:200].replace("\n", " ")
+
+
 def _retry_d1_response(resp, attempt: int, error_text: str) -> bool:
     """Give a congested D1 queue time to drain; other errors keep their budget."""
     overloaded = resp.status_code == 429 or any(term in error_text.lower() for term in
@@ -183,7 +195,8 @@ def _retry_d1_response(resp, attempt: int, error_text: str) -> bool:
                 delay = max(delay, retry_after)
         except (TypeError, ValueError):
             pass
-        logger.warning("[d1_client] D1 overloaded retry=%s delay_s=%.2f", attempt + 1, delay)
+        logger.warning("[d1_client] D1 overloaded retry=%s delay_s=%.2f http=%s body=%s",
+                       attempt + 1, delay, resp.status_code, _response_excerpt(resp, error_text))
         time.sleep(delay)
     else:
         _sleep_before_retry(attempt)

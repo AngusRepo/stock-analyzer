@@ -2006,6 +2006,10 @@ CREATE INDEX IF NOT EXISTS idx_pred_stock_generated
 
 CREATE INDEX IF NOT EXISTS idx_pred_model_verified_date
   ON predictions(model_name, verified_at, prediction_date);
+-- Snapshot export reads resolved predictions by generated_at (learning migration 0074).
+CREATE INDEX IF NOT EXISTS idx_pred_verified_generated
+  ON predictions(generated_at, direction_correct, verified_at, verification_label_known_date)
+  WHERE direction_correct IN (0, 1);
 
 CREATE INDEX IF NOT EXISTS idx_model_acc_period_model
   ON model_accuracy(period, model_name);

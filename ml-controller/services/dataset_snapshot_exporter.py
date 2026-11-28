@@ -53,6 +53,21 @@ def _snapshot_query_workers() -> int:
     return int(os.environ.get("DATASET_SNAPSHOT_QUERY_WORKERS", "4"))
 
 
+def _snapshot_learning_query_workers() -> int:
+    """Threads for the Learning ensemble read: 7-13 MB a day of forecast_data per response.
+
+    Four of those in flight met D1 overload (7429) on Learning while the hot days were read.
+    The default lives here and the job may override it by env; _query_date_range never lets it
+    exceed the export's general worker count, so a sequential export (=1) stays sequential.
+    """
+    return max(1, int(os.environ.get("DATASET_SNAPSHOT_LEARNING_QUERY_WORKERS", "2")))
+
+
+def _first_date_sql(table: str, date_column: str) -> str:
+    # Every table passed here has an index led by date_column, so MIN is one index seek.
+    return f"SELECT MIN({date_column}) AS d FROM {table}"
+
+
 # Narrow market tables: one D1 read covers this many export chunks. A trading day of the
 # widest one (technical_indicators) is ~0.6 MB of values on 2026-11-17, so five days stay far
 # below D1's 50 MB response limit, while the export issues a fifth of the reads. Ensemble
@@ -90,18 +105,30 @@ def _query_date_range(
     query_client: Any,
     read_chunk_days: int | None = None,
     bind_shape: tuple[str, ...] = ("start", "end"),
+    first_date_sql: str | None = None,
+    query_workers: int | None = None,
 ) -> tuple[pl.DataFrame, int]:
     """Read [start_date, end_date] in date chunks; returns the rows and the D1 query count.
 
     The result rows equal the concatenation of one read per `chunk_days` chunk, in order.
     `read_chunk_days` lets one D1 read cover several of those chunks (fewer queries);
     `bind_shape` lists the chunk bound each SQL placeholder takes.
+    `first_date_sql` returns the table's smallest date as `d`: a chunk that ends before it
+    holds no D1 row, so it is not read. The chunk grid and the archive read are unchanged.
+    `query_workers` caps the threads below the export's general worker count.
     """
     from services.verified_read_observation import observation_active
     export_chunks = _date_chunks(start_date, end_date, chunk_days)
     read_days = _read_chunk_days(chunk_days, read_chunk_days)
     chunks = export_chunks if read_days == chunk_days else _date_chunks(start_date, end_date, read_days)
     chunk_starts = [chunk[0] for chunk in export_chunks]
+    first_date_queries = 0
+    if first_date_sql:
+        first = query_client.query(first_date_sql, [], timeout=120.0)
+        first_date = first[0].get("d") if first else None
+        first_date_queries = 1
+        # Text order, as in the chunk predicate: no row is <= a chunk end below MIN.
+        chunks = [] if first_date is None else [chunk for chunk in chunks if chunk[1] >= str(first_date)]
 
     def read(chunk: tuple[str, str]) -> pl.DataFrame | None:
         bounds = {"start": chunk[0], "end": chunk[1]}
@@ -114,13 +141,14 @@ def _query_date_range(
     # Chunks are independent reads; map keeps date order so the concat is unchanged.
     # d1_client already backs off on 429/overload. UI observation scopes (a ContextVar
     # pool threads do not inherit) stay sequential.
-    workers = 1 if observation_active() else max(1, min(_snapshot_query_workers(), len(chunks)))
+    limit = _snapshot_query_workers() if query_workers is None else min(query_workers, _snapshot_query_workers())
+    workers = 1 if observation_active() else max(1, min(limit, len(chunks)))
     if workers > 1:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             frames = [frame for frame in pool.map(read, chunks) if frame is not None]
     else:
         frames = [frame for frame in map(read, chunks) if frame is not None]
-    query_count = len(chunks)
+    query_count = len(chunks) + first_date_queries
     from services.retention_market_history import TABLES, archived_market_projection
     match = re.search(r'\bFROM\s+([a-z_]+)\b', sql, re.I)
     if match and match.group(1) in TABLES:
@@ -390,6 +418,7 @@ def _query_prices(start_date: str, end_date: str, chunk_days: int) -> tuple[pl.D
         chunk_days,
         query_client=MARKET_D1_CLIENT,
         read_chunk_days=MARKET_READ_CHUNK_DAYS,
+        first_date_sql=_first_date_sql("stock_prices", "date"),
     )
 
 
@@ -502,6 +531,7 @@ def _query_margin_data(start_date: str, end_date: str, chunk_days: int) -> tuple
         chunk_days,
         query_client=MARKET_D1_CLIENT,
         read_chunk_days=MARKET_READ_CHUNK_DAYS,
+        first_date_sql=_first_date_sql("margin_data", "date"),
     )
 
 
@@ -644,6 +674,27 @@ ENSEMBLE_SIGNALS_SQL = """
               AND prediction_date <= ?
             ORDER BY stock_id, generated_at
             """
+# A one-day chunk (the job default): equality on the date lets the index seek
+# (prediction_date, model_name) instead of walking every model's entries of that day.
+# start = end there, and text `x >= d AND x <= d` is `x = d`, so the rows are the same.
+# Multi-day chunks keep the range: an IN list of every day would change the SQL per
+# chunk length for a chunk size the nightly export does not use.
+ENSEMBLE_SIGNALS_DAY_SQL = """
+            SELECT id, stock_id, generated_at, prediction_date, trade_signal,
+                   direction_accuracy, entry_price, stop_loss, target1, target2,
+                   forecast_data
+            FROM predictions INDEXED BY idx_pred_date_model_stock
+            WHERE model_name = 'ensemble'
+              AND prediction_date = ?
+            ORDER BY stock_id, generated_at
+            """
+PREDICTIONS_FIRST_DATE_SQL = _first_date_sql("predictions", "prediction_date")
+
+
+def _ensemble_signal_read(chunk_days: int) -> tuple[str, tuple[str, ...]]:
+    if chunk_days == 1:
+        return ENSEMBLE_SIGNALS_DAY_SQL, ("start",)
+    return ENSEMBLE_SIGNALS_SQL, ("start", "end")
 
 
 def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[str, Any]:
@@ -690,6 +741,7 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
         chunk_days,
         query_client=MARKET_D1_CLIENT,
         read_chunk_days=MARKET_READ_CHUNK_DAYS,
+        first_date_sql=_first_date_sql("technical_indicators", "date"),
     )
     chips, chip_queries = _query_date_range(
         """
@@ -705,6 +757,7 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
         chunk_days,
         query_client=MARKET_D1_CLIENT,
         read_chunk_days=MARKET_READ_CHUNK_DAYS,
+        first_date_sql=_first_date_sql("chip_data", "date"),
     )
     broker_flows, broker_queries = _query_date_range(
         """
@@ -716,6 +769,7 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
         """, req.start_date, req.end_date, chunk_days,
         query_client=MARKET_D1_CLIENT,
         read_chunk_days=MARKET_READ_CHUNK_DAYS,
+        first_date_sql=_first_date_sql("canonical_broker_flow_daily", "date"),
     )
     if broker_flows.is_empty():
         broker_flows = _empty_frame(["symbol", "date", "net_shares", "estimated_amount", "concentration", "as_of_date"])
@@ -787,12 +841,18 @@ def export_backtest_dataset_snapshot(req: DatasetSnapshotExportRequest) -> dict[
             ['generated_at', 'verified_at', 'direction_correct'])
     signal_queries = 0
     if req.include_signals:
+        # Days before the oldest hot prediction are not read from D1 (they come from the archive
+        # below, which still covers the whole request range).
+        signal_sql, signal_binds = _ensemble_signal_read(chunk_days)
         signals, signal_queries = _query_date_range(
-            ENSEMBLE_SIGNALS_SQL,
+            signal_sql,
             req.start_date,
             req.end_date,
             chunk_days,
             query_client=LEARNING_D1_CLIENT,
+            bind_shape=signal_binds,
+            first_date_sql=PREDICTIONS_FIRST_DATE_SQL,
+            query_workers=_snapshot_learning_query_workers(),
         )
         from services.retention_history import archived_predictions
         columns = ["stock_id", "generated_at", "prediction_date", "trade_signal",

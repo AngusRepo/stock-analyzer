@@ -131,3 +131,18 @@ def test_permanent_error_never_retries(monkeypatch, status):
     monkeypatch.setattr(d1_client.time, "sleep", lambda seconds: pytest.fail("permanent error slept"))
     with pytest.raises(RuntimeError, match=f"HTTP {status}"):
         d1_client._post({"sql": "SELECT 1"})
+
+
+def test_overload_retry_log_carries_the_response_code_without_secrets(monkeypatch, caplog):
+    # 7429 (D1 overloaded) and an API rate limit are both HTTP 429: only the body tells them apart.
+    body = '{"errors":[{"code":7429,"message":"D1 DB is overloaded. Requests queued for too long. secret-token"}]}' + "x" * 400
+    response = _FakeResponse(429, body)
+    response.headers = {"Retry-After": "0", "Authorization": "Bearer secret-token"}
+    monkeypatch.setattr(d1_client, "CF_API_TOKEN", "secret-token")
+    monkeypatch.setattr(d1_client.time, "sleep", lambda seconds: None)
+    with caplog.at_level("WARNING", logger=d1_client.logger.name):
+        assert d1_client._retry_d1_response(response, 0, body)
+    message = caplog.records[-1].getMessage()
+    assert "http=429" in message and '"code":7429' in message
+    assert "secret-token" not in message and "Bearer" not in message
+    assert len(message.split(" body=", 1)[1]) == 200

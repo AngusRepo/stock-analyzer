@@ -30,6 +30,8 @@ function snapshotDate(raw?: string): string {
   return new Date(paperExecutionNow() + 8 * 3600_000).toISOString().slice(0, 10)
 }
 
+const YAHOO_POST_CLOSE_SOURCE = 'post_close_yahoo'
+
 export async function runDailySnapshot(env: Bindings, options: DailySnapshotOptions = {}) {
   console.log('[Snapshot] Starting...')
   const today = snapshotDate(options.date)
@@ -49,14 +51,20 @@ export async function runDailySnapshot(env: Bindings, options: DailySnapshotOpti
   const stockRights = corporateRights.filter(row => row.shares_due > 0 || row.kind === 'subscription').map(row => row.symbol)
   const finalSymbols = [...new Set([...(finalPos ?? []).map((p: any) => p.symbol), ...stockRights])]
   const postCloseRefresh = await refreshOpenPositionPostClosePriceCache(env, { tradeDate: valuationSession, additionalSymbols: stockRights })
-  const finalPriceMap = new Map<string, number>(
-    [...postCloseRefresh.prices.entries()].map(([symbol, snapshot]) => [symbol, snapshot.price]),
-  )
+  // Mark order: broker post-close quote, then the stock_prices exact session close, then the Yahoo
+  // fallback (a third-party quote, used only when the exact close is not written yet).
+  const markQuotes = new Map([...postCloseRefresh.prices].filter(([, snapshot]) => snapshot.source !== YAHOO_POST_CLOSE_SOURCE))
+  const finalPriceMap = new Map<string, number>([...markQuotes].map(([symbol, snapshot]) => [symbol, snapshot.price]))
   const missingFinalSymbols = finalSymbols.filter((symbol: string) => !finalPriceMap.has(symbol))
   const eodMarks = await batchGetClosingMarksByDomain(env, missingFinalSymbols, valuationSession)
   for (const [symbol, mark] of eodMarks) finalPriceMap.set(symbol, mark.price)
+  for (const [symbol, snapshot] of postCloseRefresh.prices) {
+    if (finalPriceMap.has(symbol)) continue
+    finalPriceMap.set(symbol, snapshot.price)
+    markQuotes.set(symbol, snapshot)
+  }
   const markEvidence = Object.fromEntries(finalSymbols.filter(s => finalPriceMap.has(s)).map(symbol => {
-    const quote = postCloseRefresh.prices.get(symbol)
+    const quote = markQuotes.get(symbol)
     // price_date comes from the row that supplied the price, never from the session we asked for.
     return [symbol, { price: finalPriceMap.get(symbol), price_date: quote?.trade_date ?? eodMarks.get(symbol)?.date ?? null,
       source: quote?.source ?? 'stock_prices.exact_session_close',

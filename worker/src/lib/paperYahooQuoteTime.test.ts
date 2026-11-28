@@ -23,6 +23,8 @@ const fakeDb = {
   },
 }
 
+const isYahoo = (url: string) => new URL(url).hostname === 'query1.finance.yahoo.com'
+
 function yahooBody(regularMarketTime: unknown) {
   const meta: Record<string, unknown> = { regularMarketPrice: 72.6 }
   if (regularMarketTime !== undefined) meta.regularMarketTime = regularMarketTime
@@ -36,7 +38,7 @@ async function withFetch<T>(regularMarketTime: unknown, run: () => Promise<T>): 
   globalThis.fetch = (async (input: any) => {
     const url = String(input?.url ?? input)
     urls.push(url)
-    if (url.includes('finance.yahoo.com')) return new Response(JSON.stringify(yahooBody(regularMarketTime)), { status: 200 })
+    if (isYahoo(url)) return new Response(JSON.stringify(yahooBody(regularMarketTime)), { status: 200 })
     return new Response(JSON.stringify({ data: {} }), { status: 200 })
   }) as typeof fetch
   try {
@@ -50,7 +52,7 @@ async function postCloseIssues(regularMarketTime: unknown) {
   const kv = new FakeKV()
   const { result: refresh, urls } = await withFetch(regularMarketTime, () => refreshOpenPositionPostClosePriceCache(
     { DB: fakeDb, KV: kv, SHIOAJI_PROXY_URL: 'https://proxy.test' } as any, { tradeDate: SESSION }))
-  assert(urls.some(url => url.includes('finance.yahoo.com')), 'empty Shioaji answers must fall back to Yahoo')
+  assert(urls.some(url => isYahoo(url)), 'empty Shioaji answers must fall back to Yahoo')
   const quote = refresh.prices.get('2072')
   // Same evidence shape paperWorkerTasks builds for the daily snapshot.
   const evidence = quote ? { '2072': { price: quote.price, price_date: quote.trade_date, source: quote.source, quote_time: quote.quote_time } } : {}
@@ -99,7 +101,7 @@ async function postCloseIssues(regularMarketTime: unknown) {
     assert(noProxy.get('2072')?.quoteTime === '2026-11-27T05:30:00.000Z', 'the no-proxy Yahoo path also carries the quote time')
     assert(noProxy.get('2072')?.source === 'yahoo' && noProxy.get('2072')?.bid === undefined, 'Yahoo quotes still carry no executable book')
     const { result: broker, urls } = await withFetch(SAME_DAY_CLOSE, () => batchGetIntradayOHLC(['2072'], { requireBrokerQuote: true }))
-    assert(broker.size === 0 && !urls.some(url => url.includes('finance.yahoo.com')), 'broker-required callers never reach Yahoo')
+    assert(broker.size === 0 && !urls.some(url => isYahoo(url)), 'broker-required callers never reach Yahoo')
   }
 
   console.log('paperYahooQuoteTime tests passed')

@@ -260,3 +260,30 @@ test('O04 acceptance: an older close that reaches the mark evidence is stopped b
     assert.equal(f.sqls.paper.prepare("SELECT COUNT(*) AS n FROM paper_daily_snapshots WHERE date='2026-09-17'").get()?.n, 0)
   } finally { f.close() }
 })
+
+test('a cold proxy at the settle: the exact session close wins over the dated Yahoo fallback, which only fills a gap', async () => {
+  const f = fixture()
+  try {
+    f.sqls.paper.exec("INSERT INTO paper_positions(account_id,symbol,name,shares,avg_cost,entry_price,entry_date) VALUES(1,'2330','fixture',1000,20,20,'2026-09-15')")
+    f.price('2026-09-17', 2, 150)
+    f.sqls.core.exec("INSERT INTO market_risk(date,twii_close,risk_score,risk_level) VALUES('2026-09-17',30000,10,'green')")
+    ;(f.env as any).SHIOAJI_PROXY_URL = 'https://proxy.invalid'
+    const yahooTime = Date.parse('2026-09-17T13:30:00+08:00') / 1000
+    // Cold proxy: both endpoints answer with no data, so the refresh falls back to Yahoo (dated the session).
+    f.ports.fetchFrozen = async (input: any) => new URL(String(input?.url ?? input)).hostname === 'query1.finance.yahoo.com'
+      ? Response.json({ chart: { result: [{ meta: { regularMarketPrice: 22.5, regularMarketTime: yahooTime } }] } })
+      : Response.json({ data: {} })
+    // No exact close yet: the dated Yahoo quote is the mark, and its evidence says so.
+    let run = await f.snapshot('2026-09-17')
+    assert.equal(run.result.valuation.marks['2330'], 22.5)
+    assert.equal(run.result.valuation.mark_evidence['2330'].source, 'post_close_yahoo')
+    assert.equal(run.result.valuation.mark_evidence['2330'].price_date, '2026-09-17')
+    // Once the exact close is written it supplies the mark, and the evidence names it, not Yahoo.
+    f.price('2026-09-17', 1, 21)
+    run = await f.snapshot('2026-09-17')
+    assert.equal(run.result.valuation.marks['2330'], 21)
+    assert.deepEqual(run.result.valuation.mark_evidence['2330'], {
+      price: 21, price_date: '2026-09-17', source: 'stock_prices.exact_session_close', quote_time: null, observed_at: null,
+    })
+  } finally { f.close() }
+})

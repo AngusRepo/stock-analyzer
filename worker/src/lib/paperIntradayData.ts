@@ -562,7 +562,7 @@ async function fetchYahooQuote(symbol: string): Promise<YahooQuote | null> {
   try {
     const twSymbol = `${symbol}.TW`
     const res = await paperExecutionFetch(
-      `https://query1.finance.yahoo.com/v8/finance/chart/${twSymbol}?interval=1m&range=1d`,
+      `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(twSymbol)}?interval=1m&range=1d`,
       { headers: { 'User-Agent': 'Mozilla/5.0' } },
     )
     if (!res.ok) return null

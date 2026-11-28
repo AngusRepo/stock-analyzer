@@ -52,9 +52,10 @@ jobs:
         id: units
         env:
           CHOICE: ${{ github.event_name == 'workflow_dispatch' && inputs.units || 'changed' }}
-          # The monitoring Worker has no public live version: a push plans it from the pushed range.
-          SINCE: ${{ github.event_name == 'push' && github.event.before || '' }}
-        run: python3 tools/deploy_units.py plan --choice "$CHOICE" --since "$SINCE" | tee -a "$GITHUB_OUTPUT"
+          # The monitoring Worker's live version needs the Cloudflare token (cloudflare job only): the plan
+          # marks it a candidate from the last commit a run confirmed it at, read through the Actions API.
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/deploy_units.py plan --choice "$CHOICE" | tee -a "$GITHUB_OUTPUT"
       - name: Require ci gate on every pushed commit since live
         if: steps.units.outputs.worker == 'true' || steps.units.outputs.pages == 'true'
         env:
@@ -125,9 +126,29 @@ jobs:
           # The Worker's locked wrangler also deploys Pages and runs the D1 checks.
           (cd worker && npm ci --no-audit --no-fund)
           if [ "$PAGES" = true ]; then (cd frontend && npm ci --no-audit --no-fund); fi
+      # The plan only marked a candidate. Its live version is readable only through the Cloudflare API (every
+      # route is behind Access): deploy when live..HEAD changes it, fail on a live tag main never merged.
+      # A failed decision must not hold back the Worker or Pages: the step soft-fails (the only
+      # continue-on-error in this file), the monitoring Worker is not deployed, and Verify monitoring Worker
+      # fails at the end of the job, so the run is red and records no confirmed point.
+      # Not a pin: an unreadable live tag deploys HEAD, and a deliberate rollback (an older live version
+      # with monitoring changes since) is overwritten with HEAD by the next run that checks it, which is
+      # any Worker or Pages deploy. To keep a rollback, revert it on main (docs/runbooks/cd-monitoring-worker.md).
+      - name: Decide monitoring Worker
+        id: monitoring
+        if: steps.tip.outputs.current == 'true' && env.MONITORING == 'true'
+        continue-on-error: true
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ steps.secrets.outputs.cf_token }}
+          CHOICE: ${{ github.event_name == 'workflow_dispatch' && inputs.units || 'changed' }}
+        run: |
+          set -e
+          live="$(node tools/deploy_monitoring_worker_with_provenance.mjs --live)"
+          python3 tools/deploy_units.py monitoring --choice "$CHOICE" --live "$live" | tee -a "$GITHUB_OUTPUT"
       # Order: D1 → Worker → monitoring Worker → Pages (CD_DESIGN.md). Each deploy script re-checks HEAD, a clean tree and its guards.
+      # D1 runs for every monitoring deploy: both conditions read the same decision output.
       - name: Require applied D1 migrations
-        if: steps.tip.outputs.current == 'true' && (env.WORKER == 'true' || env.MONITORING == 'true')
+        if: steps.tip.outputs.current == 'true' && (env.WORKER == 'true' || steps.monitoring.outputs.deploy == 'true')
         env:
           CLOUDFLARE_API_TOKEN: ${{ steps.secrets.outputs.cf_token }}
         run: |
@@ -165,30 +186,16 @@ jobs:
           done
           echo "worker health reports ${live:-nothing}, expected $GITHUB_SHA"; exit 1
       - name: Deploy monitoring Worker
-        if: steps.tip.outputs.current == 'true' && env.MONITORING == 'true'
+        if: steps.tip.outputs.current == 'true' && steps.monitoring.outcome == 'success' && steps.monitoring.outputs.deploy == 'true'
         env:
           CLOUDFLARE_API_TOKEN: ${{ steps.secrets.outputs.cf_token }}
           GH_TOKEN: ${{ github.token }}
+          BASE: ${{ steps.monitoring.outputs.gate_base }}
         run: |
           set -e
-          # Its live version is readable only through the Cloudflare API (every route is behind Access).
-          live="$(node tools/deploy_monitoring_worker_with_provenance.mjs --live)"
-          if [ "$live" = "$GITHUB_SHA" ]; then echo "monitoring already live at $live"; exit 0; fi
           # The plan gated from the Worker/Pages live versions; gate the monitoring range too (unknown: HEAD only).
-          base=""
-          if [ -n "$live" ] && git merge-base --is-ancestor "$live" HEAD; then base="$live"
-          elif [ -n "$live" ]; then echo "::error::monitoring live version $live is not in main history; merge it into main before deploying"; exit 1; fi
-          python3 tools/deploy_units.py gate --base "$base"
+          python3 tools/deploy_units.py gate --base "$BASE"
           node tools/deploy_monitoring_worker_with_provenance.mjs
-      - name: Verify monitoring Worker
-        if: steps.tip.outputs.current == 'true' && env.MONITORING == 'true'
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ steps.secrets.outputs.cf_token }}
-        run: |
-          set -e
-          live="$(node tools/deploy_monitoring_worker_with_provenance.mjs --live)"
-          [ "$live" = "$GITHUB_SHA" ] && { echo "monitoring live at $live"; exit 0; }
-          echo "monitoring deployment reports ${live:-nothing}, expected $GITHUB_SHA"; exit 1
       - name: Deploy Pages
         if: steps.tip.outputs.current == 'true' && env.PAGES == 'true'
         env:
@@ -214,3 +221,24 @@ jobs:
             sleep 10
           done
           echo "pages provenance reports ${live:-nothing}, expected $GITHUB_SHA"; exit 1
+      # Its success records this commit as the monitoring Worker's confirmed point for later plans
+      # (deploy_units.py MONITORING_SYNC_STEP): keep the name, and never let it pass on a run that did not check.
+      # Last, so a failed monitoring decision turns the run red only after the Worker and Pages are out.
+      - name: Verify monitoring Worker
+        if: steps.tip.outputs.current == 'true' && env.MONITORING == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ steps.secrets.outputs.cf_token }}
+          DECISION: ${{ steps.monitoring.outcome }}
+          DEPLOYED: ${{ steps.monitoring.outputs.deploy }}
+        run: |
+          set -e
+          [ "$DECISION" = success ] || { echo "::error::Decide monitoring Worker: $DECISION; the monitoring Worker was not deployed"; exit 1; }
+          # Not deployed: the decision read live and found HEAD live or nothing since that changes it.
+          case "$DEPLOYED" in
+            true) ;;
+            false) echo "monitoring Worker needs nothing for $GITHUB_SHA"; exit 0 ;;
+            *) echo "::error::no monitoring decision for $GITHUB_SHA"; exit 1 ;;
+          esac
+          live="$(node tools/deploy_monitoring_worker_with_provenance.mjs --live)"
+          [ "$live" = "$GITHUB_SHA" ] && { echo "monitoring live at $live"; exit 0; }
+          echo "monitoring deployment reports ${live:-nothing}, expected $GITHUB_SHA"; exit 1

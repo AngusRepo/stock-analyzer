@@ -8,8 +8,11 @@ frontend imports worker/src).
 Changes are diffed against what each unit runs live, not against the previous main commit, so a
 cancelled, rejected or failed run leaves its changes for the next one.
 
-  plan --choice changed|worker|pages|monitoring|all [--since <sha>]
+  plan --choice changed|worker|pages|monitoring|all
                                               prints `<unit>=true|false` and `gate_base=<sha>`
+                                              (monitoring=true marks a candidate, see below)
+  monitoring --choice <choice> --live <sha|''>
+                                              prints `deploy=true|false` and `gate_base=<sha>`
   gate --base <sha|''>                        requires a passing push-event ci gate on every
                                               pushed main commit in (base, HEAD]
 """
@@ -24,9 +27,9 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-# Public provenance per unit. The monitoring Worker has none (every route is behind Cloudflare Access):
-# the plan decides it from the pushed range (--since), and the cloudflare job reads its live tag through
-# the Cloudflare API, gates from it and skips a commit that is already live.
+# Public provenance per unit. The monitoring Worker has none (every route is behind Cloudflare Access) and
+# its live tag is readable only with the Cloudflare token, which only the approved cloudflare job holds: the
+# plan marks it a candidate (monitoring_planned) and that job decides from live (monitoring_decision).
 LIVE = {
     'worker': ('https://stockvision-worker.angus-solo-dev.workers.dev/api/health', ('provenance', 'sourceSha')),
     'pages': ('https://stockvision-frontend.pages.dev/production-provenance.json', ('sourceSha',)),
@@ -48,6 +51,10 @@ TEST = re.compile(r'(^|/)(__tests__|tests?)/|\.(test|spec)[A-Za-z]*\.[a-z]+$')
 # File references the import scan cannot follow; a guard test keeps them out of unit source.
 UNFOLLOWED = re.compile(r'import\.meta\.(url|glob)|\brequire\(|\?raw[\'"]')
 SHA = re.compile(r'^[0-9a-f]{40}$')
+# The cloudflare job step whose success means the monitoring Worker matched that run's commit (deployed
+# and verified, already live, or live with no monitoring input changed since). A contract test pins it.
+WORKFLOW, MONITORING_SYNC_JOB, MONITORING_SYNC_STEP = 'deploy-cloudflare.yml', 'cloudflare', 'Verify monitoring Worker'
+SYNC_SCAN_RUNS = 50
 
 
 def resolve(importer: Path, specifier: str, root: Path):
@@ -135,21 +142,61 @@ def live_sha(unit: str) -> str:
     return value if isinstance(value, str) and SHA.match(value) else ''
 
 
-def monitoring_planned(choice: str, since: str, head: str) -> bool:
-    """No public live version: a push deploys it when the pushed range touches it. A run that did not
-    deploy it (cancelled, rejected, failed) is retried with units=monitoring; the cloudflare job then
-    reads the live tag, gates from it and skips a commit that is already live."""
+def monitoring_synced_sha() -> str:
+    """Newest main commit a deploy-cloudflare run confirmed the monitoring Worker at; '' when none of the
+    last runs did. A run that deployed nothing (main moved, rejected, cancelled, failed) confirms nothing,
+    so its changes stay in the next plan's range."""
+    repo = os.environ['GITHUB_REPOSITORY']
+    runs = gh(f'repos/{repo}/actions/workflows/{WORKFLOW}/runs?branch=main&status=completed&per_page={SYNC_SCAN_RUNS}')['workflow_runs']
+    for run in sorted(runs, key=lambda r: r['run_number'], reverse=True):
+        jobs = gh(f'repos/{repo}/actions/runs/{run["id"]}/jobs?filter=latest&per_page=100')['jobs']
+        steps = next((j.get('steps') or [] for j in jobs if j['name'] == MONITORING_SYNC_JOB), [])
+        if any(s['name'] == MONITORING_SYNC_STEP and s['conclusion'] == 'success' for s in steps):
+            return run['head_sha']
+    return ''
+
+
+def monitoring_planned(choice: str, head: str, deploying: bool) -> bool:
+    """Whether the cloudflare job should read the monitoring Worker's live tag and decide (a candidate).
+    Tokenless, so it never needs an approval of its own: forced by units=monitoring|all; free when the job
+    runs anyway (Worker or Pages); otherwise only when main changed a monitoring input since the last commit
+    a run confirmed it at, or no recent run confirmed one (one approval, which records it)."""
     if choice in ('monitoring', 'all'):
         return True
     if choice != 'changed':
         return False
-    if not since or not SHA.match(since) or not is_ancestor(since, head):
-        print('::notice::monitoring Worker not planned (no pushed range in main history); dispatch units=monitoring to deploy it', file=sys.stderr)
+    if deploying:
+        return True
+    synced = monitoring_synced_sha()
+    if synced == head:
         return False
-    return touched_units(git('diff', '--name-only', since, head).splitlines())['monitoring']
+    if not synced or not is_ancestor(synced, head):
+        print(f'::notice::no recent run confirmed the monitoring Worker in main history ({synced or "none"}); '
+              'the cloudflare job reads its live version', file=sys.stderr)
+        return True
+    return touched_units(git('diff', '--name-only', synced, head).splitlines())['monitoring']
 
 
-def plan(choice: str, since: str = '') -> dict[str, str]:
+def monitoring_decision(choice: str, live: str) -> dict[str, str]:
+    """The cloudflare job's call, from the live tag the Cloudflare API reports: deploy when live..HEAD
+    changes a monitoring input (or units=monitoring|all), skip when it does not or HEAD is live. An
+    unreadable tag means "deploy it" (gated from HEAD only); a tag main never merged fails closed."""
+    head = git('rev-parse', 'HEAD')
+    if live == head:
+        print(f'::notice::monitoring Worker already live at {live}', file=sys.stderr)
+        return {'deploy': 'false', 'gate_base': ''}
+    if not live:
+        print('::warning::monitoring Worker live version unreadable; deploying it', file=sys.stderr)
+        return {'deploy': 'true', 'gate_base': ''}
+    if not SHA.match(live) or not is_ancestor(live, head):
+        raise SystemExit(f'::error::monitoring live version {live} is not in main history; merge it into main before deploying')
+    if choice == 'changed' and not touched_units(git('diff', '--name-only', live, head).splitlines())['monitoring']:
+        print(f'::notice::monitoring Worker live at {live}; nothing in {live[:12]}..{head[:12]} changes it, not deploying', file=sys.stderr)
+        return {'deploy': 'false', 'gate_base': ''}
+    return {'deploy': 'true', 'gate_base': live}
+
+
+def plan(choice: str) -> dict[str, str]:
     head = git('rev-parse', 'HEAD')
     remote = git('ls-remote', 'origin', 'refs/heads/main').split()[0]
     if remote != head:  # a newer run owns main; it diffs against live, so nothing is lost
@@ -172,7 +219,7 @@ def plan(choice: str, since: str = '') -> dict[str, str]:
             bases.append(live if known else '')
     # Gate every pushed commit since the oldest live version being replaced; an unreadable one gates HEAD only.
     base = '' if not bases or '' in bases else bases[0] if len(bases) == 1 else git('merge-base', *bases)
-    out['monitoring'] = monitoring_planned(choice, since, head)
+    out['monitoring'] = monitoring_planned(choice, head, out['worker'] or out['pages'])
     return {**{u: str(v).lower() for u, v in out.items()}, 'gate_base': base}
 
 
@@ -222,11 +269,14 @@ if __name__ == '__main__':
     sub = parser.add_subparsers(dest='action', required=True)
     plan_args = sub.add_parser('plan')
     plan_args.add_argument('--choice', choices=['changed', 'worker', 'pages', 'monitoring', 'all'], default='changed')
-    plan_args.add_argument('--since', default='', help='the push event before-SHA (monitoring unit only)')
+    monitoring_args = sub.add_parser('monitoring')
+    monitoring_args.add_argument('--choice', choices=['changed', 'monitoring', 'all'], default='changed')
+    monitoring_args.add_argument('--live', default='', help="the monitoring Worker's live source SHA ('' if unreadable)")
     sub.add_parser('gate').add_argument('--base', default='')
     args = parser.parse_args()
-    if args.action == 'plan':
-        for key, value in plan(args.choice, args.since).items():
+    if args.action in ('plan', 'monitoring'):
+        result = plan(args.choice) if args.action == 'plan' else monitoring_decision(args.choice, args.live)
+        for key, value in result.items():
             print(f'{key}={value}')
     else:
         gate(args.base)

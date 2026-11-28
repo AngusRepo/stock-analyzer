@@ -63,3 +63,20 @@ def test_changed_scores_features_policy_and_daily_risk_cannot_reuse_frozen_contr
         rows,policy,history,packet=fixture();change(policy,packet)
         with pytest.raises(ValueError,match='l4_r2_allocation'):
             run(rows,policy,return_history=history,private_research=True,r2_shadow=packet)
+
+
+def test_writing_the_kv_default_market_proxy_keeps_the_frozen_allocation_checksum():
+    """A sealed R2 evaluation pins digest(allocation_policy(policy)); KV writing the
+    default '0050' must not void it, while another proxy is another allocation policy."""
+    from test_l4_opb_v3_replay import OPB
+    _,policy,_,_=fixture()
+    policy['opb']={k:deepcopy(v) for k,v in OPB.items() if k!='approved_policy_identity'}
+    absent=digest(allocation_policy(policy))
+    explicit=deepcopy(policy);explicit['opb']['market_proxy']='0050'
+    other=deepcopy(policy);other['opb']['market_proxy']='006208'
+    assert digest(allocation_policy(explicit))==absent
+    assert digest(allocation_policy(other))!=absent
+    assert allocation_policy(other)['opb']['market_proxy']=='006208'
+    # approved_policy_identity is still not part of the allocation checksum.
+    stamped=deepcopy(explicit);stamped['opb']['approved_policy_identity']='x'*64
+    assert digest(allocation_policy(stamped))==absent and explicit['opb']['market_proxy']=='0050'

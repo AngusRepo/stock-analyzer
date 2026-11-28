@@ -2712,6 +2712,18 @@ async def node_recommend(state: PipelineStateV2) -> dict:
     l4_phase_started = time.perf_counter()
     if distribution_policy is not None:
         from services.l4_distribution_context import prepare_runtime_policy
+        from services.l4_opb_arm_replay import refresh_before_plan
+        # v3 OPB: price the session that closed on run_date for days already solved, before
+        # the plan reads rewards. No snapshot read and no solve here (the nightly replay job
+        # owns those), and its own deadline stops it starting days, so nothing is left
+        # running in a thread after the plan moves on.
+        opb_refresh = await asyncio.to_thread(refresh_before_plan, trading_cfg, state['run_date'])
+        if opb_refresh['status'] not in ('ok', 'skipped'):
+            logger.warning("[Pipeline V2] L4 OPB pre-plan replay %s; plan uses booked evidence only: %s",
+                           opb_refresh['status'], opb_refresh.get('failed_dates') or opb_refresh.get('reason'))
+        if opb_refresh.get('rejected_dates'):
+            logger.warning("[Pipeline V2] L4 OPB replay rejected (input digest mismatch, terminal): %s",
+                           opb_refresh['rejected_dates'])
         alpha_policy = dict(alpha_policy or {})
         alpha_policy['l4Distribution'] = await asyncio.to_thread(prepare_runtime_policy,
             policy=distribution_policy, signal_date=state['run_date'],

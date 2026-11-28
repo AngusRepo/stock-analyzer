@@ -7,7 +7,18 @@
       "runtime_owned": [
         "alphaFramework.allocation.controller",
         "alphaFramework.allocation.opbArmPrior"
-      ]
+      ],
+      "fields": {
+        "l4Distribution.opb.market_proxy": {
+          "owner": "trading:config",
+          "type": "string",
+          "pattern": "^00[0-9]{2,4}$",
+          "optional": true,
+          "default_owner": "ml-controller/services/l4_opb_selection.py:MARKET_PROXY_DEFAULT",
+          "optuna": false,
+          "note": "OPB v3 reward market proxy and replay calendar. TW ETF codes only, because the five-session label calendar (forward_net_return) stays on 0050. Not in any Optuna search space; changed by hand only. Writing the default explicitly keeps the OPB ledger context identity, the approved policy identity, the cutover policy comparison and the R2 allocation checksum; the trading:config digest still changes (expected drift alert), and other checksums over the full config follow the stored value."
+        }
+      }
     },
     "trading:risk_config": {
       "digest": "b1f9c64776dd812431ed935af7aae4a3070a8238fbfade134da2a8dd8d937dd0",

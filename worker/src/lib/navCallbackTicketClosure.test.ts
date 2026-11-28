@@ -384,8 +384,12 @@ test('queued Active-8 awaiting premarket parks its ticket and acknowledges witho
   f.env.PAPER_DAILY_PLAN_OWNER = 'premarket_once_v1'
   f.env.ML_CONTROLLER_URL = 'https://controller.invalid'
   const originalFetch = globalThis.fetch
-  let requests = 0
-  globalThis.fetch = (async () => { requests++; throw new Error('unexpected dispatch') }) as typeof fetch
+  let requests = 0, replays = 0
+  globalThis.fetch = (async (url: any) => {
+    // Without the OOF job tonight the OPB arm replay is booked on its own (research evidence only).
+    if (String(url).endsWith('/l4_distribution/opb-arm-replay')) { replays++; throw new Error('controller down') }
+    requests++; throw new Error('unexpected dispatch')
+  }) as typeof fetch
   try {
     const message = { type: 'active8_oof_continuation', cursor: 0, triggerTime: f.day,
       oofCadence: 'daily', oofContinuationAttempt: 1,
@@ -399,5 +403,6 @@ test('queued Active-8 awaiting premarket parks its ticket and acknowledges witho
     await processUpdateBatch(message, f.env, {} as any)
     assert.equal((await f.row(f.child.ticket_id)).attempt_count, settled.attempt_count, 'waiting does not consume attempts')
     assert.equal(requests, 0)
+    assert.equal(replays, 2, 'a failed independent replay never changes the ticket and is retried')
   } finally { globalThis.fetch = originalFetch }
 }))

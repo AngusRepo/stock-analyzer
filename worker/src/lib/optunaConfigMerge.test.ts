@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { L4_OPB_MARKET_PROXY_PATTERN } from './l4PolicySchema'
 import {
   COMPOSITE_OPTUNA_CONFIG_SOURCES,
   mergeCompositeOptunaCandidate,
@@ -103,4 +105,28 @@ assert.throws(
     { field: 'alphaFramework.allocation.alpha_strength', reason: 'l4_distribution_owns_allocation_params' },
   ])
   assert.deepEqual(candidate.skippedFields, [], 'v1 configs keep writing alphaFramework.allocation')
+}
+
+// Wei 11/28: l4Distribution.opb.market_proxy is owned by trading:config and never searched
+// by Optuna. No source may write it, whatever its params carry (config/kv/manifest.json
+// fields: optuna=false; ml-controller test_l4_opb_v3_replay locks the search spaces).
+{
+  const current = structuredClone(DEFAULT_TRADING_CONFIG) as any
+  current.l4Distribution = { policy_schema: 'l4-distribution-policy-v2', constraints: { risk_aversion: 2 },
+    opb: { schema_version: 'l4-opb-selection-arms-v3', market_proxy: '0050', arms: [{ id: 'base' }] } }
+  const before = JSON.stringify(current.l4Distribution)
+  const hostile = { market_proxy: '00999', marketProxy: '00999', opb: { market_proxy: '00999' },
+    l4Distribution: { opb: { market_proxy: '00999' } } }
+  const poisoned = Object.fromEntries(Object.entries(sources).map(([k, v]) => [k, { ...v, ...hostile }]))
+  poisoned.alpha_framework = { ...sources.alpha_framework, ...hostile,
+    alphaFramework: { ...(sources.alpha_framework.alphaFramework ?? {}), ...hostile } }
+  const merged = mergeCompositeOptunaCandidate(current, poisoned, mergeAlphaFrameworkConfig)
+  assert.equal(JSON.stringify(merged.config.l4Distribution), before, 'Optuna never touches l4Distribution')
+  assert.ok(!merged.updatedFields.some(field => /market_?proxy/i.test(field)), merged.updatedFields.join())
+  const manifest = JSON.parse(readFileSync(new URL('../../../config/kv/manifest.json', import.meta.url), 'utf8'))
+  const field = manifest.keys['trading:config'].fields['l4Distribution.opb.market_proxy']
+  assert.equal(field.optuna, false)
+  assert.equal(field.owner, 'trading:config')
+  assert.equal(new RegExp(field.pattern).source, L4_OPB_MARKET_PROXY_PATTERN.source)
+  for (const source of COMPOSITE_OPTUNA_CONFIG_SOURCES) assert.ok(!/market_?proxy/i.test(source))
 }

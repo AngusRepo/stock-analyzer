@@ -9,3 +9,6 @@
 - Worker task `kv-config-drift` (scheduler, nightly) digests the live KV values against this file on
   `main` and fails, raising the scheduler alert, on drift.
 - Digest a value: `cd worker && npx tsx scripts/kvConfigDigest.ts <kv-key> <value-file> <digest-key-file>`.
+- `fields` documents config fields with a single owner (type, pattern, default owner) and whether
+  Optuna may search them (`optuna: false`: never in a search space, changed by hand only). It does not
+  enter the digest.

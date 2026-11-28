@@ -516,3 +516,287 @@ def test_prepare_never_packets_a_fail_closed_worker_view(tmp_path, monkeypatch, 
         tool.main()
     assert clock.now == 120.0 and len(calls) == 25
     assert not (out / 'policy-chain.json').exists() and list(out.iterdir()) == []
+
+
+# --- OPB v2 -> v3 schema change (l4-policy-opb-schema-change-v1) ----------------------------------
+
+def _v2_world():
+    """Live raw / merged trading:config at a v2 policy (V1_POLICY after the owner move) and its risk_config."""
+    from copy import deepcopy
+    from services.l4_release_packet import prepare_policy_v2_packet
+    from services.active_model_policy import gnn_return_history_lookback
+    from test_strategy_nav_runtime_approval import RISK_DEFAULTS, V1_POLICY
+    raw = {'l4Distribution': deepcopy(V1_POLICY), 'position': {'maxPctOfPortfolio': .25, 'maxPositions': 5},
+           'circuit': {'maxPositionPct': .08, 'highVolReducedPosPct': .04}, 'fees': {'commission': .001425}}
+    risk = {'system': {'killSwitch': False}, 'portfolio': {'dailyPnlLossLimitPct': -.03},
+            'position': {'maxSingleNamePct': .25}, 'order': {}}
+    v2 = prepare_policy_v2_packet(raw_config=raw, merged_config=deepcopy(raw), risk_config=risk,
+        risk_defaults=RISK_DEFAULTS, lookback=gnn_return_history_lookback(), cost_objective='entry_round_trip_v1',
+        engineering_receipt={'r': 'v2'}, source_reference='test-only v2')
+    return v2['next_config'], v2['next_merged_config'], v2['next_risk_config']
+
+
+def _v3_opb(**overrides):
+    from copy import deepcopy
+    from test_strategy_nav_runtime_approval import V3_OPB
+    return {**deepcopy(V3_OPB), **overrides}
+
+
+def test_opb_change_replaces_only_the_opb_block_and_recomputes_the_identity():
+    from services.l4_distribution_runtime import distribution_policy_identity
+    from services.l4_opb_selection import is_v3
+    from services.l4_policy_activation import OPB_CHANGE_SCHEMA, SCHEMAS, expected_configuration, opb_change_document
+    from services.paired_nav_journal import digest
+    raw, merged, risk = _v2_world()
+    assert OPB_CHANGE_SCHEMA in SCHEMAS
+    activation, config = opb_change_document(merged, opb=_v3_opb(), engineering_receipt_checksum='e' * 64,
+                                             source_reference='x')
+    old, new = merged['l4Distribution'], config['l4Distribution']
+    assert is_v3(new) and {k: v for k, v in new.items() if k != 'opb'} == {k: v for k, v in old.items() if k != 'opb'}
+    assert {k: v for k, v in new['opb'].items() if k not in ('approved_policy_identity', 'migration')} == _v3_opb()
+    assert new['opb']['migration']['source_policy_identity'] == old['opb']['approved_policy_identity']
+    assert new['opb']['approved_policy_identity'] == distribution_policy_identity(new, new['artifact']['l3_identity'])
+    assert {k: v for k, v in config.items() if k != 'l4Distribution'} == {
+        k: v for k, v in merged.items() if k != 'l4Distribution'}
+    assert activation['schema_version'] == OPB_CHANGE_SCHEMA and activation['opb'] == _v3_opb()
+    assert activation['previous_policy_checksum'] == digest(old) and activation['next_policy_checksum'] == digest(new)
+    state = {'trading_config': merged, 'risk_config': risk}
+    assert expected_configuration(state, activation) == (config, risk)
+    for field, value in (('next_policy_checksum', '0' * 64), ('next_policy_identity', '0' * 64),
+                         ('opb', _v3_opb(hac_lag_sessions=3)), ('previous_policy_checksum', '0' * 64),
+                         ('maturity_transfer', True), ('engineering_receipt_checksum', '')):
+        with pytest.raises(ValueError):
+            expected_configuration(state, {**activation, field: value})
+
+
+def _required_v3_keys():
+    from services.l4_opb_selection import V3_CONFIG_KEYS
+    return sorted(V3_CONFIG_KEYS - {'approved_policy_identity', 'migration'})
+
+
+@pytest.mark.parametrize('missing', _required_v3_keys())
+def test_opb_change_requires_every_v3_knob_written_out(missing):
+    from services.l4_policy_activation import next_opb_policy
+    _, merged, _ = _v2_world()
+    opb = {k: v for k, v in _v3_opb().items() if k != missing}
+    with pytest.raises(ValueError, match='opb_change_(field_missing:' + missing + '|target_not_v3)'):
+        next_opb_policy(merged['l4Distribution'], opb)
+
+
+@pytest.mark.parametrize('opb,reason', [
+    ({'approved_policy_identity': 'b' * 64}, 'opb_change_unknown_or_derived_field'),
+    ({'exploration': .05}, 'opb_change_unknown_or_derived_field'),
+    ({'enabled': 1}, 'opb_change_enabled'),
+    ({'schema_version': 'l4-opb-relative-arms-v2'}, 'opb_change_target_not_v3'),
+    ({'family_error_rate': .6}, 'family_error_rate_invalid'),
+    ({'market_proxy': '2330'}, 'market_proxy_invalid'),
+    ({'cutover_warm_start': {'enabled': True, 'max_observations': 61}}, 'cutover_warm_start_invalid'),
+    ({'arms': [{'id': 'base'}, {'id': 'half', 'exposure_fraction': .5}]}, 'forbidden_override'),
+    ({'arms': [{'id': 'alpha_tilt', 'risk_aversion': .5}]}, 'base_arm_required')])
+def test_opb_change_refuses_an_invalid_v3_block(opb, reason):
+    from services.l4_policy_activation import next_opb_policy
+    _, merged, _ = _v2_world()
+    with pytest.raises(ValueError, match=reason):
+        next_opb_policy(merged['l4Distribution'], _v3_opb(**opb))
+
+
+def test_opb_change_derives_the_v2_to_v3_migration_record_from_the_source_policy():
+    from copy import deepcopy
+    from services.l4_distribution_runtime import distribution_policy_identity
+    from services.l4_policy_activation import next_opb_policy
+    _, merged, _ = _v2_world()
+    source = deepcopy(merged['l4Distribution'])
+    policy = next_opb_policy(source, _v3_opb())
+    assert source == merged['l4Distribution']
+    assert policy['opb']['migration'] == {
+        'source_policy_identity': source['opb']['approved_policy_identity'],
+        'arm_semantic': 'allocator_selection_override',
+        'replaced_v2_arms': source['opb']['arms'],
+        'v2_migration': source['opb']['migration']}
+    assert policy['opb']['migration']['v2_migration']['arm_semantic'] == 'fraction_of_risk_envelope'
+    # The record is inside the identity: it names what this policy replaced.
+    assert policy['opb']['approved_policy_identity'] == distribution_policy_identity(policy, policy['artifact']['l3_identity'])
+    stripped = deepcopy(policy)
+    del stripped['opb']['migration']
+    assert distribution_policy_identity(stripped, stripped['artifact']['l3_identity']) != policy['opb']['approved_policy_identity']
+
+
+def test_opb_change_migration_follows_the_source_policy_it_replaces():
+    from copy import deepcopy
+    from services.l4_distribution_runtime import distribution_policy_identity
+    from services.l4_policy_activation import next_opb_policy
+    _, merged, _ = _v2_world()
+    other = deepcopy(merged['l4Distribution'])
+    other['opb']['migration'] = {**other['opb']['migration'], 'exploration_removed': .2}
+    other['opb']['approved_policy_identity'] = distribution_policy_identity(other, other['artifact']['l3_identity'])
+    a = next_opb_policy(merged['l4Distribution'], _v3_opb())['opb']
+    b = next_opb_policy(other, _v3_opb())['opb']
+    assert b['migration']['source_policy_identity'] == other['opb']['approved_policy_identity']
+    assert b['migration']['v2_migration']['exploration_removed'] == .2
+    assert a['migration'] != b['migration'] and a['approved_policy_identity'] != b['approved_policy_identity']
+
+
+@pytest.mark.parametrize('record', ['derived', 'other'])
+def test_opb_change_refuses_a_caller_supplied_migration_even_when_it_matches(record):
+    from services.l4_policy_activation import next_opb_policy
+    _, merged, _ = _v2_world()
+    derived = next_opb_policy(merged['l4Distribution'], _v3_opb())['opb']['migration']
+    supplied = derived if record == 'derived' else {'source_policy_identity': 'b' * 64}
+    with pytest.raises(ValueError, match='opb_change_unknown_or_derived_field'):
+        next_opb_policy(merged['l4Distribution'], _v3_opb(migration=supplied))
+
+
+@pytest.mark.parametrize('identity', [None, '', 7, 'b' * 64, 'stale'])
+def test_opb_change_refuses_a_source_whose_identity_is_not_its_own(identity):
+    """The source identity is recomputed from the v2 policy; a well-formed but wrong 64-hex
+    value, or the identity of the policy before an edit, fails closed."""
+    from copy import deepcopy
+    from services.l4_distribution_runtime import distribution_policy_identity
+    from services.l4_policy_activation import next_opb_policy
+    _, merged, _ = _v2_world()
+    source = deepcopy(merged['l4Distribution'])
+    assert source['opb']['approved_policy_identity'] == distribution_policy_identity(
+        source, source['artifact']['l3_identity'])
+    if identity == 'stale':
+        source['constraints']['risk_aversion'] = source['constraints']['risk_aversion'] + 1.
+    else:
+        source['opb']['approved_policy_identity'] = identity
+    with pytest.raises(ValueError, match='opb_change_source_identity'):
+        next_opb_policy(source, _v3_opb())
+
+
+@pytest.mark.parametrize('source', ['v3', 'v1', 'live_scope', 'no_opb'])
+def test_opb_change_source_must_be_a_v2_paper_relative_arms_policy(source):
+    from copy import deepcopy
+    from services.l4_policy_activation import next_opb_policy
+    from test_strategy_nav_runtime_approval import V1_POLICY
+    _, merged, _ = _v2_world()
+    policy = deepcopy(merged['l4Distribution'])
+    if source == 'v3': policy = next_opb_policy(policy, _v3_opb())
+    elif source == 'v1': policy = deepcopy(V1_POLICY)
+    elif source == 'live_scope': policy['scope'] = 'live'
+    elif source == 'no_opb': del policy['opb']
+    with pytest.raises(ValueError, match='opb_change_source_not_v2'):
+        next_opb_policy(policy, _v3_opb())
+
+
+@pytest.mark.parametrize('field, value, reason', [
+    ('return_history_lookback_sessions', 10, 'l4_policy_v2_lookback_invalid'),
+    ('risk_aversion', -1., 'l4_policy_v2_risk_aversion_invalid'),
+    ('cost_objective', 'none', 'l4_policy_v2_cost_objective_invalid')])
+def test_opb_change_revalidates_the_source_constraints(field, value, reason):
+    """The OPB link keeps every constraint as it is, so it must not carry an invalid one forward."""
+    from copy import deepcopy
+    from services.l4_policy_activation import next_opb_policy
+    _, merged, _ = _v2_world()
+    from services.l4_distribution_runtime import distribution_policy_identity
+    policy = deepcopy(merged['l4Distribution'])
+    policy['constraints'][field] = value
+    policy['opb']['approved_policy_identity'] = distribution_policy_identity(policy, policy['artifact']['l3_identity'])
+    with pytest.raises(ValueError, match=reason):
+        next_opb_policy(policy, _v3_opb())
+
+
+def test_opb_packet_writes_only_trading_config_and_links_into_the_chain():
+    from services.l4_release_packet import prepare_policy_change_packet, prepare_policy_opb_packet
+    raw, merged, risk = _v2_world()
+    packet = prepare_policy_opb_packet(raw_config=raw, merged_config=merged, risk_config=risk, opb=_v3_opb(),
+                                       engineering_receipt={'r': 1}, source_reference='test')
+    assert packet['schema_version'] == 'l4-policy-opb-packet-v1'
+    assert packet['write_order'] == packet['rollback_order'] == ['trading:config']
+    assert packet['rollback_config'] == raw and packet['rollback_risk_config'] == packet['next_risk_config'] == risk
+    assert packet['next_config'] == {**raw, 'l4Distribution': packet['next_merged_config']['l4Distribution']}
+    assert packet['approved_policy_identity'] == packet['next_merged_config']['l4Distribution']['opb'][
+        'approved_policy_identity'] == packet['activation']['next_policy_identity']
+    states = chain_states([packet])
+    assert states[0] == {T: raw, R: risk} and states[1] == {T: packet['next_config'], R: risk}
+    assert step_writes([packet], {T: raw, R: risk}, 1) == (0, [(T, raw, packet['next_config'])])
+    assert step_writes([packet], {T: packet['next_config'], R: risk}, 0) == (1, [(T, packet['next_config'], raw)])
+    with pytest.raises(ValueError, match='drift'):
+        step_writes([packet], {T: packet['next_config'], R: {'other': 1}}, 0)
+    # A constraints change may follow the v3 link; a second OPB schema change may not (source is v3).
+    nxt = prepare_policy_change_packet(packet, changes={'risk_aversion': 3.}, engineering_receipt={'r': 2},
+                                       source_reference='test')
+    assert len(chain_states([packet, nxt])) == 3
+    assert nxt['next_merged_config']['l4Distribution']['opb']['schema_version'] == 'l4-opb-selection-arms-v3'
+    assert nxt['write_order'] == nxt['rollback_order'] == ['trading:config']
+    with pytest.raises(ValueError, match='opb_change_source_not_v2'):
+        prepare_policy_opb_packet(raw_config=packet['next_config'], merged_config=packet['next_merged_config'],
+            risk_config=risk, opb=_v3_opb(), engineering_receipt={'r': 3}, source_reference='test')
+    with pytest.raises(ValueError, match='l4_policy_opb_raw_policy_not_merged_policy'):
+        prepare_policy_opb_packet(raw_config={**raw, 'l4Distribution': {**raw['l4Distribution'], 'scope': 'live'}},
+            merged_config=merged, risk_config=risk, opb=_v3_opb(), engineering_receipt={'r': 1}, source_reference='t')
+
+
+def test_opb_change_declares_no_risk_field():
+    from services.l4_policy_activation import declared_risk_fields, opb_change_document
+    _, merged, _ = _v2_world()
+    activation, _ = opb_change_document(merged, opb=_v3_opb(), engineering_receipt_checksum='e' * 64,
+                                        source_reference='x')
+    assert declared_risk_fields(activation) == {}
+
+
+def test_release_policy_keys_accept_the_opb_schema_change():
+    from services.l4_policy_activation import OPB_CHANGE_SCHEMA
+    chain = [{'schema_version': OPB_CHANGE_SCHEMA}]
+    manifest, behavior = with_policy_activations({}, {'runtime_admission': 'S'}, chain=chain, keys=['P1'])
+    assert manifest['policy_activations'] == chain and behavior['policy_runtime_admissions'] == ['P1']
+
+
+def _opb_activate_world(tmp_path, monkeypatch, *, at):
+    """_ActivateWorld with S = the v2 world and P1 = its v3 OPB link (trading:config only)."""
+    import json
+    from services import active8_nav_adoption, active8_paper_admission
+    from services.l4_policy_activation import chain_states
+    from services.l4_release_packet import prepare_policy_opb_packet
+    from services.paired_nav_journal import digest
+    world = _ActivateWorld(tmp_path, monkeypatch, at=0)
+    raw, merged, risk = _v2_world()
+    packet = prepare_policy_opb_packet(raw_config=raw, merged_config=merged, risk_config=risk, opb=_v3_opb(),
+                                       engineering_receipt={'r': 1}, source_reference='test')
+    world.chain, world.states = [packet], chain_states([packet])
+    source = {'admission': {'a': 1}, 'approval_checksum': 's' * 64,
+              'configuration': {'trading_config': merged, 'risk_config': risk}}
+    p1 = {'admission': {'a': 1}, 'approval_checksum': 'p' * 64,
+          'configuration': {'trading_config': packet['next_merged_config'], 'risk_config': risk},
+          'approved_l4_execution_policy_change': {'activation_checksums': [digest(packet['activation'])]}}
+    world.grants = [source, p1]
+    world.kv = {'grant:s': source, 'grant:p1': p1, **json.loads(json.dumps(world.states[at]))}
+    (world.out / 'policy-chain.json').write_text(json.dumps(world.chain), encoding='utf-8')
+    (world.out / 'policy-grants.json').write_text(json.dumps([p1]), encoding='utf-8')
+    # S and P1 share risk_config: the live grant is the one whose policy KV holds.
+    live = lambda: (p1 if world.kv['trading:config'] == packet['next_config'] else source)
+    monkeypatch.setattr(active8_nav_adoption, 'current_execution_configuration', lambda: live()['configuration'])
+    monkeypatch.setattr(active8_paper_admission, 'verify_active_approval', lambda adm: live())
+    return world, packet
+
+
+def test_activate_dry_run_to_the_opb_link_plans_one_trading_config_write(tmp_path, monkeypatch):
+    from services.paired_nav_journal import digest
+    world, packet = _opb_activate_world(tmp_path, monkeypatch, at=0)
+    before = dict(world.kv)
+    world.activate('1', execute=False)
+    plan = world.receipt('activation-source-P1-dry-run.json')
+    assert plan['mode'] == 'dry_run' and (plan['from'], plan['to']) == ('source', 'P1')
+    assert plan['writes'] == [{'key': 'trading:config', 'from_checksum': digest(packet['rollback_config']),
+                               'to_checksum': digest(packet['next_config'])}]
+    assert plan['grant_checksum'] == 'p' * 64 and world.kv == before
+
+
+@pytest.mark.parametrize('at,to,receipt', [(0, '1', 'activation-source-P1-receipt.json'),
+                                           (1, 'source', 'activation-P1-source-receipt.json')])
+def test_activate_moves_the_opb_link_and_the_worker_risk_view_must_not_move(tmp_path, monkeypatch, at, to, receipt):
+    world, packet = _opb_activate_world(tmp_path, monkeypatch, at=at)
+    world.activate(to)
+    assert world.receipt(receipt)['status'] == 'config_written_readback_verified'
+    assert world.kv['trading:config'] == (packet['next_config'] if to == '1' else packet['rollback_config'])
+    assert world.kv['trading:risk_config'] == packet['rollback_risk_config']
+    assert world.expectations == [(at, 1 - at)]
+
+
+def test_activate_refuses_an_opb_step_that_moved_the_worker_risk_view(tmp_path, monkeypatch):
+    world, _ = _opb_activate_world(tmp_path, monkeypatch, at=0)
+    moved = {'http_status': 200, 'body': {'source': 'kv', 'effective': {**world.view(), 'portfolio': {'x': 1}}}}
+    world.script = ['live'] + [moved] * 40
+    with pytest.raises(RuntimeError, match='worker_effective_risk_config_changed'):
+        world.activate('1')

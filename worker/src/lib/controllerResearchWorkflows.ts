@@ -470,6 +470,11 @@ export async function runActive8OofLifecycle(
             WHERE ticket_id=? AND run_id=?`).bind(options.schedulerTicketId, options.schedulerRunId)
             .first<{ticket_kind: string}>() : null
       const park = waitingOwner?.ticket_kind === 'logical_child' || options.continuationAttempt != null
+      // The OPB arm replay rides the OOF job; without the job tonight, book it on its own
+      // (2026-11-19: a pipeline error stopped the replay ledger for 3.5 days).
+      const { dispatchIndependentOpbReplay } = await import('./opbIndependentReplay')
+      // Never changes the task status; terminal rejections surface as `attention=` only.
+      const opbAttention = / attention=\S+/.exec(await dispatchIndependentOpbReplay(env, runDate))?.[0] ?? ''
       if (park && options.schedulerTicketId && options.schedulerRunId) {
         await parkActive8PremarketTicket(env, {
           type: 'active8_oof_continuation', cursor: 0, triggerTime: runDate,
@@ -479,7 +484,7 @@ export async function runActive8OofLifecycle(
         }, wait)
       }
       return `${park ? wait : wait.replace('status=pending', 'status=skipped')} signal_date=${runDate}`
-        + (premarket ? '' : ` pipeline_status=${stage?.status ?? 'missing'}`)
+        + (premarket ? '' : ` pipeline_status=${stage?.status ?? 'missing'}`) + opbAttention
     }
   }
 

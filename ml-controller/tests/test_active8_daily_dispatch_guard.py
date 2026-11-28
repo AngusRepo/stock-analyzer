@@ -70,6 +70,19 @@ def execution(name="one", state="running", day=DAY, claim="", cadence="daily"):
               conditions=[NS(type_="Completed", state=condition)])
 
 
+class ListPage:
+    """One ListExecutions response as the GAPIC pager exposes it: `executions` and
+    `next_page_token` are this page only; iterating fetches the rest (as the pager does)."""
+    def __init__(self, items, request):
+        start = int(getattr(request, 'page_token', '') or 0)
+        size = int(getattr(request, 'page_size', 0) or 0) or max(len(items), 1)
+        self._rest, self.executions = items[start:], items[start:start + size]
+        self.next_page_token = str(start + size) if start + size < len(items) else ''
+
+    def __iter__(self):
+        return iter(self._rest)
+
+
 class Client:
     _parent = PARENT
 
@@ -85,7 +98,7 @@ class Client:
     def list_executions(self, request, **kwargs):
         assert kwargs["retry"] is None and 0 < kwargs["timeout"] <= 8
         self.lookups.append("list")
-        return iter(self.executions)
+        return ListPage(list(self.executions), request)
 
     def get_execution(self, request, **kwargs):
         assert kwargs["retry"] is None and 0 < kwargs["timeout"] <= 8
@@ -315,7 +328,7 @@ def test_source_lookup_uses_same_deadline_and_no_sdk_retries(monkeypatch):
         def list_executions(self, request, **kwargs):
             observed.append(("active", kwargs))
             clock[0] += 7
-            return []
+            return NS(executions=[], next_page_token="")
     client = CloudRunJobsClient(project_id="p", region="r", job_name="active8-oof-materialize")
     client._client, client._executions_client = Jobs(), Executions()
     client.run_job(expected_source_sha=SOURCE, deadline_seconds=20)
@@ -338,3 +351,45 @@ def test_source_lookup_cannot_dispatch_after_deadline_exhausted(monkeypatch):
     client._client = Jobs()
     with pytest.raises(TimeoutError, match="active_lookup_deadline"):
         client.run_job(expected_source_sha=SOURCE, deadline_seconds=5)
+
+
+def test_opb_replay_executions_do_not_spend_the_daily_scan_budget():
+    # 31 nights at the Worker's per-night cap (4) of replay executions, newest first,
+    # then a daily execution that is still found: the 100-item budget counts daily only.
+    replays = [execution(name=f"opb-{i}", state="succeeded", cadence=guard.REPLAY_CADENCE, day="")
+               for i in range(31 * 4)]
+    bucket, client = Bucket(), Client([*replays, execution(name="daily-1", state="running")])
+    with pytest.raises(JobAlreadyRunningError):
+        dispatch(client, bucket)
+    assert bucket.state()["execution_name"].endswith("/daily-1") and client.dispatches == []
+    # Still bounded: more replay executions than the allowance fail closed, and 101
+    # other executions still exhaust the daily budget behind any number of replays.
+    over = [execution(name=f"opb-{i}", cadence=guard.REPLAY_CADENCE, day="") for i in range(guard.REPLAY_SCAN_LIMIT + 1)]
+    with pytest.raises(guard.DailyDispatchBlocked, match="scan_budget"):
+        dispatch(Client(over), Bucket())
+    daily = [execution(name=str(i), day="2026-10-15") for i in range(101)]
+    with pytest.raises(guard.DailyDispatchBlocked, match="scan_budget"):
+        dispatch(Client([*replays, *daily]), Bucket())
+
+
+def test_history_scan_requests_each_page_with_what_is_left_of_the_deadline(monkeypatch):
+    """Round 15: the GAPIC pager fetches later pages with its first timeout; the scan asks
+    page by page, each with min(8, remaining), and starts none with under MIN_PAGE_SECONDS."""
+    clock = [0.0]
+    monkeypatch.setattr("time.monotonic", lambda: clock[0])
+    client = Client([execution(name=str(i), cadence=guard.REPLAY_CADENCE) for i in range(250)])
+    timeouts = []
+    listed = client.list_executions
+
+    def slow(request, step, **kwargs):
+        timeouts.append(kwargs["timeout"])
+        clock[0] += min(step, kwargs["timeout"])
+        return listed(request, **kwargs)
+    client.list_executions = lambda request, **kw: slow(request, 5.5, **kw)
+    assert len(list(guard._since(client, DAY, 18.0))) == 250
+    assert timeouts == [8.0, 8.0, 7.0] and clock[0] <= 18.0
+    clock[0], timeouts[:] = 0.0, []
+    client.list_executions = lambda request, **kw: slow(request, 8, **kw)
+    with pytest.raises(TimeoutError):
+        list(guard._since(client, DAY, 16.5))
+    assert timeouts == [8.0, 8.0], "no third page with 0.5 s left"

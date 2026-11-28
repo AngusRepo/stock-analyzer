@@ -60,8 +60,17 @@ def prepare_runtime_policy(*,policy,signal_date,predictions,manifest,account_rea
             logging.getLogger(__name__).warning('[L4] r33 rank pool has no row for held symbols=%s',unranked)
     from services.l4_execution_evidence import bind_calibration_packets
     frozen['runtime'].update(bind_calibration_packets(frozen,signal_date))
-    from services.l4_opb_selection import context_identity, is_v2
-    if reward_reader is None and is_v2(frozen):
+    from services.l4_opb_selection import context_identity, is_v2, is_v3
+    if reward_reader is None and is_v3(frozen):
+        # v3 learns from the session-piece replay ledger, frozen into the plan inputs.
+        def reward_reader():
+            from services.d1_domain_client import client_proxy_for_domain
+            return client_proxy_for_domain('learning').query(
+                'SELECT context_identity,signal_date,arm_digest,session_offset,schema_version,reward_semantic,'
+                'row_kind,status,known_date,delta,market_piece,arm_exposure,base_exposure FROM l4_opb_arm_replay_v2 '
+                'WHERE context_identity=? AND known_date<=? ORDER BY signal_date,arm_digest,session_offset',
+                [context_identity(frozen, identity), signal_date])
+    elif reward_reader is None and is_v2(frozen):
         # v2 learns only from the full-information arm replay ledger. Rows are
         # frozen into the plan inputs, so replan/replay reproduce the choice.
         def reward_reader():

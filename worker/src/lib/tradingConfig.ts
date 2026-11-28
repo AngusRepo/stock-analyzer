@@ -4,7 +4,7 @@ import { validateR2Learning } from './l4R2LearningConfig'
 import { validL4FeatureSchema, l4ReleaseEvidenceError } from './l4ReleaseEvidence'
 import { evaluateBoundedLosses } from './riskChecks/p5Losses'
 import { circuitPositionScales } from './circuitPositionScales'
-import { L4_POLICY_V2, L4_V2_ALLOCATOR_KEYS, L4_V2_COST_OBJECTIVES } from './l4PolicySchema'
+import { L4_OPB_V2, L4_OPB_V3, L4_POLICY_V2, L4_V2_ALLOCATOR_KEYS, L4_V2_COST_OBJECTIVES, l4OpbV3Error } from './l4PolicySchema'
 import { paperExecutionNow, paperExecutionDate, privateL4ResearchAllowed } from './paperExecutionScope'
 /**
  * tradingConfig.ts — 統一交易參數管理
@@ -1690,7 +1690,10 @@ export function validateTradingConfig(config: TradingConfig, privateResearch = f
         || !Number.isSafeInteger(c.return_history_lookback_sessions) || Number(c.return_history_lookback_sessions)<60
         || Number(c.return_history_lookback_sessions)>504 || !isFiniteNumber(c.risk_aversion) || c.risk_aversion<0)
         errors.push('l4Distribution v2 constraints must hold allocator-owned parameters only')
-      if (opb?.schema_version!=='l4-opb-relative-arms-v2' || !Array.isArray(opb.arms) || opb.arms[0]?.id!=='base'
+      if (opb?.schema_version===L4_OPB_V3) {
+        const error=l4OpbV3Error(opb)
+        if (error) errors.push(`l4Distribution v3 OPB selection arms are invalid: ${error}`)
+      } else if (opb?.schema_version!==L4_OPB_V2 || !Array.isArray(opb.arms) || opb.arms[0]?.id!=='base'
         || Object.keys(opb.arms[0]).length!==1 || 'exploration' in opb
         || !Number.isSafeInteger(opb.reward_window_observations) || opb.reward_window_observations<1
         || !isFiniteNumber(opb.reward_half_life_observations) || opb.reward_half_life_observations<=0
@@ -1698,6 +1701,9 @@ export function validateTradingConfig(config: TradingConfig, privateResearch = f
           || ['exposure_fraction','name_fraction'].some(k=>arm[k]!==undefined && (!isFiniteNumber(arm[k]) || arm[k]<=0 || arm[k]>1))
           || arm.risk_aversion!==undefined && (!isFiniteNumber(arm.risk_aversion) || arm.risk_aversion<0)))
         errors.push('l4Distribution v2 OPB arms must be fractions of the risk envelope')
+      // The market proxy is the v3 reward's (l4_opb_selection.validate_arms rejects it on v2).
+      if (opb?.schema_version!==L4_OPB_V3 && opb && typeof opb==='object' && 'market_proxy' in opb)
+        errors.push('l4Distribution opb.market_proxy is a v3 OPB field')
       if (!config.circuit.positionScales) errors.push('l4Distribution v2 requires circuit.positionScales')
       if ('maxPctOfPortfolio' in (config.position as any))
         errors.push('l4Distribution v2 forbids position.maxPctOfPortfolio (risk_config owns the single-name cap)')

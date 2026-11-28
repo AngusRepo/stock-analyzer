@@ -1,5 +1,5 @@
 from typing import Literal
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 from services.d1_domain_client import client_proxy_for_domain
 from services.l4_distribution_context import worker_request, publish_plan
@@ -79,3 +79,27 @@ def monthly_training_closure(checksum: str):
         return verify(checksum, bucket(), client_proxy_for_domain('learning'))
     except (ValueError, KeyError) as exc:
         raise HTTPException(409, str(exc)) from exc
+
+
+class OpbArmReplayRequest(BaseModel):
+    business_date: str = Field(pattern=r'^\d{4}-\d{2}-\d{2}$')
+
+
+@router.post('/opb-arm-replay')
+async def opb_arm_replay(request: OpbArmReplayRequest):
+    """Start the OPB arm replay outside the OOF job (research evidence; no Paper/KV effect).
+
+    The Worker calls it on nights active8-oof-daily does not dispatch the job, so a
+    failed pipeline or premarket no longer stops the ledger. It only starts a Cloud
+    Run Job execution and returns; the job writes l4_opb_arm_replay_runs_v1, which
+    the Worker's next tick reads.
+    """
+    import asyncio
+    import time
+    # One budget from here: config read, GCS claim, execution list and RunJob together.
+    from services.l4_opb_replay_dispatch import TOTAL_DEADLINE_SECONDS, dispatch_independent_replay
+    deadline = time.monotonic() + TOTAL_DEADLINE_SECONDS
+    try:
+        return await asyncio.to_thread(dispatch_independent_replay, request.business_date, deadline=deadline)
+    except Exception as exc:
+        raise HTTPException(503, f'opb_arm_replay_dispatch_failed:{type(exc).__name__}') from exc

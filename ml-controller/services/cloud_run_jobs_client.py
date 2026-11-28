@@ -34,6 +34,34 @@ class JobExecution:
     execution_id: str    # Short tail (pipeline-v2-xxxxx)
 
 
+# Executions are listed one ListExecutions call per page. The GAPIC pager fetches every later
+# page with the timeout fixed when its first call started, so a long history could run past
+# the caller's deadline; here each page gets what is left (at most MAX_PAGE_SECONDS) and none
+# starts with less than MIN_PAGE_SECONDS left (TimeoutError instead). Engineering bounds.
+MIN_PAGE_SECONDS = 1.0
+MAX_PAGE_SECONDS = 8.0
+
+
+def executions_newest_first(client, deadline: float, page_size: int, *, error: str):
+    """Executions of `client`'s job (anything with _get_executions_client and _parent),
+    creation-time descending, fetched lazily page by page within `deadline` (monotonic)."""
+    import time
+    token = ""
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining < MIN_PAGE_SECONDS:
+            raise TimeoutError(error)
+        page = client._get_executions_client().list_executions(
+            request=run_v2.ListExecutionsRequest(parent=client._parent, page_size=page_size, page_token=token),
+            timeout=min(MAX_PAGE_SECONDS, remaining), retry=None,
+        )
+        # This page only (the pager's own response); the next one is requested here.
+        yield from page.executions
+        token = page.next_page_token
+        if not token:
+            return
+
+
 class JobAlreadyRunningError(RuntimeError):
     """Raised when the target Cloud Run Job already has an active execution."""
 
@@ -123,15 +151,14 @@ class CloudRunJobsClient:
         if not self._parent:
             return None
 
-        request = run_v2.ListExecutionsRequest(parent=self._parent, page_size=100)
-        options = {}
-        if deadline is not None:
+        if deadline is None:
+            pager = self._get_executions_client().list_executions(
+                request=run_v2.ListExecutionsRequest(parent=self._parent, page_size=100))
+        else:
+            # Each page within what is left of the deadline; none with under MIN_PAGE_SECONDS
+            # (TimeoutError, as before: run_job(reject_if_running) then starts nothing).
             import time
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise TimeoutError('cloud_run_active_lookup_deadline')
-            options = {'timeout': min(8.0, remaining), 'retry': None}
-        pager = self._get_executions_client().list_executions(request=request, **options)
+            pager = executions_newest_first(self, deadline, 100, error='cloud_run_active_lookup_deadline')
         for execution in pager:
             if deadline is not None and time.monotonic() >= deadline:
                 raise TimeoutError('cloud_run_active_lookup_deadline')

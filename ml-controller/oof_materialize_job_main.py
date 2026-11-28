@@ -520,7 +520,30 @@ def _dependency_retry_reason(result: dict[str, Any]) -> str:
     return "dependency_retry_required"
 
 
+def _opb_attention(replay: Any) -> str:
+    """`attention=` token of the OPB arm replay (status classification unchanged), on the
+    nightly OOF summary and the independent replay summary alike: terminal rejections,
+    the failed, missing-price and deferred days left for the next business date, and a
+    run that failed before any day (config, D1). Same token as the Worker's opbReplayAttention."""
+    replay = replay if isinstance(replay, dict) else {}
+    keys = ("rejected", "failed", "missing_price", "deferred")
+    parts = [f"opb_replay_{key}:{len(replay[key + '_dates'])}" for key in keys if replay.get(key + "_dates")]
+    if replay.get("status") == "failed" and not replay.get("failed_dates"):
+        parts.append("opb_replay_run_failed")      # setup failure (config, D1): no day was tried
+    return "attention=" + ",".join(parts) if parts else ""
+
+
 def _summary(run_id: str, result: dict[str, Any], *, mode: str) -> str:
+    if mode == "opb_arm_replay":
+        return " ".join(part for part in [
+            f"run_id={run_id}",
+            f"opb_replay={result.get('status', 'unknown')}",
+            f"failed={len(result.get('failed_dates') or [])}",
+            f"deferred={len(result.get('deferred_dates') or [])}",
+            f"rejected={len(result.get('rejected_dates') or [])}",
+            f"progress={int(result.get('progress') or 0)}",
+            _opb_attention(result),
+        ] if part)
     if mode == "allocator_snapshot":
         return " ".join([
             f"run_id={run_id}",
@@ -558,6 +581,8 @@ def _summary(run_id: str, result: dict[str, Any], *, mode: str) -> str:
     if result.get('comparison_review_status'):
         parts.extend(['comparison_review=' + result['comparison_review_status'],
             'completion_scope=' + result['completion_scope']])
+    if _opb_attention(result.get('opb_arm_replay')):
+        parts.append(_opb_attention(result.get('opb_arm_replay')))
     forward = result.get('forward_learning_data')
     if isinstance(forward, dict):
         parts.extend([f"forward_data={forward.get('status', 'unknown')}",
@@ -722,6 +747,17 @@ async def _run() -> int:
                     f"written={result.get('written')} "
                     f"skip_reasons={result.get('skip_reasons') or {}}"
                 )
+        elif mode == "opb_arm_replay":
+            # Research evidence only: no scheduler ticket, no callback; the run receipt
+            # in l4_opb_arm_replay_runs_v1 is what the Worker reads on its next tick.
+            from services.l4_opb_replay_dispatch import JOB_DATE_ENV, independent_replay
+            replay_date = os.environ.get(JOB_DATE_ENV, "").strip()
+            if not replay_date:
+                raise RuntimeError(f"opb_arm_replay mode requires {JOB_DATE_ENV}")
+            result = await asyncio.to_thread(independent_replay, replay_date, execution_id=execution_id)
+            if result.get("status") == "failed":
+                raise RuntimeError(f"opb_arm_replay_failed:{result.get('failed_dates') or result.get('reason')}")
+            callback_status = "success"
         elif mode == "semantic_reconcile_only":
             if promote or dispatch_full_fit or continuation_only:
                 raise RuntimeError(
@@ -915,7 +951,8 @@ async def _run() -> int:
         payload["scheduler_run_id"] = scheduler_run_id
     if error:
         payload["error"] = error
-    await _callback_worker(payload)
+    if mode != "opb_arm_replay":
+        await _callback_worker(payload)
     logger.info("[OofMaterializeJob] Finished %s", summary)
     return 0 if callback_status in {"success", "skipped", "triggered"} else 1
 

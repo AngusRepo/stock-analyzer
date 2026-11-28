@@ -3,7 +3,8 @@ import { StatusIcon } from './status'
 /**
  * 空資料／載入中／失敗的固定樣式（2026-11-26）。
  * - 一行人話（title），可選一行補充（hint）。
- * - 後端原始代碼只能放 code，顯示在 tooltip，不直接印在畫面上。
+ * - 後端原始代碼只能放 code：只寫進 data-code 屬性（開發者工具可查），畫面與 tooltip 都不顯示（Wei 規則：title 不露原碼）。
+ * - title 與 hint 各自是獨立區塊（flex-wrap），窄欄換行時不會疊在一起。
  * - onRetry 存在才顯示「重試」。
  * - 失敗時保留上次資料的情境請用 kind="stale"。
  */
@@ -42,15 +43,15 @@ export function DataState({
   return (
     <div
       role={kind === 'error' ? 'alert' : 'status'}
-      title={code ?? undefined}
+      data-code={code ?? undefined}
       data-state={kind}
       className={`flex items-center gap-2 px-3 py-2.5 text-xs text-muted-foreground ${className}`}
       style={minHeight ? { minHeight } : undefined}
     >
       <StatusIcon tone={tone} size={12} />
-      <div className="min-w-0">
+      <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
         <span className={kind === 'error' ? 'text-foreground' : ''}>{text}</span>
-        {hint && <span className="ml-2 text-[11px] text-muted-foreground">{hint}</span>}
+        {hint && <span className="text-[11px] text-muted-foreground">{hint}</span>}
       </div>
       {onRetry && (
         <button type="button" onClick={onRetry} className="ml-auto shrink-0 rounded border border-border px-2 py-0.5 text-[11px] text-foreground hover:bg-muted">

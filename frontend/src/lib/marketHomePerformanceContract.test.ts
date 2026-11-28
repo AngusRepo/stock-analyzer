@@ -15,7 +15,8 @@ assert((page.match(/sv-home-deferred-section/g) ?? []).length >= 2, 'Below-fold 
 // d32030c2 changed this row from 6:4 to an even 1:1 split (also pinned by pitFactorTrajectoryUiContract).
 assert(/xl:grid-cols-2">\s*<div className="min-w-0"><RecommendationPanel \/><\/div>\s*<div className="min-w-0"><GroupFactorTrajectoryPanel \/><\/div>/.test(page), 'Recommendation list and group residual momentum must share a 1:1 desktop row')
 assert(page.includes('aria-label="市場概況與風險"'), 'Market overview should be split into a semantic section')
-assert(page.includes("panelClass('grid gap-4 p-4 xl:self-stretch')"), 'Large market overview should be split into contained cards')
+// 11/26 live fix：加 content-start，卡片照內容高度排，不被 grid 拉長成卡片間大片空白。
+assert(/panelClass\('grid (content-start )?gap-4 p-4 xl:self-stretch'\)/.test(page), 'Large market overview should be split into contained cards')
 
 assert(css.includes('.sv-home-glass-panel'), 'Homepage glass panel CSS should exist')
 assert(css.includes('box-shadow: none !important;'), 'Homepage glass panels should not paint large shadows')

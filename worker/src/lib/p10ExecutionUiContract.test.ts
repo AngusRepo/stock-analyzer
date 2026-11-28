@@ -79,19 +79,19 @@ assert(
   'Bot dashboard must use item-aware execution status labels',
 )
 assert(
-  // 交易門檻：每列的卡住原因（第一個未通過的關卡＋中文原因，原碼只進 title），沒有原因時用 trade.gateReason。
+  // 交易門檻：每列的卡住原因（第一個未通過的關卡＋中文原因；11/26 起原碼不進 title），沒有原因時用 trade.gateReason。
   simroomModel.includes(': trade.gateReason ?? (allocatorAction') &&
-    simroom.includes('title={row.reasonCode ?? undefined}>{row.blockerText}') &&
+    simroom.includes('{row.blockerText}') && !simroom.includes('title={row.reasonCode') &&
     // 配置器與五檔是同一張條件表裡的兩格（最近檢查值，送單時重查）。
     simroomModel.includes("key === 'allocation' && preview?.allocator") &&
     // 配置器結論：沒有擋單原因時寫「L4 配置可買，等待進場條件」；配置格也寫可買／可加碼。
     simroomModel.includes("allocatorAction === 'buy' || allocatorAction === 'add' ? 'L4 配置可買，等待進場條件'") &&
     simroomModel.includes('allocatorActionLabel(preview.allocator.action)') &&
-    // l5Status 中文轉換：pass→L5 報價通過、其餘→未通過／缺五檔；原碼只進 title。
+    // l5Status 中文轉換：pass→L5 報價通過、其餘→未通過／缺五檔；原碼不進畫面也不進 title（11/26 起）。
     simroomModel.includes('l5StatusLabel(preview.allocator.l5_status)') &&
     simroomModel.includes("if (key === 'pass') return 'L5 報價通過'") &&
     simroomModel.includes("return 'L5 報價未通過'") &&
-    simroom.includes('title={c.raw}') &&
+    !simroom.includes('title={c.raw}') &&
     // S12 事件超過 5 分鐘時退回 watch_points 最後一筆結構狀態。
     simroomModel.includes('formatS12IntradayStructureBadge(item?.watch_points)') &&
     simroomModel.includes("s12Badge?.label ?? '等待近期盤中結構資料'") &&

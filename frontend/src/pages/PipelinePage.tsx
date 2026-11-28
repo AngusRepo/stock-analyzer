@@ -45,9 +45,19 @@ const SOURCE_OF_TRUTH_LABELS: Record<string, string> = {
   'legacy_fallback:screener_funnel_items.l1_candidate_seed_after_overlay': '來源：L1 候選名單（備援）',
   canonical_v4: '來源：正式策略矩陣',
 }
+// 組合來源（例：strategy_label_matrix_v4 + selection_reference_snapshots_v1）逐段換名。
+const SOURCE_PART_LABELS: Array<[RegExp, string]> = [
+  [/^strategy_label_matrix/, '正式策略矩陣'],
+  [/^selection_reference_snapshots/, '選股參考快照'],
+]
 
 function sourceOfTruthLabel(raw: unknown): string {
   if (typeof raw === 'string' && raw.startsWith('legacy_fallback')) return SOURCE_OF_TRUTH_LABELS[raw] ?? '來源：舊版彙總（備援）'
+  if (typeof raw === 'string' && raw.includes('+')) {
+    const parts = raw.split('+').map((part) => part.trim()).filter(Boolean)
+      .map((part) => SOURCE_PART_LABELS.find(([pattern]) => pattern.test(part))?.[1] ?? (looksInternal(part) ? '策略彙總' : part))
+    return `來源：${[...new Set(parts)].join('＋')}`
+  }
   return humanizeId(raw, SOURCE_OF_TRUTH_LABELS, '來源：策略彙總')
 }
 
@@ -664,7 +674,7 @@ function FunnelSummaryColumn({ summary, fallbackCount }: {
                   <p className={`sv-num text-base font-semibold ${NEUTRAL_ACCENT.text}`}>{row.layer}</p>
                   <p className="mt-1 text-xs text-[#9aa4b7]">{row.label}</p>
                 </div>
-                <StatusText tone={complete ? 'ok' : 'warn'} className="text-[10px]" title={row.availability}>
+                <StatusText tone={complete ? 'ok' : 'warn'} className="text-[10px]">
                   {complete ? '完整統計' : '資料未完整'}
                 </StatusText>
               </div>
@@ -733,11 +743,11 @@ function StrategySummaryColumn({ summary, sectors }: { summary: any; sectors: Ar
       className="xl:col-span-2"
       title="策略彙總"
       subtitle={summary?.source_of_truth
-        ? <span title={String(summary.source_of_truth)}>{sourceOfTruthLabel(summary.source_of_truth)}</span>
+        ? <span>{sourceOfTruthLabel(summary.source_of_truth)}</span>
         : '策略彙總尚未產生；等待後端篩選彙總。'}
     >
       {!canonicalMatrixReady && (
-        <p className="flex items-start gap-1.5 rounded-xl border border-warn/25 bg-warn/[0.06] px-3 py-2 text-xs leading-5 text-slate-200" title={summary?.raw_matrix_status ? `raw_matrix_status：${summary.raw_matrix_status}` : undefined}>
+        <p className="flex items-start gap-1.5 rounded-xl border border-warn/25 bg-warn/[0.06] px-3 py-2 text-xs leading-5 text-slate-200">
           <StatusIcon tone="warn" />
           <span>今日正式策略矩陣尚未就緒；下方為備援名單，命中數以「—」表示，不是 0。</span>
         </p>
@@ -786,7 +796,7 @@ function StrategySummaryColumn({ summary, sectors }: { summary: any; sectors: Ar
                   const selectedCount = Number(row.selected_count ?? 0)
                   return (
                     <div key={row.strategy_id ?? index} className="grid grid-cols-[minmax(0,1fr)_56px_32px] items-center gap-2 border-b border-white/[0.06] py-1 text-xs">
-                      <span className="min-w-0 truncate text-[#d7deea]" title={row.strategy_id}>{strategyDisplayLabel(row.strategy_id, row.display_name)}</span>
+                      <span className="min-w-0 break-words text-[#d7deea]">{strategyDisplayLabel(row.strategy_id, row.display_name)}</span>
                       {canonicalMatrixReady
                         ? <div className="h-1.5 overflow-hidden rounded-full bg-black/30" title={`命中 ${countValue(row.selected_count)} 檔`}>
                             <div className="h-full rounded-full bg-sky-400/70" style={{ width: selectedCount > 0 ? `${Math.min(100, Math.max(8, selectedCount * 12))}%` : '0%' }} />
@@ -810,7 +820,7 @@ function StrategySummaryColumn({ summary, sectors }: { summary: any; sectors: Ar
               const accent = NEUTRAL_ACCENT
               return (
                 <div key={`${row.left}-${row.right}`} className="min-w-0 overflow-hidden bg-[#111319] px-3 py-2 text-xs">
-                  <div className={`min-w-0 break-words font-semibold ${accent.text}`} title={`${row.left} / ${row.right}`}>{strategyName(row.left)} / {strategyName(row.right)}</div>
+                  <div className={`min-w-0 break-words font-semibold ${accent.text}`}>{strategyName(row.left)} / {strategyName(row.right)}</div>
                   <div className="mt-2 grid min-w-0 grid-cols-3 gap-2 text-[#9aa4b7]">
                     <span className="min-w-0">重疊 <b className="sv-num text-[#f5f7fb]">{countValue(row.overlap)}</b></span>
                     <span className="min-w-0">J <b className="sv-num text-[#f5f7fb]">{ratioValue(row.jaccard)}</b></span>
@@ -922,7 +932,6 @@ function ExecutionFlowColumn({
                   key={`${entry.symbol}-${rawReason}`}
                   variant="outline"
                   className="gap-1 text-[10px]"
-                  title={[rawReason, entry.stage].filter(Boolean).join(' · ')}
                 >
                   <StatusIcon tone={stage?.tone ?? 'na'} size={10} />
                   <span className="sv-num">{entry.symbol}</span>

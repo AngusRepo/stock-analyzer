@@ -12,16 +12,14 @@ import { debateObservationLabel } from './paperDecisionUi'
 import { humanEntryReason } from './orderReason'
 
 // ─── 時段 ────────────────────────────────────────────────────────────────────
-export type SessionPhase = 'night' | 'premarket' | 'intraday' | 'close' | 'postmarket'
-export type SimroomView = 'premarket' | 'intraday' | 'postmarket'
+export type SessionPhase = 'premarket' | 'intraday' | 'postmarket'
+export type SimroomView = SessionPhase
 
-/** 時段軸：夜間 00:00–08:00、盤前 08:00–09:00、盤中 09:00–13:30、收盤／零股 13:30–14:30、盤後 14:30–24:00。 */
+/** 時段軸：盤前（09:00 前）、盤中 09:00–13:30、盤後 13:30 起。 */
 export const SESSION_SEGMENTS: Array<{ phase: SessionPhase; label: string; detail: string; from: number; to: number; weight: number }> = [
-  { phase: 'night', label: '夜間', detail: '00:00–08:00', from: 0, to: 480, weight: 3 },
-  { phase: 'premarket', label: '盤前', detail: '08:00–09:00 計畫', from: 480, to: 540, weight: 2 },
+  { phase: 'premarket', label: '盤前', detail: '計畫 · 09:00 開盤', from: 0, to: 540, weight: 3 },
   { phase: 'intraday', label: '盤中', detail: '09:00–13:30', from: 540, to: 810, weight: 9 },
-  { phase: 'close', label: '收盤', detail: '13:30–14:30 零股', from: 810, to: 870, weight: 2 },
-  { phase: 'postmarket', label: '盤後', detail: '14:30 起 結果', from: 870, to: 1440, weight: 4 },
+  { phase: 'postmarket', label: '盤後', detail: '13:30 起 結果', from: 810, to: 1440, weight: 4 },
 ]
 
 export interface TwClock { minutes: number; weekday: number; date: string }
@@ -36,9 +34,7 @@ export function sessionPhase(minutes: number): SessionPhase {
 }
 
 export function defaultView(phase: SessionPhase): SimroomView {
-  if (phase === 'intraday') return 'intraday'
-  if (phase === 'close' || phase === 'postmarket') return 'postmarket'
-  return 'premarket'
+  return phase
 }
 
 /** 時段軸上現在的位置（0–1）。 */

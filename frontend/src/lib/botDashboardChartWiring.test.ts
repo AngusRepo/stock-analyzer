@@ -15,14 +15,14 @@ assert(fs.existsSync(chartPath), 'PaperTradePerformanceChart component should ex
 const chart = fs.readFileSync(chartPath, 'utf8')
 const series = fs.readFileSync(path.join(root, 'src', 'lib', 'paperPerformanceSeries.ts'), 'utf8')
 assert(chart.includes("from 'lightweight-charts'"), 'PaperTradePerformanceChart should use lightweight-charts')
-assert(chart.includes('AreaSeries'), 'PaperTradePerformanceChart should render the bot equity curve as an area series')
+// 11/26 Wei 定案：只和大盤（TWII）與 0050 比，bot↔0050 之間塗差距帶；其他 ETF 與回撤直方圖拿掉。
+assert(chart.includes('AreaSeries') && chart.includes("gapBandData(points, '0050'"), 'PaperTradePerformanceChart should shade the bot↔0050 gap band')
 assert(chart.includes('LineSeries'), 'PaperTradePerformanceChart should render benchmark / TWII overlays')
-assert(chart.includes('HistogramSeries'), 'PaperTradePerformanceChart should render drawdown or daily-risk histograms')
 assert(chart.includes('createSeriesMarkers'), 'PaperTradePerformanceChart should render execution markers')
 assert(chart.includes('Paper Trading Visual Workbench'), 'PaperTradePerformanceChart should render a visible visual workbench')
 assert(chart.includes('buildPaperTradePerformancePoints('), 'PaperTradePerformanceChart should build points from paper PnL snapshots')
 assert(chart.includes('buildExecutionMarkers('), 'PaperTradePerformanceChart should build markers from orders and pending buys')
-assert(chart.includes('00981A') && chart.includes('00631L') && chart.includes('00403A'), 'PaperTradePerformanceChart should render the approved ETF comparison set')
+assert(chart.includes("key: '0050'") && chart.includes("key: 'TWII'") && !chart.includes("key: '00981A'") && !chart.includes("key: '00631L'") && !chart.includes("key: '00403A'"), 'PaperTradePerformanceChart compares only against TWII and 0050')
 assert(series.includes('export function benchmarkBases('), 'Benchmarks share the bot start as base; late series start from their own first value')
 assert(chart.includes('起算'), 'A benchmark that starts after the bot must be labelled with its own start date')
 assert(series.includes("if (value == null || value === '') return null"), 'Missing snapshot values must not coerce to 0 (Number(null) === 0 plotted TWII at -100%)')
@@ -37,7 +37,8 @@ assert(page.includes('PaperTradePerformanceChart'), 'BotDashboard should render 
 // The chart shares the order-list and SignalTable query keys; a chart-only key fetched the same payload twice per visit.
 assert(!page.includes("'performance-chart']"), 'BotDashboard performance chart must reuse the shared paper query keys instead of refetching')
 assert((page.match(/queryKey: \['paper', 'orders'\],/g) ?? []).length === 2, 'BotDashboard performance chart should share the order-list query for markers')
-assert((page.match(/queryKey: \['paper', 'pending-buys'\],/g) ?? []).length === 2, 'BotDashboard performance chart should share the SignalTable pending-buys query for markers')
+// SignalTable、績效圖標記、強弱軌跡空狀態判斷共用同一個 pending-buys key。
+assert((page.match(/queryKey: \['paper', 'pending-buys'\],/g) ?? []).length >= 2, 'BotDashboard performance chart should share the SignalTable pending-buys query for markers')
 assert(page.includes('pnl={data}'), 'BotDashboard should pass paper PnL data into the performance chart')
 assert(page.includes('paperOrdersFromPayload(ordersData)'), 'BotDashboard should normalize Worker order payloads before charting')
 assert(page.includes('orders={orders}'), 'BotDashboard should pass normalized orders into the performance chart')

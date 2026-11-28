@@ -129,7 +129,7 @@ export default function NewsPanel({ stockId }: { stockId: number }) {
                   className="flex gap-3 p-3 rounded-lg border border-border/40 hover:border-border hover:bg-muted/30 transition-colors group">
                   <Icon className={`w-4 h-4 shrink-0 mt-0.5 ${item.sentiment === 'positive' ? 'text-up' : item.sentiment === 'negative' ? 'text-down' : 'text-muted-foreground'}`} />
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm leading-snug group-hover:text-primary transition-colors line-clamp-2">
+                    <p className="text-sm leading-snug group-hover:text-primary transition-colors">
                       {item.title}
                     </p>
                     <div className="flex items-center gap-2 mt-1.5 flex-wrap">

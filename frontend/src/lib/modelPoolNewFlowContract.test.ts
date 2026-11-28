@@ -35,7 +35,13 @@ assert(workbench.includes('registration.oof_promotion_evidence') && workbench.in
 assert(!workbench.includes('...notBetter.map((row) => String(row.artifact_id'), 'Candidate-not-better history must not be reinserted into the actionable archive queue')
 assert(workbench.includes("'待補證據'"), 'Base CPCV missing evidence must be explicit instead of cryptic N/R')
 assert(workbench.includes('selection risk：由 V5 ensemble') && !workbench.includes("label: 'PBO/CPCV'"), 'Per-model cells must not misreport missing PBO; selection risk belongs to V5 bundle validation')
-assert(workbench.includes('min-w-[300px] whitespace-normal'), 'Artifact comparison heading should reserve enough width and wrap instead of clipping')
+// 11/26 live fix：證據表改卡片列（任何寬度不橫捲）；比較欄標題是一般 <p>，不 truncate、自然換行。
+assert(
+  workbench.includes('<p className="sv-num text-[#70809b]">V5 serving bundle vs latest retrain</p>') &&
+    !workbench.includes('min-w-[1380px]') &&
+    !/V5 serving bundle vs latest retrain[^\n]*truncate|truncate[^\n]*V5 serving bundle vs latest retrain/.test(workbench),
+  'Artifact comparison heading should wrap instead of clipping, without a fixed-width table that needs horizontal scrolling',
+)
 assert(workbench.includes('{compare.candidate}') && workbench.includes('{compare.champion}'), 'Artifact comparison rows should render complete candidate and champion identifiers')
 assert(!workbench.includes('compactVersion(compare.candidate, 22)') && !workbench.includes('compactVersion(compare.champion, 22)'), 'Artifact comparison identifiers must not be truncated to 22 characters')
 assert(workbench.includes('function selectedPromotionRow'), 'ModelPool should reconcile the queue against the selected best artifact')

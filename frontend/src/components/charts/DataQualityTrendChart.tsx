@@ -244,7 +244,7 @@ export default function DataQualityTrendChart({ report, loading, error }: DataQu
                   <span className="truncate font-semibold">{point.check.label}</span>
                   <span className="inline-flex shrink-0 items-center gap-1 text-[10px]" style={{ color: point.color }} title={point.check.status}><StatusIcon tone={statusTone(point.check.status)} size={10} />{STATUS_LABEL[statusTone(point.check.status)]}</span>
                 </div>
-                <p className="mt-1 line-clamp-2 text-[#8b9bab]">{point.check.summary}</p>
+                <p className="mt-1 [overflow-wrap:anywhere] text-[#8b9bab]">{point.check.summary}</p>
               </a>
             )) : (
               <div className={`flex items-center gap-1 border p-2 ${STATUS_CHIP.ok}`}>

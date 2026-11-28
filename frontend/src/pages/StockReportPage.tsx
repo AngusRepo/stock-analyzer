@@ -334,7 +334,7 @@ export default function StockReportPage() {
                   </div>
                 ) : <p className="text-xs text-muted-foreground">尚未分類</p>}
                 {profile?.business_desc && (
-                  <p className="mt-3 text-[11px] text-muted-foreground leading-relaxed line-clamp-4 border-t border-white/[0.05] pt-3">
+                  <p className="mt-3 text-[11px] text-muted-foreground leading-relaxed border-t border-white/[0.05] pt-3">
                     {profile.business_desc.replace(/\*\*/g, '').slice(0, 300)}
                   </p>
                 )}

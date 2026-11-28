@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { benchmarkBases, benchmarkLineData, benchmarkReturnSince, botLineData, buildPaperTradePerformancePoints, periodMaxDrawdown } from './paperPerformanceSeries'
+import { benchmarkBases, benchmarkLineData, benchmarkReturnSince, botLineData, buildPaperTradePerformancePoints, gapBandData, periodMaxDrawdown } from './paperPerformanceSeries'
 
 const snapshots = [
   { date: '2026-03-24', total_value: 1_000_000, benchmark_value: null, twii_value: 20000, etf_benchmarks: { '00631L': 100 } },
@@ -150,4 +150,19 @@ test('F8 wiring: the /bot summary reads 0050 through benchmarkReturnSince, not b
   const summary = page.slice(page.indexOf('function PortfolioSummary'), page.indexOf('function executionToneClass'))
   assert.ok(summary.includes("benchmarkReturnSince(snapshots, '0050'"))
   assert.ok(!summary.includes('benchmark_value'))
+})
+
+test('gap band spans bot↔0050, colored by lead/lag, and breaks where either side is missing', () => {
+  const points = [
+    { time: '2026-01-02', bot: 0, benchmarks: { '0050': 0 }, drawdown: 0, totalValue: 100 },
+    { time: '2026-01-03', bot: -2, benchmarks: { '0050': 3 }, drawdown: -2, totalValue: 98 },
+    { time: '2026-01-04', bot: 5, benchmarks: { '0050': 1 }, drawdown: 0, totalValue: 105 },
+    { time: '2026-01-05', bot: 4, benchmarks: {}, drawdown: -1, totalValue: 104 },
+  ]
+  const { upper, lower } = gapBandData(points, '0050', { lead: 'R', lag: 'G', background: 'BG' })
+  assert.deepEqual(upper[1], { time: '2026-01-03', value: 3, topColor: 'G', bottomColor: 'G' })
+  assert.deepEqual(lower[1], { time: '2026-01-03', value: -2, topColor: 'BG', bottomColor: 'BG' })
+  assert.equal(upper[2].value, 5); assert.equal(upper[2].topColor, 'R'); assert.equal(lower[2].value, 1)
+  assert.deepEqual(upper[3], { time: '2026-01-05' })
+  assert.deepEqual(lower[3], { time: '2026-01-05' })
 })

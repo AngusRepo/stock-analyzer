@@ -1,6 +1,7 @@
 import { AlertTriangle, ArrowRight, CalendarClock, CircleDot, ListTree } from 'lucide-react'
 import type { SchedulerJob, SchedulerStatus } from '@/lib/api'
 import { attentionSkipReason } from '@/lib/schedulerDisplay'
+import { humanTitle, humanJobSummary } from '@/lib/humanLabels'
 import JobRunTiming from './JobRunTiming'
 import './StandaloneJobRegistry.css'
 
@@ -143,8 +144,8 @@ export default function StandaloneJobRegistry({
                           </div>
                         </div>
 
-                        <p className={`obs-standalone__summary ${job.lastError ? 'is-error' : attention ? 'is-attention' : ''}`} title={job.lastError || job.summary || undefined}>
-                          {job.lastError || attention || job.summary || '目前 API 沒有提供摘要。'}
+                        <p className={`obs-standalone__summary ${job.lastError ? 'is-error' : attention ? 'is-attention' : ''}`} title={humanTitle(job.lastError || job.summary)}>
+                          {humanJobSummary(job.lastError || attention || job.summary || '目前 API 沒有提供摘要。')}
                         </p>
 
                         <div className={`obs-standalone__relation ${dependency.isTopologyGap ? 'is-unmapped' : ''}`}>

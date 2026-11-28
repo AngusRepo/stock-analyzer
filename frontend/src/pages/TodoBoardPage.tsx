@@ -162,7 +162,8 @@ function TodoCardView({
       <div className="flex min-w-0 items-start justify-between gap-2">
         <div className="min-w-0">
           <p className="sv-num break-all text-[11px] text-[#d6a85f]">{card.id}</p>
-          <h3 className="break-words text-sm font-semibold text-slate-100">{card.title}</h3>
+          {/* text-spacing-trim:space-all：行尾全形「）」不再半形懸出 6px（被量成截字）；長英文詞可斷。 */}
+          <h3 className="text-sm font-semibold text-slate-100 [overflow-wrap:anywhere] [text-spacing-trim:space-all]">{card.title}</h3>
         </div>
         <div className="flex shrink-0 gap-1">
           {!card.archived && (

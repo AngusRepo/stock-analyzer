@@ -171,6 +171,35 @@ stocks.get('/search', async (c) => {
   return c.json(results)
 })
 
+// ─── GET /api/stocks/daily-bars?symbols=2330,2317&days=45&limit=20 ───────────
+// 交易室盤前 20 日 K 線：一次帶多檔，symbol 走 stocks 唯一索引、價格走 idx_prices_stock_date，
+// 取代逐檔 search（LIKE 全表掃）＋prices。只讀近期熱資料，不合併封存。
+const DAILY_BARS_MAX_SYMBOLS = 30
+stocks.get('/daily-bars', async (c) => {
+  const symbols = [...new Set(String(c.req.query('symbols') ?? '').split(',').map((s) => s.trim().toUpperCase()).filter((s) => /^[0-9A-Z]{1,10}$/.test(s)))]
+  if (!symbols.length) return c.json({ error: '請提供 symbols' }, 400)
+  if (symbols.length > DAILY_BARS_MAX_SYMBOLS) return c.json({ error: `symbols 最多 ${DAILY_BARS_MAX_SYMBOLS} 檔` }, 400)
+  const days = Math.min(parsePosInt(c.req.query('days'), 45), 120)
+  const limit = Math.min(parsePosInt(c.req.query('limit'), 20), 60)
+  const since = new Date(Date.now() - days * 86400000).toISOString().split('T')[0]
+  const { results: ids } = await databaseForDataDomain(c.env, 'core').prepare(
+    `SELECT id, symbol FROM stocks WHERE symbol IN (${symbols.map(() => '?').join(',')})`
+  ).bind(...symbols).all<{ id: number; symbol: string }>()
+  const bars: Record<string, Array<{ date: string; open: number; high: number; low: number; close: number }>> = Object.fromEntries(symbols.map((s) => [s, []]))
+  if (ids?.length) {
+    const symbolById = new Map(ids.map((r) => [r.id, r.symbol]))
+    const { results } = await databaseForDataDomain(c.env, 'market').prepare(
+      `SELECT stock_id, date, open, high, low, close FROM stock_prices WHERE stock_id IN (${ids.map(() => '?').join(',')}) AND date>=? ORDER BY stock_id, date`
+    ).bind(...ids.map((r) => r.id), since).all<{ stock_id: number; date: string; open: number; high: number; low: number; close: number }>()
+    for (const r of results ?? []) {
+      const symbol = symbolById.get(r.stock_id)
+      if (symbol) bars[symbol].push({ date: r.date, open: r.open, high: r.high, low: r.low, close: r.close })
+    }
+    for (const s of symbols) bars[s] = bars[s].slice(-limit)
+  }
+  return c.json({ since, bars })
+})
+
 // ─── GET /api/stocks/:id ──────────────────────────────────────────────────────
 stocks.get('/:id', async (c) => {
   const id = parseId(c.req.param('id'))

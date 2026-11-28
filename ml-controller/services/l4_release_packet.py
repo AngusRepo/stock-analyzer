@@ -150,6 +150,10 @@ def prepare_policy_risk_packet(*,raw_config,merged_config,risk_config,risk_field
         'remote_mutations_executed':False,'deployment_requires_separate_authorization':True}
 
 
+POLICY_PACKET_SCHEMAS=('l4-policy-v2-packet-v1','l4-policy-change-packet-v1','l4-policy-risk-packet-v1',
+    'l4-policy-opb-packet-v1')
+
+
 def prepare_policy_change_packet(previous,*,changes,engineering_receipt,source_reference):
     """Next link of the release chain: a v2 constraints change after `previous`.
 
@@ -158,7 +162,7 @@ def prepare_policy_change_packet(previous,*,changes,engineering_receipt,source_r
     """
     from services.l4_policy_activation import change_document
     from services.paired_nav_journal import digest as approval_digest
-    if previous.get('schema_version') not in ('l4-policy-v2-packet-v1','l4-policy-change-packet-v1','l4-policy-risk-packet-v1'):
+    if previous.get('schema_version') not in POLICY_PACKET_SCHEMAS:
         raise ValueError('l4_policy_change_previous_packet_invalid')
     activation,next_merged=change_document(previous['next_merged_config'],changes=changes,
         engineering_receipt_checksum=approval_digest(engineering_receipt),source_reference=source_reference)
@@ -169,6 +173,31 @@ def prepare_policy_change_packet(previous,*,changes,engineering_receipt,source_r
         'rollback_config':deepcopy(previous['next_config']),'rollback_risk_config':deepcopy(risk),
         'previous_config_checksum':approval_digest(previous['next_config']),'next_config_checksum':approval_digest(next_raw),
         'previous_risk_config_checksum':approval_digest(risk),'next_risk_config_checksum':approval_digest(risk),
+        'approved_policy_identity':activation['next_policy_identity'],
+        'write_order':['trading:config'],'rollback_order':['trading:config'],
+        'engineering_receipt':deepcopy(engineering_receipt),
+        'remote_mutations_executed':False,'deployment_requires_separate_authorization':True}
+
+
+def prepare_policy_opb_packet(*,raw_config,merged_config,risk_config,opb,engineering_receipt,source_reference):
+    """A link that replaces the v2 relative-arms OPB block with the explicit v3 block `opb`.
+
+    Only trading:config is written; risk_config and every other policy field stay. The first
+    link reads the live raw/merged trading:config and raw trading:risk_config; a later link (or
+    one continuing packet k of a live chain) passes that packet's next_config /
+    next_merged_config / next_risk_config."""
+    from services.l4_policy_activation import opb_change_document
+    from services.paired_nav_journal import digest as approval_digest
+    if raw_config.get('l4Distribution')!=merged_config.get('l4Distribution'):
+        raise ValueError('l4_policy_opb_raw_policy_not_merged_policy')
+    activation,next_merged=opb_change_document(merged_config,opb=opb,
+        engineering_receipt_checksum=approval_digest(engineering_receipt),source_reference=source_reference)
+    next_raw={**deepcopy(raw_config),'l4Distribution':deepcopy(next_merged['l4Distribution'])}
+    return {'schema_version':'l4-policy-opb-packet-v1','activation':activation,
+        'next_config':next_raw,'next_merged_config':next_merged,'next_risk_config':deepcopy(risk_config),
+        'rollback_config':deepcopy(raw_config),'rollback_risk_config':deepcopy(risk_config),
+        'previous_config_checksum':approval_digest(raw_config),'next_config_checksum':approval_digest(next_raw),
+        'previous_risk_config_checksum':approval_digest(risk_config),'next_risk_config_checksum':approval_digest(risk_config),
         'approved_policy_identity':activation['next_policy_identity'],
         'write_order':['trading:config'],'rollback_order':['trading:config'],
         'engineering_receipt':deepcopy(engineering_receipt),

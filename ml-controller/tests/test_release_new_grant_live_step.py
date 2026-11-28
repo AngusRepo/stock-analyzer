@@ -406,7 +406,7 @@ def test_continue_from_refuses_a_chain_whose_links_do_not_connect(tmp_path, monk
 
 
 def test_continue_from_is_refused_outside_prepare_change(tmp_path, monkeypatch):
-    with pytest.raises(SystemExit, match='with prepare-change / prepare-risk only'):
+    with pytest.raises(SystemExit, match='with prepare-change / prepare-risk / prepare-opb only'):
         activate(monkeypatch, tmp_path, 'grant', '--out', str(tmp_path / 'w-rel'), '--continue-from',
                  str(tmp_path / 'chain.json'), '--step', '1')
 
@@ -442,3 +442,119 @@ def test_admission_binds_a_risk_only_first_packet_to_the_live_step(tmp_path, mon
     (tmp_path / 'policy-chain.json').write_text(json.dumps([packet]), encoding='utf-8')
     receipt = release.run(policy_chain=tmp_path / 'policy-chain.json')
     assert receipt['live_step'] == 2 and release.manifests()[1]['policy_activations'] == [packet['activation']]
+
+
+# --- OPB v2 -> v3: prepare-opb (P1 = the v3 OPB block, S = the live v2 policy) ---------------------
+
+def opb_file(tmp_path, text=None, name='opb-v3.json'):
+    from test_strategy_nav_runtime_approval import V3_OPB
+    path = tmp_path / name
+    path.write_text(json.dumps(V3_OPB, indent=2) if text is None else text, encoding='utf-8')
+    return path
+
+
+def test_prepare_opb_continues_a_new_chain_from_the_live_step(tmp_path, monkeypatch):
+    from services.l4_opb_selection import is_v3
+    from services.l4_policy_activation import OPB_CHANGE_SCHEMA, chain_states
+    from test_strategy_nav_runtime_approval import V3_OPB
+    chain = old_chain()
+    (tmp_path / 'r31-chain.json').write_text(json.dumps(chain), encoding='utf-8')
+    out, path = tmp_path / 'opb', opb_file(tmp_path)
+    activate(monkeypatch, tmp_path, 'prepare-opb', '--out', str(out), '--continue-from',
+             str(tmp_path / 'r31-chain.json'), '--step', '2', '--opb-file', str(path))
+    (packet,) = json.loads((out / 'policy-chain.json').read_text(encoding='utf-8'))
+    p2 = chain[1]
+    assert packet['activation']['schema_version'] == OPB_CHANGE_SCHEMA and packet['activation']['opb'] == V3_OPB
+    assert packet['write_order'] == packet['rollback_order'] == ['trading:config']
+    assert packet['rollback_config'] == p2['next_config'] and packet['next_risk_config'] == p2['next_risk_config']
+    assert packet['activation']['previous_policy_checksum'] == digest(p2['next_merged_config']['l4Distribution'])
+    assert is_v3(packet['next_config']['l4Distribution']) and is_v3(packet['next_merged_config']['l4Distribution'])
+    # The v2 -> v3 record is derived from the live step's v2 policy, not taken from the file.
+    migration = packet['next_merged_config']['l4Distribution']['opb']['migration']
+    assert migration['source_policy_identity'] == p2['next_merged_config']['l4Distribution']['opb']['approved_policy_identity']
+    assert migration['replaced_v2_arms'] == p2['next_merged_config']['l4Distribution']['opb']['arms']
+    assert 'migration' not in packet['activation']['opb']
+    assert chain_states([packet])[0] == chain_states(chain)[2]
+    assert packet['continued_from']['step'] == 2 and packet['opb_file_sha256'] == sha(path.read_bytes())
+    assert packet['controller_source_sha'] == 'e' * 40
+
+
+def test_admission_binds_an_opb_schema_change_first_packet_to_the_live_step(tmp_path, monkeypatch):
+    from services.l4_policy_activation import OPB_CHANGE_SCHEMA
+    release = Release(tmp_path, monkeypatch).at('P2')
+    synthetic = {'activation': {'schema_version': OPB_CHANGE_SCHEMA, 'previous_policy_checksum': digest({'policy': 'P2'})},
+                 'rollback_risk_config': deepcopy(release.current['risk_config']),
+                 'continued_from': {'step': 2, 'activation_checksum': digest(LIVE_ACTIVATIONS[1])}}
+    (tmp_path / 'policy-chain.json').write_text(json.dumps([synthetic]), encoding='utf-8')
+    receipt = release.run(policy_chain=tmp_path / 'policy-chain.json')
+    assert receipt['live_step'] == 2 and receipt['policy_keys'] == [NEW_KEY + '-p1']
+    assert release.manifests()[1]['policy_activations'] == [synthetic['activation']]
+
+
+def test_prepare_opb_first_link_reads_the_live_step_and_writes_nothing(tmp_path, monkeypatch):
+    import activate_l4_policy
+    from services import worker_config_client
+    from services.l4_opb_selection import is_v3
+    chain = old_chain()
+    raw, merged, risk = chain[1]['next_config'], chain[1]['next_merged_config'], chain[1]['next_risk_config']
+    reads = []
+
+    def kv_get(key):
+        reads.append(key)
+        return {'http_status': 200, 'body': deepcopy({'trading:config': raw, 'trading:risk_config': risk}[key])}
+    fake = types.ModuleType('runtime_context')
+    fake.load_environment = lambda: {'source_sha': 'e' * 40}
+    fake.kv_get = kv_get
+    for name in ('request', 'worker', 'gc'):
+        setattr(fake, name, lambda *a, **kw: pytest.fail('prepare-opb must not call ' + name))
+    monkeypatch.setitem(sys.modules, 'runtime_context', fake)
+    monkeypatch.setattr(worker_config_client, 'load_active_trading_config', lambda *a, **kw: deepcopy(merged))
+    monkeypatch.setattr(sys, 'path', list(sys.path))
+    monkeypatch.setenv('CLOUDSDK_PYTHON', sys.executable)
+    (tmp_path / 'receipt.json').write_text('{"receipt": "opb"}', encoding='utf-8')
+    out = tmp_path / 'opb'
+    monkeypatch.setattr(sys, 'argv', ['activate_l4_policy.py', 'prepare-opb', '--workspace-root', str(tmp_path),
+        '--out', str(out), '--opb-file', str(opb_file(tmp_path)), '--engineering-receipt', str(tmp_path / 'receipt.json'),
+        '--source-reference', 'test-only opb'])
+    activate_l4_policy.main()
+    (packet,) = json.loads((out / 'policy-chain.json').read_text(encoding='utf-8'))
+    assert packet['rollback_config'] == raw and packet['rollback_risk_config'] == risk and 'continued_from' not in packet
+    assert is_v3(packet['next_config']['l4Distribution'])
+    assert reads == ['trading:config', 'trading:risk_config', 'trading:config', 'trading:risk_config']
+
+
+def test_prepare_opb_refuses_a_block_that_writes_its_own_migration(tmp_path, monkeypatch):
+    from test_strategy_nav_runtime_approval import V3_OPB
+    (tmp_path / 'chain.json').write_text(json.dumps(old_chain()), encoding='utf-8')
+    text = json.dumps({**V3_OPB, 'migration': {'source_policy_identity': 'b' * 64}})
+    with pytest.raises(ValueError, match='opb_change_unknown_or_derived_field'):
+        activate(monkeypatch, tmp_path, 'prepare-opb', '--out', str(tmp_path / 'opb'), '--continue-from',
+                 str(tmp_path / 'chain.json'), '--step', '2', '--opb-file', str(opb_file(tmp_path, text)))
+    assert not (tmp_path / 'opb' / 'policy-chain.json').exists()
+
+
+@pytest.mark.parametrize('text,error', [
+    (None, None),
+    ('{"schema_version": "l4-opb-selection-arms-v3", "schema_version": "l4-opb-selection-arms-v3"}', 'duplicate key'),
+    ('{"family_error_rate": NaN}', 'non-finite number NaN'),
+    ('{"critical_value_simulations": Infinity}', 'non-finite number Infinity')])
+def test_prepare_opb_reads_the_block_strictly(tmp_path, monkeypatch, text, error):
+    from test_strategy_nav_runtime_approval import V3_OPB
+    chain = old_chain()
+    (tmp_path / 'chain.json').write_text(json.dumps(chain), encoding='utf-8')
+    if text is None:   # a block missing one knob is refused by the transform, nothing defaulted
+        text = json.dumps({k: v for k, v in V3_OPB.items() if k != 'hac_lag_sessions'})
+        expected, kind = 'opb_change_field_missing:hac_lag_sessions', ValueError
+    else:
+        expected, kind = error, SystemExit
+    with pytest.raises(kind, match=expected):
+        activate(monkeypatch, tmp_path, 'prepare-opb', '--out', str(tmp_path / 'opb'), '--continue-from',
+                 str(tmp_path / 'chain.json'), '--step', '2', '--opb-file', str(opb_file(tmp_path, text)))
+    assert not (tmp_path / 'opb' / 'policy-chain.json').exists()
+
+
+@pytest.mark.parametrize('command,with_file', [('prepare-opb', False), ('prepare-change', True), ('grant', True)])
+def test_opb_file_goes_with_prepare_opb_only(tmp_path, monkeypatch, command, with_file):
+    args = ['--opb-file', str(opb_file(tmp_path))] if with_file else []
+    with pytest.raises(SystemExit, match='--opb-file goes with prepare-opb'):
+        activate(monkeypatch, tmp_path, command, '--out', str(tmp_path / 'opb'), *args)

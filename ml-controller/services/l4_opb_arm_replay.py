@@ -28,6 +28,10 @@ logger = logging.getLogger(__name__)
 
 # Engineering budget per nightly run (snapshot reads + solves), not a trading decision.
 BACKFILL_DATES_PER_RUN = 10
+# The allocator's two certification failures (l4_portfolio.allocate): a challenger arm that
+# raises one is booked STATUS_SOLVE_FAILED for the day instead of failing every arm.
+ARM_SOLVE_FAILURES = frozenset({'l4_portfolio_optimality_not_certified', 'l4_portfolio_invalid_bound'})
+STATUS_SOLVE_FAILED = 'solve_failed'
 COLUMNS = ('context_identity', 'signal_date', 'arm_digest', 'arm_id', 'schema_version', 'known_date',
            'arm_return', 'base_return', 'delta', 'effective_digest', 'arm_inert', 'status', 'snapshot_id',
            'plan_id', 'replay_plan_id', 'consistency', 'payload_checksum', 'materialized_at')
@@ -316,22 +320,45 @@ def _solve_arms(*, live, signal_date, entry, arms, paper, learning, run, now, co
         if frozen_override is None or artifact.get('model_checksum') != live['artifact'].get('model_checksum'):
             raise ValueError('l4_opb_arm_replay_artifact_override_invalid')
         policy['artifact'] = deepcopy(artifact)
+    chosen = (stored.get('opb') or {}).get('arm_id')
     # Every arm is solved: the chosen arm's solve is what verifies tonight's verdict.
-    solved = {}
+    solved, failed = {}, {}
     for arm_id, arm_digest in arms:
-        output = run(deepcopy(recommendations), deepcopy(policy), return_history=history, forced_arm=arm_id)
+        try:
+            output = run(deepcopy(recommendations), deepcopy(policy), return_history=history, forced_arm=arm_id)
+        except ValueError as exc:
+            # A challenger the allocator cannot certify on this day is booked as a terminal
+            # solve_failed outcome (never selection evidence) so the other arms still book and
+            # the day is not re-read every night. Base (every delta's pair) and the arm the
+            # live plan chose (tonight's verification) still fail the day, as does any other error.
+            if (arm_id == 'base' or str(exc) not in ARM_SOLVE_FAILURES
+                    or (kind == ROW_LIVE and arm_id == chosen)):
+                raise
+            logger.warning('[L4 OPB replay] %s arm %s %s: booked solve_failed', signal_date, arm_id, exc)
+            failed[arm_digest] = str(exc)
+            continue
         plan = output[0]['_l4_portfolio_plan']
         solved[arm_digest] = {'weights': {s: w for s, w in plan['weights'].items() if w > WEIGHT_SUPPORT},
             'current': {s: t['current_weight'] for s, t in plan['targets'].items() if t['current_weight'] > WEIGHT_SUPPORT},
             'replay_plan_id': plan['plan_id'], 'effective_digest': plan['opb']['effective_digest'],
             'inert': bool(plan['opb']['arm_inert'])}
+    if failed:
+        # The arm's limits as the runtime resolves them (same policy, same frozen account).
+        from services.l4_opb_selection import arm_policies, risk_envelope
+        account = runtime['account']
+        resolved = {a['id']: a['effective_digest'] for a in arm_policies(policy, risk_envelope(account, float(account['nav'])))}
+        base_current = solved[dict(arms)['base']]['current']
+        for arm_id, arm_digest in arms:
+            if arm_digest in failed:
+                solved[arm_digest] = {'weights': {}, 'current': dict(base_current), 'replay_plan_id': '',
+                                      'effective_digest': resolved[arm_id], 'inert': False,
+                                      'solve_failed': failed[arm_digest]}
     # Outputs are comparable only when nothing that shapes them changed since the plan;
     # the input digest above is checked regardless, so `verified_inputs` runs in prod
     # across deploys (v1 only ever reached not_applicable: replay is >=1 session late).
     same_policy = (digest(canonical_policy({k: v for k, v in frozen.items() if k != 'runtime'}))
                    == digest(canonical_policy(live)))
     same_source = content.get('allocator_source_identity') == allocator_source_identity()
-    chosen = (stored.get('opb') or {}).get('arm_id')
     by_id = dict(arms)
     if not inputs_verified:
         consistency = 'not_applicable:no_input_digest'
@@ -345,7 +372,8 @@ def _solve_arms(*, live, signal_date, entry, arms, paper, learning, run, now, co
     else:
         consistency = 'verified'
     return {'snapshot_id': row['allocation_snapshot_id'], 'plan_id': row['plan_id'],
-            'fees': runtime['account']['fees'], 'row_kind': kind, 'consistency': consistency, 'targets': solved}
+            'fees': runtime['account']['fees'], 'row_kind': kind, 'consistency': consistency, 'targets': solved,
+            'solve_failed': {arm_id: failed[d] for arm_id, d in arms if d in failed}}
 
 
 def replay_day_v3(*, live, signal_date, business_date, paper, learning, market, run=None, now=None,
@@ -393,8 +421,10 @@ def replay_day_v3(*, live, signal_date, business_date, paper, learning, market, 
         if r is not None:
             targets[arm_digest] = {'weights': json.loads(r['weights_json']), 'current': json.loads(r['current_json']),
                                    'replay_plan_id': r['replay_plan_id'], 'effective_digest': r['effective_digest'],
-                                   'inert': r['status'] == 'inert'}
+                                   'inert': r['status'] == 'inert',
+                                   **({'solve_failed': 'booked'} if r['status'] == STATUS_SOLVE_FAILED else {})}
             consistency_by_arm[arm_digest], kind_by_arm[arm_digest] = r['consistency'], r['row_kind']
+    new_failures = {}
     if len(targets) == len(arms) and all((d, 1) in have for _, d in arms):
         # Every arm is booked from session 1: later sessions need only prices. No plan
         # payload, no snapshot (0.8-2.4 GB), no solve. Session 1 carries the only
@@ -413,6 +443,7 @@ def replay_day_v3(*, live, signal_date, business_date, paper, learning, market, 
         if 'receipt' in solved:
             return solved['receipt']    # terminal verdict or not applicable: no rows
         snapshot_id, plan_id, fees = solved['snapshot_id'], solved['plan_id'], solved['fees']
+        new_failures = solved['solve_failed']
         for _, arm_digest in arms:
             if arm_digest not in targets:
                 targets[arm_digest] = solved['targets'][arm_digest]
@@ -465,12 +496,14 @@ def replay_day_v3(*, live, signal_date, business_date, paper, learning, market, 
         for i, day in enumerate(sessions):
             if (arm_digest, i + 1) in have:
                 continue
-            arm_piece = pieces[arm_digest][i]
             base_piece = booked.get(i + 1, {}).get('base', pieces[base_digest][i])
+            arm_piece = 0. if 'solve_failed' in target else pieces[arm_digest][i]
             if arm_digest == base_digest:
                 arm_piece = base_piece
             market_piece = booked.get(i + 1, {}).get('market', proxy_pieces[i])
-            if target['inert'] or targets[base_digest]['inert']:
+            if 'solve_failed' in target:
+                status, delta = STATUS_SOLVE_FAILED, 0.
+            elif target['inert'] or targets[base_digest]['inert']:
                 status, delta = 'inert', 0.
             elif exposure <= WEIGHT_SUPPORT or base_exposure <= WEIGHT_SUPPORT:
                 status, delta = 'no_exposure', 0.
@@ -495,6 +528,8 @@ def replay_day_v3(*, live, signal_date, business_date, paper, learning, market, 
                **({'missing_price': missing} if missing is not None else {}),
                'row_kind': kinds.pop() if len(kinds) == 1 else 'mixed',
                'consistency': verdicts.pop() if len(verdicts) == 1 else 'mixed'}
+    if new_failures:
+        receipt['solve_failed'] = new_failures
     if receipt['consistency'] == 'mixed' or receipt['row_kind'] == 'mixed':
         receipt['by_arm'] = {arm_id: {'row_kind': kind_by_arm[d], 'consistency': consistency_by_arm[d]}
                              for arm_id, d in arms}

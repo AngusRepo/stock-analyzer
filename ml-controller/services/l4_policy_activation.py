@@ -5,7 +5,9 @@ v1 value except the S3 arm rule and the cost objective the activation names.
 `l4-policy-constraints-change-v1` then changes named allocator constraints of a
 v2 policy, e.g. the cost objective. `l4-policy-risk-change-v1` adds named absent
 `trading:risk_config` fields (add-only, policy unchanged), e.g. C-1
-position.minCorrelationOverlap, which the Worker reads from KV only. One release stages a chain of them as P1..Pn
+position.minCorrelationOverlap, which the Worker reads from KV only. `l4-policy-opb-schema-change-v1`
+replaces the OPB block of a v2 relative-arms (v2) policy with an explicit v3 selection block
+(every v3 knob written out; constraints, artifact and the rest of the policy unchanged). One release stages a chain of them as P1..Pn
 grants; grant k names the chain prefix 1..k and the validator recomputes every
 step from the source grant's configuration. Nothing accepts an arbitrary config.
 """
@@ -16,7 +18,8 @@ from services.paired_nav_journal import digest
 SCHEMA = 'l4-policy-activation-v2'
 CHANGE_SCHEMA = 'l4-policy-constraints-change-v1'
 RISK_SCHEMA = 'l4-policy-risk-change-v1'
-SCHEMAS = (SCHEMA, CHANGE_SCHEMA, RISK_SCHEMA)
+OPB_CHANGE_SCHEMA = 'l4-policy-opb-schema-change-v1'
+SCHEMAS = (SCHEMA, CHANGE_SCHEMA, RISK_SCHEMA, OPB_CHANGE_SCHEMA)
 # The allocator's history window stays with the v2 activation (it must match the capture).
 FIXED_CONSTRAINTS = frozenset({'return_history_lookback_sessions'})
 # Worker legacy constants the circuit layers use until circuit.positionScales
@@ -122,6 +125,68 @@ def next_constraints_policy(l4, changes):
     return policy
 
 
+def opb_v3_migration(l4):
+    """The v2 -> v3 record, in the shape of the v1 -> v2 one: which v2 policy it replaced and how.
+
+    v3 arms no longer scale the risk envelope; each overrides the allocator's selection.
+    The replaced v2 arms and the v2 block's own migration record are kept whole. The
+    source identity is the one the v2 policy hashes to (recomputed, as the runtime does
+    before it plans); a stored identity that does not match fails closed.
+    """
+    from services.l4_distribution_runtime import distribution_policy_identity
+    source_opb = l4['opb']
+    identity = source_opb.get('approved_policy_identity')
+    if (not isinstance(identity, str)
+            or identity != distribution_policy_identity(l4, l4['artifact']['l3_identity'])):
+        raise _fail('opb_change_source_identity')
+    return {'source_policy_identity': identity, 'arm_semantic': 'allocator_selection_override',
+        'replaced_v2_arms': deepcopy(source_opb.get('arms')), 'v2_migration': deepcopy(source_opb.get('migration'))}
+
+
+def next_opb_policy(l4, opb):
+    """The v2 policy with its relative-arms OPB block replaced by the v3 block `opb`; identity recomputed.
+
+    `opb` must write out every v3 knob (no code default stands in, the market proxy
+    included). `migration` and `approved_policy_identity` are derived, never supplied:
+    the migration record comes from the source v2 block (`opb_v3_migration`) and the
+    identity is recomputed. Everything outside the OPB block stays as it is.
+    """
+    from services.l4_distribution_runtime import distribution_policy_identity
+    from services.l4_opb_selection import (OPB_SCHEMA, OPB_SCHEMA_V3, V3_CONFIG_KEYS, is_v2, validate_arms,
+                                           validate_constraints)
+    if (not is_v2(l4) or l4.get('scope') != 'paper' or not isinstance(l4.get('opb'), dict)
+            or l4['opb'].get('schema_version') != OPB_SCHEMA):
+        raise _fail('opb_change_source_not_v2')
+    if not isinstance(opb, dict) or opb.get('schema_version') != OPB_SCHEMA_V3:
+        raise _fail('opb_change_target_not_v3')
+    required = V3_CONFIG_KEYS - {'approved_policy_identity', 'migration'}
+    if set(opb) - required:
+        raise _fail('opb_change_unknown_or_derived_field')
+    if required - set(opb):
+        raise _fail('opb_change_field_missing:' + ','.join(sorted(required - set(opb))))
+    if type(opb['enabled']) is not bool:
+        raise _fail('opb_change_enabled')
+    policy = deepcopy(l4)
+    policy['opb'] = {**deepcopy(opb), 'migration': opb_v3_migration(l4)}
+    validate_constraints(policy['constraints'])
+    validate_arms(policy)          # v3: validate_v3_config, then every arm
+    policy['opb']['approved_policy_identity'] = distribution_policy_identity(policy, policy['artifact']['l3_identity'])
+    return policy
+
+
+def opb_change_document(trading_config, *, opb, engineering_receipt_checksum, source_reference):
+    old = trading_config.get('l4Distribution')
+    l4 = next_opb_policy(old, opb)
+    if not engineering_receipt_checksum or not source_reference:
+        raise _fail('review_reference')
+    activation = {'schema_version': OPB_CHANGE_SCHEMA, 'scope': 'paper', 'maturity_transfer': False,
+        'account_reset': False, 'opb': deepcopy(opb),
+        'previous_policy_checksum': digest(old), 'next_policy_checksum': digest(l4),
+        'next_policy_identity': l4['opb']['approved_policy_identity'],
+        'engineering_receipt_checksum': engineering_receipt_checksum, 'source_reference': source_reference}
+    return activation, {**deepcopy(trading_config), 'l4Distribution': l4}
+
+
 FORMAL_POSITION_FIELDS = frozenset({'maxPerSector', 'maxSingleNamePct', 'correlationThreshold',
                                     'correlationWindow', 'minCorrelationOverlap'})
 
@@ -222,6 +287,9 @@ def expected_configuration(state, activation):
             raise _fail('owner_move')
     elif activation.get('schema_version') == CHANGE_SCHEMA:
         l4 = next_constraints_policy(trading.get('l4Distribution'), activation.get('changes'))
+        config, next_risk = {**deepcopy(trading), 'l4Distribution': l4}, deepcopy(risk)
+    elif activation.get('schema_version') == OPB_CHANGE_SCHEMA:
+        l4 = next_opb_policy(trading.get('l4Distribution'), activation.get('opb'))
         config, next_risk = {**deepcopy(trading), 'l4Distribution': l4}, deepcopy(risk)
     elif activation.get('schema_version') == RISK_SCHEMA:
         l4 = trading.get('l4Distribution')

@@ -9,6 +9,10 @@
                   section.key=JSON, add-only, policy unchanged). With no chain in --out and no
                   --continue-from it starts the chain at the live step (read-only KV/Worker reads);
                   otherwise it appends to the chain end / continues like prepare-change
+  prepare-opb     link that replaces the v2 relative-arms OPB block with the v3 block read from
+                  --opb-file (every v3 knob written out in the file; nothing defaulted here; the
+                  policy identity is recomputed). Starts at the live step / appends / continues
+                  like prepare-risk
   grant           local: derive P1..Pn from the release's S grant and validate every grant
   activate        dry-run unless --execute: move one adjacent step to --to (source|1..n);
                   forward follows the packet write order, backward its rollback order
@@ -47,6 +51,19 @@ def load(path):
 
 def save(out, name, value):
     (out / name).write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n', encoding='utf-8', newline='\n')
+
+
+def load_explicit_json(path):
+    """A reviewed JSON file: a repeated key or a NaN/Infinity literal is an error, not last-wins."""
+    def pairs(items):
+        keys = [key for key, _ in items]
+        if len(keys) != len(set(keys)):
+            raise SystemExit('duplicate key in ' + str(path))
+        return dict(items)
+
+    def constant(name):
+        raise SystemExit('non-finite number ' + name + ' in ' + str(path))
+    return json.loads(Path(path).read_text(encoding='utf-8'), object_pairs_hook=pairs, parse_constant=constant)
 
 
 def sealed_plans(paper):
@@ -175,7 +192,8 @@ def verify_worker_risk_step(fetch, before, chain, start, target, **poll):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('command', choices=('prepare', 'prepare-change', 'prepare-risk', 'grant', 'activate'))
+    parser.add_argument('command', choices=('prepare', 'prepare-change', 'prepare-risk', 'prepare-opb', 'grant',
+                                            'activate'))
     parser.add_argument('--workspace-root', type=Path, required=True, help='holds audits/pipeline-nightly-20261013')
     parser.add_argument('--out', type=Path, required=True)
     parser.add_argument('--controller', type=Path, default=REPO / 'ml-controller')
@@ -186,6 +204,8 @@ def main():
     parser.add_argument('--set', action='append', default=[], metavar='KEY=JSON')
     parser.add_argument('--risk-set', action='append', default=[], metavar='SECTION.KEY=JSON',
                         help='prepare-risk: an absent trading:risk_config field and its value')
+    parser.add_argument('--opb-file', type=Path, metavar='OPB_V3_JSON',
+                        help='prepare-opb: the complete v3 opb block (approved_policy_identity is derived)')
     parser.add_argument('--to', help='source, or the 1-based grant index to step to')
     parser.add_argument('--execute', action='store_true')
     parser.add_argument('--continue-from', type=Path, metavar='POLICY_CHAIN_JSON',
@@ -193,8 +213,10 @@ def main():
     parser.add_argument('--step', type=int, help='with --continue-from: the activated step k (1..n)')
     args = parser.parse_args()
     if ((args.continue_from is None) != (args.step is None)
-            or args.continue_from and args.command not in ('prepare-change', 'prepare-risk')):
-        raise SystemExit('--continue-from and --step go together, with prepare-change / prepare-risk only')
+            or args.continue_from and args.command not in ('prepare-change', 'prepare-risk', 'prepare-opb')):
+        raise SystemExit('--continue-from and --step go together, with prepare-change / prepare-risk / prepare-opb only')
+    if (args.opb_file is None) != (args.command != 'prepare-opb'):
+        raise SystemExit('--opb-file goes with prepare-opb, and prepare-opb needs it')
     out = args.out.resolve()
     out.mkdir(parents=True, exist_ok=True)
     sys.path[:0] = [str(args.workspace_root / 'audits/pipeline-nightly-20261013'), str(args.controller)]
@@ -215,7 +237,7 @@ def main():
         os.environ['STOCKVISION_WORKER_URL'].rstrip('/') + '/api/admin/risk-config',
         headers={'Authorization': 'Bearer ' + os.environ['STOCKVISION_AUTH_TOKEN']}, timeout=timeout))
 
-    if args.command in ('prepare', 'prepare-change', 'prepare-risk') and (not args.engineering_receipt or not args.source_reference):
+    if args.command in ('prepare', 'prepare-change', 'prepare-risk', 'prepare-opb') and (not args.engineering_receipt or not args.source_reference):
         raise SystemExit(args.command + ' needs --engineering-receipt and --source-reference')
     if args.command == 'prepare':
         if not args.cost_objective:
@@ -265,11 +287,11 @@ def main():
             raise SystemExit('--step must name a packet of the --continue-from chain (1..n)')
         chain_states(previous_chain)
         chain, previous = [], previous_chain[args.step - 1]
-    elif args.command == 'prepare-risk' and not (out / 'policy-chain.json').exists():
+    elif args.command in ('prepare-risk', 'prepare-opb') and not (out / 'policy-chain.json').exists():
         chain, previous = [], None   # first link: starts at the live step (S)
     else:
         chain = load(out / 'policy-chain.json')
-        previous = chain[-1] if args.command in ('prepare-change', 'prepare-risk') else None
+        previous = chain[-1] if args.command in ('prepare-change', 'prepare-risk', 'prepare-opb') else None
     if args.command == 'prepare-risk':
         from services.l4_release_packet import prepare_policy_risk_packet
         fields = {}
@@ -297,6 +319,31 @@ def main():
         save(out, 'policy-chain.json', [*chain, packet])
         print(json.dumps({'status': 'prepared_locally', 'cloud_writes': 0, 'chain_length': len(chain) + 1,
                           'risk_config_added_fields': fields, 'next_policy_identity': packet['approved_policy_identity']}))
+        return
+    if args.command == 'prepare-opb':
+        from services.l4_release_packet import prepare_policy_opb_packet
+        opb = load_explicit_json(args.opb_file)
+        if previous is None:
+            from services.worker_config_client import load_active_trading_config
+            raw, risk = read('trading:config'), read('trading:risk_config')
+            merged = load_active_trading_config()
+            packet = prepare_policy_opb_packet(raw_config=raw, merged_config=merged, risk_config=risk, opb=opb,
+                engineering_receipt=load(args.engineering_receipt), source_reference=args.source_reference)
+            if read('trading:config') != raw or read('trading:risk_config') != risk:
+                raise RuntimeError('configuration_changed_during_prepare')
+        else:
+            packet = prepare_policy_opb_packet(raw_config=previous['next_config'],
+                merged_config=previous['next_merged_config'], risk_config=previous['next_risk_config'], opb=opb,
+                engineering_receipt=load(args.engineering_receipt), source_reference=args.source_reference)
+        packet['controller_source_sha'] = release['source_sha']
+        packet['opb_file_sha256'] = hashlib.sha256(args.opb_file.read_bytes()).hexdigest()
+        if args.continue_from:
+            packet['continued_from'] = {'step': args.step, 'activation_checksum': digest(previous['activation']),
+                'policy_chain_sha256': hashlib.sha256(previous_raw).hexdigest()}
+        save(out, 'policy-chain.json', [*chain, packet])
+        print(json.dumps({'status': 'prepared_locally', 'cloud_writes': 0, 'chain_length': len(chain) + 1,
+                          'opb_schema_version': opb['schema_version'],
+                          'next_policy_identity': packet['approved_policy_identity']}))
         return
     if args.command == 'prepare-change':
         from services.l4_release_packet import prepare_policy_change_packet

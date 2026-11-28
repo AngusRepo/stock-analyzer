@@ -12,8 +12,12 @@ replay  Rerun the allocator offline on each cached day for every arm of one or m
         and report per arm: target weights, gross exposure, five-session net return, the v2
         reward (arm minus base) and the v3 exposure-normalized reward.
 
-`--output` writes local JSON only. Learning-db reads honour the write-avoid windows
-(13:00-16:30Z, 17:00-23:00Z) like the R13 replay.
+`--output` writes local JSON only. Every D1 read honours the write-avoid windows
+(13:00-16:30Z, 17:00-23:00Z) like the R13 replay. `fetch` appends each read's rows_read and
+each cold download's bytes to ledgers in the cache and stops once a budget is spent; budgets
+span resumed runs, and cached days are never re-read. `replay` downloads the TabPack weights
+the cached policies name through the same byte ledger, once, and its workers load those
+checksum-verified copies instead of reading the cold store themselves.
 """
 from __future__ import annotations
 
@@ -24,6 +28,7 @@ import gzip
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -42,12 +47,16 @@ WORKER = REPO / 'worker'
 WRANGLER = os.environ.get('WRANGLER') or str(WORKER / 'node_modules/.bin/wrangler')
 DATABASES = {'paper': 'stockvision-paper-db', 'learning': 'stockvision-learning-db',
              'market': 'stockvision-market-db'}
-AVOID_WINDOWS_UTC = (('13:00', '16:30'), ('17:00', '23:00'))
+# learning-db write windows, UTC: post-close chain (TW 14:15-15:40), evening chain
+# (TW 21:00-00:30) and the night caution period (TW 01:00-07:00). Every day, weekends
+# included: a weekday-only gate would read into a re-run of a weekday chain.
+# Both ends inclusive, to the minute (15:40 TW is still inside; 15:41 is not).
+AVOID_WINDOWS_UTC = (('06:15', '07:40'), ('13:00', '16:30'), ('17:00', '23:00'))
 
 
 def in_avoid_window(now: datetime) -> bool:
     clock = now.astimezone(timezone.utc).strftime('%H:%M')
-    return any(start <= clock < end for start, end in AVOID_WINDOWS_UTC)
+    return any(start <= clock <= end for start, end in AVOID_WINDOWS_UTC)
 
 
 def _literal(value):
@@ -72,37 +81,122 @@ def inline(sql: str, params) -> str:
     return ''.join(out)
 
 
+def _spent(ledger, field):
+    if ledger is None or not ledger.exists():
+        return 0
+    return sum(json.loads(line)[field] for line in ledger.read_text().splitlines() if line)
+
+
+def _record(ledger, entry):
+    if ledger is not None:
+        with ledger.open('a') as sink:
+            sink.write(json.dumps({'at': datetime.now(timezone.utc).isoformat(), **entry}) + '\n')
+
+
+WRITE_KEYWORDS = frozenset({'INSERT', 'UPDATE', 'DELETE', 'REPLACE', 'UPSERT', 'CREATE', 'DROP', 'ALTER',
+                            'ATTACH', 'DETACH', 'PRAGMA', 'VACUUM', 'REINDEX', 'ANALYZE', 'BEGIN', 'COMMIT',
+                            'ROLLBACK', 'SAVEPOINT', 'RELEASE'})
+
+
+def _code_only(statement):
+    """The statement with string literals, quoted identifiers and comments blanked out."""
+    out, i, n = [], 0, len(statement)
+    while i < n:
+        c = statement[i]
+        if c in '\'"`[':
+            close = ']' if c == '[' else c
+            j = i + 1
+            while j < n:
+                if statement[j] == close:
+                    if close != ']' and j + 1 < n and statement[j + 1] == close:
+                        j += 2
+                        continue
+                    break
+                j += 1
+            if j >= n:
+                raise ValueError('read-only client: unterminated quote')
+            out.append(' ')
+            i = j + 1
+        elif statement.startswith('--', i):
+            j = statement.find('\n', i)
+            i = n if j < 0 else j
+            out.append(' ')
+        elif statement.startswith('/*', i):
+            j = statement.find('*/', i + 2)
+            if j < 0:
+                raise ValueError('read-only client: unterminated comment')
+            out.append(' ')
+            i = j + 2
+        else:
+            out.append(c)
+            i += 1
+    return ''.join(out)
+
+
+def read_only(statement):
+    """One SELECT / WITH / EXPLAIN statement with no write keyword anywhere (WITH ... DELETE included)."""
+    code = _code_only(statement).strip()
+    if code.endswith(';'):
+        code = code[:-1].rstrip()
+    if not code or ';' in code:
+        raise ValueError('read-only client: one statement only')
+    words = re.findall(r'[A-Za-z_]+', code.upper())
+    if words[0] not in ('SELECT', 'WITH', 'EXPLAIN'):
+        raise ValueError('read-only client: ' + words[0])
+    writes = sorted(WRITE_KEYWORDS & set(words))
+    if writes:
+        raise ValueError('read-only client: ' + writes[0])
+
+
 class WranglerQuery:
     """query() only, through the operator's wrangler login; never writes."""
 
-    def __init__(self, domain: str):
+    def __init__(self, domain: str, ledger=None, row_budget=None):
         self.domain = domain
         self.database = DATABASES[domain]
+        self.ledger, self.row_budget = ledger, row_budget
 
     def query(self, sql, params=()):
         statement = inline(sql, list(params or ()))
-        head = statement.lstrip().split(None, 1)[0].upper()
-        if head not in ('SELECT', 'WITH', 'EXPLAIN'):
-            raise ValueError('read-only client: ' + head)
-        if self.domain == 'learning' and in_avoid_window(datetime.now(timezone.utc)):
-            raise RuntimeError('learning_db_avoid_window')
+        read_only(statement)
+        if in_avoid_window(datetime.now(timezone.utc)):
+            raise RuntimeError(f'{self.domain}_db_avoid_window')
+        if self.row_budget is not None and _spent(self.ledger, 'rows_read') >= self.row_budget:
+            raise RuntimeError('d1_rows_read_budget_spent')
         result = subprocess.run([WRANGLER, 'd1', 'execute', self.database, '--remote', '--json',
                                  '--command', statement], cwd=WORKER, capture_output=True, text=True, timeout=600)
         if result.returncode != 0:
             raise RuntimeError(f'wrangler failed: {result.stderr[-800:]}{result.stdout[-800:]}')
         payload = json.loads(result.stdout)
+        _record(self.ledger, {'domain': self.domain, 'rows_read': payload[0]['meta']['rows_read'],
+                              'rows': len(payload[0]['results']), 'sql': statement[:240]})
         return payload[0]['results']
 
     __call__ = query
 
 
 class GcloudCold:
-    """Cold store download through one `gcloud storage cat` stream (no sliced cp)."""
+    """Cold store download through one `gcloud storage cat` stream (no sliced cp): a hard
+    per-object timeout, one retry, then stop."""
+
+    def __init__(self, ledger=None, byte_budget=None, timeout=600):
+        self.ledger, self.byte_budget, self.timeout = ledger, byte_budget, timeout
 
     def download(self, key, path):
-        with open(path, 'wb') as sink:
-            subprocess.run(['gcloud', 'storage', 'cat', f'gs://{COLD_BUCKET}/{key}'], stdout=sink, check=True,
-                           timeout=1800)
+        for attempt in (1, 2):
+            if self.byte_budget is not None and _spent(self.ledger, 'bytes') >= self.byte_budget:
+                raise RuntimeError('cold_download_budget_spent')
+            try:
+                with open(path, 'wb') as sink:
+                    subprocess.run(['gcloud', 'storage', 'cat', f'gs://{COLD_BUCKET}/{key}'], stdout=sink,
+                                   stderr=subprocess.DEVNULL, check=True, timeout=self.timeout)
+                _record(self.ledger, {'attempt': attempt, 'status': 'ok', 'bytes': os.path.getsize(path)})
+                return
+            except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as exc:
+                _record(self.ledger, {'attempt': attempt, 'status': type(exc).__name__,
+                                      'bytes': os.path.getsize(path) if os.path.exists(path) else 0})
+                if attempt == 2:
+                    raise RuntimeError('cold_download_failed_twice') from None
 
 
 def first_formal_plan(paper, signal_date, entry_date):
@@ -130,17 +224,23 @@ def fetch(args):
     from services import paired_nav_cold
     from services.paired_nav_journal import read_snapshot
     from services.forward_net_return import forward_sessions
-    paper, learning, market = (WranglerQuery(d) for d in ('paper', 'learning', 'market'))
-    store = GcloudCold()
-    original = paired_nav_cold.production_store
-    paired_nav_cold.production_store = lambda: paired_nav_cold.ColdObjects.__new__(paired_nav_cold.ColdObjects)
     cache = Path(args.cache)
     cache.mkdir(parents=True, exist_ok=True)
-    dates = [r['signal_date'] for r in paper.query(
-        'SELECT DISTINCT signal_date FROM l4_portfolio_plans_v1 WHERE account_id=1 AND activated=1 '
-        'AND signal_date>=? AND signal_date<=? ORDER BY signal_date', [args.start, args.end])]
+    ledger = cache / 'd1_reads.jsonl'
+    paper, learning, market = (WranglerQuery(d, ledger, args.row_budget) for d in ('paper', 'learning', 'market'))
+    store = GcloudCold(cache / 'cold_downloads.jsonl', args.byte_budget)
+    original, original_available = paired_nav_cold.production_store, paired_nav_cold.available
     report = {}
-    try:
+    try:   # every patch below is undone on any exit, including a failed first read
+        paired_nav_cold.production_store = lambda: paired_nav_cold.ColdObjects.__new__(paired_nav_cold.ColdObjects)
+        # The cold table's existence is a schema fact: check it once, not once per day
+        # (each check reads the whole sqlite_master catalog).
+        if not original_available(learning.query):
+            raise RuntimeError('paired_nav_cold_migration_0048_missing')
+        paired_nav_cold.available = lambda query: True
+        dates = [r['signal_date'] for r in paper.query(
+            'SELECT DISTINCT signal_date FROM l4_portfolio_plans_v1 WHERE account_id=1 AND activated=1 '
+            'AND signal_date>=? AND signal_date<=? ORDER BY signal_date', [args.start, args.end])]
         for day in dates:
             target = cache / f'{day}.json.gz'
             if target.exists() and not args.refresh:
@@ -180,6 +280,7 @@ def fetch(args):
             print(day, 'fetched', flush=True)
     finally:
         paired_nav_cold.production_store = original
+        paired_nav_cold.available = original_available
     prices(args, market, cache)
     print(json.dumps(report, indent=1))
 
@@ -266,6 +367,57 @@ def emulated_policy(reference, runtime, arm, inert_reference_exposure=None, iner
     return policy, inert, counterfactual
 
 
+def tabpack_weight_refs(records):
+    """Every distinct official TabPack weights reference the cached frozen policies name."""
+    from services import l4_tabpack_weights as official
+    refs = {}
+
+    def walk(node):
+        if isinstance(node, dict):
+            if isinstance(node.get('path'), str) and node['path'].startswith(official.PREFIX):
+                official.validate_reference(node)
+                refs[node['sha256']] = {'path': node['path'], 'sha256': node['sha256'], 'bytes': node['bytes']}
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+    for record in records:
+        walk(record['inputs']['l4Distribution'])
+    return [refs[sha] for sha in sorted(refs)]
+
+
+def prefetch_tabpack_weights(refs, directory, store):
+    """Local, checksum-verified copies of the weights, downloaded through the ledgered store.
+
+    The allocator's own loader reads the cold store with no ledger or budget; the replay
+    workers read these copies instead (`_use_local_weights`), so every byte is counted.
+    """
+    from services import l4_tabpack_weights as official
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    for ref in refs:
+        target = directory / (ref['sha256'] + '.npz')
+        if not target.exists():
+            partial = target.with_suffix('.part')
+            store.download(ref['path'], partial)
+            official.decode(partial.read_bytes(), ref)
+            partial.replace(target)
+        official.decode(target.read_bytes(), ref)
+
+
+def _use_local_weights(directory):
+    """Worker initializer: the TabPack loader decodes the prefetched copy and never opens the cold store."""
+    from functools import lru_cache
+    from services import l4_tabpack_weights as official
+
+    @lru_cache(maxsize=3)
+    def local(bucket_name, path, sha, size):
+        return official.decode((Path(directory) / (sha + '.npz')).read_bytes(),
+                               {'path': path, 'sha256': sha, 'bytes': size})
+    official._load = local
+
+
 def _solve(job):
     record, reference, arm, inert_reference_exposure, inert_reference_name = job
     from services.l4_distribution_runtime import run
@@ -301,8 +453,13 @@ def replay(args):
             continue
         for arm in arm_sets:
             jobs.append((record, reference, arm, args.inert_reference_exposure, args.inert_reference_name))
+    cache = Path(args.cache)
+    weights = cache / 'tabpack'
+    prefetch_tabpack_weights(tabpack_weight_refs(records), weights,
+                             GcloudCold(cache / 'cold_downloads.jsonl', args.byte_budget))
     results = []
-    with ProcessPoolExecutor(max_workers=args.workers) as pool:
+    with ProcessPoolExecutor(max_workers=args.workers, initializer=_use_local_weights,
+                             initargs=(str(weights),)) as pool:
         for result in pool.map(_solve, jobs):
             results.append(result)
             print(result['signal_date'], result['arm'], result['status'], round(result.get('exposure', 0), 4),
@@ -399,7 +556,7 @@ def evaluate(args):
             'se': stats['standard_error'],
             't': (stats['mean'] / stats['standard_error']) if stats['mean'] is not None and stats['standard_error'] else None,
             'critical_value_full_sample': critical_value(stats['samples'], max(k, 1), args.alpha, 10 ** 6, 10 ** 9,
-                                                         args.lag, 20000) if a != 'base' else None,
+                                                         args.lag, args.simulations) if a != 'base' else None,
             'distinct_days': len(distinct), 'days': sum(1 for day in days if (day, a) in by),
             'mean_exposure_ratio': sum(ratios) / len(ratios) if ratios else None,
             'raw_five_session_delta_mean': (sum(five) / len(five)) if five else None,
@@ -414,7 +571,7 @@ def evaluate(args):
         for a in arm_ids:
             d, m, _ = ser[a]
             st = market_neutral_edge(d, m, window=window, half_life=half_life, lag=args.lag)
-            c = critical_value(st['samples'], k, args.alpha, window, half_life, args.lag, 20000) \
+            c = critical_value(st['samples'], k, args.alpha, window, half_life, args.lag, args.simulations) \
                 if a != 'base' and st['mean'] is not None else None
             lb = st['mean'] - c * st['standard_error'] if c is not None else None
             detail[a] = {'n': st['samples'], 'alpha': st['mean'], 'se': st['standard_error'], 'c': c, 'lb': lb}
@@ -474,6 +631,8 @@ def main(argv=None):
     f.add_argument('--end', required=True)
     f.add_argument('--cache', required=True)
     f.add_argument('--refresh', action='store_true')
+    f.add_argument('--row-budget', type=int, default=None, help='stop once the ledger reaches this D1 rows_read')
+    f.add_argument('--byte-budget', type=int, default=None, help='stop once cold downloads reach this many bytes')
     proxy_help = 'market proxy (default: the KV schema default, l4_opb_selection.MARKET_PROXY_DEFAULT)'
     f.add_argument('--market-proxy', default=None, help=proxy_help)
     q = sub.add_parser('prices')
@@ -481,6 +640,7 @@ def main(argv=None):
     q.add_argument('--end', required=True)
     q.add_argument('--cache', required=True)
     q.add_argument('--market-proxy', default=None, help=proxy_help)
+    q.add_argument('--row-budget', type=int, default=None, help='stop once the ledger reaches this D1 rows_read')
     r = sub.add_parser('replay')
     r.add_argument('--cache', required=True)
     r.add_argument('--arms', required=True, help='JSON list of {id, constraints?, exposure_fraction?, name_fraction?}')
@@ -489,6 +649,8 @@ def main(argv=None):
     r.add_argument('--inert-reference-exposure', type=float, default=None)
     r.add_argument('--inert-reference-name', type=float, default=0.0625)
     r.add_argument('--market-proxy', default=None, help=proxy_help)
+    r.add_argument('--byte-budget', type=int, default=None,
+                   help='stop once cold downloads (snapshots and TabPack weights) reach this many bytes')
     e = sub.add_parser('evaluate')
     e.add_argument('--results', required=True)
     e.add_argument('--output', required=True)
@@ -498,11 +660,12 @@ def main(argv=None):
     e.add_argument('--half-life', type=float, default=20.)
     e.add_argument('--count-inert', action='store_true')
     e.add_argument('--min-exposure-ratio', type=float, default=0.5)
+    e.add_argument('--simulations', type=int, default=20000, help='critical_value_simulations')
     args = parser.parse_args(argv)
     if args.command == 'fetch':
         fetch(args)
     elif args.command == 'prices':
-        prices(args, WranglerQuery('market'), Path(args.cache))
+        prices(args, WranglerQuery('market', Path(args.cache) / 'd1_reads.jsonl', args.row_budget), Path(args.cache))
     elif args.command == 'replay':
         replay(args)
     elif args.command == 'evaluate':

@@ -13,6 +13,15 @@ from scipy.sparse import csc_matrix, eye, hstack, vstack
 from services.l4_quadratic_refinement import refine
 from services.l4_numeric_contract import WEIGHT_SUPPORT
 
+# Outer-approximation engineering constants (solver numerics, not trading parameters):
+# static perspective cuts per name at k/8 of its cap, leading eigen-directions lifted,
+# static tangents per lifted direction across its range, and the rounds without a
+# certificate after which the lift is added.
+PERSPECTIVE_ANCHORS = 8
+FACTOR_RANK = 50
+FACTOR_ANCHORS = 4
+LIFT_AFTER_ROUNDS = 10
+
 
 def allocate(*, symbols, expected_gross, covariance, current_weights,
              exposure_cap, name_cap, min_weight, max_positions,
@@ -164,37 +173,118 @@ def allocate(*, symbols, expected_gross, covariance, current_weights,
     # Keep the original feasible region for fixed-membership QP refinement.
     # Quadratic epigraph cuts constrain the MILP bound, not this exact QP.
     linear_matrix, linear_lhs, linear_rhs = matrix, lhs, rhs
-    # q >= lambda_min*I. For binary membership z, w_i^2 >= 2*a_i*w_i-a_i^2*z_i.
-    # These global perspective cuts remain valid for EVERY candidate subset;
-    # unlike a tangent at one sparse portfolio they also bound unseen subsets.
-    diagonal_floor=max(0.,eigen_floor-1e-12)
-    for fraction in (.25,.5,.75,1.):
-        anchors=upper*fraction
-        row=np.r_[2*diagonal_floor*anchors,-diagonal_floor*anchors**2,np.zeros(2*n),-1.]
-        matrix=vstack([matrix,csc_matrix(10000.*row[None,:])],format='csc')
-        lhs=np.r_[lhs,-np.inf];rhs=np.r_[rhs,0.]
-    bounds = Bounds(np.r_[lower, np.zeros(3*n+1)],
-                    np.r_[upper, np.ones(n), np.ones(2*n), np.inf])
-    objective = np.r_[-mu, np.zeros(n), entry_costs+uncertainty, reduce_costs+uncertainty, 1.]
-    integrality = np.r_[np.zeros(n), np.ones(n), np.zeros(2*n+1)]
+    linear_bounds = Bounds(np.r_[lower, np.zeros(3*n+1)], np.r_[upper, np.ones(n), np.ones(2*n), np.inf])
+    # Outer approximation of w'Qw with Q = d*I + F'F + E, each part PSD:
+    #   d*I: d is the eigen floor. Per name s_i >= d*w_i^2/z_i through perspective cuts
+    #        s_i >= d*(2a*w_i - a^2*z_i), valid for every subset. Separable, so the bound
+    #        moves name by name; one aggregated row per anchor could not (a ridge arm
+    #        with 475 candidates stayed 1e-4 from its bound after 120s).
+    #   F'F: the leading eigen-directions of Q - d*I, lifted as y = F w with u_j >= y_j^2
+    #        by one-dimensional tangents. A dense tangent of w'Qw tightens one direction
+    #        per round; high risk-aversion arms never closed the gap without the lift.
+    #   E:   the PSD remainder, epigraph t >= w'Ew by tangents (Kelley).
+    # Every cut is a tangent of a convex function, so the MILP optimum bounds the exact
+    # objective from below over the whole feasible set. The lift makes every round
+    # costlier, so it is added only after LIFT_AFTER_ROUNDS rounds without a certificate
+    # (a round count, not a clock, so a replay takes the same path); the rebuilt model
+    # keeps the incumbent, the verified bound and a cut at every point seen so far.
+    diagonal = max(0., eigen_floor*(1-1e-9)-1e-12)
+    residual = q - diagonal*np.eye(n)
+    values, vectors = np.linalg.eigh((residual+residual.T)*.5)
+    by_size = np.argsort(-values)
     deadline = time.monotonic() + time_limit
-    best, best_value, global_lower, rounds = None, math.inf, -math.inf, 0
-    while time.monotonic() < deadline:
-        result = milp(objective * 10000., integrality=integrality, bounds=bounds,
-                      constraints=LinearConstraint(matrix, lhs, rhs),
-                      options={'time_limit': max(.01, deadline-time.monotonic()), 'mip_rel_gap': 1e-10,
-                               # HiGHS defaults to 1e-6, looser than our 1e-8 certificate.
-                               'mip_feasibility_tolerance': max(1e-10, tolerance*.1)})
-        rounds += 1
+    model = {}
+
+    def build(rank):
+        leading = by_size[:rank]
+        leading = leading[values[leading] > 0.]
+        factor = (vectors[:, leading]*np.sqrt(values[leading])).T
+        k = len(leading)
+        rest = residual-factor.T@factor
+        # Variables: w, z, pos, neg, t | s (n) | y (k) | u (k).
+        width = 5*n+1+2*k
+        s_at, y_at, u_at = 4*n+1, 5*n+1, 5*n+1+k
+        y_low = np.minimum(factor*lower, factor*upper).sum(axis=1)
+        y_high = np.maximum(factor*lower, factor*upper).sum(axis=1)
+        model.update(factor=factor, k=k, rest=(rest+rest.T)*.5, width=width, s_at=s_at, y_at=y_at, u_at=u_at,
+                     matrix=hstack([linear_matrix, csc_matrix((linear_matrix.shape[0], n+2*k))], format='csc'),
+                     lhs=linear_lhs, rhs=linear_rhs,
+                     bounds=Bounds(np.r_[lower, np.zeros(3*n+1), np.zeros(n), y_low, np.zeros(k)],
+                                   np.r_[upper, np.ones(n), np.ones(2*n), np.inf, np.full(n, np.inf), y_high,
+                                         np.full(k, np.inf)]),
+                     objective=np.r_[-mu, np.zeros(n), entry_costs+uncertainty, reduce_costs+uncertainty, 1.,
+                                     np.ones(n), np.zeros(k), np.ones(k)],
+                     integrality=np.r_[np.zeros(n), np.ones(n), np.zeros(3*n+1+2*k)])
+        if k:
+            link = hstack([csc_matrix(-factor), csc_matrix((k, 4*n+1)), eye(k, format='csc'),
+                           csc_matrix((k, k))], format='csc')
+            model['matrix'] = vstack([model['matrix'], link], format='csc')
+            model['lhs'], model['rhs'] = np.r_[model['lhs'], np.zeros(k)], np.r_[model['rhs'], np.zeros(k)]
+            factor_cuts([(j, float(a)) for j in range(k) for a in np.linspace(y_low[j], y_high[j], FACTOR_ANCHORS)])
+        if diagonal > 0:
+            perspective_cuts([(i, float(upper[i]*f)) for i in range(n) if upper[i] > 0
+                              for f in np.arange(1, PERSPECTIVE_ANCHORS+1)/PERSPECTIVE_ANCHORS])
+
+    def add_rows(rr, cc, vv, bound):
+        if not bound:
+            return
+        block = csc_matrix((10000.*np.asarray(vv, float), (rr, cc)), shape=(len(bound), model['width']))
+        model['matrix'] = vstack([model['matrix'], block], format='csc')
+        model['lhs'] = np.r_[model['lhs'], np.full(len(bound), -np.inf)]
+        model['rhs'] = np.r_[model['rhs'], 10000.*np.asarray(bound, float)]
+
+    def perspective_cuts(points):
+        # d*(2a*w_i - a^2*z_i) - s_i <= 0
+        rr, cc, vv = [], [], []
+        for row, (i, a) in enumerate(points):
+            rr += [row]*3; cc += [i, n+i, model['s_at']+i]; vv += [2*diagonal*a, -diagonal*a*a, -1.]
+        add_rows(rr, cc, vv, [0.]*len(points))
+
+    def factor_cuts(points):
+        # 2a*y_j - u_j <= a^2
+        rr, cc, vv = [], [], []
+        for row, (j, a) in enumerate(points):
+            rr += [row]*2; cc += [model['y_at']+j, model['u_at']+j]; vv += [2*a, -1.]
+        add_rows(rr, cc, vv, [a*a for _, a in points])
+
+    def cuts_at(points):
+        rest = model['rest']
+        for point in points:
+            # 2(E c)'w - t <= c'Ec
+            add_rows([0]*(n+1), list(range(n))+[4*n], np.r_[2*rest@point, -1.], [float(point@rest@point)])
+        if model['k']:
+            factor_cuts([(j, float(y)) for point in points for j, y in enumerate(model['factor']@point)])
+        if diagonal > 0:
+            perspective_cuts([(i, float(point[i])) for point in points for i in np.flatnonzero(point > WEIGHT_SUPPORT)])
+
+    def solve(presolve):
+        return milp(model['objective'] * 10000., integrality=model['integrality'], bounds=model['bounds'],
+                    constraints=LinearConstraint(model['matrix'], model['lhs'], model['rhs']),
+                    options={'time_limit': max(.01, deadline-time.monotonic()), 'mip_rel_gap': 1e-10,
+                             'presolve': presolve,
+                             # HiGHS defaults to 1e-6, looser than our 1e-8 certificate.
+                             'mip_feasibility_tolerance': max(1e-10, tolerance*.1)})
+
+    def dual_bound(result):
         bound = getattr(result, 'mip_dual_bound', None)
-        if bound is not None and math.isfinite(bound):
-            global_lower = max(global_lower, float(bound) / 10000.)
+        return float(bound) / 10000. if bound is not None and math.isfinite(bound) else -math.inf
+
+    build(0)
+    seen = []
+    best, best_value, global_lower, rounds, verifications, lifted = None, math.inf, -math.inf, 0, 0, False
+    while time.monotonic() < deadline:
+        if not lifted and rounds >= LIFT_AFTER_ROUNDS and FACTOR_RANK > 0:
+            lifted = True
+            build(FACTOR_RANK)
+            cuts_at(seen)
+        result = solve(True)
+        rounds += 1
         if result.x is None:
             break
-        candidate = result.x[:n]
-        candidate = refine(candidate, q=q, objective=objective, current=current,
+        raw = result.x[:n].copy()
+        candidate = refine(result.x[:n], q=q, objective=model['objective'][:4*n+1], current=current,
                            matrix=linear_matrix, lhs=linear_lhs, rhs=linear_rhs,
-                           bounds=bounds, deadline=deadline)
+                           bounds=linear_bounds, deadline=deadline)
         positive, negative = np.maximum(candidate-current, 0), np.maximum(current-candidate, 0)
         value = float(candidate @ q @ candidate - mu @ candidate + entry_costs@positive + reduce_costs@negative+uncertainty@(positive+negative))
         active = candidate > WEIGHT_SUPPORT
@@ -209,12 +299,20 @@ def allocate(*, symbols, expected_gross, covariance, current_weights,
             raise ValueError('l4_portfolio_solver_infeasible_result')
         if value < best_value:
             best, best_value = candidate.copy(), value
-        if best_value - global_lower <= tolerance:
-            break
-        tangent = np.r_[2*q@candidate, np.zeros(3*n), -1.]
-        matrix = vstack([matrix, csc_matrix(10000. * tangent[None, :])], format='csc')
-        lhs = np.r_[lhs, -np.inf]
-        rhs = np.r_[rhs, 10000. * float(candidate@q@candidate)]
+        bound = dual_bound(result)
+        if best_value - bound <= tolerance:
+            # Bound within tolerance of the incumbent, or above it (an invalid bound: HiGHS
+            # presolve reported Optimal above a feasible point, 11/18 ra 64). Only a bound
+            # re-derived without presolve on the same model may certify or condemn: the
+            # smaller of the two is kept, so one wrong solve cannot.
+            verifications += 1
+            bound = min(bound, dual_bound(solve(False)))
+            global_lower = max(global_lower, bound)
+            if best_value - global_lower <= tolerance:
+                break
+        points = [candidate] if np.max(abs(raw-candidate)) <= 1e-12 else [candidate, raw]
+        seen += points
+        cuts_at(points)
     gap = best_value - global_lower
     if best is None or not math.isfinite(gap) or gap > tolerance:
         raise ValueError('l4_portfolio_optimality_not_certified')
@@ -233,7 +331,8 @@ def allocate(*, symbols, expected_gross, covariance, current_weights,
             'proof': {'evaluated_candidate_count': n, 'preselection': False,
                       'objective_utility': -best_value, 'global_utility_upper_bound': -global_lower,
                       'absolute_objective_gap': max(0., gap), 'tolerance': tolerance,
-                      'within_tolerance': True, 'rounds': rounds},
+                      'within_tolerance': True, 'rounds': rounds, 'presolve_free_verifications': verifications,
+                      'lifted_directions': model['k']},
             'constraints': {'exposure_cap': exposure_cap, 'name_cap': name_cap,
                             'min_weight': min_weight, 'max_positions': max_positions, 'name_caps':caps,
                             'exposure_groups':groups,'membership_groups':membership_evidence,'excluded_pairs':list(excluded_pairs)}}

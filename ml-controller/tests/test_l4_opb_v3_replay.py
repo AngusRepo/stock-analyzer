@@ -715,13 +715,43 @@ def test_one_deadline_from_the_route_covers_config_claim_list_and_run_job(monkey
     route = Path(__file__).resolve().parents[1].joinpath('routers', 'l4_distribution.py').read_text()
     handler = route[route.index("'/opb-arm-replay'"):]
     assert 'deadline = time.monotonic() + TOTAL_DEADLINE_SECONDS' in handler and 'deadline=deadline' in handler
-    timeouts = []
-    monkeypatch.setattr(dispatch, '_load_config', lambda timeout=10.0: timeouts.append(timeout) or time.sleep(2))
-    started = time.monotonic()
-    out = dispatch.dispatch_independent_replay('2026-11-19', jobs=object(), bucket=object(),
-                                               deadline=time.monotonic() + 0.5)
-    assert out == {'status': 'dispatch_failed', 'business_date': '2026-11-19', 'reason': 'config_load_failed:TimeoutError'}
-    assert time.monotonic() - started < 1.5 and 0 < timeouts[0] <= 0.5
+    import concurrent.futures
+    import threading
+    # The config read blocks until the test releases it (at most 2 s if nothing bounds the
+    # wait); the bound is checked on the arguments, never on elapsed wall time.
+    release, finished, timeouts, waits = threading.Event(), threading.Event(), [], []
+
+    def blocked(timeout=10.0):
+        timeouts.append(timeout)
+        release.wait(2)
+        finished.set()
+        return {'l4Distribution': LIVE}
+    real_result = concurrent.futures.Future.result
+
+    def result(self, timeout=None):
+        waits.append(timeout)
+        return real_result(self, timeout)
+    monkeypatch.setattr(dispatch, '_load_config', blocked)
+    monkeypatch.setattr(concurrent.futures.Future, 'result', result)
+    try:
+        # The only real wait in this test. 0.5 s leaves CI stalls room before the read starts
+        # (a spent budget would skip it), and is still 4x short of the read's 2 s block, so
+        # an unbounded wait cannot pass `not finished.is_set()`.
+        budget = .5
+        deadline = time.monotonic() + budget
+        out = dispatch.dispatch_independent_replay('2026-11-19', jobs=object(), bucket=object(), deadline=deadline)
+        # The dispatch returned while the read was still blocked: the deadline cut the wait.
+        assert not finished.is_set()
+        assert out == {'status': 'dispatch_failed', 'business_date': '2026-11-19',
+                       'reason': 'config_load_failed:TimeoutError'}
+        assert len(waits) == 1 and 0 < waits[0] <= budget and timeouts == waits
+        # A spent budget never starts the read.
+        out = dispatch.dispatch_independent_replay('2026-11-19', jobs=object(), bucket=object(),
+                                                   deadline=time.monotonic() - 1)
+        assert out['reason'] == 'config_load_failed:TimeoutError' and len(timeouts) == 1
+    finally:
+        release.set()
+    monkeypatch.setattr(concurrent.futures.Future, 'result', real_result)
     # The remaining time reaches RunJob (never the fixed 25 s of the old path).
     seen = {}
     provider, Client = replay_provider()
@@ -1913,3 +1943,125 @@ def test_offline_replay_refuses_prices_cached_for_another_market_proxy(tmp_path,
         json.dump({'calendar': [], 'rows': []}, sink)
     with pytest.raises(RuntimeError, match='market_proxy_mismatch'):
         tool.load_prices(legacy, proxy=MARKET_PROXY_DEFAULT)
+
+
+# --- A challenger the allocator cannot certify (l4_portfolio) is isolated to that arm and day.
+
+class FailingRuns(Runs):
+    """Runs whose `fail` arms raise the allocator's error instead of returning a plan."""
+
+    def __init__(self, fail, error='l4_portfolio_optimality_not_certified'):
+        super().__init__()
+        self.fail, self.error = set(fail), error
+
+    def __call__(self, recommendations, policy, *, return_history, forced_arm):
+        if forced_arm in self.fail:
+            self.calls.append((forced_arm, deepcopy(policy['runtime']['account']['risk_limits'])))
+            raise ValueError(self.error)
+        return super().__call__(recommendations, policy, return_history=return_history, forced_arm=forced_arm)
+
+
+def _resolvable(state):
+    """The frozen account as a real snapshot has it (nav, positions, minimum trade): the replay
+    resolves a failed arm's effective limits from it exactly as the runtime does."""
+    account = state['content']['inputs']['alpha_policy']['l4Distribution']['runtime']['account']
+    account['nav'] = 1_000_000.
+    account['risk_limits'].update(max_positions=8, min_trade_value=20_000.)
+    return account
+
+
+@pytest.mark.parametrize('error', sorted(replay.ARM_SOLVE_FAILURES))
+def test_an_uncertified_challenger_books_solve_failed_and_the_other_arms_still_book(world, monkeypatch, error):
+    from services.l4_opb_selection import _v3_series, arm_policies, risk_envelope
+    state, stored = world
+    account = _resolvable(state)
+    seal(stored)
+    reads = _snapshot_reads(monkeypatch, state)
+    learning, runs = Learning(), FailingRuns({'risk_tilt'}, error)
+    paper = CountingPaper(stored)
+
+    def night(business_date):
+        return replay.replay_day_v3(live=deepcopy(LIVE), signal_date='2026-10-01', business_date=business_date,
+                                    paper=paper, learning=learning, market=Market(), run=runs)
+    first = night('2026-10-06')
+    assert first['status'] == 'materialized' and first['rows'] == 4
+    assert first['solve_failed'] == {'risk_tilt': error}
+    rows = sorted(learning.rows.values(), key=lambda r: (r['arm_id'], r['session_offset']))
+    tilt = [r for r in rows if r['arm_id'] == 'risk_tilt']
+    assert {r['status'] for r in rows if r['arm_id'] == 'base'} == {'complete'}
+    assert [(r['status'], r['delta'], r['arm_piece'], r['arm_exposure'], r['weights_json']) for r in tilt] == \
+        [(replay.STATUS_SOLVE_FAILED, 0., 0., 0., '{}')] * 2
+    # The effective limits the runtime would have solved under, not a placeholder.
+    policy = {**deepcopy(LIVE), 'runtime': state['content']['inputs']['alpha_policy']['l4Distribution']['runtime']}
+    resolved = {a['id']: a['effective_digest'] for a in arm_policies(policy, risk_envelope(account, account['nav']))}
+    assert {r['effective_digest'] for r in tilt} == {resolved['risk_tilt']}
+    # Terminal: later nights price the stored targets; no snapshot re-read, no re-solve.
+    for business_date in ('2026-10-07', '2026-10-08', '2026-10-09'):
+        later = night(business_date)
+        assert later['status'] == 'materialized' and 'solve_failed' not in later
+    assert night('2026-10-09') == {'status': 'already_materialized'}
+    assert len(reads) == 1 and paper.reads == 1 and [a for a, _ in runs.calls] == ['base', 'risk_tilt']
+    assert {r['status'] for r in learning.rows.values() if r['arm_id'] == 'risk_tilt'} == {replay.STATUS_SOLVE_FAILED}
+    assert len([r for r in learning.rows.values() if r['arm_id'] == 'risk_tilt']) == 5
+    # Never selection evidence: the arm's series is empty, base's is whole.
+    config = {**LIVE['opb']}
+    series, any_rows, counted = _v3_series(config, [{'id': 'base', 'definition_digest': d} if a == 'base' else
+                                                    {'id': a, 'definition_digest': d} for a, d in replay._arms(LIVE)],
+                                           list(learning.rows.values()), context=context_identity(LIVE, {'source': 'fixed'}),
+                                           signal_date='2026-10-09')
+    assert series['risk_tilt'][0] == [] and len(series['base'][0]) == 5 and counted[ROW_LIVE] == 5
+
+
+@pytest.mark.parametrize('case', ['base_fails', 'base_fails_another_arm_chosen', 'chosen_arm_fails', 'other_error'])
+def test_base_the_chosen_arm_and_any_other_error_still_fail_the_day(world, monkeypatch, case):
+    state, stored = world
+    _resolvable(state)
+    if case in ('chosen_arm_fails', 'base_fails_another_arm_chosen'):
+        stored = {**stored, 'opb': {'arm_id': 'risk_tilt'}, 'weights': dict(WEIGHTS['risk_tilt'])}
+    runs = {'base_fails': FailingRuns({'base'}), 'base_fails_another_arm_chosen': FailingRuns({'base'}),
+            'chosen_arm_fails': FailingRuns({'risk_tilt'}),
+            'other_error': FailingRuns({'risk_tilt'}, 'l4_portfolio_solver_infeasible_result')}[case]
+    learning = Learning()
+    with pytest.raises(ValueError, match=runs.error):
+        book(stored, learning, runs, '2026-10-06')
+    assert learning.rows == {} and learning.verdicts == {}
+
+
+def test_a_failed_challenger_on_a_counterfactual_day_is_still_isolated(world):
+    """The live plan chose base on the halted day; the counterfactual replays every arm."""
+    state, stored = world
+    account = _resolvable(state)
+    account['risk_limits'].update(exposure_cap=0, name_cap=0, buys_halted=True)
+    stored['weights'] = {}
+    live = deepcopy(LIVE)
+    live['opb']['inert_counterfactual'] = {'enabled': True, 'reference_exposure_cap': .2, 'reference_name_cap': .0625}
+    learning = Learning()
+    receipt = book(stored, learning, FailingRuns({'risk_tilt'}), '2026-10-09', live=live)
+    assert receipt['row_kind'] == ROW_COUNTERFACTUAL_INERT and receipt['solve_failed'] == {
+        'risk_tilt': 'l4_portfolio_optimality_not_certified'}
+    assert {(r['arm_id'], r['status']) for r in learning.rows.values()} == {
+        ('base', 'complete'), ('risk_tilt', replay.STATUS_SOLVE_FAILED)}
+
+
+def test_solve_failed_rows_satisfy_the_migration_and_verify_on_rerun(world):
+    import sqlite3
+    from pathlib import Path
+    migration = Path(__file__).resolve().parents[2] / 'worker/domain-migrations/learning/0075_l4_opb_arm_replay_v2.sql'
+    db = sqlite3.connect(':memory:')
+    db.row_factory = sqlite3.Row
+    db.executescript(migration.read_text())
+
+    class SqliteLearning(Learning):
+        def batch_execute(self, statements):
+            super().batch_execute(statements)
+            for sql, values in statements:
+                if 'l4_opb_arm_replay_v2' in sql:
+                    db.execute(sql, values)
+    state, stored = world
+    _resolvable(state)
+    learning = SqliteLearning()
+    book(stored, learning, FailingRuns({'risk_tilt'}), '2026-10-09')
+    assert {r['status'] for r in db.execute('SELECT status FROM l4_opb_arm_replay_v2')} == {
+        'complete', replay.STATUS_SOLVE_FAILED}
+    with pytest.raises(sqlite3.IntegrityError):
+        db.execute("INSERT INTO l4_opb_arm_replay_v2(status) VALUES('failed')")

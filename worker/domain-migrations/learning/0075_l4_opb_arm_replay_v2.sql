@@ -11,6 +11,8 @@
 -- (a risk-halted day replayed at the policy's reference exposure), or
 -- cutover_warm_start (a pre-cutover day replayed with the new L3's fold-OOF
 -- scores). Selection admits the latter two only under their own KV switches.
+-- status solve_failed: the allocator could not certify that challenger arm on that
+-- day (base and the live plan's chosen arm never book it); terminal, never evidence.
 CREATE TABLE IF NOT EXISTS l4_opb_arm_replay_v2 (
   context_identity TEXT NOT NULL CHECK(length(context_identity)=64),
   signal_date TEXT NOT NULL,
@@ -20,7 +22,7 @@ CREATE TABLE IF NOT EXISTS l4_opb_arm_replay_v2 (
   schema_version TEXT NOT NULL CHECK(schema_version='l4-opb-arm-replay-v2'),
   reward_semantic TEXT NOT NULL CHECK(reward_semantic='exposure_normalized_market_neutral_daily_v1'),
   row_kind TEXT NOT NULL CHECK(row_kind IN ('live_context','counterfactual_inert','cutover_warm_start')),
-  status TEXT NOT NULL CHECK(status IN ('complete','no_exposure','inert')),
+  status TEXT NOT NULL CHECK(status IN ('complete','no_exposure','inert','solve_failed')),
   known_date TEXT NOT NULL CHECK(known_date>signal_date),
   arm_piece REAL NOT NULL,
   base_piece REAL NOT NULL,

@@ -4,10 +4,10 @@
   "source_equivalence": false,
   "maturity_transfer": false,
   "production_baseline_verified": true,
-  "production_baseline_source": "f2b4ea78ce5c6dfe56b3b09ee4fbeb84ab738d34",
+  "production_baseline_source": "3308b89e22ca7f5742c2e440ea889284064ce493",
   "production_baseline_receipt_checksum": "669abd8095444f4a56893ca7ceed9e5a41ab32f7a7f2da99625b83bcef1ad913",
-  "prior_approval_checksum": "6560e0dc4b08d4fc94d28f03509c5e25c6dcc97a11d57509d6931d0a0cd980bb",
-  "prior_configuration_checksum": "226eaaa026b9b26b8244e95bd973092c77f217cc1dc5e756c691ba6b535f4f6b",
+  "prior_approval_checksum": "eaf28e7a753d11f6fb604c3d4f5e728e996447de466d7c76c259744bc806e6bf",
+  "prior_configuration_checksum": "aa5c281520f58626dd7225b735f9889eafff3acaf9b645b8322a9f039301d9d1",
   "approved_sources": {
     "allocator_source_identity": {
       "recommendation_service.py": "1a9930c1890a87d1a31aa0a502115eee136bca1e1f817af308af4522e563d442",
@@ -99,6 +99,6 @@
       "alpha_model_roster.py": "e38d7cf80060bef1b79e72f27079f7e2a04a6638b2e84888985de83b8491fe89"
     }
   },
-  "execution_owner_version": "native-paper-v1:2d9ad9a6acb4e029b48912c51d2cdc2734399d6a1359aee351465e800b987151",
+  "execution_owner_version": "native-paper-v1:e612bc90f079295068d04d14fc6b9270c5df2a2cee91a0609ed91c69ba0ab5fa",
   "review": "output/herdr-handoff-20261018/sys-cleanup-20261028/runbook_k20_repin_grant.md"
 }

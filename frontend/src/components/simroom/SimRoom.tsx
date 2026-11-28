@@ -402,7 +402,7 @@ export function SimRoom({ clock, closed, rows, view, onViewChange, kpis, status,
     </div>
   ) : view === 'intraday' ? (
     <div className="sr-kpis">
-      <div className="sr-kpi">計畫 <b>{rows.length}</b> 檔 <span className="hide-m">{formatTwd(planValue)}</span></div>
+      <div className="sr-kpi">計畫 <b>{rows.length}</b> 檔 <span>{formatTwd(planValue)}</span></div>
       {(['filled', 'trig', 'near', 'wait', 'stop'] as RowStatus[]).filter((s) => s !== 'filled' || counts.filled > 0).map((s) => (
         <div key={s} className="sr-kpi"><StatusGlyph status={s} view="intraday" bare />{ROW_STATUS_LABEL[s]} <b>{counts[s]}</b></div>
       ))}
@@ -449,23 +449,23 @@ export function SimRoom({ clock, closed, rows, view, onViewChange, kpis, status,
               <th title="前一交易日收盤（當日基準評估後才有）">昨收</th>
               <th>選股參考價</th>
               <th className="l">權重 · 配置</th>
-              <th className="hide-m" title="配置 ÷ 參考價；含零股、未扣手續費；參考價差 >20% 時不算">預估股數</th>
-              <th className="l hide-m" title="近 20 日 K 線：紅＝收高於開、綠＝收低於開">20 日 K 線</th>
-              <th className="l hide-m">20 日區間 · 距高點</th>
-              <th className="l hide-m"><GateHeader groups={groups} /></th>
+              <th title="配置 ÷ 參考價；含零股、未扣手續費；參考價差 >20% 時不算">預估股數</th>
+              <th className="l" title="近 20 日 K 線：紅＝收高於開、綠＝收低於開">20 日 K 線</th>
+              <th className="l">20 日區間 · 距高點</th>
+              <th className="l"><GateHeader groups={groups} /></th>
             </tr></thead>
             <tbody>
               {sorted.map((row) => (
                 <tr key={row.symbol} {...rowProps(row)}>
-                  <td className="l"><StatusGlyph status={row.status} view={view} text={row.statusText} /></td>
-                  <td className="l sym"><b>{row.symbol}</b><span>{row.name}</span><RefFlag row={row} /><RowMarks row={row} /></td>
-                  <td className="px">{formatPrice(row.prevClose)}</td>
-                  <td className={row.refFlag ? 'text-warn' : ''}>{formatPrice(row.refPrice)}</td>
-                  <td className="l"><AllocCell row={row} maxWeight={maxWeight} />{row.weight != null && <span className="ml-1 text-muted-foreground">{formatNumber(row.weight * 100, 1)}%</span>}</td>
-                  <td className="hide-m">{row.refFlag ? <span className="text-warn">待確認</span> : formatShares(row.estimatedShares)}</td>
-                  <td className="l hide-m"><CandleSpark bars={bars[row.symbol] ?? []} /></td>
-                  <td className="l hide-m"><RangeCell values={(bars[row.symbol] ?? []).map((b) => b.close)} /></td>
-                  <td className="l dotcell"><GateProgress row={row} groups={groups} /><BlockerCell row={row} premarket />{row.debateLabel && <div className="why">{row.debateLabel}</div>}</td>
+                  <td className="l" data-label="狀態"><StatusGlyph status={row.status} view={view} text={row.statusText} /></td>
+                  <td className="l sym" data-label="標的"><b>{row.symbol}</b><span>{row.name}</span><RefFlag row={row} /><RowMarks row={row} /></td>
+                  <td className="px" data-label="昨收">{formatPrice(row.prevClose)}</td>
+                  <td className={row.refFlag ? 'text-warn' : ''} data-label="選股參考價">{formatPrice(row.refPrice)}</td>
+                  <td className="l" data-label="權重 · 配置"><AllocCell row={row} maxWeight={maxWeight} />{row.weight != null && <span className="ml-1 text-muted-foreground">{formatNumber(row.weight * 100, 1)}%</span>}</td>
+                  <td data-label="預估股數">{row.refFlag ? <span className="text-warn">待確認</span> : formatShares(row.estimatedShares)}</td>
+                  <td className="l wide" data-label="20 日 K 線"><CandleSpark bars={bars[row.symbol] ?? []} /></td>
+                  <td className="l wide" data-label="20 日區間 · 距高點"><RangeCell values={(bars[row.symbol] ?? []).map((b) => b.close)} /></td>
+                  <td className="l dotcell" data-label="進場關卡"><span className="sr-gate-head"><GateHeader groups={groups} /></span><GateProgress row={row} groups={groups} /><BlockerCell row={row} premarket />{row.debateLabel && <div className="why">{row.debateLabel}</div>}</td>
                 </tr>
               ))}
             </tbody>
@@ -485,9 +485,9 @@ export function SimRoom({ clock, closed, rows, view, onViewChange, kpis, status,
             <th className="l">標的</th>
             <th>{post ? '最後價 · 漲跌' : '現價 · 漲跌'}</th>
             <th className="l" title="▏參考價 ┃觸發價（ORH） ░到追價上限 │VWAP ● 現價">{post ? '價格梯' : '價格梯 · 距觸發'}</th>
-            {post && <th className="hide-m">成交</th>}
-            <th className="l hide-m"><GateHeader /></th>
-            <th className="hide-m">配置</th>
+            {post && <th>成交</th>}
+            <th className="l"><GateHeader /></th>
+            <th>配置</th>
           </tr></thead>
           <tbody>
             {sorted.map((row) => {
@@ -497,13 +497,13 @@ export function SimRoom({ clock, closed, rows, view, onViewChange, kpis, status,
               return (
                 <FragmentRow key={row.symbol} header={header}>
                   <tr {...rowProps(row)}>
-                    <td className="l"><StatusGlyph status={row.status} view={view} outcome={postOutcome(row)} text={row.statusText} /></td>
-                    <td className="l sym"><b>{row.symbol}</b><span>{row.name}</span><RefFlag row={row} /><RowMarks row={row} /></td>
-                    <td className="px">{formatPrice(row.price)}{row.price != null && <div className="chg"><Change row={row} /></div>}</td>
-                    <td className="l ladder wide">{row.completed ? <span className="text-muted-foreground">—</span> : <PriceLadder row={row} width={160} showDistance={!post} orhPending={orhPending} />}</td>
-                    {post && <td className="hide-m">{row.fill ? `${formatPrice(row.fill.avgPrice)} × ${formatNumber(row.fill.shares, 0)}` : '—'}</td>}
-                    <td className="l dotcell"><GateProgress row={row} /><BlockerCell row={row} /></td>
-                    <td className="hide-m"><AllocCell row={row} maxWeight={maxWeight} /></td>
+                    <td className="l" data-label={post ? '結果' : '狀態'}><StatusGlyph status={row.status} view={view} outcome={postOutcome(row)} text={row.statusText} /></td>
+                    <td className="l sym" data-label="標的"><b>{row.symbol}</b><span>{row.name}</span><RefFlag row={row} /><RowMarks row={row} /></td>
+                    <td className="px" data-label={post ? '最後價 · 漲跌' : '現價 · 漲跌'}>{formatPrice(row.price)}{row.price != null && <div className="chg"><Change row={row} /></div>}</td>
+                    <td className="l ladder wide" data-label={post ? '價格梯' : '價格梯 · 距觸發'}>{row.completed ? <span className="text-muted-foreground">—</span> : <PriceLadder row={row} width={160} showDistance={!post} orhPending={orhPending} />}</td>
+                    {post && <td data-label="成交">{row.fill ? `${formatPrice(row.fill.avgPrice)} × ${formatNumber(row.fill.shares, 0)}` : '—'}</td>}
+                    <td className="l dotcell" data-label="進場關卡"><span className="sr-gate-head"><GateHeader /></span><GateProgress row={row} /><BlockerCell row={row} /></td>
+                    <td data-label="配置"><AllocCell row={row} maxWeight={maxWeight} /></td>
                   </tr>
                 </FragmentRow>
               )

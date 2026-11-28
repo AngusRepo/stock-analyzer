@@ -33,7 +33,7 @@ export function finlabStageCards(parent?: SchedulerJob, now = Date.now()): Sched
         : row?.status === 'running' && !staleRunning ? `${duration(Math.max(0, now-Date.parse(row.started_at)))}（進行中）` : 'N/A',
       durationConcern: null, durationConcernReason: undefined, recoveredFromStatus: null,
       lastError: lastStatus === 'failed' ? parent.lastError ?? summary : undefined,
-      summary, details: [...new Set([card.description, summary])], displayNote: summary,
+      summary, summaryZh: undefined, details: [...new Set([card.description, summary])], displayNote: summary,
       history7d: [], rate7d: 'N/A', nextRun: '隨同一 FinLab run 執行',
       accounting: { ...parent.accounting, task: card.id, physicalRoot: false, ticketRequired: false },
       ticket: { ...parent.ticket, logicalTask: card.id, status: lastStatus, missing: !row },

@@ -1,4 +1,4 @@
-import { humanJobSummary } from '@/lib/humanLabels'
+import { jobErrorText, jobSummaryText } from '@/lib/humanLabels'
 import { eveningClosureDisplay } from './eveningClosureDisplay'
 import { postcloseDispatchLabel, withPostcloseDispatchWait } from './postcloseDispatchWait'
 import { isMissedWatchdog } from './missedWatchdog'
@@ -484,10 +484,10 @@ function formatUpdatedAt(value: number): string {
 function statusSummary(job?: SchedulerJob): string {
   if (!job) return '正式 API 尚未回傳此 job。'
   if (isAllocatorSafeAbstention(job)) {
-    return `No validated Fusion owner; BUY/allocation remains fail-closed. ${humanJobSummary(job?.summary)}`.trim()
+    return `No validated Fusion owner; BUY/allocation remains fail-closed. ${jobSummaryText(job)}`.trim()
   }
-  if (job.lastError) return humanJobSummary(job.lastError)
-  if (job.summary) return humanJobSummary(job.summary)
+  if (job.lastError) return jobErrorText(job)
+  if (job.summary) return jobSummaryText(job)
   if (job.lastStatus === 'running') return '已收到 start/trigger evidence，等待 final callback。'
   if (job.lastStatus === 'waiting') return '等待 upstream callback 或 readiness gate。'
   if (job.lastStatus === 'success') return 'Final callback 已完成並寫入 scheduler log。'
@@ -562,6 +562,7 @@ export default function ExecutionChainPanel({
         ...job,
         lastStatus: 'waiting',
         summary: `Waiting for ${definition.dependsOn} terminal callback`,
+        summaryZh: undefined,
         statusScope: upstream.statusScope,
         statusRunDate: upstream.statusRunDate,
         displayNote: 'Callback-owned downstream stage has not started because its upstream owner is not complete.',

@@ -111,3 +111,13 @@ test('maturity lineage labels cadence, role, availability, and comparable contra
   assert(panel.includes("最佳情境達 11 日"))
   assert(panel.includes("每一日仍須完整 V5 carrier、T+5 outcome、canonical identity 與 re-audit 全部通過"))
 })
+
+test('L4 panel never formats missing loss-distribution fields as NaN%', () => {
+  // 2026-11-28: r33-roster-isotonic-v1 distribution carries only the mean (no p_loss/gain/loss) → live page showed NaN%.
+  const l4 = fs.readFileSync(path.join(root, 'components/L4DistributionPanel.tsx'), 'utf8')
+  assert(!/pct\(target\.distribution\.(p_loss|gain|loss)\)/.test(l4), 'loss fields must go through the finite guard')
+  assert(l4.includes('Number.isFinite(value)'))
+  assert(l4.includes('hasLossDistribution &&'))
+  assert(l4.includes('只輸出五日預期收益，不提供虧損機率與獲利／虧損幅度'))
+  assert(contract.includes('p_loss?:number'))
+})

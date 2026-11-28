@@ -59,6 +59,8 @@
 /* 關卡進度：每段一條分格條（格寬 14、間距 2）＋通過數 */
 .simroom .gates { display: inline-flex; gap: 10px; vertical-align: middle; }
 .simroom .gseg { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+/* 關卡分組標題：桌機在表頭，手機（表頭隱藏）改顯示在關卡格內。 */
+.simroom .sr-gate-head { display: none; }
 .simroom th .gseg { font-size: 11px; color: var(--sr-sub); border-bottom: 1px solid var(--sr-border); padding-bottom: 2px; }
 .simroom .gseg .bar { display: inline-flex; gap: 2px; }
 .simroom .gseg .bar i { display: block; width: 10px; height: 10px; border-radius: 2px; background: var(--na); }
@@ -105,27 +107,32 @@
 .simroom .sr-up { color: var(--up); } .simroom .sr-down { color: var(--down); }
 
 @media (max-width: 1420px) { .simroom .sr-main { grid-template-columns: minmax(0, 1fr); } }
-@media (max-width: 760px) {
-  .simroom .hide-m { display: none; }
-  .simroom .sr-axis button span.t { display: none; }
+@media (width < 48rem) {
+  /* 11/28：手機不藏字。時段軸改兩行（名稱／時間），高度隨內容。 */
+  .simroom .sr-axis, .simroom .sr-head .sr-axis { height: auto; min-height: 30px; }
+  .simroom .sr-axis button { flex-direction: column; gap: 0; padding: 3px 2px; white-space: normal; overflow: visible; overflow-wrap: anywhere; line-height: 1.25; text-align: center; }
+  .simroom .sr-axis button span.t { font-size: 10px; }
   .simroom .sr-kpi.trend { margin-left: 0; }
   .simroom .vals { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .simroom .vals.cond { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  /* 明天候選維持表格（欄位少，375 放得下） */
-  /* 手機：每檔兩到三行，價格梯與關卡點陣照樣直接顯示；面板排在清單下方 */
+  /* 手機（< md）：每檔一塊，每格 data-label 當 10px 小標、值在下面可換行；
+     K 線、區間、價格梯、關卡整行顯示，不藏欄、不橫捲；面板排在清單下方。 */
   .simroom .sr-scroll { overflow: visible; }
   .simroom table.sr-rows thead { display: none; }
   .simroom table.sr-rows, .simroom table.sr-rows tbody { display: block; white-space: normal; }
   .simroom table.sr-rows tr.grp, .simroom table.sr-rows tr.grp td { display: block; }
-  .simroom table.sr-rows tr.sr-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; column-gap: 10px; row-gap: 4px; padding: 7px 10px; border-top: 1px solid var(--sr-border); }
-  .simroom table.sr-rows tr.sr-row td { height: auto; border: 0; padding: 0; background: none; text-align: left; }
+  .simroom table.sr-rows tr.sr-row { display: grid; grid-template-columns: repeat(auto-fill, minmax(6.5rem, 1fr)); align-items: start; column-gap: 10px; row-gap: 6px; padding: 7px 10px; border-top: 1px solid var(--sr-border); }
+  .simroom table.sr-rows tr.sr-row td { display: block; min-width: 0; height: auto; border: 0; padding: 0; background: none; text-align: left; white-space: normal; overflow-wrap: anywhere; }
+  .simroom table.sr-rows tr.sr-row td[data-label]::before { content: attr(data-label); display: block; font-size: 10px; line-height: 14px; color: var(--sr-dim); }
   .simroom table.sr-rows tr.sel { background: #1b2130; box-shadow: inset 2px 0 0 var(--ok); }
   .simroom table.sr-rows tr.sel td:first-child { box-shadow: none; }
+  /* 手機 td 背景為 none，選中列改標在 tr；要壓過下方 .sv-stockintelli-page 的 transparent !important。 */
+  .sv-stockintelli-page .simroom table.sr-rows tbody tr.sel { background: #1b2130 !important; box-shadow: inset 2px 0 0 var(--ok); }
   .simroom table.sr-rows td.wide { grid-column: 1 / -1; }
   .simroom table.sr-rows td.dotcell { display: block; grid-column: 1 / -1; }
+  .simroom table.sr-rows td.dotcell .sr-gate-head { display: block; color: var(--sr-dim); font-size: 10px; margin-bottom: 2px; }
   .simroom td.dotcell .why { max-width: none; }
   .simroom .gates { flex-wrap: wrap; row-gap: 4px; }
-  .simroom .stl { display: none; }
 }
 
 /* 抵消 index.css 對 .sv-stockintelli-page 表格的全站卡片化（列漸層、圓角、間距） */

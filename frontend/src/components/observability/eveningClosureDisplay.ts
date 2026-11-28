@@ -18,6 +18,7 @@ export function eveningClosureDisplay(root: SchedulerJob): SchedulerJob {
       : terminal ? root.summary : root.lastStatus === 'waiting'
       ? '等待盤前接續及下游驗證完成後，才會產生全鏈收據'
       : '尚未到收尾階段；等待上游與驗證完成',
+    summaryZh: terminal ? root.summaryZh : undefined,
     displayNote: 'L3 封存是跨夜檢查點；全鏈成功仍須原有驗證與學習收據通過。',
     ticket: { ...root.ticket, logicalTask: 'evening-closure', status },
   }

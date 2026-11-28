@@ -12,5 +12,5 @@ export function postcloseDispatchLabel(root?: SchedulerJob): string | null {
 /** A stage with no runtime log of its own says what it waits for instead of a generic upstream note. */
 export function withPostcloseDispatchWait(job: SchedulerJob, label: string | null): SchedulerJob {
   if (!label || job.lastStatus !== 'waiting' || job.lastRunAt || job.summary) return job
-  return { ...job, summary: `等待 ${label} 收盤後 research dispatch` }
+  return { ...job, summary: `等待 ${label} 收盤後 research dispatch`, summaryZh: undefined }
 }

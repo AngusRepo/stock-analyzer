@@ -1,4 +1,5 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from 'react'
+import { createContext, lazy, Suspense, useContext, useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { useIsFetching, useQuery } from '@tanstack/react-query'
 import {
   Activity,
@@ -18,7 +19,6 @@ import { DeferredRender } from '@/components/DeferredRender'
 import { GroupFactorTrajectoryPanel } from '@/components/PitFactorTrajectoryPanel'
 import { MarketRiskDetailBreakdown } from '@/components/MarketRiskDetailBreakdown'
 import { DataState } from '@/components/ui/data-state'
-import { ListDetailLayout } from '@/components/ui/list-detail'
 import { PriceChange, StatusBadge, StatusIcon } from '@/components/ui/status'
 import { marketApi, recommendationsApi } from '@/lib/api'
 import { TW_COLORS } from '@/lib/colorTokens'
@@ -1214,6 +1214,9 @@ function selectHomeRecommendationRows(rows: any[], sortMode: ConfidenceSortMode,
   return sortByConfidence([...buyRows, ...potentialRows].filter(takeUnique), sortMode).slice(0, limit)
 }
 
+// 11/28 Wei：選中標的明細不放在左欄（明細約 3000px 會讓右欄下方整片空白），改到兩欄下方全寬。
+const HomeRecoDetailSlot = createContext<HTMLElement | null>(null)
+
 function RecommendationPanel() {
   // 列表＋明細區：列只負責選取，選中那檔的完整明細（含 K 線圖）只渲染一份；不分批載入、不展開卡片。
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
@@ -1242,8 +1245,20 @@ function RecommendationPanel() {
     setSelectedKey(null)
   }, [data?.date])
 
+  const detailSlot = useContext(HomeRecoDetailSlot)
+  const detailKey = selectedRec ? rowKey(selectedRec, selectedIndex) : undefined
+  const previousDetailKey = useRef(detailKey)
+  useEffect(() => {
+    // 點了別檔：明細在下方，畫面上看不到時捲過去（第一次載入不捲）。
+    if (previousDetailKey.current === detailKey) return
+    const firstSelection = previousDetailKey.current === undefined
+    previousDetailKey.current = detailKey
+    if (firstSelection || !detailSlot || selectedKey == null) return
+    const top = detailSlot.getBoundingClientRect().top
+    if (top < 0 || top > window.innerHeight * 0.6) detailSlot.scrollIntoView({ block: 'start', behavior: 'smooth' })
+  }, [detailKey, detailSlot, selectedKey])
+
   return (
-    // overflow-clip (not hidden) so the sticky detail panel can follow the page scroll.
     <section className={panelClass('overflow-clip')} data-home-reco-empty={listState === 'empty' || listState === 'empty-stale' ? '' : undefined}>
       <SectionHeader
         icon={Sparkles}
@@ -1313,44 +1328,41 @@ function RecommendationPanel() {
               ))}
             </div>
           )}>
-            <ListDetailLayout
-              listLabel="選股推薦名單"
-              detailLabel="選中標的明細"
-              listClassName="space-y-3"
-              detailKey={selectedRec ? rowKey(selectedRec, selectedIndex) : undefined}
-              list={(
-                <>
-                  {eligibleRows.slice(0, HOME_INITIAL_RECOMMENDATION_LIMIT).map((rec: any, index: number) => (
-                    <RecommendationCardClean
-                      key={rowKey(rec, index)}
-                      rec={rec}
-                      rank={index + 1}
-                      context="home"
-                      selected={index === selectedIndex}
-                      onSelect={() => setSelectedKey(rowKey(rec, index))}
-                    />
-                  ))}
-                  {eligibleRows.length > HOME_INITIAL_RECOMMENDATION_LIMIT && (
-                    <DeferredRender className="space-y-3" minHeight={(eligibleRows.length - HOME_INITIAL_RECOMMENDATION_LIMIT) * 88}>
-                      {eligibleRows.slice(HOME_INITIAL_RECOMMENDATION_LIMIT).map((rec: any, offset: number) => {
-                        const index = HOME_INITIAL_RECOMMENDATION_LIMIT + offset
-                        return (
-                          <RecommendationCardClean
-                            key={rowKey(rec, index)}
-                            rec={rec}
-                            rank={index + 1}
-                            context="home"
-                            selected={index === selectedIndex}
-                            onSelect={() => setSelectedKey(rowKey(rec, index))}
-                          />
-                        )
-                      })}
-                    </DeferredRender>
-                  )}
-                </>
+            <div className="space-y-3" aria-label="選股推薦名單">
+              {eligibleRows.slice(0, HOME_INITIAL_RECOMMENDATION_LIMIT).map((rec: any, index: number) => (
+                <RecommendationCardClean
+                  key={rowKey(rec, index)}
+                  rec={rec}
+                  rank={index + 1}
+                  context="home"
+                  selected={index === selectedIndex}
+                  onSelect={() => setSelectedKey(rowKey(rec, index))}
+                />
+              ))}
+              {eligibleRows.length > HOME_INITIAL_RECOMMENDATION_LIMIT && (
+                <DeferredRender className="space-y-3" minHeight={(eligibleRows.length - HOME_INITIAL_RECOMMENDATION_LIMIT) * 88}>
+                  {eligibleRows.slice(HOME_INITIAL_RECOMMENDATION_LIMIT).map((rec: any, offset: number) => {
+                    const index = HOME_INITIAL_RECOMMENDATION_LIMIT + offset
+                    return (
+                      <RecommendationCardClean
+                        key={rowKey(rec, index)}
+                        rec={rec}
+                        rank={index + 1}
+                        context="home"
+                        selected={index === selectedIndex}
+                        onSelect={() => setSelectedKey(rowKey(rec, index))}
+                      />
+                    )
+                  })}
+                </DeferredRender>
               )}
-              detail={selectedRec ? <RecommendationCardDetail key={rowKey(selectedRec, selectedIndex)} rec={selectedRec} context="home" /> : null}
-            />
+            </div>
+            {selectedRec && detailSlot && createPortal(
+              <section aria-label="選中標的明細" className="scroll-mt-16">
+                <RecommendationCardDetail key={detailKey} rec={selectedRec} context="home" />
+              </section>,
+              detailSlot,
+            )}
           </Suspense>
         </div>
       ) : (
@@ -1426,6 +1438,7 @@ function HomeBootOverlay() {
 }
 
 export default function MarketHomePage() {
+  const [recoDetailSlot, setRecoDetailSlot] = useState<HTMLDivElement | null>(null)
   useQuery({
     queryKey: recommendationDailyKey(),
     queryFn: () => recommendationsApi.daily(undefined, { view: 'card' }),
@@ -1451,10 +1464,17 @@ export default function MarketHomePage() {
           {/* DeferredRender shows a labelled loading skeleton until the section nears the viewport. */}
           <DeferredRender className="sv-home-deferred-section" minHeight={760}>
             {/* 桌機 1:1 並排；當天沒有推薦（名單只剩空狀態一行）時改上下排，避免左欄下方整片空白。 */}
+            <HomeRecoDetailSlot.Provider value={recoDetailSlot}>
             <div className="grid items-start gap-4 xl:has-[[data-home-reco-empty]]:grid-cols-1 xl:grid-cols-2">
               <div className="min-w-0"><RecommendationPanel /></div>
               <div className="min-w-0"><GroupFactorTrajectoryPanel /></div>
             </div>
+            {/* 選中標的明細：兩欄下方全寬；寬螢幕內部區塊排雙欄，交易計畫（K 線）整寬。 */}
+            <div
+              ref={setRecoDetailSlot}
+              className="sv-home-reco-detail mt-4 scroll-mt-16 empty:hidden xl:[&_.sv-card-expanded-content]:grid xl:[&_.sv-card-expanded-content]:grid-cols-2 xl:[&_.sv-card-expanded-content]:items-start xl:[&_.sv-card-expanded-content]:gap-x-5 xl:[&_.sv-card-expanded-content]:gap-y-4 xl:[&_.sv-card-expanded-content>*]:mt-0! xl:[&_[data-detail-wide]]:col-span-2"
+            />
+            </HomeRecoDetailSlot.Provider>
           </DeferredRender>
         </main>
       </div>

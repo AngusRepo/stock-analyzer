@@ -117,7 +117,7 @@ export function pipelineStageCards(parent?: SchedulerJob, now=Date.now()): Sched
     return {...parent,id:card.id,name:card.label,stageVisualStatus:visual,stageCard:true,
       stageElapsed:wall,
       lastStatus:visual==='completed'?'success':visual==='noop'?'skip':upstreamBlocked?'blocked':visual==='blocked'?'failed':visual==='running'?'running':'waiting',
-      summary,details:[summary],displayNote:summary,lastError:failed?parent.lastError:undefined,
+      summary,summaryZh:undefined,details:[summary],displayNote:summary,lastError:failed?parent.lastError:undefined,
       lastRunAt:started,lastRun:started??'N/A',lastRunBasis:'started',lastAttemptAt:null,lastEffectiveRunAt:null,
       lastAttemptStatus:undefined,lastEffectiveStatus:undefined,recoveredFromStatus:null,
       lastDuration:rows.length||visual==='running'?`${duration(elapsed)}${visual==='running'?'（進行中）':complete?'':'（已記錄）'}`:'N/A',

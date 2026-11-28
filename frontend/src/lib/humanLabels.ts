@@ -143,3 +143,18 @@ export function humanJobSummary(text: unknown): string {
   const human = out.replace(/_/g, ' ').replace(/\s+/g, ' ').trim()
   return hidden ? `${human}（另有機器明細 ${hidden.toLocaleString()} 字）` : human
 }
+
+/**
+ * 排程 job 顯示句（FE-SUMMARY-KV-LABELS，11/28 Wei 定案）：Worker 給的中文句優先，沒有才退回 humanJobSummary。
+ * 機器原文仍在 job.summary／job.lastError（API 與明細）。不截斷。
+ */
+export function jobSummaryText(job: { summary?: string | null; summaryZh?: string | null } | null | undefined, fallback = ''): string {
+  if (job?.summaryZh) return job.summaryZh
+  return humanJobSummary(job?.summary || fallback)
+}
+
+export function jobErrorText(job: { lastError?: string | null; lastErrorZh?: string | null } | null | undefined): string {
+  // 派生卡片把 lastError 清掉時可能還帶著 parent 的 lastErrorZh；沒有 lastError 就不顯示錯誤句。
+  if (!job?.lastError) return ''
+  return job.lastErrorZh || humanJobSummary(job.lastError)
+}

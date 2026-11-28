@@ -26,6 +26,7 @@ import {
   Zap,
 } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
+import { humanSource } from '@/lib/humanLabels'
 import { explainExecutionEvent, parseExecutionEvent } from '@/lib/executionEvent'
 import { stocksApi } from '@/lib/api'
 import { describeAllocatorDecision } from '@/lib/pendingBuyAllocatorUi'
@@ -1602,8 +1603,8 @@ function FundamentalSnapshotBlock({ rec }: { rec: any }) {
     { label: '毛利率', value: latest?.gross_margin == null ? '-' : fmtPercentValue(latest.gross_margin), note: latest?.missing_fields?.gross_margin ? '待匯入' : '產品利差' },
     { label: '營益率', value: latest?.operating_margin == null ? '-' : fmtPercentValue(latest.operating_margin), note: '營運效率' },
     { label: '營收 MoM', value: latest?.revenue_mom == null ? '-' : fmtPercentValue(latest.revenue_mom), note: revenueNote },
-    { label: '稅後淨利率', value: latest?.net_profit_margin == null ? '-' : fmtPercentValue(latest.net_profit_margin), note: latest?.fundamental_source?.net_profit_margin ?? '待資料' },
-    { label: '股價淨值比 P/B', value: latest?.pb == null ? '-' : fmtNumber(latest.pb, 2), note: latest?.fundamental_source?.valuation ?? '估值' },
+    { label: '稅後淨利率', value: latest?.net_profit_margin == null ? '-' : fmtPercentValue(latest.net_profit_margin), note: latest?.net_profit_margin == null ? '待資料' : humanSource(latest?.fundamental_source?.net_profit_margin, '稅後淨利 ÷ 營收') },
+    { label: '股價淨值比 P/B', value: latest?.pb == null ? '-' : fmtNumber(latest.pb, 2), note: humanSource(latest?.fundamental_source?.valuation, '估值') },
     { label: '資本額', value: fmtCapitalAmount(latest?.capital_amount), note: latest?.capital_source === 'not_materialized' ? '待匯入' : '股本規模' },
   ]
 
@@ -1620,7 +1621,7 @@ function FundamentalSnapshotBlock({ rec }: { rec: any }) {
           <div key={item.label} className="rounded-xl border border-white/[0.06] bg-black/15 p-2">
             <p className="text-[11px] font-medium text-slate-400">{item.label}</p>
             <p className="mt-1 sv-num text-sm font-bold text-slate-100">{isLoading ? '讀取中' : item.value}</p>
-            <p className="mt-0.5 text-[10px] text-muted-foreground">{item.note}</p>
+            <p className="mt-0.5 text-[10px] text-muted-foreground [overflow-wrap:anywhere]">{item.note}</p>
           </div>
         ))}
       </div>
@@ -2972,8 +2973,9 @@ function TradingPlanNarrative({
   })
 
   // Section heading + divided subsections (chart / 盤勢判讀 / 風控規則); no box nested inside another box.
+  // data-detail-wide：首頁明細在寬螢幕排雙欄時，這段（含 K 線）佔整列。
   return (
-    <section className="border-t border-white/[0.08] pt-3">
+    <section className="border-t border-white/[0.08] pt-3" data-detail-wide="">
       <p className="mb-1 flex items-center gap-1 text-xs font-semibold text-slate-200">
         <ShieldCheck className="h-3 w-3 text-sky-300" />
         推薦理由 / Alpha 交易計劃

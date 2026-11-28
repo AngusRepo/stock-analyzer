@@ -1,4 +1,4 @@
-import { humanJobSummary } from '@/lib/humanLabels'
+import { humanJobSummary, jobSummaryText } from '@/lib/humanLabels'
 ﻿import { useEffect, useMemo, useRef } from 'react'
 import {
   ColorType,
@@ -252,7 +252,7 @@ export default function SchedulerCadenceChart({ status, loading, error }: Schedu
                   <span className={`inline-flex shrink-0 items-center gap-1 text-[10px] ${job.lastStatus === 'failed' ? 'text-fail' : 'text-warn'}`} title={job.lastStatus}><StatusIcon tone={job.lastStatus === 'failed' ? 'fail' : 'warn'} size={10} />{job.lastStatus === 'failed' ? '失敗' : '耗時異常'}</span>
                 </div>
                 <p className="mt-1 sv-num text-[10px] text-[#70809b]">{job.group.replace(/_/g, ' ')} / {job.lastDuration || '-'}</p>
-                <p className="mt-1 break-all text-[#8b9bab]">{humanJobSummary(job.durationConcernReason || job.summary || job.schedule || '')}</p>
+                <p className="mt-1 break-all text-[#8b9bab]">{job.durationConcernReason ? humanJobSummary(job.durationConcernReason) : jobSummaryText(job, job.schedule)}</p>
               </a>
             )) : (
               <div className={`flex items-center gap-1 border p-2 ${STATUS_CHIP.ok}`}>

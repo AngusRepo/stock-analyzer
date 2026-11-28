@@ -2402,7 +2402,7 @@
   {
    "type": "barchart",
    "title": "失敗的 Job（14 天）",
-   "description": "14 天內有失敗的 Cloud Run Job 與失敗次數，最多的在上。",
+   "description": "14 天內有失敗的 Cloud Run Job 與失敗次數，最多的在上。名稱超過 18 字時中間以「…」省略（ml-controller 縮成 ml-ctl）。",
    "gridPos": {
     "x": 8,
     "y": 32,
@@ -2472,13 +2472,14 @@
      "id": "organize",
      "options": {
       "renameByName": {
+       "Field": "Job",
        "Total": "次數"
       }
      }
     }
    ],
    "options": {
-    "xField": "Field",
+    "xField": "Job",
     "orientation": "horizontal",
     "stacking": "none",
     "showValue": "always",
@@ -2526,7 +2527,51 @@
       "axisPlacement": "auto"
      }
     },
-    "overrides": []
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Job"
+      },
+      "properties": [
+       {
+        "id": "mappings",
+        "value": [
+         {
+          "type": "regex",
+          "options": {
+           "pattern": "^ml-controller-(.{1,11})$",
+           "result": {
+            "text": "ml-ctl-$1",
+            "index": 0
+           }
+          }
+         },
+         {
+          "type": "regex",
+          "options": {
+           "pattern": "^ml-controller-(.{5}).{2,}(.{5})$",
+           "result": {
+            "text": "ml-ctl-$1…$2",
+            "index": 1
+           }
+          }
+         },
+         {
+          "type": "regex",
+          "options": {
+           "pattern": "^(.{9}).{2,}(.{8})$",
+           "result": {
+            "text": "$1…$2",
+            "index": 2
+           }
+          }
+         }
+        ]
+       }
+      ]
+     }
+    ]
    },
    "timeFrom": "14d",
    "hideTimeOverride": true,
@@ -2535,7 +2580,7 @@
   {
    "type": "barchart",
    "title": "Scheduler 錯誤日誌（14 天）",
-   "description": "14 天內每個排程寫出的錯誤日誌筆數，最多的在上。錯誤日誌不一定是最終失敗（重試後成功也會留一筆），要看最終結果請對照 ② 執行品質。",
+   "description": "14 天內每個排程寫出的錯誤日誌筆數，最多的在上。錯誤日誌不一定是最終失敗（重試後成功也會留一筆），要看最終結果請對照 ② 執行品質。名稱超過 18 字時中間以「…」省略（ml-controller 縮成 ml-ctl）。",
    "gridPos": {
     "x": 16,
     "y": 32,
@@ -2605,13 +2650,14 @@
      "id": "organize",
      "options": {
       "renameByName": {
+       "Field": "排程",
        "Total": "次數"
       }
      }
     }
    ],
    "options": {
-    "xField": "Field",
+    "xField": "排程",
     "orientation": "horizontal",
     "stacking": "none",
     "showValue": "always",
@@ -2659,7 +2705,51 @@
       "axisPlacement": "auto"
      }
     },
-    "overrides": []
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "排程"
+      },
+      "properties": [
+       {
+        "id": "mappings",
+        "value": [
+         {
+          "type": "regex",
+          "options": {
+           "pattern": "^ml-controller-(.{1,11})$",
+           "result": {
+            "text": "ml-ctl-$1",
+            "index": 0
+           }
+          }
+         },
+         {
+          "type": "regex",
+          "options": {
+           "pattern": "^ml-controller-(.{5}).{2,}(.{5})$",
+           "result": {
+            "text": "ml-ctl-$1…$2",
+            "index": 1
+           }
+          }
+         },
+         {
+          "type": "regex",
+          "options": {
+           "pattern": "^(.{9}).{2,}(.{8})$",
+           "result": {
+            "text": "$1…$2",
+            "index": 2
+           }
+          }
+         }
+        ]
+       }
+      ]
+     }
+    ]
    },
    "timeFrom": "14d",
    "hideTimeOverride": true,

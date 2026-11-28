@@ -226,9 +226,9 @@ function today(q) {
 function chainPanel(state, q) {
   const panel = chainCanvas('流程鏈', [state(CHAIN_PIVOT, [], 'A'), q(READINESS, { root: DOTS_PIVOT, refId: 'B' }),
     q(TIMELINE, { root: slowPivot(Object.keys(dag.stages)), refId: 'C' })], dag, 0, 4, 24, 16, {
-    desc: '由左到右＝先後，箭頭＝相依（完成後轉綠、執行中藍）；粗框＝必要階段，細框＝只看失敗的階段。框色與左上圓點＝狀態（✓ 完成、… 執行中、! 逾時、✕ 失敗；灰點 …＝排定的等待，例如等 14:20 盤後 dispatch，不算耗時）；每段標題旁＝必要階段完成數；'
-      + '底色只標還沒完成的站：離截止 10–30 分＝灰藍，不到 10 分＝琥珀，超過截止＝深琥珀；準時完成的不上色（餘裕在 tooltip），逾時完成的維持深琥珀。Intraday check 整段盤中都在跑，只看狀態、不算餘裕。'
-      + '方塊下方一行：完成＝耗時、執行中＝已經過、未開始＝餘裕；右側淡紫 +Xm＝比平常慢（今晚耗時超過近 14 天中位數 1.5 倍且多 5 分以上，timeline 少於兩個業務日時不顯示）。右上圓點＝這一站寫入的資料集是否就緒。'
+    desc: '由左到右＝先後，箭頭＝相依（完成後轉綠、執行中藍）；粗框＝必要階段，細框＝只看失敗的階段。框色與左上圓點＝狀態（✓ 完成、… 執行中、! 逾時、✕ 失敗；灰點 …＝排定的等待，例如等 14:20 盤後派送，不算耗時）；每段標題旁＝必要階段完成數；'
+      + '底色只標還沒完成的站：離截止 10–30 分＝灰藍，不到 10 分＝琥珀，超過截止＝深琥珀；準時完成的不上色（滑鼠停在方塊上看餘裕），逾時完成的維持深琥珀。Intraday check 整段盤中都在跑，只看狀態、不算餘裕。'
+      + '方塊下方一行：完成＝耗時、執行中＝已經過、未開始＝餘裕；右側淡紫 +Xm＝比平常慢（今晚耗時超過近 14 天中位數 1.5 倍且多 5 分以上，時間軸少於兩個業務日時不顯示）。右上圓點＝這一站寫入的資料集是否就緒。'
       + '滑鼠停在方塊或圓點上看起訖、截止、預估、平常耗時、嘗試次數與錯誤。' })
   panel.transformations = [{ id: 'joinByField', options: { byField: 'one', mode: 'outer' } }]
   return panel
@@ -249,7 +249,7 @@ const perDate = (value) => `$sort($distinct(rows.business_date)).($d := $; $r :=
 const FAILURE_CLASS_SERIES = [['最終失敗', `$count($r[class = 'final_failure'])`, C.bad], ['上游擋下', `$count($r[class = 'upstream_blocked'])`, COOL.cat[2]],
   ['重試後成功', `$count($r[class = 'recovered'])`, COOL.cat[0]], ['進行中', `$count($r[class = 'in_progress'])`, C.run],
   ['其他', `$count($r[class in ['orphan_running', 'unsettled_triggered', 'designed_retry']])`, COOL.other]]
-const FAILURE_CLASS_NOTE = '依 (job, 日) 歸成一類：最終失敗、上游擋下、重試後成功、進行中；其他＝未收尾＋設計性重試。'
+const FAILURE_CLASS_NOTE = '依（排程、日）歸成一類：最終失敗、上游擋下、重試後成功、進行中；其他＝未收尾＋設計性重試。'
 
 /** Page ②: what keeps breaking or slowing down over the last 14 business days. */
 function health(q) {
@@ -286,14 +286,14 @@ function health(q) {
     16, 4, 8, 8, { num: { 次數: [[C.txt, null], [C.bad, 2]] }, wd: { 鏈: 48, 次數: 64 }, sort: '次數', desc_sort: true, hidden: ['失敗日', '最後錯誤'],
       details: { 階段: ['最後錯誤', '失敗日'] }, empty: '沒有',
       desc: '失敗 2 次以上的階段（每日／盤中＝14 天，每週＝5 週，每月＝3 個月）。點階段名稱看失敗日與最後一次的錯誤。' }),
-    stackedBars('14 天失敗分類（scheduler ticket）', [q(FAILURE_CLASSES, {
+    stackedBars('14 天失敗分類（排程執行）', [q(FAILURE_CLASSES, {
       root: `$sort($distinct(rows.business_date)).($d := $; $r := $$.rows[business_date = $d]; $merge([{ 'date': $replace($substring($d, 5), '-', '/') },
         ${FAILURE_CLASS_SERIES.map(([name, value]) => `{ '${name}': ${value} }`).join(', ')}]))`,
       columns: [S('date', 'date'), ...FAILURE_CLASS_SERIES.map(([name]) => N(name, name))] })], 'date', 16, 12, 8, 10,
     FAILURE_CLASS_SERIES.map(([name, , color]) => [name, color]),
-    { desc: `每個業務日非成功的 scheduler ticket，${FAILURE_CLASS_NOTE}` }),
+    { desc: `每個業務日非成功的排程執行，${FAILURE_CLASS_NOTE}` }),
     lanePanel('每週研究', 'weekly_research', 0, 22, 16, 6, q),
-    lanePanel('每月 artifact', 'monthly_artifact', 16, 22, 8, 6, q),
+    lanePanel('每月產出', 'monthly_artifact', 16, 22, 8, 6, q),
     lanePanel('盤中守門與收盤帳務', 'intraday_guard', 0, 28, 11, 8, q),
     // One row per intraday stage (8): h 8 gives each row room for its name.
     states('status-history', '盤中鏈近 14 天', q(intraday[0], {
@@ -317,9 +317,19 @@ const gcpTimeseries = (title, targets, o = {}) => ({ type: 'timeseries', title, 
     ? { drawStyle: 'points', pointSize: 7, fillOpacity: 0, lineWidth: 0 }
     : o.bars ? { drawStyle: 'bars', barAlignment: 0, fillOpacity: 85, lineWidth: 0, stacking: { mode: 'normal' } }
       : { drawStyle: 'line', lineInterpolation: 'stepAfter', fillOpacity: 20, stacking: { mode: o.stack === false ? 'none' : 'normal' } }),
-  ...(o.softMax != null ? { axisSoftMax: o.softMax } : {}) } }, overrides: [] } })
+  ...(o.softMax != null ? { axisSoftMax: o.softMax } : {}) } }, overrides: o.overrides ?? [] } })
 const INSTANCES = ['resource.type', '=', 'cloud_run_revision', 'AND', 'metric.type', '=', 'run.googleapis.com/container/instance_count', 'AND', 'metric.label.state', '=', 'active']
 const RUNNING = ['resource.type', '=', 'cloud_run_job', 'AND', 'metric.type', '=', 'run.googleapis.com/job/running_executions']
+const jobRuns = (result) => ['resource.type', '=', 'cloud_run_job', 'AND', 'metric.type', '=', 'run.googleapis.com/job/completed_execution_count',
+  'AND', 'metric.label.result', '=', result]
+const SCHEDULER_ERRORS = ['resource.type', '=', 'cloud_scheduler_job', 'AND', 'metric.type', '=', 'logging.googleapis.com/log_entry_count',
+  'AND', 'metric.label.severity', '=', 'ERROR']
+/** One bar per series: the series' total over the panel's 14 days, the largest on top. */
+const gcpTotals = (title, target, x, y, w, h, o) => Object.assign(hbars(title, target, 'Field', x, y, w, h,
+  { th: th([o.color, null]), empty: o.empty, desc: o.desc, labelMax: 28 }), { timeFrom: '14d', hideTimeOverride: true,
+  transformations: [{ id: 'reduce', options: { mode: 'seriesToRows', reducers: ['sum'] } },
+    { id: 'sortBy', options: { fields: {}, sort: [{ field: 'Total', desc: true }] } },
+    { id: 'organize', options: { renameByName: { Total: '次數' } } }] })
 
 /** Cloud Run over Google Cloud Monitoring (already live; the fixture build reads it too), unplaced. */
 function gcpPanels() {
@@ -431,7 +441,7 @@ function resources(q, mode) {
     cost.byService,
     lcd('D1 各資料庫用量', q(CAPACITY, { root: `$sort(rows, function($a, $b) { $a.utilization_pct < $b.utilization_pct }).{ 'db': binding_name, 'pct': utilization_pct }`,
       columns: [S('db', 'db'), N('pct', 'pct')] }), 'db', 'pct', 14, 4, 10, 9,
-    { dec: 1, desc: '單庫上限 10 GB；80% 注意、90% 硬門檻。成長速度與到門檻天數在資料庫容量快照裡（/v1/capacity）。' }),
+    { dec: 1, desc: '單庫上限 10 GB；80% 注意、90% 硬門檻。成長速度與到門檻天數在資料庫容量快照裡。' }),
     { type: 'timeseries', title: 'D1 讀取／寫入列數（每小時）', gridPos: gp(0, 13, 14, 8),
       description: '來源規劃：Cloudflare GraphQL d1AnalyticsAdaptiveGroups（資料源 sv-cloudflare-api，token 未設，上線前不放）。',
       targets: [q('plan:cloudflare-d1-rows', { root: 'rows', columns: [T('time', 'time'), N('reads', '讀取列'), N('writes', '寫入列')] })],
@@ -489,7 +499,7 @@ function model(q) {
           properties: [{ id: 'color', value: { mode: 'fixed', fixedColor: color } }] })) } },
     states('state-timeline', '每天選到的 OPB arm', q(OPB, { root: `rows.{ 'time': ${DAY_TIME('signal_date')}, 'row': '選到的 arm', 'arm': arm_inert ? 'arm_inert' : arm_id }`,
       columns: [T('time', 'time'), S('row', 'row'), S('arm', 'arm')] }), 'row', 14, 4, 10, 4,
-    { mappings: ARM_MAPPINGS, legend: true, desc: '每個 signal date 的計畫用了哪個 arm；灰＝風控把所有 arm 壓成同一組，那天學不到差別。' }),
+    { mappings: ARM_MAPPINGS, legend: true, desc: '每個訊號日的計畫用了哪個 arm；灰＝風控把所有 arm 壓成同一組，那天學不到差別。' }),
     stackedBars('各 arm 累積樣本（最新有統計的計畫）', [q(OPB, { root: `latest_arm_statistics.{ 'arm': arm_id, 'samples': samples }`,
       columns: [S('arm', 'arm'), N('samples', '樣本數')] })], 'arm', 14, 8, 10, 5, [['樣本數', COOL.cat[0]]],
     { horizontal: true, desc: '最新一筆有 arm 統計的計畫：每個 arm 累積多少樣本（v2 從 replay 學）。所有 arm 被壓成同一組或固定 arm 那天的計畫統計是空的，往前取；統計按 context 算，可能早於目前的 context。' }),
@@ -497,14 +507,14 @@ function model(q) {
       'version': '版本 ' & champion_version, 'run': source_run_date ? '訓練資料 ' & source_run_date : '訓練資料 —' }`,
       columns: [S('model', '模型'), S('gate', '閘門'), N('ic', 'OOS IC'), N('min', 'IC 門檻'), S('state', '狀態'), S('version', '版本'), S('run', '訓練')] }),
     0, 13, 14, 7, { status: ['閘門'], vocabulary: GATE_VOCAB, wd: { 閘門: 64, 'OOS IC': 84, 'IC 門檻': 84 }, hidden: ['版本', '訓練'], details: { 模型: ['版本', '訓練'] },
-      desc: '上線中的 alpha roster 與各模型最近一次月訓的離線閘門。點模型名稱看版本與訓練資料日。' }),
+      desc: '上線中的模型名冊與各模型最近一次月訓的離線閘門。點模型名稱看版本與訓練資料日。' }),
     at(gcp.jobMinutes, 14, 13, 10, 7),
     states('status-history', 'KV 設定漂移（7 天）', q(KV_DRIFT, {
       // Inside ['a', 'b'].{ … } `$` is not the key string in Infinity's JSONata (and $lookup needs a string), so each key is bound as $k first.
       root: `$sort(rows, function($a, $b) { $a.business_date > $b.business_date }).($r := $; ['trading:config', 'trading:risk_config'].($k := $string($);
         { 'time': ${DAY_TIME('$r.business_date')}, 'key': $k, 'status': $lookup($r, $k) }))`,
       columns: [T('time', 'time'), S('key', 'key'), S('status', 'status')] }), 'key', 0, 20, 12, 4,
-    { opts: { colWidth: 0.9 }, desc: '每晚 kv-config-drift 對 manifest digest 的比對結果；漂移＝KV 現值與 repo manifest 不同（Optuna 月搜直推後屬預期）。' }),
+    { opts: { colWidth: 0.9 }, desc: '每晚設定漂移檢查的結果；漂移＝KV 現值和 repo 記錄的設定摘要不同（Optuna 月搜直推後屬預期）。' }),
     Object.assign(kpi('證據累積（execution parity、RFS allocator）', [
       q(CLOCKS, { root: `$merge([details.execution_parity, { 'k': 1 }])`, columns: [KPI_KEY, N('real_intents', '真實意圖'), N('paper_intents', 'paper 意圖'), N('matched_intents', '對得上')], refId: 'A' }),
       // blocked_receipts and mature_*_session_dates are null by design until the Worker can read them without a full scan
@@ -795,7 +805,7 @@ function health5(q) {
     donut('失敗分類（14 天）', q(FAILURE_CLASSES, { root: `{ '最終失敗': classes.final_failure, '上游擋下': classes.upstream_blocked,
       '重試後成功': classes.recovered, '進行中': classes.in_progress, '其他': classes.orphan_running + classes.unsettled_triggered + classes.designed_retry }`,
     columns: FAILURE_CLASS_SERIES.map(([name]) => N(name, name)) }), 16, 4, 8, 12, { colors: FAILURE_CLASS_SERIES.map(([name, , color]) => [name, color]),
-      desc: `14 天內非成功的 scheduler ticket 各類占比，${FAILURE_CLASS_NOTE}` }),
+      desc: `14 天內非成功排程執行的各類占比，${FAILURE_CLASS_NOTE}` }),
     { type: 'timeseries', title: 'L3 Pipeline 收尾時間', gridPos: gp(0, 16, 10, 8),
       description: `每個業務日夜間 L3 Pipeline 全部完成的時間（隔天早上），虛線＝截止 ${new Date(clock(deadline) + 8 * 3600_000).toISOString().slice(11, 16)}；`
         + '紅區＝超過截止、琥珀＝截止前 15 分內。點越來越往上＝夜鏈越跑越晚。只畫成功完成的業務日。',
@@ -819,7 +829,7 @@ function health5(q) {
     Object.assign(repeat, { gridPos: gp(11, 30, 13, 8) }),
   ]
 }
-const OTHER_TITLES = { weekly_research: '每週研究', monthly_artifact: '每月 artifact', intraday_guard: '盤中守門與收盤帳務' }
+const OTHER_TITLES = { weekly_research: '每週研究', monthly_artifact: '每月產出', intraday_guard: '盤中守門與收盤帳務' }
 
 const REQUESTS = ['resource.type', '=', 'cloud_run_revision', 'AND', 'metric.type', '=', 'run.googleapis.com/request_count']
 const LATENCIES = ['resource.type', '=', 'cloud_run_revision', 'AND', 'metric.type', '=', 'run.googleapis.com/request_latencies']
@@ -926,7 +936,7 @@ function resources5(q, mode) {
       { calc: 'sum', unit: 'short', desc: '所選時間內所有 Cloud Run 服務的請求數合計；折線＝每小時。' }),
     gauges('D1 各資料庫用量', q(CAPACITY, { root: `$sort(rows, function($a, $b) { $a.utilization_pct < $b.utilization_pct }).{ 'db': ($n := $lookup(${D1_NAMES}, binding_name); $n ? $n : '其他庫'), 'pct': utilization_pct }`,
       columns: [S('db', 'db'), N('pct', 'pct')] }), 'db', 'pct', 0, 4, 19, 5,
-    { dec: 1, desc: '每個 D1 庫用了 10 GB 上限的幾成，最滿的在左；80% 起琥珀、90% 起紅（硬門檻）。成長速度與到門檻天數在 /v1/capacity。' }),
+    { dec: 1, desc: '每個 D1 庫用了 10 GB 上限的幾成，最滿的在左；80% 起琥珀、90% 起紅（硬門檻）。' }),
     hbars('Cloudflare 內含額度', quota, 'product', 0, 9, 6, 8,
       { unit: 'percent', dec: 1, softMin: 0, softMax: 100, th: th([C.ok, null], [C.warn, 100]),
         desc: 'Workers Paid 方案每個帳單週期（依續約日，不是每月 1 日）內含的用量。請求、讀寫列＝照本期到目前的速度，到期末會用掉內含量的幾成；儲存＝最新一天的大小 ÷ 內含量。超過 100% 的部分照量計費（琥珀）。內含量：Workers 1,000 萬請求；D1 讀 250 億列、寫 5,000 萬列、存 5 GB；KV 讀 1,000 萬、寫 100 萬、存 1 GB。' }),
@@ -954,9 +964,19 @@ function resources5(q, mode) {
       overrides: [['A', COOL.cat[0]], ['B', COOL.cat[2]]].map(([refId, color]) => ({ matcher: { id: 'byFrameRefID', options: refId }, properties: [{ id: 'color', value: { mode: 'fixed', fixedColor: color } }] })) } },
     gcpStates('Cloud Run 服務執行個體', gcpSeries('A', INSTANCES, 'resource.label.service_name', 'ALIGN_MAX', '+3600s', '{{resource.label.service_name}}'), 0, 25, 12, 7,
       { on: '有執行個體', empty: '沒有', desc: '每個服務每小時有沒有執行個體醒著（scale-to-zero 下，藍＝那一小時有執行個體在跑）。滑鼠停在色段上看持續多久。' }),
-    states('state-timeline', 'Cloud Run Job 成敗', q('plan:cloud-run-job-runs', { root: `rows.{ 'time': time, 'job': job, 'result': result }`,
-      columns: [T('time', 'time'), S('job', 'job'), S('result', 'result')] }), 'job', 12, 25, 12, 7,
-    { timeFrom: '14d', opts: { mergeValues: false }, desc: '每個 Job 一列，色段從一次執行開始、到下一次執行為止：綠＝成功、紅＝失敗。' }),
+    // Cloud Run Jobs and Scheduler over Cloud Monitoring (moved from the old GCP 執行狀態 page, 11/28; the planned
+    // per-run source never came).
+    gcpStates('Cloud Run Job 執行時段', gcpSeries('A', RUNNING, 'resource.label.job_name', 'ALIGN_MAX', '+3600s', '{{resource.label.job_name}}'), 12, 25, 12, 7,
+      { on: '執行中', timeFrom: '14d', empty: '14 天內沒有 Job 執行', desc: '每個 Cloud Run Job 一列、每小時一格：藍＝那一小時有執行中的 Job。滑鼠停在色段上看持續多久。' }),
+    Object.assign(gcpTimeseries('Cloud Run Job 每日成敗', [gcpSeries('A', jobRuns('succeeded'), null, 'ALIGN_SUM', '+86400s', '成功'),
+      gcpSeries('B', jobRuns('failed'), null, 'ALIGN_SUM', '+86400s', '失敗')], { bars: true, legend: 'list', calcs: [], timeFrom: '14d',
+      desc: '所有 Cloud Run Job 每天結束的執行次數：青＝成功、紅＝失敗。', overrides: [['A', C.ok], ['B', C.bad]].map(([refId, color]) =>
+        ({ matcher: { id: 'byFrameRefID', options: refId }, properties: [{ id: 'color', value: { mode: 'fixed', fixedColor: color } }] })) }),
+      { gridPos: gp(0, 32, 8, 9), hideTimeOverride: true }),
+    gcpTotals('失敗的 Job（14 天）', gcpSeries('A', jobRuns('failed'), 'resource.label.job_name', 'ALIGN_SUM', '+86400s', '{{resource.label.job_name}}'), 8, 32, 8, 9,
+      { color: C.bad, empty: '14 天內沒有失敗', desc: '14 天內有失敗的 Cloud Run Job 與失敗次數，最多的在上。' }),
+    gcpTotals('Scheduler 錯誤日誌（14 天）', gcpSeries('A', SCHEDULER_ERRORS, 'resource.label.job_id', 'ALIGN_SUM', '+86400s', '{{resource.label.job_id}}'), 16, 32, 8, 9,
+      { color: C.warn, empty: '14 天內沒有錯誤日誌', desc: '14 天內每個排程寫出的錯誤日誌筆數，最多的在上。錯誤日誌不一定是最終失敗（重試後成功也會留一筆），要看最終結果請對照 ② 執行品質。' }),
   ]
 }
 
@@ -1017,8 +1037,8 @@ function model5(q) {
       'run': source_run_date ? '訓練資料 ' & source_run_date : '訓練資料 —' }`,
     columns: [S('model', '模型'), S('gate', '閘門'), S('ic', 'IC'), S('state', '狀態'), S('min', 'IC 門檻'), S('version', '版本'), S('run', '訓練')] }),
     0, 14, 14, 7, { status: ['閘門'], vocabulary: GATE_VOCAB, ...SHORT_TABLE('狀態'), hidden: ['IC 門檻', '版本', '訓練'], details: { 模型: ['IC 門檻', '版本', '訓練'] },
-      desc: '上線中的 alpha roster 與各模型最近一次月訓的離線閘門。IC＝OOS IC，格子照該模型自己的閘門門檻上色：紅＝不高於 min 門檻（未過），'
-        + '琥珀＝低於弱門檻（弱通過），綠＝達弱門檻以上；灰＝沒有門檻。狀態＝registry 狀態（上線＝production）。點模型名稱看門檻、版本與訓練資料日。' })
+      desc: '上線中的模型名冊與各模型最近一次月訓的離線閘門。IC＝OOS IC，格子照該模型自己的閘門門檻上色：紅＝不高於最低門檻（未過），'
+        + '琥珀＝低於弱門檻（弱通過），綠＝達弱門檻以上；灰＝沒有門檻。狀態＝模型登錄表的狀態。點模型名稱看門檻、版本與訓練資料日。' })
   // A cell filled with its tier's colour (the number is the magnitude), as the solid cells are.
   roster.fieldConfig.overrides.push({ matcher: { id: 'byName', options: 'IC' }, properties: [
     { id: 'custom.cellOptions', value: { type: 'color-background', mode: 'basic' } }, { id: 'mappings', value: IC_TIER_MAPPINGS }] })
@@ -1038,7 +1058,7 @@ function model5(q) {
   return [
     ret, excess, drawdown, opb, models,
     Object.assign(nav, { gridPos: gp(0, 4, 14, 6) }),
-    { type: 'timeseries', title: '回撤', gridPos: gp(0, 10, 14, 4), description: 'Paper NAV 離窗口內最高點的距離（underwater）；越深＝回撤越大。',
+    { type: 'timeseries', title: '回撤', gridPos: gp(0, 10, 14, 4), description: 'Paper NAV 離窗口內最高點的距離；越深＝回撤越大。',
       targets: [q(NAV, { root: `rows.{ 'time': ${DAY_TIME('date')}, 'dd': drawdown_pct }`, columns: [T('time', 'time'), N('dd', '回撤')] })],
       options: { legend: { showLegend: false, displayMode: 'list', placement: 'bottom', calcs: [] }, tooltip: { mode: 'single' } },
       // A loss, not an alert: a muted red, lightly filled.
@@ -1072,7 +1092,7 @@ function model5(q) {
       columns: [S('name', 'name'), N('days', 'days')] }), 'name', 'days', 12, 21, 12, 4,
     { unit: 'suffix: 日', max: 20, th: th([C.run, null], [C.ok, 20]),
       desc: '各影子機制已累積的證據日數，滿 20 日轉綠（可以下判斷）。影子 A＝Shadow A；RFS 配置＝RFS allocator；執行一致＝Execution parity，要有真實下單才會開始累積。'
-        + 'RFS allocator 的證據日數、被擋的收據與滿 20 日的日數要等 RFS 比較表加上 D1 索引後 Worker 才提供（目前固定回 0／null），所以這一格先停在 0。' }),
+        + 'RFS allocator 的證據日數、被擋的收據與滿 20 日的日數要等 RFS 比較表加上 D1 索引後 Worker 才提供（目前固定回 0），所以這一格先停在 0。' }),
   ]
 }
 /* ---- v6 preview (11/26 Wei: 今天頁朝圖表多樣性與配色): each panel the chart its question asks for; a normal state is a
@@ -1208,9 +1228,9 @@ function bgKpi(title, targets, x, y, w, h, fields, desc, textMode = 'value_and_n
 /** The T+5 serving guard as one cell (expected_return_serving_forward_guard.py: 3 jointly inferior dates bypass, 3 passing recover). */
 const GUARD_CELL = `($s := summary.status; $s = 'not_applicable' ? 'na|未啟用' : $s = 'mismatch' ? 'bad|版本不符' : $s = 'bypass' ? 'bad|已旁路・恢復 ' & $string(summary.recovery_streak) & '／' & $string(thresholds.pass_streak_to_recover)
   : $s = 'warning' ? 'warn|惡化 ' & $string(summary.degraded_streak) & '／' & $string(thresholds.degraded_streak_to_bypass) & ' 日' : 'ok|正常')`
-const GUARD_DESC = 'Fusion artifact 上線後的 T+5 前向檢查：連續 3 個預測日 IC 與價差都輸 L4 就旁路 residual，旁路後要連續 3 日通過才恢復（至少 5 個可評估日）。'
+const GUARD_DESC = 'Fusion 模型上線後的 T+5 前向檢查：連續 3 個預測日 IC 與價差都輸 L4 就旁路 residual，旁路後要連續 3 日通過才恢復（至少 5 個可評估日）。'
   + '未啟用＝目前沒有 Fusion residual 在服務，不需要這道保護（灰）；正常＝青；惡化中＝琥珀；已旁路＝紅；'
-  + '版本不符＝guard 綁的 artifact／fingerprint 不是目前服務中的 Fusion（紅，日數不顯示）。'
+  + '版本不符＝這道檢查綁的模型檔或版本指紋不是目前服務中的 Fusion（紅，日數不顯示）。'
 function guardCell(q, x, y, w, h) {
   return bgKpi('T+5 guard', [q(GUARD, { root: `{ 'g': ${GUARD_CELL} }`, columns: [S('g', 'guard')] })], x, y, w, h,
     [{ name: 'guard', mappings: TONE6 }], GUARD_DESC, 'value')
@@ -1218,7 +1238,7 @@ function guardCell(q, x, y, w, h) {
 function d1Overloaded(q, x, y, w, h) {
   return bgKpi('D1 過載', [q(D1_OVERLOADED, { root: `{ 'n': summary.count }`, columns: [N('n', '次數')] })], x, y, w, h,
     [{ name: '次數', th: th([CALM_OK, null], [C.warn, 1], [C.bad, 5]) }],
-    'D1 overloaded（24 小時）：近 24 小時以 D1 overloaded（或 Requests queued for too long）結束的排程 ticket 數（讀排程執行紀錄的最後錯誤與摘要，不另外寫 D1）。'
+    '近 24 小時因 D1 過載（含排隊逾時）而結束的排程執行次數（讀排程執行紀錄的最後錯誤與摘要，不另外寫 D1）。'
     + '任務內部重試後成功的不算。0＝青、≥1 琥珀、≥5 紅。', 'value')
 }
 const GATE6 = [{ type: 'value', options: Object.fromEntries(Object.entries({ STRONG_PASS: ['強通過', CALM_OK], PASS: ['通過', CALM_OK], WEAK_PASS: ['弱通過', C.warn],
@@ -1258,11 +1278,11 @@ function model6(q) {
   columns: [T('time', 'time'), S('row', 'row'), S('cell', 'cell')] }), 'row', 18, 0, 6, 4,
   { mappings: TONE6, timeFrom: '14d', opts: { mergeValues: false, rowHeight: 0.8 }, empty: '14 天內沒有交易日', desc: '每個交易日一格：青＝盤前已封存（滑鼠停在格子上看封存時間）、紅＝過了 cutoff 沒有封存、灰＝今天還在 cutoff 前。' })
   const serving = states('state-timeline', '模型服務狀態（14 日）', q(SERVING, { root: `rows.{ 'time': ${DAY_TIME('date')}, 'model': model_name,
-      'cell': (state = 'serving' ? 'ok|' : state = 'switched' ? 'info|換版 ' : state = 'pending' ? 'wait|待今晚 ' : 'bad|缺 ') & ${VERSION_WORDS('version')} }`,
+      'cell': (state = 'serving' ? 'ok|' : state = 'switched' ? 'info|換版 ' : state = 'pending' ? 'wait|待寫入 ' : 'bad|缺 ') & ${VERSION_WORDS('version')} }`,
   columns: [T('time', 'time'), S('model', 'model'), S('cell', 'cell')] }), 'model', 0, 29, 14, 7,
   { mappings: TONE6, timeFrom: '14d', opts: { mergeValues: true, rowHeight: 0.8 }, empty: '沒有已發布的模型',
-    desc: '上線 roster 的每個模型一列、每個交易日一段：青＝當天有預測（predictions 有該模型該日的列）、藍＝當天換了 champion 版本、'
-      + '紅＝那天的夜間流程已結束卻沒有預測、灰＝今晚的流程還沒跑完。滑鼠停在色帶上看是哪一天訓練的版本。' })
+    desc: '上線名冊的每個模型一列、每個交易日一段：青＝當天有預測、藍＝當天換了正式版本、'
+      + '紅＝下一個交易日 09:00 過後仍沒有預測、灰＝還在等（週五的預測下週一早上才寫入）。滑鼠停在色帶上看是哪一天訓練的版本。' })
   const retrain = table('最近一次月訓結果', q(ROSTER, { root: `($run := latest_monthly_run; $run.models.{ 'model': model_name, 'gate': gate_decision, 'ic': ${IC_CELL},
       'failed': $type(failed_gates) = 'array' and $count(failed_gates) > 0 ? $join([failed_gates.($w := $lookup(${GATE_WORDS}, $); $w ? $w : '其他閘門')], '、') : '—',
       'state': ($w := $lookup(${REGISTRY_WORDS}, state); $w ? $w : state ? state : '—'), 'live': $run.is_live ? '上線中' : '未上線',
@@ -1271,7 +1291,7 @@ function model6(q) {
   // Phone width (375 px): model, gate, IC and 上線 fit; the failed gates and the registry state open from the model name.
   14, 29, 10, 7, { ...SHORT_TABLE('上線'), hidden: ['未過的閘門', '狀態', '訓練', '版本'], details: { 模型: ['未過的閘門', '狀態', '訓練', '版本'] }, empty: '近 62 天沒有月訓 run',
     desc: '最近一次月訓（模型登錄表近 62 天最新的一次正式月訓）每個模型的離線閘門：閘門 青＝通過、琥珀＝弱通過、紅＝未過；'
-      + 'IC＝OOS IC，照該模型自己的門檻上色；上線＝這個 run 是不是目前 ensemble 的 run。點模型名稱看未過的閘門（被拒原因）、registry 狀態、訓練資料日與版本。' })
+      + 'IC＝OOS IC，照該模型自己的門檻上色；上線＝這次月訓是不是目前上線的那一次。點模型名稱看未過的閘門（被拒原因）、登錄表狀態、訓練資料日與版本。' })
   retrain.fieldConfig.overrides.push(
     { matcher: { id: 'byName', options: '閘門' }, properties: [{ id: 'custom.cellOptions', value: { type: 'color-background', mode: 'basic' } }, { id: 'mappings', value: GATE6 }] },
     { matcher: { id: 'byName', options: 'IC' }, properties: [{ id: 'custom.cellOptions', value: { type: 'color-background', mode: 'basic' } }, { id: 'mappings', value: IC_TIER6 }] },
@@ -1366,7 +1386,7 @@ function recolorKeepingMarks(panel) {
   return out
 }
 /** Live pages leave planned panels out; a panel directly left of one, on the same rows, takes its width so no hole is
- * left (v6 ③ Cloud Run 服務執行個體 beside Job 成敗, ④ 模型名冊 beside 訓練與研究 Job). */
+ * left (v6 ④ 模型名冊 beside 訓練與研究 Job). */
 function withoutPlanned(panels) {
   const kept = panels.filter((panel) => !isPlanned(panel))
   for (const gone of panels.filter(isPlanned)) {

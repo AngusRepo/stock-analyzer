@@ -846,7 +846,7 @@
   {
    "type": "gauge",
    "title": "D1 各資料庫用量",
-   "description": "每個 D1 庫用了 10 GB 上限的幾成，最滿的在左；80% 起琥珀、90% 起紅（硬門檻）。成長速度與到門檻天數在 /v1/capacity。",
+   "description": "每個 D1 庫用了 10 GB 上限的幾成，最滿的在左；80% 起琥珀、90% 起紅（硬門檻）。",
    "gridPos": {
     "x": 0,
     "y": 4,
@@ -2155,8 +2155,8 @@
   },
   {
    "type": "state-timeline",
-   "title": "Cloud Run Job 成敗（示範資料）",
-   "description": "示範資料。每個 Job 一列，色段從一次執行開始、到下一次執行為止：青＝成功、紅＝失敗。",
+   "title": "Cloud Run Job 執行時段",
+   "description": "每個 Cloud Run Job 一列、每小時一格：藍＝那一小時有執行中的 Job。滑鼠停在色段上看持續多久。",
    "gridPos": {
     "x": 12,
     "y": 25,
@@ -2164,59 +2164,45 @@
     "h": 7
    },
    "datasource": {
-    "type": "yesoreyeram-infinity-datasource",
-    "uid": "grafanacloud-infinity"
+    "type": "stackdriver",
+    "uid": "bg59sppgm7v9cb"
    },
    "targets": [
     {
      "refId": "A",
-     "type": "json",
-     "parser": "backend",
-     "format": "table",
-     "root_selector": "([rows.{ 'time': time, 'job': job, 'result': result }])",
-     "columns": [
-      {
-       "selector": "time",
-       "text": "time",
-       "type": "timestamp"
-      },
-      {
-       "selector": "job",
-       "text": "job",
-       "type": "string"
-      },
-      {
-       "selector": "result",
-       "text": "result",
-       "type": "string"
-      }
-     ],
-     "filters": [],
      "datasource": {
-      "type": "yesoreyeram-infinity-datasource",
-      "uid": "grafanacloud-infinity"
+      "type": "stackdriver",
+      "uid": "bg59sppgm7v9cb"
      },
-     "source": "inline",
-     "data": "{\"rows\":[{\"time\":\"2026-11-15T10:00:00.000Z\",\"job\":\"weekly-root\",\"result\":\"failed\"},{\"time\":\"2026-11-15T11:00:00.000Z\",\"job\":\"allocator-ev-lifecycle-watchdog\",\"result\":\"success\"},{\"time\":\"2026-11-15T12:00:00.000Z\",\"job\":\"finlab-v4-backfill\",\"result\":\"success\"},{\"time\":\"2026-11-15T13:00:00.000Z\",\"job\":\"rescore-1230\",\"result\":\"success\"},{\"time\":\"2026-11-15T14:00:00.000Z\",\"job\":\"active8-oof-daily\",\"result\":\"success\"},{\"time\":\"2026-11-15T15:00:00.000Z\",\"job\":\"pipeline\",\"result\":\"success\"},{\"time\":\"2026-11-16T10:00:00.000Z\",\"job\":\"allocator-ev-lifecycle-watchdog\",\"result\":\"success\"},{\"time\":\"2026-11-16T11:00:00.000Z\",\"job\":\"finlab-v4-backfill\",\"result\":\"success\"},{\"time\":\"2026-11-16T12:00:00.000Z\",\"job\":\"rescore-1230\",\"result\":\"success\"},{\"time\":\"2026-11-16T13:00:00.000Z\",\"job\":\"active8-oof-daily\",\"result\":\"success\"},{\"time\":\"2026-11-16T14:00:00.000Z\",\"job\":\"pipeline\",\"result\":\"success\"},{\"time\":\"2026-11-17T10:00:00.000Z\",\"job\":\"allocator-ev-lifecycle-watchdog\",\"result\":\"success\"},{\"time\":\"2026-11-17T11:00:00.000Z\",\"job\":\"finlab-v4-backfill\",\"result\":\"failed\"},{\"time\":\"2026-11-17T12:00:00.000Z\",\"job\":\"rescore-1230\",\"result\":\"success\"},{\"time\":\"2026-11-17T13:00:00.000Z\",\"job\":\"active8-oof-daily\",\"result\":\"success\"},{\"time\":\"2026-11-17T14:00:00.000Z\",\"job\":\"pipeline\",\"result\":\"success\"},{\"time\":\"2026-11-18T10:00:00.000Z\",\"job\":\"allocator-ev-lifecycle-watchdog\",\"result\":\"success\"},{\"time\":\"2026-11-18T11:00:00.000Z\",\"job\":\"finlab-v4-backfill\",\"result\":\"success\"},{\"time\":\"2026-11-18T12:00:00.000Z\",\"job\":\"rescore-1230\",\"result\":\"success\"},{\"time\":\"2026-11-18T13:00:00.000Z\",\"job\":\"active8-oof-daily\",\"result\":\"success\"},{\"time\":\"2026-11-18T14:00:00.000Z\",\"job\":\"pipeline\",\"result\":\"success\"},{\"time\":\"2026-11-19T10:00:00.000Z\",\"job\":\"allocator-ev-lifecycle-watchdog\",\"result\":\"success\"},{\"time\":\"2026-11-19T11:00:00.000Z\",\"job\":\"finlab-v4-backfill\",\"result\":\"success\"},{\"time\":\"2026-11-19T12:00:00.000Z\",\"job\":\"rescore-1230\",\"result\":\"failed\"},{\"time\":\"2026-11-19T13:00:00.000Z\",\"job\":\"active8-oof-daily\",\"result\":\"success\"},{\"time\":\"2026-11-19T14:00:00.000Z\",\"job\":\"pipeline\",\"result\":\"success\"},{\"time\":\"2026-11-20T10:00:00.000Z\",\"job\":\"allocator-ev-lifecycle-watchdog\",\"result\":\"success\"},{\"time\":\"2026-11-20T11:00:00.000Z\",\"job\":\"finlab-v4-backfill\",\"result\":\"success\"},{\"time\":\"2026-11-20T12:00:00.000Z\",\"job\":\"rescore-1230\",\"result\":\"success\"},{\"time\":\"2026-11-20T13:00:00.000Z\",\"job\":\"active8-oof-daily\",\"result\":\"success\"},{\"time\":\"2026-11-20T14:00:00.000Z\",\"job\":\"pipeline\",\"result\":\"success\"},{\"time\":\"2026-11-21T10:00:00.000Z\",\"job\":\"allocator-ev-lifecycle-watchdog\",\"result\":\"success\"},{\"time\":\"2026-11-21T11:00:00.000Z\",\"job\":\"finlab-v4-backfill\",\"result\":\"success\"},{\"time\":\"2026-11-21T12:00:00.000Z\",\"job\":\"rescore-1230\",\"result\":\"success\"},{\"time\":\"2026-11-21T13:00:00.000Z\",\"job\":\"active8-oof-daily\",\"result\":\"failed\"},{\"time\":\"2026-11-21T14:00:00.000Z\",\"job\":\"pipeline\",\"result\":\"success\"},{\"time\":\"2026-11-22T10:00:00.000Z\",\"job\":\"weekly-root\",\"result\":\"success\"},{\"time\":\"2026-11-22T11:00:00.000Z\",\"job\":\"allocator-ev-lifecycle-watchdog\",\"result\":\"success\"},{\"time\":\"2026-11-22T12:00:00.000Z\",\"job\":\"finlab-v4-backfill\",\"result\":\"success\"},{\"time\":\"2026-11-22T13:00:00.000Z\",\"job\":\"rescore-1230\",\"result\":\"success\"},{\"time\":\"2026-11-22T14:00:00.000Z\",\"job\":\"active8-oof-daily\",\"result\":\"success\"},{\"time\":\"2026-11-22T15:00:00.000Z\",\"job\":\"pipeline\",\"result\":\"success\"},{\"time\":\"2026-11-23T10:00:00.000Z\",\"job\":\"allocator-ev-lifecycle-watchdog\",\"result\":\"success\"},{\"time\":\"2026-11-23T11:00:00.000Z\",\"job\":\"finlab-v4-backfill\",\"result\":\"success\"},{\"time\":\"2026-11-23T12:00:00.000Z\",\"job\":\"rescore-1230\",\"result\":\"success\"},{\"time\":\"2026-11-23T13:00:00.000Z\",\"job\":\"active8-oof-daily\",\"result\":\"success\"},{\"time\":\"2026-11-23T14:00:00.000Z\",\"job\":\"pipeline\",\"result\":\"failed\"},{\"time\":\"2026-11-24T10:00:00.000Z\",\"job\":\"allocator-ev-lifecycle-watchdog\",\"result\":\"success\"},{\"time\":\"2026-11-24T11:00:00.000Z\",\"job\":\"finlab-v4-backfill\",\"result\":\"success\"},{\"time\":\"2026-11-24T12:00:00.000Z\",\"job\":\"rescore-1230\",\"result\":\"success\"},{\"time\":\"2026-11-24T13:00:00.000Z\",\"job\":\"active8-oof-daily\",\"result\":\"success\"},{\"time\":\"2026-11-24T14:00:00.000Z\",\"job\":\"pipeline\",\"result\":\"success\"},{\"time\":\"2026-11-25T10:00:00.000Z\",\"job\":\"allocator-ev-lifecycle-watchdog\",\"result\":\"success\"},{\"time\":\"2026-11-25T11:00:00.000Z\",\"job\":\"finlab-v4-backfill\",\"result\":\"success\"},{\"time\":\"2026-11-25T12:00:00.000Z\",\"job\":\"rescore-1230\",\"result\":\"success\"},{\"time\":\"2026-11-25T13:00:00.000Z\",\"job\":\"active8-oof-daily\",\"result\":\"success\"},{\"time\":\"2026-11-25T14:00:00.000Z\",\"job\":\"pipeline\",\"result\":\"success\"},{\"time\":\"2026-11-26T10:00:00.000Z\",\"job\":\"allocator-ev-lifecycle-watchdog\",\"result\":\"success\"},{\"time\":\"2026-11-26T11:00:00.000Z\",\"job\":\"finlab-v4-backfill\",\"result\":\"success\"},{\"time\":\"2026-11-26T12:00:00.000Z\",\"job\":\"rescore-1230\",\"result\":\"success\"},{\"time\":\"2026-11-26T13:00:00.000Z\",\"job\":\"active8-oof-daily\",\"result\":\"success\"},{\"time\":\"2026-11-26T14:00:00.000Z\",\"job\":\"pipeline\",\"result\":\"success\"},{\"time\":\"2026-11-27T10:00:00.000Z\",\"job\":\"allocator-ev-lifecycle-watchdog\",\"result\":\"success\"},{\"time\":\"2026-11-27T11:00:00.000Z\",\"job\":\"finlab-v4-backfill\",\"result\":\"success\"},{\"time\":\"2026-11-27T12:00:00.000Z\",\"job\":\"rescore-1230\",\"result\":\"success\"},{\"time\":\"2026-11-27T13:00:00.000Z\",\"job\":\"active8-oof-daily\",\"result\":\"success\"},{\"time\":\"2026-11-27T14:00:00.000Z\",\"job\":\"pipeline\",\"result\":\"success\"},{\"time\":\"2026-11-28T10:00:00.000Z\",\"job\":\"allocator-ev-lifecycle-watchdog\",\"result\":\"success\"},{\"time\":\"2026-11-28T11:00:00.000Z\",\"job\":\"finlab-v4-backfill\",\"result\":\"success\"},{\"time\":\"2026-11-28T12:00:00.000Z\",\"job\":\"rescore-1230\",\"result\":\"success\"},{\"time\":\"2026-11-28T13:00:00.000Z\",\"job\":\"active8-oof-daily\",\"result\":\"success\"},{\"time\":\"2026-11-28T14:00:00.000Z\",\"job\":\"pipeline\",\"result\":\"success\"}]}"
+     "queryType": "timeSeriesList",
+     "timeSeriesList": {
+      "projectName": "gen-lang-client-0602998820",
+      "filters": [
+       "resource.type",
+       "=",
+       "cloud_run_job",
+       "AND",
+       "metric.type",
+       "=",
+       "run.googleapis.com/job/running_executions"
+      ],
+      "crossSeriesReducer": "REDUCE_SUM",
+      "perSeriesAligner": "ALIGN_MAX",
+      "alignmentPeriod": "+3600s",
+      "groupBys": [
+       "resource.label.job_name"
+      ]
+     },
+     "aliasBy": "{{resource.label.job_name}}"
     }
    ],
    "timeFrom": "14d",
    "hideTimeOverride": true,
-   "transformations": [
-    {
-     "id": "partitionByValues",
-     "options": {
-      "fields": [
-       "job"
-      ],
-      "keepFields": false,
-      "naming": {
-       "asLabels": true
-      }
-     }
-    }
-   ],
    "options": {
+    "showValue": "never",
+    "rowHeight": 0.7,
+    "mergeValues": true,
+    "alignValue": "left",
     "legend": {
      "showLegend": false,
      "displayMode": "list",
@@ -2224,212 +2210,11 @@
     },
     "tooltip": {
      "mode": "single"
-    },
-    "showValue": "never",
-    "rowHeight": 0.7,
-    "mergeValues": false
+    }
    },
    "fieldConfig": {
     "defaults": {
-     "displayName": "${__field.labels.job}",
-     "noValue": "尚未接資料",
-     "mappings": [
-      {
-       "type": "value",
-       "options": {
-        "completed": {
-         "text": "完成",
-         "color": "#173d42",
-         "index": 0
-        },
-        "success": {
-         "text": "完成",
-         "color": "#173d42",
-         "index": 1
-        },
-        "noop": {
-         "text": "無事可做",
-         "color": "#173d42",
-         "index": 2
-        },
-        "retry_success": {
-         "text": "重試後完成",
-         "color": "#173d42",
-         "index": 3
-        },
-        "running": {
-         "text": "執行中",
-         "color": "#8ab8ff",
-         "index": 4
-        },
-        "waiting": {
-         "text": "等待中",
-         "color": "#5c606b",
-         "index": 5
-        },
-        "not_started": {
-         "text": "未開始",
-         "color": "#5c606b",
-         "index": 6
-        },
-        "pending": {
-         "text": "未開始",
-         "color": "#5c606b",
-         "index": 7
-        },
-        "out_of_window": {
-         "text": "未到時段",
-         "color": "#5c606b",
-         "index": 8
-        },
-        "stale": {
-         "text": "待確認",
-         "color": "#5c606b",
-         "index": 9
-        },
-        "skipped": {
-         "text": "略過",
-         "color": "#464a52",
-         "index": 10
-        },
-        "at_risk": {
-         "text": "趕不上截止",
-         "color": "#ff9830",
-         "index": 11
-        },
-        "attention": {
-         "text": "應跑未跑",
-         "color": "#ff9830",
-         "index": 12
-        },
-        "overdue": {
-         "text": "逾時",
-         "color": "#ff9830",
-         "index": 13
-        },
-        "stuck": {
-         "text": "卡住",
-         "color": "#f2495c",
-         "index": 14
-        },
-        "missed": {
-         "text": "漏跑",
-         "color": "#f2495c",
-         "index": 15
-        },
-        "failed": {
-         "text": "失敗",
-         "color": "#f2495c",
-         "index": 16
-        },
-        "error": {
-         "text": "失敗",
-         "color": "#f2495c",
-         "index": 17
-        },
-        "blocked": {
-         "text": "中止",
-         "color": "#f2495c",
-         "index": 18
-        },
-        "watcher_blocked": {
-         "text": "被擋住",
-         "color": "#ff9830",
-         "index": 19
-        },
-        "ready": {
-         "text": "就緒",
-         "color": "#173d42",
-         "index": 20
-        },
-        "ok": {
-         "text": "正常",
-         "color": "#173d42",
-         "index": 21
-        },
-        "warn": {
-         "text": "注意",
-         "color": "#ff9830",
-         "index": 22
-        },
-        "fail": {
-         "text": "未過",
-         "color": "#f2495c",
-         "index": 23
-        },
-        "critical": {
-         "text": "重大",
-         "color": "#f2495c",
-         "index": 24
-        },
-        "warning": {
-         "text": "注意",
-         "color": "#ff9830",
-         "index": 25
-        },
-        "healthy": {
-         "text": "正常",
-         "color": "#173d42",
-         "index": 26
-        },
-        "pending_maturity": {
-         "text": "等待成熟",
-         "color": "#5c606b",
-         "index": 27
-        },
-        "pass": {
-         "text": "通過",
-         "color": "#173d42",
-         "index": 28
-        },
-        "collecting": {
-         "text": "收集中",
-         "color": "#8ab8ff",
-         "index": 29
-        },
-        "not_applicable_no_real_intents": {
-         "text": "不適用（沒有真實下單）",
-         "color": "#5c606b",
-         "index": 30
-        },
-        "owner_read_unavailable": {
-         "text": "讀不到來源",
-         "color": "#ff9830",
-         "index": 31
-        },
-        "match": {
-         "text": "一致",
-         "color": "#173d42",
-         "index": 32
-        },
-        "drift": {
-         "text": "漂移",
-         "color": "#ff9830",
-         "index": 33
-        },
-        "missing": {
-         "text": "缺少",
-         "color": "#f2495c",
-         "index": 34
-        },
-        "invalid": {
-         "text": "無效",
-         "color": "#f2495c",
-         "index": 35
-        },
-        "PASS": {
-         "text": "通過",
-         "color": "#173d42",
-         "index": 36
-        },
-        "FAIL": {
-         "text": "未過",
-         "color": "#f2495c",
-         "index": 37
-        }
-       }
-      }
-     ],
+     "noValue": "14 天內沒有 Job 執行",
      "color": {
       "mode": "thresholds"
      },
@@ -2439,9 +2224,35 @@
        {
         "color": "#2B2D33",
         "value": null
+       },
+       {
+        "color": "#8ab8ff",
+        "value": 0.5
        }
       ]
      },
+     "mappings": [
+      {
+       "type": "value",
+       "options": {
+        "0": {
+         "text": "沒有",
+         "index": 0
+        }
+       }
+      },
+      {
+       "type": "range",
+       "options": {
+        "from": 0.5,
+        "to": 1000000000,
+        "result": {
+         "text": "執行中",
+         "index": 1
+        }
+       }
+      }
+     ],
      "custom": {
       "fillOpacity": 100,
       "lineWidth": 0
@@ -2450,6 +2261,409 @@
     "overrides": []
    },
    "id": 17
+  },
+  {
+   "type": "timeseries",
+   "title": "Cloud Run Job 每日成敗",
+   "description": "所有 Cloud Run Job 每天結束的執行次數：青＝成功、紅＝失敗。",
+   "datasource": {
+    "type": "stackdriver",
+    "uid": "bg59sppgm7v9cb"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "stackdriver",
+      "uid": "bg59sppgm7v9cb"
+     },
+     "queryType": "timeSeriesList",
+     "timeSeriesList": {
+      "projectName": "gen-lang-client-0602998820",
+      "filters": [
+       "resource.type",
+       "=",
+       "cloud_run_job",
+       "AND",
+       "metric.type",
+       "=",
+       "run.googleapis.com/job/completed_execution_count",
+       "AND",
+       "metric.label.result",
+       "=",
+       "succeeded"
+      ],
+      "crossSeriesReducer": "REDUCE_SUM",
+      "perSeriesAligner": "ALIGN_SUM",
+      "alignmentPeriod": "+86400s",
+      "groupBys": []
+     },
+     "aliasBy": "成功"
+    },
+    {
+     "refId": "B",
+     "datasource": {
+      "type": "stackdriver",
+      "uid": "bg59sppgm7v9cb"
+     },
+     "queryType": "timeSeriesList",
+     "timeSeriesList": {
+      "projectName": "gen-lang-client-0602998820",
+      "filters": [
+       "resource.type",
+       "=",
+       "cloud_run_job",
+       "AND",
+       "metric.type",
+       "=",
+       "run.googleapis.com/job/completed_execution_count",
+       "AND",
+       "metric.label.result",
+       "=",
+       "failed"
+      ],
+      "crossSeriesReducer": "REDUCE_SUM",
+      "perSeriesAligner": "ALIGN_SUM",
+      "alignmentPeriod": "+86400s",
+      "groupBys": []
+     },
+     "aliasBy": "失敗"
+    }
+   ],
+   "timeFrom": "14d",
+   "options": {
+    "legend": {
+     "showLegend": true,
+     "displayMode": "list",
+     "placement": "bottom",
+     "calcs": []
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "decimals": 0,
+     "min": 0,
+     "custom": {
+      "drawStyle": "bars",
+      "barAlignment": 0,
+      "fillOpacity": 85,
+      "lineWidth": 0,
+      "stacking": {
+       "mode": "normal"
+      }
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byFrameRefID",
+       "options": "A"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#1d6b73"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byFrameRefID",
+       "options": "B"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#f2495c"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 32,
+    "w": 8,
+    "h": 9
+   },
+   "hideTimeOverride": true,
+   "id": 18
+  },
+  {
+   "type": "barchart",
+   "title": "失敗的 Job（14 天）",
+   "description": "14 天內有失敗的 Cloud Run Job 與失敗次數，最多的在上。",
+   "gridPos": {
+    "x": 8,
+    "y": 32,
+    "w": 8,
+    "h": 9
+   },
+   "datasource": {
+    "type": "stackdriver",
+    "uid": "bg59sppgm7v9cb"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "stackdriver",
+      "uid": "bg59sppgm7v9cb"
+     },
+     "queryType": "timeSeriesList",
+     "timeSeriesList": {
+      "projectName": "gen-lang-client-0602998820",
+      "filters": [
+       "resource.type",
+       "=",
+       "cloud_run_job",
+       "AND",
+       "metric.type",
+       "=",
+       "run.googleapis.com/job/completed_execution_count",
+       "AND",
+       "metric.label.result",
+       "=",
+       "failed"
+      ],
+      "crossSeriesReducer": "REDUCE_SUM",
+      "perSeriesAligner": "ALIGN_SUM",
+      "alignmentPeriod": "+86400s",
+      "groupBys": [
+       "resource.label.job_name"
+      ]
+     },
+     "aliasBy": "{{resource.label.job_name}}"
+    }
+   ],
+   "transformations": [
+    {
+     "id": "reduce",
+     "options": {
+      "mode": "seriesToRows",
+      "reducers": [
+       "sum"
+      ]
+     }
+    },
+    {
+     "id": "sortBy",
+     "options": {
+      "fields": {},
+      "sort": [
+       {
+        "field": "Total",
+        "desc": true
+       }
+      ]
+     }
+    },
+    {
+     "id": "organize",
+     "options": {
+      "renameByName": {
+       "Total": "次數"
+      }
+     }
+    }
+   ],
+   "options": {
+    "xField": "Field",
+    "orientation": "horizontal",
+    "stacking": "none",
+    "showValue": "always",
+    "barWidth": 0.75,
+    "groupWidth": 0.7,
+    "barRadius": 0,
+    "xTickLabelRotation": 0,
+    "xTickLabelSpacing": 0,
+    "xTickLabelMaxLength": 28,
+    "fullHighlight": false,
+    "tooltip": {
+     "mode": "single"
+    },
+    "text": {
+     "valueSize": 12
+    },
+    "legend": {
+     "showLegend": false,
+     "displayMode": "list",
+     "placement": "bottom",
+     "calcs": []
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "decimals": 0,
+     "noValue": "14 天內沒有失敗",
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#f2495c",
+        "value": null
+       }
+      ]
+     },
+     "custom": {
+      "fillOpacity": 90,
+      "lineWidth": 0,
+      "gradientMode": "none",
+      "axisPlacement": "auto"
+     }
+    },
+    "overrides": []
+   },
+   "timeFrom": "14d",
+   "hideTimeOverride": true,
+   "id": 19
+  },
+  {
+   "type": "barchart",
+   "title": "Scheduler 錯誤日誌（14 天）",
+   "description": "14 天內每個排程寫出的錯誤日誌筆數，最多的在上。錯誤日誌不一定是最終失敗（重試後成功也會留一筆），要看最終結果請對照 ② 執行品質。",
+   "gridPos": {
+    "x": 16,
+    "y": 32,
+    "w": 8,
+    "h": 9
+   },
+   "datasource": {
+    "type": "stackdriver",
+    "uid": "bg59sppgm7v9cb"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "stackdriver",
+      "uid": "bg59sppgm7v9cb"
+     },
+     "queryType": "timeSeriesList",
+     "timeSeriesList": {
+      "projectName": "gen-lang-client-0602998820",
+      "filters": [
+       "resource.type",
+       "=",
+       "cloud_scheduler_job",
+       "AND",
+       "metric.type",
+       "=",
+       "logging.googleapis.com/log_entry_count",
+       "AND",
+       "metric.label.severity",
+       "=",
+       "ERROR"
+      ],
+      "crossSeriesReducer": "REDUCE_SUM",
+      "perSeriesAligner": "ALIGN_SUM",
+      "alignmentPeriod": "+86400s",
+      "groupBys": [
+       "resource.label.job_id"
+      ]
+     },
+     "aliasBy": "{{resource.label.job_id}}"
+    }
+   ],
+   "transformations": [
+    {
+     "id": "reduce",
+     "options": {
+      "mode": "seriesToRows",
+      "reducers": [
+       "sum"
+      ]
+     }
+    },
+    {
+     "id": "sortBy",
+     "options": {
+      "fields": {},
+      "sort": [
+       {
+        "field": "Total",
+        "desc": true
+       }
+      ]
+     }
+    },
+    {
+     "id": "organize",
+     "options": {
+      "renameByName": {
+       "Total": "次數"
+      }
+     }
+    }
+   ],
+   "options": {
+    "xField": "Field",
+    "orientation": "horizontal",
+    "stacking": "none",
+    "showValue": "always",
+    "barWidth": 0.75,
+    "groupWidth": 0.7,
+    "barRadius": 0,
+    "xTickLabelRotation": 0,
+    "xTickLabelSpacing": 0,
+    "xTickLabelMaxLength": 28,
+    "fullHighlight": false,
+    "tooltip": {
+     "mode": "single"
+    },
+    "text": {
+     "valueSize": 12
+    },
+    "legend": {
+     "showLegend": false,
+     "displayMode": "list",
+     "placement": "bottom",
+     "calcs": []
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "decimals": 0,
+     "noValue": "14 天內沒有錯誤日誌",
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#ff9830",
+        "value": null
+       }
+      ]
+     },
+     "custom": {
+      "fillOpacity": 90,
+      "lineWidth": 0,
+      "gradientMode": "none",
+      "axisPlacement": "auto"
+     }
+    },
+    "overrides": []
+   },
+   "timeFrom": "14d",
+   "hideTimeOverride": true,
+   "id": 20
   }
  ]
 }

@@ -193,6 +193,31 @@ test('/v1/models/serving: before 09:00 TW the previous trading day is pending, f
   assert.equal(tabm(late), 'missing')
 })
 
+test('/v1/models/serving: a Friday stays pending over the weekend (its predictions land Monday morning)', async () => {
+  // GAP is Fri 11/20. Sat 11/21 10:00 TW and Sun 11/22 23:00 TW: pending; Mon 11/23 09:00 TW: missing (test above).
+  const tabm = (body: any) => body.rows.find((row: any) => row.date === GAP && row.model_name === 'TabM').state
+  const saturday = await endpoint('/v1/models/serving', 80, OPB_TTL_S, Date.parse('2026-11-21T02:00:00Z'))
+  assert.equal(tabm(saturday), 'pending')
+  assert.equal(saturday.summary.latest_finished_date, '2026-11-19')
+  const sunday = await endpoint('/v1/models/serving', 80, OPB_TTL_S, Date.parse('2026-11-22T15:00:00Z'))
+  assert.equal(tabm(sunday), 'pending')
+  assert.equal(sunday.summary.latest_finished_date, '2026-11-19')
+  assert.equal(sunday.summary.missing_cells, sunday.rows.filter((row: any) => row.state === 'missing').length)
+  assert.ok(sunday.rows.every((row: any) => row.date !== GAP || row.state !== 'missing'), 'no Friday cell counted as missing')
+})
+
+test('/v1/models/serving: a Monday holiday moves the Friday\'s due time to Tuesday 09:00', async () => {
+  const tabm = (body: any) => body.rows.find((row: any) => row.date === GAP && row.model_name === 'TabM').state
+  await fx.kv.put('holiday:2026-11-23', '1')
+  try {
+    assert.equal(tabm(await endpoint('/v1/models/serving', 80, OPB_TTL_S, Date.parse('2026-11-23T02:00:00Z'))), 'pending', 'Mon (holiday) 10:00')
+    assert.equal(tabm(await endpoint('/v1/models/serving', 80, OPB_TTL_S, Date.parse('2026-11-23T23:59:00Z'))), 'pending', 'Tue 07:59')
+    assert.equal(tabm(await endpoint('/v1/models/serving', 80, OPB_TTL_S, Date.parse('2026-11-24T01:00:00Z'))), 'missing', 'Tue 09:00')
+  } finally {
+    await fx.kv.delete('holiday:2026-11-23')
+  }
+})
+
 test('/v1/serving-guard: no guard row is not applicable; a guard row serves its streaks and the identity\'s evaluations', async () => {
   const none = await endpoint('/v1/serving-guard', 5, OPB_TTL_S)
   assert.deepEqual([none.summary.status, none.summary.degraded_streak, none.rows.length], ['not_applicable', null, 0])

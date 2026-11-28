@@ -133,10 +133,6 @@ export function mockResponses(nowIso) {
     })
   })
 
-  // Last result of each Cloud Run job, one row per run; the state holds until the next run.
-  const jobRuns = days(14).flatMap((d, i) => jobs.filter(([, task]) => task !== 'weekly' || new Date(`${d}T00:00:00Z`).getUTCDay() === 0)
-    .map(([job], j) => ({ time: new Date(Date.parse(`${d}T00:00:00+08:00`) + (18 + j) * 3600_000).toISOString(), job,
-      result: (i * 7 + j * 3) % 17 === 0 ? 'failed' : 'success' })))
   const cfQuota = [['Workers 請求', 41], ['D1 讀取', 87], ['D1 寫入', 34], ['D1 儲存', 62], ['KV 讀取', 9], ['R2 儲存', 18]].map(([product, pct]) => ({ product, pct }))
   return {
     'mock:cloudflare-d1-grid': { rows: d1Grid },
@@ -145,7 +141,6 @@ export function mockResponses(nowIso) {
     'mock:cloudflare-cost-items': { rows: [['D1 儲存', 18.75], ['D1 讀取列', 14.03], ['方案月費', 5], ['R2 儲存', 0.2]].map(([item, usd]) => ({ item, usd })) },
     'mock:billing-month-by-service': { rows: monthByService },
     'mock:billing-month-cumulative': { rows: cumulative },
-    'plan:cloud-run-job-runs': { rows: jobRuns },
     'plan:cloud-run-job-days': { rows: jobDays },
     'mock:billing-by-service': { rows: billingRows },
     'mock:billing-month-daily': { rows: daily(month) },

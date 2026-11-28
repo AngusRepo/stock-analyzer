@@ -1087,7 +1087,7 @@
   {
    "type": "piechart",
    "title": "失敗分類（14 天）",
-   "description": "14 天內非成功的 scheduler ticket 各類占比，依 (job, 日) 歸成一類：最終失敗、上游擋下、重試後成功、進行中；其他＝未收尾＋設計性重試。",
+   "description": "14 天內非成功排程執行的各類占比，依（排程、日）歸成一類：最終失敗、上游擋下、重試後成功、進行中；其他＝未收尾＋設計性重試。",
    "gridPos": {
     "x": 16,
     "y": 4,
@@ -5591,7 +5591,7 @@
   },
   {
    "type": "canvas",
-   "title": "每月 artifact",
+   "title": "每月產出",
    "description": "",
    "gridPos": {
     "x": 16,

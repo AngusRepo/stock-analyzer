@@ -898,7 +898,7 @@
      }
     ]
    },
-   "description": "Fusion artifact 上線後的 T+5 前向檢查：連續 3 個預測日 IC 與價差都輸 L4 就旁路 residual，旁路後要連續 3 日通過才恢復（至少 5 個可評估日）。未啟用＝目前沒有 Fusion residual 在服務，不需要這道保護（灰）；正常＝青；惡化中＝琥珀；已旁路＝紅；版本不符＝guard 綁的 artifact／fingerprint 不是目前服務中的 Fusion（紅，日數不顯示）。連續惡化／恢復＝最近連續幾個預測日。",
+   "description": "Fusion 模型上線後的 T+5 前向檢查：連續 3 個預測日 IC 與價差都輸 L4 就旁路 residual，旁路後要連續 3 日通過才恢復（至少 5 個可評估日）。未啟用＝目前沒有 Fusion residual 在服務，不需要這道保護（灰）；正常＝青；惡化中＝琥珀；已旁路＝紅；版本不符＝這道檢查綁的模型檔或版本指紋不是目前服務中的 Fusion（紅，日數不顯示）。連續惡化／恢復＝最近連續幾個預測日。",
    "id": 3
   },
   {
@@ -2074,7 +2074,7 @@
     "w": 14,
     "h": 4
    },
-   "description": "Paper NAV 離窗口內最高點的距離（underwater）；越深＝回撤越大。",
+   "description": "Paper NAV 離窗口內最高點的距離；越深＝回撤越大。",
    "targets": [
     {
      "refId": "A",
@@ -2148,7 +2148,7 @@
   {
    "type": "state-timeline",
    "title": "每天選到的 OPB arm",
-   "description": "每個 signal date 的計畫用了哪個 arm；灰＝風控把所有 arm 壓成同一組，那天學不到差別。顏色與右下 OPB arm 長條相同。",
+   "description": "每個訊號日的計畫用了哪個 arm；灰＝風控把所有 arm 壓成同一組，那天學不到差別。顏色與右下 OPB arm 長條相同。",
    "gridPos": {
     "x": 14,
     "y": 8,
@@ -2474,7 +2474,7 @@
   {
    "type": "table",
    "title": "模型名冊",
-   "description": "上線中的 alpha roster 與各模型最近一次月訓的離線閘門。IC＝OOS IC，格子照該模型自己的閘門門檻上色：紅＝不高於 min 門檻（未過），琥珀＝低於弱門檻（弱通過），青＝達弱門檻以上；灰＝沒有門檻。狀態＝registry 狀態（上線＝production）。點模型名稱看門檻、版本與訓練資料日。",
+   "description": "上線中的模型名冊與各模型最近一次月訓的離線閘門。IC＝OOS IC，格子照該模型自己的閘門門檻上色：紅＝不高於最低門檻（未過），琥珀＝低於弱門檻（弱通過），青＝達弱門檻以上；灰＝沒有門檻。狀態＝模型登錄表的狀態。點模型名稱看門檻、版本與訓練資料日。",
    "gridPos": {
     "x": 0,
     "y": 18,
@@ -2820,7 +2820,7 @@
   {
    "type": "status-history",
    "title": "KV 設定漂移（7 天）",
-   "description": "每晚 kv-config-drift 對 manifest digest 的比對結果；漂移＝KV 現值與 repo manifest 不同（Optuna 月搜直推後屬預期）。",
+   "description": "每晚設定漂移檢查的結果；漂移＝KV 現值和 repo 記錄的設定摘要不同（Optuna 月搜直推後屬預期）。",
    "gridPos": {
     "x": 0,
     "y": 25,
@@ -2951,7 +2951,7 @@
   {
    "type": "gauge",
    "title": "證據累積（距 20 日門檻）",
-   "description": "各影子機制已累積的證據日數，滿 20 日轉青（可以下判斷）。影子 A＝Shadow A；RFS 配置＝RFS allocator；執行一致＝Execution parity，要有真實下單才會開始累積。RFS allocator 的證據日數、被擋的收據與滿 20 日的日數要等 RFS 比較表加上 D1 索引後 Worker 才提供（目前固定回 0／null），所以這一格先停在 0。",
+   "description": "各影子機制已累積的證據日數，滿 20 日轉青（可以下判斷）。影子 A＝Shadow A；RFS 配置＝RFS allocator；執行一致＝Execution parity，要有真實下單才會開始累積。RFS allocator 的證據日數、被擋的收據與滿 20 日的日數要等 RFS 比較表加上 D1 索引後 Worker 才提供（目前固定回 0），所以這一格先停在 0。",
    "gridPos": {
     "x": 12,
     "y": 25,
@@ -3056,7 +3056,7 @@
   {
    "type": "state-timeline",
    "title": "模型服務狀態（14 日）",
-   "description": "上線 roster 的每個模型一列、每個交易日一段：青＝當天有預測（predictions 有該模型該日的列）、藍＝當天換了 champion 版本、紅＝那天的夜間流程已結束卻沒有預測、灰＝今晚的流程還沒跑完。滑鼠停在色帶上看是哪一天訓練的版本。",
+   "description": "上線名冊的每個模型一列、每個交易日一段：青＝當天有預測、藍＝當天換了正式版本、紅＝下一個交易日 09:00 過後仍沒有預測、灰＝還在等（週五的預測下週一早上才寫入）。滑鼠停在色帶上看是哪一天訓練的版本。",
    "gridPos": {
     "x": 0,
     "y": 29,
@@ -3073,7 +3073,7 @@
      "type": "json",
      "parser": "backend",
      "format": "table",
-     "root_selector": "([rows.{ 'time': $fromMillis($toMillis(date & 'T00:00:00.000Z') - 28800000), 'model': model_name,\n      'cell': (state = 'serving' ? 'ok|' : state = 'switched' ? 'info|換版 ' : state = 'pending' ? 'wait|待今晚 ' : 'bad|缺 ') & ($v := version; $contains($v ? $v : '', /^v[0-9]{14}$/) ? $substring($v, 1, 4) & '/' & $substring($v, 5, 2) & '/' & $substring($v, 7, 2) & ' 版' : $v ? $v : '') }])",
+     "root_selector": "([rows.{ 'time': $fromMillis($toMillis(date & 'T00:00:00.000Z') - 28800000), 'model': model_name,\n      'cell': (state = 'serving' ? 'ok|' : state = 'switched' ? 'info|換版 ' : state = 'pending' ? 'wait|待寫入 ' : 'bad|缺 ') & ($v := version; $contains($v ? $v : '', /^v[0-9]{14}$/) ? $substring($v, 1, 4) & '/' & $substring($v, 5, 2) & '/' & $substring($v, 7, 2) & ' 版' : $v ? $v : '') }])",
      "columns": [
       {
        "selector": "time",
@@ -3229,7 +3229,7 @@
   {
    "type": "table",
    "title": "最近一次月訓結果",
-   "description": "最近一次月訓（模型登錄表近 62 天最新的一次正式月訓）每個模型的離線閘門：閘門 青＝通過、琥珀＝弱通過、紅＝未過；IC＝OOS IC，照該模型自己的門檻上色；上線＝這個 run 是不是目前 ensemble 的 run。點模型名稱看未過的閘門（被拒原因）、registry 狀態、訓練資料日與版本。",
+   "description": "最近一次月訓（模型登錄表近 62 天最新的一次正式月訓）每個模型的離線閘門：閘門 青＝通過、琥珀＝弱通過、紅＝未過；IC＝OOS IC，照該模型自己的門檻上色；上線＝這次月訓是不是目前上線的那一次。點模型名稱看未過的閘門（被拒原因）、登錄表狀態、訓練資料日與版本。",
    "gridPos": {
     "x": 14,
     "y": 29,

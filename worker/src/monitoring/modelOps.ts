@@ -143,8 +143,8 @@ export async function opbLedgerReport(env: MonitoringEnv, nowMs: number) {
 /* ---- /v1/models/serving ---- */
 
 export const SERVING_DAYS = 14
-/** Predictions of a signal date land after its overnight pipeline (L3 by ~08:00 TW); before 09:00 the previous
- * trading day is still pending, not missing. */
+/** Predictions of a signal date land on the next trading day's morning (L3 by ~08:00 TW; a Friday's on Monday: 10/30, 11/06
+ * and 11/20 rows written Sun 23:2x UTC): until 09:00 of the trading day after it, a date is pending, not missing. */
 const PIPELINE_DONE_MINUTES = 9 * 60
 const SERVED_SQL = 'SELECT 1 AS served FROM predictions WHERE prediction_date = ? AND model_name = ? LIMIT 1'
 const CHAMPION_BEFORE_SQL = `SELECT model_name, version, effective_at FROM model_champion_history
@@ -175,7 +175,11 @@ export async function modelServingReport(env: MonitoringEnv, nowMs: number) {
     const end = Date.parse(`${addDays(date, 1)}T00:00:00Z`) - TW_OFFSET_MS
     return history.filter((row) => row.model_name === model && utcMs(row.effective_at) < end).at(-1)?.version ?? null
   }
-  const pending = (date: string) => date === today || (date === prevTrading && twMinutes(nowMs) < PIPELINE_DONE_MINUTES)
+  // The last date whose predictions are due: the previous trading day once today trades and it is past 09:00, else the
+  // trading day before that (a weekend or holiday waits for the next trading morning).
+  const lastDue = (await isTradingDay(env, today)) && twMinutes(nowMs) >= PIPELINE_DONE_MINUTES
+    ? prevTrading : prevTrading ? await previousTradingDay(env, prevTrading) : null
+  const pending = (date: string) => date === today || (lastDue !== null && date > lastDue)
   const rows = pairs.map(({ date, model }, i) => {
     const version = versionOn(model, date)
     const previous = days.indexOf(date) > 0 ? versionOn(model, days[days.indexOf(date) - 1]) : version
@@ -188,7 +192,7 @@ export async function modelServingReport(env: MonitoringEnv, nowMs: number) {
     today, since, days: SERVING_DAYS, models,
     definitions: {
       serving: 'predictions has rows for the model and prediction_date', switched: 'served, and the champion version changed since the previous trading day',
-      pending: 'the date\'s overnight pipeline has not finished yet', missing: 'a finished trading day without predictions for the model',
+      pending: 'not due until 09:00 TW of the next trading day', missing: 'past 09:00 TW of the next trading day without predictions for the model',
     },
     summary: {
       model_count: models.length, trading_days: days.length, latest_finished_date: latestDone,

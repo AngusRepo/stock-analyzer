@@ -846,7 +846,7 @@
   {
    "type": "gauge",
    "title": "D1 各資料庫用量",
-   "description": "每個 D1 庫用了 10 GB 上限的幾成，最滿的在左；80% 起琥珀、90% 起紅（硬門檻）。成長速度與到門檻天數在 /v1/capacity。",
+   "description": "每個 D1 庫用了 10 GB 上限的幾成，最滿的在左；80% 起琥珀、90% 起紅（硬門檻）。",
    "gridPos": {
     "x": 0,
     "y": 4,
@@ -2048,7 +2048,7 @@
    "gridPos": {
     "x": 0,
     "y": 25,
-    "w": 24,
+    "w": 12,
     "h": 7
    },
    "datasource": {
@@ -2152,6 +2152,518 @@
     "overrides": []
    },
    "id": 16
+  },
+  {
+   "type": "state-timeline",
+   "title": "Cloud Run Job 執行時段",
+   "description": "每個 Cloud Run Job 一列、每小時一格：藍＝那一小時有執行中的 Job。滑鼠停在色段上看持續多久。",
+   "gridPos": {
+    "x": 12,
+    "y": 25,
+    "w": 12,
+    "h": 7
+   },
+   "datasource": {
+    "type": "stackdriver",
+    "uid": "bg59sppgm7v9cb"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "stackdriver",
+      "uid": "bg59sppgm7v9cb"
+     },
+     "queryType": "timeSeriesList",
+     "timeSeriesList": {
+      "projectName": "gen-lang-client-0602998820",
+      "filters": [
+       "resource.type",
+       "=",
+       "cloud_run_job",
+       "AND",
+       "metric.type",
+       "=",
+       "run.googleapis.com/job/running_executions"
+      ],
+      "crossSeriesReducer": "REDUCE_SUM",
+      "perSeriesAligner": "ALIGN_MAX",
+      "alignmentPeriod": "+3600s",
+      "groupBys": [
+       "resource.label.job_name"
+      ]
+     },
+     "aliasBy": "{{resource.label.job_name}}"
+    }
+   ],
+   "timeFrom": "14d",
+   "hideTimeOverride": true,
+   "options": {
+    "showValue": "never",
+    "rowHeight": 0.7,
+    "mergeValues": true,
+    "alignValue": "left",
+    "legend": {
+     "showLegend": false,
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "single"
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "noValue": "14 天內沒有 Job 執行",
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#2B2D33",
+        "value": null
+       },
+       {
+        "color": "#8ab8ff",
+        "value": 0.5
+       }
+      ]
+     },
+     "mappings": [
+      {
+       "type": "value",
+       "options": {
+        "0": {
+         "text": "沒有",
+         "index": 0
+        }
+       }
+      },
+      {
+       "type": "range",
+       "options": {
+        "from": 0.5,
+        "to": 1000000000,
+        "result": {
+         "text": "執行中",
+         "index": 1
+        }
+       }
+      }
+     ],
+     "custom": {
+      "fillOpacity": 100,
+      "lineWidth": 0
+     }
+    },
+    "overrides": []
+   },
+   "id": 17
+  },
+  {
+   "type": "timeseries",
+   "title": "Cloud Run Job 每日成敗",
+   "description": "所有 Cloud Run Job 每天結束的執行次數：青＝成功、紅＝失敗。",
+   "datasource": {
+    "type": "stackdriver",
+    "uid": "bg59sppgm7v9cb"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "stackdriver",
+      "uid": "bg59sppgm7v9cb"
+     },
+     "queryType": "timeSeriesList",
+     "timeSeriesList": {
+      "projectName": "gen-lang-client-0602998820",
+      "filters": [
+       "resource.type",
+       "=",
+       "cloud_run_job",
+       "AND",
+       "metric.type",
+       "=",
+       "run.googleapis.com/job/completed_execution_count",
+       "AND",
+       "metric.label.result",
+       "=",
+       "succeeded"
+      ],
+      "crossSeriesReducer": "REDUCE_SUM",
+      "perSeriesAligner": "ALIGN_SUM",
+      "alignmentPeriod": "+86400s",
+      "groupBys": []
+     },
+     "aliasBy": "成功"
+    },
+    {
+     "refId": "B",
+     "datasource": {
+      "type": "stackdriver",
+      "uid": "bg59sppgm7v9cb"
+     },
+     "queryType": "timeSeriesList",
+     "timeSeriesList": {
+      "projectName": "gen-lang-client-0602998820",
+      "filters": [
+       "resource.type",
+       "=",
+       "cloud_run_job",
+       "AND",
+       "metric.type",
+       "=",
+       "run.googleapis.com/job/completed_execution_count",
+       "AND",
+       "metric.label.result",
+       "=",
+       "failed"
+      ],
+      "crossSeriesReducer": "REDUCE_SUM",
+      "perSeriesAligner": "ALIGN_SUM",
+      "alignmentPeriod": "+86400s",
+      "groupBys": []
+     },
+     "aliasBy": "失敗"
+    }
+   ],
+   "timeFrom": "14d",
+   "options": {
+    "legend": {
+     "showLegend": true,
+     "displayMode": "list",
+     "placement": "bottom",
+     "calcs": []
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "decimals": 0,
+     "min": 0,
+     "custom": {
+      "drawStyle": "bars",
+      "barAlignment": 0,
+      "fillOpacity": 85,
+      "lineWidth": 0,
+      "stacking": {
+       "mode": "normal"
+      }
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byFrameRefID",
+       "options": "A"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#1d6b73"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byFrameRefID",
+       "options": "B"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#f2495c"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 32,
+    "w": 8,
+    "h": 9
+   },
+   "hideTimeOverride": true,
+   "id": 18
+  },
+  {
+   "type": "barchart",
+   "title": "失敗的 Job（14 天）",
+   "description": "14 天內有失敗的 Cloud Run Job 與失敗次數，最多的在上。",
+   "gridPos": {
+    "x": 8,
+    "y": 32,
+    "w": 8,
+    "h": 9
+   },
+   "datasource": {
+    "type": "stackdriver",
+    "uid": "bg59sppgm7v9cb"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "stackdriver",
+      "uid": "bg59sppgm7v9cb"
+     },
+     "queryType": "timeSeriesList",
+     "timeSeriesList": {
+      "projectName": "gen-lang-client-0602998820",
+      "filters": [
+       "resource.type",
+       "=",
+       "cloud_run_job",
+       "AND",
+       "metric.type",
+       "=",
+       "run.googleapis.com/job/completed_execution_count",
+       "AND",
+       "metric.label.result",
+       "=",
+       "failed"
+      ],
+      "crossSeriesReducer": "REDUCE_SUM",
+      "perSeriesAligner": "ALIGN_SUM",
+      "alignmentPeriod": "+86400s",
+      "groupBys": [
+       "resource.label.job_name"
+      ]
+     },
+     "aliasBy": "{{resource.label.job_name}}"
+    }
+   ],
+   "transformations": [
+    {
+     "id": "reduce",
+     "options": {
+      "mode": "seriesToRows",
+      "reducers": [
+       "sum"
+      ]
+     }
+    },
+    {
+     "id": "sortBy",
+     "options": {
+      "fields": {},
+      "sort": [
+       {
+        "field": "Total",
+        "desc": true
+       }
+      ]
+     }
+    },
+    {
+     "id": "organize",
+     "options": {
+      "renameByName": {
+       "Total": "次數"
+      }
+     }
+    }
+   ],
+   "options": {
+    "xField": "Field",
+    "orientation": "horizontal",
+    "stacking": "none",
+    "showValue": "always",
+    "barWidth": 0.75,
+    "groupWidth": 0.7,
+    "barRadius": 0,
+    "xTickLabelRotation": 0,
+    "xTickLabelSpacing": 0,
+    "xTickLabelMaxLength": 28,
+    "fullHighlight": false,
+    "tooltip": {
+     "mode": "single"
+    },
+    "text": {
+     "valueSize": 12
+    },
+    "legend": {
+     "showLegend": false,
+     "displayMode": "list",
+     "placement": "bottom",
+     "calcs": []
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "decimals": 0,
+     "noValue": "14 天內沒有失敗",
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#f2495c",
+        "value": null
+       }
+      ]
+     },
+     "custom": {
+      "fillOpacity": 90,
+      "lineWidth": 0,
+      "gradientMode": "none",
+      "axisPlacement": "auto"
+     }
+    },
+    "overrides": []
+   },
+   "timeFrom": "14d",
+   "hideTimeOverride": true,
+   "id": 19
+  },
+  {
+   "type": "barchart",
+   "title": "Scheduler 錯誤日誌（14 天）",
+   "description": "14 天內每個排程寫出的錯誤日誌筆數，最多的在上。錯誤日誌不一定是最終失敗（重試後成功也會留一筆），要看最終結果請對照 ② 執行品質。",
+   "gridPos": {
+    "x": 16,
+    "y": 32,
+    "w": 8,
+    "h": 9
+   },
+   "datasource": {
+    "type": "stackdriver",
+    "uid": "bg59sppgm7v9cb"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "stackdriver",
+      "uid": "bg59sppgm7v9cb"
+     },
+     "queryType": "timeSeriesList",
+     "timeSeriesList": {
+      "projectName": "gen-lang-client-0602998820",
+      "filters": [
+       "resource.type",
+       "=",
+       "cloud_scheduler_job",
+       "AND",
+       "metric.type",
+       "=",
+       "logging.googleapis.com/log_entry_count",
+       "AND",
+       "metric.label.severity",
+       "=",
+       "ERROR"
+      ],
+      "crossSeriesReducer": "REDUCE_SUM",
+      "perSeriesAligner": "ALIGN_SUM",
+      "alignmentPeriod": "+86400s",
+      "groupBys": [
+       "resource.label.job_id"
+      ]
+     },
+     "aliasBy": "{{resource.label.job_id}}"
+    }
+   ],
+   "transformations": [
+    {
+     "id": "reduce",
+     "options": {
+      "mode": "seriesToRows",
+      "reducers": [
+       "sum"
+      ]
+     }
+    },
+    {
+     "id": "sortBy",
+     "options": {
+      "fields": {},
+      "sort": [
+       {
+        "field": "Total",
+        "desc": true
+       }
+      ]
+     }
+    },
+    {
+     "id": "organize",
+     "options": {
+      "renameByName": {
+       "Total": "次數"
+      }
+     }
+    }
+   ],
+   "options": {
+    "xField": "Field",
+    "orientation": "horizontal",
+    "stacking": "none",
+    "showValue": "always",
+    "barWidth": 0.75,
+    "groupWidth": 0.7,
+    "barRadius": 0,
+    "xTickLabelRotation": 0,
+    "xTickLabelSpacing": 0,
+    "xTickLabelMaxLength": 28,
+    "fullHighlight": false,
+    "tooltip": {
+     "mode": "single"
+    },
+    "text": {
+     "valueSize": 12
+    },
+    "legend": {
+     "showLegend": false,
+     "displayMode": "list",
+     "placement": "bottom",
+     "calcs": []
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "decimals": 0,
+     "noValue": "14 天內沒有錯誤日誌",
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#ff9830",
+        "value": null
+       }
+      ]
+     },
+     "custom": {
+      "fillOpacity": 90,
+      "lineWidth": 0,
+      "gradientMode": "none",
+      "axisPlacement": "auto"
+     }
+    },
+    "overrides": []
+   },
+   "timeFrom": "14d",
+   "hideTimeOverride": true,
+   "id": 20
   }
  ]
 }

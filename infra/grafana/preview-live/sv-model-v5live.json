@@ -1078,7 +1078,7 @@
     "w": 14,
     "h": 4
    },
-   "description": "Paper NAV 離窗口內最高點的距離（underwater）；越深＝回撤越大。",
+   "description": "Paper NAV 離窗口內最高點的距離；越深＝回撤越大。",
    "targets": [
     {
      "refId": "A",
@@ -1152,7 +1152,7 @@
   {
    "type": "state-timeline",
    "title": "每天選到的 OPB arm",
-   "description": "每個 signal date 的計畫用了哪個 arm；灰＝風控把所有 arm 壓成同一組，那天學不到差別。顏色與右下 OPB arm 長條相同。",
+   "description": "每個訊號日的計畫用了哪個 arm；灰＝風控把所有 arm 壓成同一組，那天學不到差別。顏色與右下 OPB arm 長條相同。",
    "gridPos": {
     "x": 14,
     "y": 4,
@@ -1478,7 +1478,7 @@
   {
    "type": "table",
    "title": "模型名冊",
-   "description": "上線中的 alpha roster 與各模型最近一次月訓的離線閘門。IC＝OOS IC，格子照該模型自己的閘門門檻上色：紅＝不高於 min 門檻（未過），琥珀＝低於弱門檻（弱通過），綠＝達弱門檻以上；灰＝沒有門檻。狀態＝registry 狀態（上線＝production）。點模型名稱看門檻、版本與訓練資料日。",
+   "description": "上線中的模型名冊與各模型最近一次月訓的離線閘門。IC＝OOS IC，格子照該模型自己的閘門門檻上色：紅＝不高於最低門檻（未過），琥珀＝低於弱門檻（弱通過），綠＝達弱門檻以上；灰＝沒有門檻。狀態＝模型登錄表的狀態。點模型名稱看門檻、版本與訓練資料日。",
    "gridPos": {
     "x": 0,
     "y": 14,
@@ -1960,7 +1960,7 @@
   {
    "type": "status-history",
    "title": "KV 設定漂移（7 天）",
-   "description": "每晚 kv-config-drift 對 manifest digest 的比對結果；漂移＝KV 現值與 repo manifest 不同（Optuna 月搜直推後屬預期）。",
+   "description": "每晚設定漂移檢查的結果；漂移＝KV 現值和 repo 記錄的設定摘要不同（Optuna 月搜直推後屬預期）。",
    "gridPos": {
     "x": 0,
     "y": 21,
@@ -2091,7 +2091,7 @@
   {
    "type": "gauge",
    "title": "證據累積（距 20 日門檻）",
-   "description": "各影子機制已累積的證據日數，滿 20 日轉綠（可以下判斷）。影子 A＝Shadow A；RFS 配置＝RFS allocator；執行一致＝Execution parity，要有真實下單才會開始累積。RFS allocator 的證據日數、被擋的收據與滿 20 日的日數要等 RFS 比較表加上 D1 索引後 Worker 才提供（目前固定回 0／null），所以這一格先停在 0。",
+   "description": "各影子機制已累積的證據日數，滿 20 日轉綠（可以下判斷）。影子 A＝Shadow A；RFS 配置＝RFS allocator；執行一致＝Execution parity，要有真實下單才會開始累積。RFS allocator 的證據日數、被擋的收據與滿 20 日的日數要等 RFS 比較表加上 D1 索引後 Worker 才提供（目前固定回 0），所以這一格先停在 0。",
    "gridPos": {
     "x": 12,
     "y": 21,

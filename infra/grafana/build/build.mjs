@@ -14,7 +14,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ERROR_FALLBACK, WATCHERS, chainCanvas, CHAIN_PIVOT, DOTS_PIVOT, laneCanvas, laneSlots, readinessCanvas, readinessPivot, SHORT_LABELS, slowPivot } from './canvas.mjs'
 import { ALERT_KIND, BIGQUERY_DS, C, COOL, STATUS, TONE, GCP_DS, KPI_KEY, N, NO_SOURCE, READINESS_VOCAB, S, STATUS_LABELS_JSONATA, T, dashboard, donut, gauges, gp, grid, hbars, heatmap, kpi, lcd,
-  querySource, spark, stackedBars, states, statusMappings, table, th } from './lib.mjs'
+  lit, querySource, spark, stackedBars, states, statusMappings, table, th } from './lib.mjs'
 import { mockResponses } from './mock.mjs'
 import { rawErrorHits } from './rawErrors.mjs'
 
@@ -63,9 +63,9 @@ function lanePanel(title, id, x, y, w, h, q) {
   if (slots < laneSlots(OTHER[id])) throw new Error(`${id} needs ${laneSlots(OTHER[id])} slots, ${w} columns give ${slots}`)
   return laneCanvas(title, q(`${STATE}?chain=${id}`, { root: CHAIN_PIVOT }), OTHER[id], x, y, w, h, slots)
 }
-const CHAIN_NAMES = JSON.stringify({ daily_readiness: '每日', intraday_guard: '盤中', weekly_research: '每週', monthly_artifact: '每月' })
+const CHAIN_NAMES = lit({ daily_readiness: '每日', intraday_guard: '盤中', weekly_research: '每週', monthly_artifact: '每月' })
 /** Stage names (every chain) for responses that carry only stage_id. */
-const NAMES = JSON.stringify(Object.fromEntries([...dag.catalog, ...Object.values(OTHER).flatMap((chain) => Object.entries(chain.stages).map(([id, stage]) => ({ id, label: stage.label })))]
+const NAMES = lit(Object.fromEntries([...dag.catalog, ...Object.values(OTHER).flatMap((chain) => Object.entries(chain.stages).map(([id, stage]) => ({ id, label: stage.label })))]
   .map((stage) => [stage.id, stage.label])))
 /** Every daily stage in Canvas order: phase by phase, the lane left to right, then the side row. A parent the Canvas shows
  * as its sub-stages (FinLab, Pipeline) sits just before them; a stage the Canvas leaves out (ML Predict) follows the catalog
@@ -116,7 +116,7 @@ const SHORT_DURATION = (field) => `(${field} != null ? (${field} < 60 ? $string(
 const TODO_WIDTHS = { 鏈: 64, 狀況: 66, 持續: 70, 次數: 78 }
 /** 要處理: rows a 8-unit-high table shows without scrolling (header + 5 rows of 36 px, about 243 px inside), and its order, worst first. */
 const TODO_ROWS = 5
-const TODO_RANK = JSON.stringify({ failed: 1, missed: 2, stuck: 3, blocked: 4, overdue: 5 })
+const TODO_RANK = lit({ failed: 1, missed: 2, stuck: 3, blocked: 4, overdue: 5 })
 const BRIEF = (brief = 'error_brief', raw = 'error') => `(${brief} ? ${brief} : ${raw} ? '${ERROR_FALLBACK}' : '沒有錯誤訊息')`
 /** Readiness reasons in words: the Worker's root-cause codes (dataQualityMonitor buildMarketDashboardMaterializationCheck and
  * the sources' own root causes); any other code reads 狀態異常, a sentence keeps its words with "lag Nd" as 落後 N 天. */
@@ -555,7 +555,7 @@ const PHONE_W = 331
 const ROW_PX = 36
 /** Rendered width at the table's 14 px font: CJK and full-width forms 14, capitals and digits 8.5, narrow punctuation 4,
  * other Latin 7.5 — plus 8% margin and the cell's 17 px of padding and border. */
-const textPx = (text) => [...String(text)].reduce((sum, ch) => sum + (/[①-⓿⺀-鿿＀-￯　-〿]/.test(ch) ? 14
+const textPx = (text) => [...String(text)].reduce((sum, ch) => sum + (/[①-⓿⺀-鿿＀-￯]/.test(ch) ? 14
   : /[A-Z0-9mwMW]/.test(ch) ? 8.5 : /[ .,·|:;il1!'\-\/()]/.test(ch) ? 4 : 7.5), 0)
 const cellPx = (text) => Math.ceil(textPx(text) * 1.08) + 17
 /** A header needs its words plus padding and the sort arrow's space (38 px; 50 at the first and last column, measured:

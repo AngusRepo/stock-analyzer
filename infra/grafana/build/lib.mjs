@@ -103,6 +103,9 @@ export function querySource(mode, fixtures, { liveRoutes, demo = new Set() } = {
       { planned, demo: mode !== 'live' && demo.has(path), standIn: path.startsWith('mock:') })
   }
 }
+/** A value as a JSONata literal: its JSON, with `<`, `>` and the two JSON-legal line separators escaped (the same string to
+ * JSONata, and no text from a catalog can close or split the query it is written into). */
+export const lit = (value) => JSON.stringify(value).replace(/[<>\u2028\u2029]/g, (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`)
 /** Build-time flags on a target, kept out of the JSON (not enumerable). */
 export const marked = (target, flags) => {
   for (const [flag, on] of Object.entries(flags)) if (on) Object.defineProperty(target, flag, { value: true })

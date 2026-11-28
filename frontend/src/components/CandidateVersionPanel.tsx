@@ -19,10 +19,7 @@ export default function CandidateVersionPanel({ versions }: { versions?: Candida
               ? <p className="text-amber-200">候選身分或 NAV 證據驗證受阻，不能套用其他版本數據</p> : null}
             <p className="text-slate-400">離線診斷：{candidate.offline_decision ?? '尚無資料'}（非 NAV 採用判定）</p>
             <p className="mt-1 text-muted-foreground">
-              <span
-                className="cursor-help border-b border-dotted border-white/25"
-                title={candidate.checksum ? `模型檢查碼 ${String(candidate.checksum).slice(0, 12)}` : undefined}
-              >Cohort 與產物身分</span>
+              <span className="[overflow-wrap:anywhere]">Cohort 與產物身分{candidate.checksum ? `：模型檢查碼 ${String(candidate.checksum)}` : ''}</span>
             </p>
           </>}
       </div>)}

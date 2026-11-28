@@ -105,3 +105,120 @@ test('verifier 回報的變體：盤勢未切換不誤報、dry run 出錯標題
   assert.ok(storage.includes('market 71.9% 已超過 65% 警戒線'), storage)
   assert.equal(schedulerSummaryZh('strategy-learning-mature-evidence', 'mature_recovery=mature_signal_date=none inspected_dates=0 gaps_before=0 targeted=none projection_runs=0 labels_persisted=0 gaps_after=0 blocked=none labels=0 pending=0 unavailable=0')!.includes('尚無成熟訊號日'), true)
 })
+
+// ── 第二批：非 key=value 摘要、pipeline 執行中、排程框架句 ─────────────────
+type Batch2Job = FixtureJob & { lastError?: string }
+const batch2 = JSON.parse(readFileSync(new URL('./fixtures/schedulerSummaryZh.prod-20261128-batch2.json', import.meta.url), 'utf8')) as { jobs: Batch2Job[] }
+const sample = (id: string, marker: string) => {
+  const job = batch2.jobs.find((row) => row.id === id && row.summary.includes(marker))
+  assert.ok(job, `fixture 缺 ${id}「${marker}」`)
+  return job!
+}
+
+test('prod 第二批每個樣本（summary 與 lastError）都有中文句，且不殘留機器識別字', () => {
+  assert.ok(batch2.jobs.length >= 150, `樣本太少：${batch2.jobs.length}`)
+  for (const job of batch2.jobs) {
+    assertHuman(job.id, schedulerSummaryZh(job.id, job.summary))
+    if (job.lastError) assertHuman(`${job.id} lastError`, schedulerLastErrorZh(job.id, job.lastError))
+  }
+  const required = [
+    'storage-health-check', 'learning-retention-readiness', 'legacy-learning-deletion-readiness', 'storage-integrity-audit',
+    'weekly-readiness', 'monthly-readiness', 'weekly-backtest', 'us-leading', 'intraday-check', 'rescore-10', 'rescore-11',
+    'rescore-12', 'rescore-1230', 'daily-snapshot', 'hmm-maintenance', 'pipeline', 'evening-chain',
+  ]
+  for (const id of required) assert.ok(batch2.jobs.some((job) => job.id === id), `第二批缺 ${id}`)
+})
+
+test('第二批中文句帶出原文的關鍵數字與狀態', () => {
+  const cases: Array<[string, string, string[]]> = [
+    ['hmm-maintenance', 'hmm=not_due', ['尚未到期', '盤勢涵蓋已就緒']],
+    ['hmm-maintenance', 'hmm=dispatched', ['已派送', '等待完成']],
+    ['storage-health-check', 'storage_health_check', ['正常', '完整性阻擋 0', 'DLQ 待處理 0', 'market 71.9%', 'learning 69.5%']],
+    ['learning-retention-readiness', 'learning_retention_readiness', ['尚未就緒', '120 天', '3,650 天', '721,168', '阻擋 22 項', '75/75']],
+    ['legacy-learning-deletion-readiness', 'legacy_learning_deletion_readiness', ['尚未就緒', '未授權刪除', '不會自動刪除', '2026-09-17', '74/74']],
+    ['storage-integrity-audit', 'storage integrity audit failed', ['失敗', '檢查 100 件', '驗證通過 99 件', '讀取錯誤 1', 'D1 過載']],
+    ['storage-integrity-audit', 'checked=100 verified=100', ['通過', '檢查 100 件', '驗證 100 件']],
+    ['weekly-readiness', 'weekly_readiness_blocked', ['被擋', '2 項必要工作未收斂', '儲存完整性稽核失敗', '每週回測失敗']],
+    ['monthly-readiness', 'monthly_readiness_blocked', ['被擋', '每月策略挖掘未收到完成回呼']],
+    ['weekly-backtest', 'research_corporate_coverage_incomplete', ['被擋', '455 個交易日', '455 日有缺口', '候選搜尋未開始']],
+    ['us-leading', '"sox"', ['2026-11-27', '費半 -0.65%', '台積電 ADR -1.96%', 'VIX 26.80']],
+    ['intraday-check', '"status":"partial"', ['不完整', '3 檔持股只取得 2 檔報價', '2206']],
+    ['intraday-check', '"status":"ok"', ['正常', '3 檔持股皆取得報價']],
+    ['rescore-10', '2 positions', ['2 檔持股', '自動出場 0', '警示 2', '續抱 0']],
+    ['rescore-1230', '3 positions', ['3 檔持股', '警示 3']],
+    ['rescore-11', 'No open positions', ['沒有持股']],
+    ['daily-snapshot', 'paper_snapshot_mark_date_mismatch', ['失敗', '2026-11-27', '3 檔持股', '2072、2206、9925', '未寫入快照']],
+    ['daily-snapshot', '"nav":948203.63', ['2026-11-20', '948,203.63', '持股 0 檔']],
+    ['pipeline', 'preds=2375', ['Pipeline 完成', '2,375', '475', '沒有錯誤']],
+    ['pipeline', 'atomic_inputs=waiting', ['L3 已封存', 'Atomic 輸入等待中']],
+    ['pipeline', 'historical learning lineage boundary', ['擋下', '未執行']],
+    ['evening-chain', 'blockers=active8_oof_daily:error', ['晚間流程失敗', '2026-11-20', '歷史重播', 'Active-8 每日證據錯誤']],
+    ['evening-chain', 'durable DAG complete date=2026-11-03', ['晚間流程完成', '2026-11-03', '5 個必要階段', '2026-08-20']],
+    ['screener-v2-watchdog', 'continuation=already_success', ['正式選股已確認', '839', 'Pipeline 未失敗']],
+    ['strategy-learning-watchdog', 'reason=run_error:D1_ERROR', ['被擋', '2026-11-17', 'D1 過載', '不自動重跑']],
+    ['allocator-ev-lifecycle-watchdog', 'dates=5 incomplete=1', ['失敗', '5 日', '未完成 1 日', '2026-11-23']],
+    ['active8-oof-daily', 'reason=awaiting_pipeline', ['尚未執行', '2026-11-26', '未派送']],
+    ['news-analyst', 'bias=negative', ['偏空', '0.70', '5 個']],
+    ['premarket-evidence-watchdog', 'stage=premarket_v3:allocate', ['進行中', ' L4 配置階段', '佇列 2 件', '08:45']],
+    ['premarket-evidence-watchdog', 'overdue=true', ['逾時未完成', '盤前脈絡階段', '08:45']],
+    ['verify-v2', 'verified 5588/5624', ['5,624', '5,588', '判定正確 0 筆']],
+    ['optuna-queue', 'per_regime:regime_shift:volatile', ['高波動', '2026-11-27', 'Cloud Run job']],
+    ['artifact-reconcile', 'maintenance_lease_busy:audit-json-retention:queue:2026-11-23 18:06:31', ['稽核 JSON 清理', '台灣時間 2026-11-24 02:06', '未執行']],
+    ['storage-capacity-report', 'observed_date=2026-11-20', ['2026-11-20', 'legacy 91.3% 已超過 90% 上限警戒', 'market 69.0%', 'learning 70.5%', 'market（約 39 天）', 'learning（約 45 天）']],
+    ['allocator-ev-lifecycle-watchdog', 'window=2026-11-19..2026-11-25', ['已完成 2 日', '等待 Pipeline 1 日', '2026-11-23 Pipeline 後續鏈已無法補救', '已重試 9 次仍失敗', '先前已回報']],
+    ['allocator-ev-lifecycle-watchdog', 'window=2026-11-23..2026-11-27', ['檢查失敗', '無法補救', '需人工檢查']],
+    ['active8-oof-monthly', 'full_fit_poll_only_terminal_failure', ['失敗', '2026-11-05', '終止失敗', '重試 12 次已用完']],
+    ['daily-report', 'no_channel_configured', ['未寄出', '報告列出買進 15 檔', '賣出 10 檔']],
+    ['legacy-learning-deletion-readiness', 'legacy_learning_deletion_readiness', ['最近一次全表比對 74/74 張一致', '切換後目標端有 6 項漂移', '4 張控制表版本落後']],
+    ['model-ic-full-check', 'config=no_challenger', ['65,983', '沒有挑戰者交易參數組']],
+    ['sector-leaders', 'sectors=45', ['45 個產業', '132 檔']],
+  ]
+  for (const [id, marker, parts] of cases) {
+    const sentence = schedulerSummaryZh(id, sample(id, marker).summary)!
+    for (const part of parts) assert.ok(sentence.includes(part), `${id}「${marker}」缺「${part}」：${sentence}`)
+  }
+  // 單日 ok 只代表檢查沒丟錯：無法補救的日子不能被歸成「已處理」
+  for (const job of batch2.jobs.filter((row) => row.id === 'allocator-ev-lifecycle-watchdog')) {
+    assert.doesNotMatch(schedulerSummaryZh(job.id, job.summary)!, /已處理|檢查正常/)
+  }
+  assert.doesNotMatch(schedulerSummaryZh('active8-oof-monthly', sample('active8-oof-monthly', 'full_fit_poll_only_terminal_failure').summary)!, /尚未完成/)
+})
+
+test('pipeline 執行中摘要（phase=… phase_status=… execution=…）翻成階段中文，認不得的階段回 undefined', () => {
+  const running = schedulerSummaryZh('pipeline', 'phase=modal_inference phase_status=running execution=pipeline-job-abc12')
+  assertHuman('pipeline running', running)
+  assert.ok(running!.includes('執行中'), running)
+  const failed = schedulerSummaryZh('pipeline', 'phase=node_write_d1 phase_status=failed execution=pipeline-job-abc12')!
+  assert.ok(failed.includes('失敗'), failed)
+  assert.doesNotMatch(failed, /完成|成功/)
+  assert.equal(schedulerSummaryZh('pipeline', 'phase=brand_new_phase phase_status=running execution=x'), undefined)
+  assert.equal(schedulerSummaryZh('pipeline', 'phase=modal_inference phase_status=weird execution=x'), undefined)
+})
+
+test('第二批錯誤／略過變體不會講成成功，認不得的格式回 undefined', () => {
+  const failures: Array<[string, string, RegExp]> = [
+    ['hmm-maintenance', 'admitted delivery ended before execution started', /未執行/],
+    ['optuna-queue', 'sync delivery ended after execution started without settling its ticket', /結果不明/],
+    ['legacy-strategy-evidence-migration', 'blocked by storage admission: legacy_d1_capacity_unknown utilization=unknown%', /擋下/],
+    ['active8-oof-daily', 'active8-oof-daily requires sync=1', /擋下未執行/],
+    ['linucb-reward-ledger', 'skipped non-production-authoritative callback run_date=2026-11-03; linucb-reward-ledger is live-canonical only', /未執行/],
+    ['model-ic-full-check', 'RuntimeError: D1 request failed: HTTP 400: {"errors":[{"code":7500,"message":"D1 query result exceeded the maximum response size limit of 50 MB"}]}', /50 MB/],
+  ]
+  for (const [id, raw, re] of failures) {
+    const sentence = schedulerSummaryZh(id, raw)
+    assertHuman(id, sentence)
+    assert.match(sentence!, re, `${id}: ${sentence}`)
+    assert.doesNotMatch(sentence!, /完成：|成功|通過|正常/, `${id} 把失敗講成成功：${sentence}`)
+  }
+  assert.equal(schedulerSummaryZh('hmm-maintenance', 'status=success hmm=brand_new coverage=true call=none'), undefined)
+  assert.equal(schedulerSummaryZh('storage-health-check', 'storage_health_check {not json'), undefined)
+  assert.equal(schedulerSummaryZh('intraday-check', '{"status":"brand_new","positions":1}'), undefined)
+  assert.equal(schedulerSummaryZh('weekly-readiness', 'weekly_readiness_blocked {"truncated'), undefined)
+  assert.equal(schedulerSummaryZh('rescore-10', 'some other text'), undefined)
+  assert.equal(schedulerSummaryZh('us-leading', '{"date":"2026-11-27","fetched_at":"x"'), undefined)
+  assert.equal(schedulerSummaryZh('allocator-ev-lifecycle-watchdog', 'status=success allocator EV lifecycle window=2026-11-19..2026-11-25 dates=1 incomplete=0 dispatched=none outside_window_new=0 outside_window_known=0; 2026-11-23=ok:status:success_allocator_EV_lifecycle_brand_new_detail'), undefined)
+  const kv = schedulerSummaryZh('kv-config-drift', 'kv_config_drift trading:config=match:a trading:risk_config=match:b | stored_risk_v2_drift since=2026-10-12 checked=2 skipped_pre_v2=0 failed=1 policy_changed=0')!
+  assert.match(kv, /發現問題/)
+  assert.doesNotMatch(kv, /比對完成/)
+  assert.doesNotMatch(schedulerSummaryZh('sector-flow-pre-screener', 'sector_flow date=2026-11-20 status=brand_new rebuild_run_id=x')!, /狀態狀態/)
+})

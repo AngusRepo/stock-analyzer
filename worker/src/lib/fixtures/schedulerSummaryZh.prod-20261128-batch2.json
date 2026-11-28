@@ -1,0 +1,840 @@
+{
+ "source": "prod 2026-11-03～2026-11-28 唯讀取樣：/api/scheduler/status 快照、KV scheduler:run:* 日誌、ops D1 scheduler_execution_tickets_v1；每個 job 每種原文格式取一筆（PR #333 fixture 已有的不重複），用來鎖住 schedulerSummaryZh 的中文句",
+ "jobs": [
+  {
+   "id": "finlab-backfill-watchdog",
+   "lastStatus": "sleep",
+   "summary": "skipped: no pending FinLab trigger for 2026-11-27"
+  },
+  {
+   "id": "indicator-queue-watchdog",
+   "lastStatus": "skip",
+   "summary": "skipped: indicator queue receipt missing for 2026-11-27"
+  },
+  {
+   "id": "us-leading",
+   "lastStatus": "sleep",
+   "summary": "{\"date\":\"2026-11-27\",\"fetched_at\":\"2026-11-26T22:30:08.533Z\",\"source_times\":{\"sox\":\"2026-11-25T14:30:00.000Z\",\"tsm\":\"2026-11-25T14:30:00.000Z\",\"gspc\":\"2026-11-25T14:30:00.000Z\",\"dxy\":\"2026-11-26T22:20:05.000Z\",\"vix\":\"2026-11-26T08:00:00.000Z\",\"hy\":\"2026-11-24\"},\"sox_close\":8774.8603515625,\"sox_return\":-0.00652585886640249,\"sox_ma5\":9004.7439453125,\"tsm_close\":342.3399963378906,\"tsm_return\":-0.019644947392136708,\"tsm_premium\":null,\"gspc_close\":7182.77978515625,\"gspc_return\":-0.0025426788154353807,\"dxy_close\":103.77899932861328,\"dxy_return\":0.001051424342559894,\"hy_spread\":3.72,\"hy_spread_chg\":0.0900000000000003,\"vix_close\":26.799999237060547,\"sentiment\":\"neutral\"}"
+  },
+  {
+   "id": "daily-snapshot",
+   "lastStatus": "sleep",
+   "summary": "D1_ERROR: D1 DB is overloaded. Too many resources consumed within a 10 second window.",
+   "lastError": "Error: D1_ERROR: D1 DB is overloaded. Too many resources consumed within a 10 second window."
+  },
+  {
+   "id": "storage-health-check",
+   "lastStatus": "success",
+   "summary": "storage_health_check {\"enforcement_scope\":\"scheduler_and_producer_admission\",\"admission_control\":true,\"blocks_storage_producers\":true,\"blocks_trading_path\":false,\"healthy\":true,\"integrity_blocked\":0,\"cleanup_backlog_over_24h\":0,\"dlq_pending\":0,\"allocator_ev_snapshot_rows\":7319,\"allocator_ev_snapshot_dates\":35,\"allocator_snapshot_incomplete_runs\":0,\"allocator_snapshot_staging_orphans\":0,\"artifact_hard_ref_drift\":0,\"artifact_active_references\":1115,\"artifact_true_orphan_references\":0,\"artifact_true_orphan_ids\":[],\"domain_schema\":[{\"domain\":\"execution\",\"migration_catalog\":\"domain_baseline\",\"expected_migration\":\"0001_execution_baseline.sql\",\"applied_migrations\":[\"0001_execution_baseline.sql\",\"0002_data_domain_cutover_probe_canary.sql\",\"0002_runtime_owned_tables.sql\",\"0003_retention_source_release.sql\",\"0004_retention_reference_indexes.sql\"],\"pending_migrations\":0,\"expected_tables\":5,\"present_tables\":5,\"missing_tables\":[],\"ready\":true,\"error\":null},{\"domain\":\"paper\",\"migration_catalog\":\"domain_baseline\",\"expected_migration\":\"0001_paper_baseline.sql\",\"applied_migrations\":[\"0001_paper_baseline.sql\",\"0002_data_domain_cutover_probe_canary.sql\",\"0002_runtime_owned_tables.sql\",\"0003_paper_kelly_calibration.sql\",\"0004_corporate_action_accounting.sql\",\"0005_l4_distribution.sql\",\"0006_p5_rearm.sql\",\"0007_daily_plan_reviews.sql\",\"0008_rotation_audit.sql\",\"0009_atr_once.sql\",\"0010_intraday_nav_risk.sql\",\"0011_second_breakout.sql\"],\"pending_migrations\":0,\"expected_tables\":36,\"present_tables\":36,\"missing_tables\":[],\"ready\":true,\"error\":null}],\"expected_lineage_date\":\"2026-11-27\",\"canonical_execution_lineage_ready\":true,\"paper_shadow_lineage_ready\":true,\"legacy_retention_backlog_cohorts\":0,\"legacy_retention_progress_24h\":0,\"legacy_retention_stalled\":false,\"legacy_retention_audit\":\"skipped_frozen_rollback_source\",\"d1_bytes\":9125703680,\"d1_utilization\":0.912570368,\"capacity_status\":\"critical\",\"capacity_error\":null,\"legacy_capacity_role\":\"frozen_rollback_source\",\"blocking_capacity_domains\":[],\"capacity_domains\":[{\"domain\":\"legacy\",\"binding_name\":\"DB\",\"utilization_pct\":91.257,\"status\":\"critical\"},{\"domain\":\"core\",\"binding_name\":\"CORE_DB\",\"utilization_pct\":10.3252,\"status\":\"healthy\"},{\"domain\":\"market\",\"binding_name\":\"MARKET_DB\",\"utilization_pct\":71.8624,\"status\":\"warning\"},{\"domain\":\"learning\",\"binding_name\":\"LEARNING_DB\",\"utilization_pct\":69.5308,\"status\":\"warning\"},{\"domain\":\"ops\",\"binding_name\":\"OPS_DB\",\"utilization_pct\":27.2091,\"status\":\"healthy\"},{\"domain\":\"execution\",\"binding_name\":\"EXECUTION_DB\",\"utilization_pct\":0.1329,\"status\":\"healthy\"},{\"domain\":\"paper\",\"binding_name\":\"PAPER_DB\",\"utilization_pct\":6.1741,\"status\":\"healthy\"},{\"domain\":\"research\",\"binding_name\":\"RESEARCH_DB\",\"utilization_pct\":0.5093,\"status\":\"healthy\"}],\"capacity_runway\":[{\"domain\":\"legacy\",\"binding_name\":\"DB\",\"utilization_pct\":91.257,\"forecast_status\":\"ready\",\"daily_growth_bytes\":0,\"projected_days_to_critical_90pct\":0},{\"domain\":\"core\",\"binding_name\":\"CORE_DB\",\"utilization_pct\":10.3252,\"forecast_status\":\"ready\",\"daily_growth_bytes\":13037568,\"projected_days_to_critical_90pct\":611},{\"domain\":\"market\",\"binding_name\":\"MARKET_DB\",\"utilization_pct\":71.8624,\"forecast_status\":\"ready\",\"daily_growth_bytes\":53805056,\"projected_days_to_critical_90pct\":33},{\"domain\":\"learning\",\"binding_name\":\"LEARNING_DB\",\"utilization_pct\":69.5308,\"forecast_status\":\"ready\",\"daily_growth_bytes\":38395904,\"projected_days_to_critical_90pct\":53},{\"domain\":\"ops\",\"binding_name\":\"OPS_DB\",\"utilization_pct\":27.2091,\"forecast_status\":\"ready\",\"daily_growth_bytes\":15942178,\"projected_days_to_critical_90pct\":393},{\"domain\":\"execution\",\"binding_name\":\"EXECUTION_DB\",\"utilization_pct\":0.1329,\"forecast_status\":\"ready\",\"daily_growth_bytes\":211172,\"projected_days_to_critical_90pct\":42556},{\"domain\":\"paper\",\"binding_name\":\"PAPER_DB\",\"utilization_pct\":6.1741,\"forecast_status\":\"ready\",\"daily_growth_bytes\":2775723,\"projected_days_to_critical_90pct\":3019},{\"domain\":\"research\",\"binding_name\":\"RESEARCH_DB\",\"utilization_pct\":0.5093,\"forecast_status\":\"ready\",\"daily_growth_bytes\":97667,\"projected_days_to_critical_90pct\":91628}],\"capacity_runway_alert_days\":30,\"capacity_runway_alert_domains\":[],\"capacity_runway_error\":null}"
+  },
+  {
+   "id": "learning-retention-readiness",
+   "lastStatus": "success",
+   "summary": "learning_retention_readiness {\"schema_version\":\"learning-ten-year-retention-readiness-v2\",\"mode\":\"read_only_audit\",\"as_of_date\":\"2026-11-28\",\"hot_days\":120,\"cold_days\":3650,\"hot_cutoff_date\":\"2026-07-31\",\"policy_ready\":true,\"nav_cold_storage\":{\"ready\":true,\"migration_ready\":true,\"store\":\"gcs\",\"storage_policy\":\"cold_at_write\",\"minimum_cold_days\":3650,\"immutable_hold\":\"release_requires_governance_after_retention\",\"snapshots\":75,\"cold_snapshots\":75,\"cold_payload_bytes\":54400499048,\"snapshots_pending_archive\":0,\"legacy_hot_parts\":0,\"orphan_parts\":0,\"automatic_delete\":false,\"orphan_policy\":\"verified_forensic_backup_and_writer_fence_no_nav_credit\"},\"complete\":false,\"blockers\":[\"cold_reader_not_verified:strategy_decision_log\",\"cold_reader_not_verified:s12_replay_trade_outcomes\",\"cold_reader_not_verified:s12_structure_snapshots\",\"cold_reader_not_verified:dataset_snapshots\",\"cold_reader_not_verified:selection_reference_snapshots_v1\",\"cold_reader_not_verified:strategy_label_matrix_v4\",\"cold_reader_not_verified:canonical_selection_labels_v4\",\"cold_reader_not_verified:canonical_selection_outcomes_v1\",\"cold_reader_not_verified:price_horizon_labels_v1\",\"cold_reader_not_verified:price_horizon_labels_v2\",\"retention_executor_not_current:predictions\",\"retention_backlog:predictions\",\"retention_backlog:strategy_decision_log\",\"retention_backlog:s12_replay_trade_outcomes\",\"retention_backlog:s12_structure_snapshots\",\"retention_backlog:dataset_snapshots\",\"retention_backlog:selection_reference_snapshots_v1\",\"retention_backlog:strategy_label_matrix_v4\",\"retention_backlog:canonical_selection_labels_v4\",\"retention_backlog:canonical_selection_outcomes_v1\",\"retention_backlog:price_horizon_labels_v1\",\"retention_backlog:price_horizon_labels_v2\"],\"cold_reader_pending_datasets\":[\"strategy_decision_log\",\"s12_replay_trade_outcomes\",\"s12_structure_snapshots\",\"dataset_snapshots\",\"selection_reference_snapshots_v1\",\"strategy_label_matrix_v4\",\"canonical_selection_labels_v4\",\"canonical_selection_outcomes_v1\",\"price_horizon_labels_v1\",\"price_horizon_labels_v2\"],\"executor_receipts\":[{\"dataset_id\":\"hot-drain:canonical_selection_labels_v4\",\"status\":\"cycle_complete\",\"backlog_remaining\":0,\"updated_at\":\"2026-08-23 14:37:07\"},{\"dataset_id\":\"hot-drain:canonical_selection_outcomes_v1\",\"status\":\"cycle_complete\",\"backlog_remaining\":0,\"updated_at\":\"2026-08-23 14:37:07\"},{\"dataset_id\":\"hot-drain:predictions\",\"status\":\"cycle_complete\",\"backlog_remaining\":0,\"updated_at\":\"2026-08-23 14:36:48\"},{\"dataset_id\":\"hot-drain:price_horizon_labels_v1\",\"status\":\"cycle_complete\",\"backlog_remaining\":0,\"updated_at\":\"2026-08-23 14:37:08\"},{\"dataset_id\":\"hot-drain:price_horizon_labels_v2\",\"status\":\"cycle_complete\",\"backlog_remaining\":0,\"updated_at\":\"2026-08-23 14:37:08\"},{\"dataset_id\":\"hot-drain:s12_replay_trade_outcomes\",\"status\":\"cycle_complete\",\"backlog_remaining\":0,\"updated_at\":\"2026-08-23 14:37:00\"},{\"dataset_id\":\"hot-drain:s12_structure_snapshots\",\"status\":\"cycle_complete\",\"backlog_remaining\":0,\"updated_at\":\"2026-08-23 14:37:02\"},{\"dataset_id\":\"hot-drain:selection_reference_snapshots_v1\",\"status\":\"cycle_complete\",\"backlog_remaining\":0,\"updated_at\":\"2026-08-23 14:37:03\"},{\"dataset_id\":\"hot-drain:strategy_decision_log\",\"status\":\"cycle_complete\",\"backlog_remaining\":0,\"updated_at\":\"2026-08-23 14:36:58\"},{\"dataset_id\":\"hot-drain:strategy_label_matrix_v4\",\"status\":\"cycle_complete\",\"backlog_remaining\":0,\"updated_at\":\"2026-08-23 14:37:07\"}],\"policy\":{\"policy_id\":\"learning_lineage_v1\",\"hot_retention_days\":120,\"cold_retention_days\":3650,\"archive_store\":\"r2\",\"action\":\"archive_delete\",\"hard_reference_protected\":1,\"version\":2,\"status\":\"active\"},\"candidate_rows\":721168,\"datasets\":[{\"dataset_id\":\"predictions\",\"date_column\":\"prediction_date\",\"reclaim_enabled\":true,\"cutoff_date\":\"2026-07-31\",\"candidate_rows\":59423,\"oldest_candidate_date\":\"2026-04-30\",\"newest_candidate_date\":\"2026-07-30\"},{\"dataset_id\":\"strategy_decision_log\",\"date_column\":\"date\",\"reclaim_enabled\":false,\"cutoff_date\":\"2026-07-31\",\"candidate_rows\":413047,\"oldest_candidate_date\":\"2026-05-29\",\"newest_candidate_date\":\"2026-07-30\"},{\"dataset_id\":\"s12_replay_trade_outcomes\",\"date_column\":\"trade_date\",\"reclaim_enabled\":false,\"cutoff_date\":\"2026-07-31\",\"candidate_rows\":9297,\"oldest_candidate_date\":\"2026-06-08\",\"newest_candidate_date\":\"2026-07-30\"},{\"dataset_id\":\"s12_structure_snapshots\",\"date_column\":\"trade_date\",\"reclaim_enabled\":false,\"cutoff_date\":\"2026-07-31\",\"candidate_rows\":9123,\"oldest_candidate_date\":\"2026-06-08\",\"newest_candidate_date\":\"2026-07-30\"},{\"dataset_id\":\"dataset_snapshots\",\"date_column\":\"business_date\",\"reclaim_enabled\":false,\"cutoff_date\":\"2026-07-31\",\"candidate_rows\":1390,\"oldest_candidate_date\":\"2026-05-06\",\"newest_candidate_date\":\"2026-07-30\"},{\"dataset_id\":\"selection_reference_snapshots_v1\",\"date_column\":\"signal_date\",\"reclaim_enabled\":false,\"cutoff_date\":\"2026-07-31\",\"candidate_rows\":7399,\"oldest_candidate_date\":\"2026-07-15\",\"newest_candidate_date\":\"2026-07-30\"},{\"dataset_id\":\"strategy_label_matrix_v4\",\"date_column\":\"signal_date\",\"reclaim_enabled\":false,\"cutoff_date\":\"2026-07-31\",\"candidate_rows\":157805,\"oldest_candidate_date\":\"2026-07-15\",\"newest_candidate_date\":\"2026-07-30\"},{\"dataset_id\":\"canonical_selection_labels_v4\",\"date_column\":\"signal_date\",\"reclaim_enabled\":false,\"cutoff_date\":\"2026-07-31\",\"candidate_rows\":4813,\"oldest_candidate_date\":\"2026-07-15\",\"newest_candidate_date\":\"2026-07-30\"},{\"dataset_id\":\"canonical_selection_outcomes_v1\",\"date_column\":\"signal_date\",\"reclaim_enabled\":false,\"cutoff_date\":\"2026-07-31\",\"candidate_rows\":12508,\"oldest_candidate_date\":\"2026-07-15\",\"newest_candidate_date\":\"2026-07-30\"},{\"dataset_id\":\"price_horizon_labels_v1\",\"date_column\":\"price_date\",\"reclaim_enabled\":false,\"cutoff_date\":\"2026-07-31\",\"candidate_rows\":18786,\"oldest_candidate_date\":\"2026-04-30\",\"newest_candidate_date\":\"2026-07-30\"},{\"dataset_id\":\"price_horizon_labels_v2\",\"date_column\":\"price_date\",\"reclaim_enabled\":false,\"cutoff_date\":\"2026-07-31\",\"candidate_rows\":27577,\"oldest_candidate_date\":\"2026-05-06\",\"newest_candidate_date\":\"2026-07-30\"}],\"retention_runs\":{\"run_count\":1371,\"scanned_rows\":283566,\"archived_rows\":283566,\"deleted_rows\":0,\"last_completed_at\":\"2026-11-27 18:07:19\"},\"automatic_delete\":false,\"delete_executor_available\":true,\"delete_executor\":\"retention-hot-window-drain-v1\",\"next_action\":\"close_reader_restore_executor_and_backlog_evidence\"}"
+  },
+  {
+   "id": "legacy-learning-deletion-readiness",
+   "lastStatus": "success",
+   "summary": "legacy_learning_deletion_readiness {\"schema_version\":\"legacy-learning-deletion-readiness-v1\",\"mode\":\"read_only_audit\",\"as_of_date\":\"2026-11-28\",\"earliest_clear_date\":\"2026-09-17\",\"technical_ready_for_explicit_approval\":false,\"delete_authorized\":false,\"automatic_delete\":false,\"requires_explicit_wei_approval\":true,\"blockers\":[\"legacy_hot_r2_v1_final_archive_not_cycle_complete\"],\"evidence\":{\"cutover\":{\"status\":\"complete\",\"parity_checked_at\":\"2026-08-18T02:30:48.816Z\",\"updated_at\":\"2026-08-18 07:05:39\"},\"writer\":{\"epoch\":260906,\"writer_state\":\"cutover\",\"updated_at\":\"2026-08-18 07:05:39\"},\"projections\":{\"pending\":0,\"errors\":0},\"probe\":{\"status\":\"passed\",\"source_epoch\":260906,\"parity_checked_at\":\"2026-08-18T02:30:48.816Z\",\"read_write_readback_passed\":1,\"rollback_restore_passed\":1,\"checked_at\":\"2026-08-18T02:32:31.283Z\"},\"legacy_learning_manifest\":{\"expected_tables\":74,\"tables\":[\"active8_oof_cohorts\",\"active8_oof_date_eligibility\",\"active8_oof_forward_extension_coverage\",\"active8_oof_freshness_sla\",\"active8_oof_materialized_artifact_history\",\"active8_oof_retention_ledger\",\"adaptive_meta_policy_decisions\",\"allocator_ev_daily_lifecycle\",\"allocator_ev_feature_snapshots\",\"allocator_ev_snapshot_runs\",\"canonical_selection_label_rejections_v4\",\"canonical_selection_label_runs_v4\",\"canonical_selection_labels_v4\",\"config_lifecycle_events\",\"config_lifecycle_state\",\"dataset_snapshots\",\"expected_return_forward_guard_state\",\"expected_return_serving_forward_evaluations\",\"expected_return_shadow_evaluation_packets\",\"model_accuracy\",\"model_artifact_registry\",\"model_health_daily\",\"model_lifecycle_events\",\"model_lifecycle_state\",\"parameter_candidate_events\",\"parameter_candidate_evidence\",\"parameter_candidate_registry\",\"persona_opinions\",\"predictions\",\"price_horizon_label_rejections_v1\",\"price_horizon_labels_v1\",\"s12_formal_ev_decisions\",\"s12_replay_trade_outcomes\",\"s12_structure_snapshots\",\"s12_tw_calibration_artifacts\",\"s12_tw_calibration_runs\",\"selection_reference_identity_repair_runs_v1\",\"selection_reference_repair_runs_v1\",\"selection_reference_snapshots_v1\",\"state_space_shadow_results\",\"stock_memories\",\"strategy_adaptive_policy_history_v2\",\"strategy_decision_log\",\"strategy_evidence_rebuild_runs_v5\",\"strategy_label_matrix_runs_v4\",\"strategy_label_matrix_v4\",\"strategy_learning_daily_stats\",\"strategy_learning_head\",\"strategy_marginal_edge_runs_v4\",\"strategy_policy_state\",\"strategy_production_policy_history_v1\",\"strategy_redundancy_artifacts_v1\",\"strategy_replacement_cutover_guards_v5\",\"strategy_replacement_decisions_v5\",\"strategy_reward_ledger\",\"strategy_route_calibration_runs_v1\",\"strategy_spec_registry\",\"strategy_threshold_calibration_artifacts\",\"strategy_threshold_calibration_runs\",\"trade_performance\",\"active8_oof_fold_artifacts\",\"active8_oof_materialized_artifacts\",\"active8_oof_predictions\",\"allocator_ev_feature_snapshot_staging\",\"allocator_ev_oof_snapshots\",\"expected_return_artifact_payloads\",\"l4_oof_predictions\",\"model_champion_history\",\"strategy_marginal_edge_dates_v4\",\"strategy_marginal_edge_head_v4\",\"strategy_marginal_edge_v4\",\"strategy_route_backfill_eligibility_v1\",\"strategy_route_calibration_head_v1\",\"model_champion_pointers\"],\"tracked_tables\":74,\"completed_tables\":74,\"failed_tables\":0},\"parity\":{\"checked_tables\":74,\"matched_tables\":74},\"legacy_hot_final_archive\":{\"policy_id\":\"legacy_hot_r2_v1\",\"datasets\":[\"obsolete_screener_items\",\"superseded_pending_items\",\"superseded_pending_events\",\"null_date_predictions\",\"dataset_snapshots\",\"state_space_shadow_results\",\"allocator_ev_snapshot_runs\"],\"pending_datasets\":[\"obsolete_screener_items\",\"superseded_pending_items\",\"superseded_pending_events\",\"null_date_predictions\",\"dataset_snapshots\",\"state_space_shadow_results\",\"allocator_ev_snapshot_runs\"]},\"deletion_gate_policy\":\"formal_cutover_receipt_plus_time_travel_window_plus_legacy_final_archive\",\"post_cutover_target_drift\":[\"full_table_parity_incomplete_or_mismatch\",\"control_table_revision_fence:expected_return_artifact_payloads:target_revision_stale:6/7\",\"control_table_revision_fence:model_artifact_registry:target_revision_stale:6/504\",\"control_table_revision_fence:model_champion_history:target_revision_stale:63/119\",\"control_table_revision_fence:model_champion_pointers:target_revision_stale:11/40\",\"aggregate_parity_snapshot_missing_or_mismatch\"],\"cutover_readiness\":{\"domain\":\"learning\",\"data_ready\":false,\"cutover_ready\":false,\"blockers\":[\"full_table_parity_incomplete_or_mismatch\",\"control_table_revision_fence:expected_return_artifact_payloads:target_revision_stale:6/7\",\"control_table_revision_fence:model_artifact_registry:target_revision_stale:6/504\",\"control_table_revision_fence:model_champion_history:target_revision_stale:63/119\",\"control_table_revision_fence:model_champion_pointers:target_revision_stale:11/40\",\"aggregate_parity_snapshot_missing_or_mismatch\"],\"data_blockers\":[\"full_table_parity_incomplete_or_mismatch\",\"control_table_revision_fence:expected_return_artifact_payloads:target_revision_stale:6/7\",\"control_table_revision_fence:model_artifact_registry:target_revision_stale:6/504\",\"control_table_revision_fence:model_champion_history:target_revision_stale:63/119\",\"control_table_revision_fence:model_champion_pointers:target_revision_stale:11/40\",\"aggregate_parity_snapshot_missing_or_mismatch\"],\"contract_blockers\":[],\"owned_tables\":74,\"completed_tables\":74,\"parity_tables\":70,\"incomplete_tables\":[],\"parity_blocked_tables\":[\"expected_return_artifact_payloads\",\"model_artifact_registry\",\"model_champion_history\",\"model_champion_pointers\"],\"unresolved_route_tables\":[],\"pending_projection_events\":0,\"projection_error_events\":0,\"cutover_status\":\"complete\",\"aggregate_parity_checked_at\":\"2026-08-18T02:30:48.816Z\",\"required_parity_not_before\":null,\"routing_contract_ready\":true,\"projection_contract_ready\":true,\"cutover_probe_checked_at\":\"2026-08-18T02:32:31.283Z\",\"cutover_probe_epoch\":260906,\"current_writer_epoch\":260906,\"current_writer_state\":\"cutover\"}}}"
+  },
+  {
+   "id": "storage-integrity-audit",
+   "lastStatus": "sleep",
+   "summary": "storage integrity audit failed {\"checked\":100,\"verified\":99,\"missing\":0,\"mismatched\":0,\"errors\":[\"artifact:s12_research_minute_bars:2026-08-07:168153c89b1a3f6c499ae940:D1_ERROR: D1 DB is overloaded. Too many resources consumed within a 10 second window.\"]}",
+   "lastError": "Error: storage integrity audit failed {\"checked\":100,\"verified\":99,\"missing\":0,\"mismatched\":0,\"errors\":[\"artifact:s12_research_minute_bars:2026-08-07:168153c89b1a3f6c499ae940:D1_ERROR: D1 DB is overloaded. Too many resources consumed within a 10 second window.\"]}"
+  },
+  {
+   "id": "intraday-check",
+   "lastStatus": "sleep",
+   "summary": "{\"status\":\"partial\",\"positions\":3,\"quoted\":2,\"missing_symbols\":[\"2206\"]}"
+  },
+  {
+   "id": "rescore-10",
+   "lastStatus": "sleep",
+   "summary": "2 positions: 0 auto EXIT, 0 EXIT_SIGNAL, 2 WARN, 0 HOLD"
+  },
+  {
+   "id": "rescore-11",
+   "lastStatus": "sleep",
+   "summary": "3 positions: 0 auto EXIT, 0 EXIT_SIGNAL, 3 WARN, 0 HOLD"
+  },
+  {
+   "id": "rescore-12",
+   "lastStatus": "sleep",
+   "summary": "3 positions: 0 auto EXIT, 0 EXIT_SIGNAL, 3 WARN, 0 HOLD"
+  },
+  {
+   "id": "rescore-1230",
+   "lastStatus": "sleep",
+   "summary": "3 positions: 0 auto EXIT, 0 EXIT_SIGNAL, 3 WARN, 0 HOLD"
+  },
+  {
+   "id": "weekly-readiness",
+   "lastStatus": "sleep",
+   "summary": "weekly_readiness_blocked {\"missing\":[],\"blockers\":[{\"task\":\"storage-integrity-audit\",\"status\":\"failed\",\"reason\":\"Error: storage integrity audit failed {\\\"checked\\\":100,\\\"verified\\\":99,\\\"missing\\\":0,\\\"mismatched\\\":0,\\\"errors\\\":[\\\"artifact:s12_research_minute_bars:2026-08-07:168153c89b1a3f6c499ae940:D1_ERROR: D1 DB is overloaded. Too many resources consumed within a 10 second window.\\\"]}\"},{\"task\":\"weekly-backtest\",\"status\":\"failed\",\"reason\":\"CorporateCoverageError: research_corporate_coverage_incomplete:{\\\"candidate_search_started\\\": false, \\\"end_date\\\": \\\"2026-11-18\\\", \\\"issue_count\\\": 455, \\\"issues\\\": [{\\\"date\\\": \\\"2024-12-31\\\", \\\"reason\\\": \\\"session_missing\\\"}, {\\\"date\\\": \\\"2025-01-02\\\", \\\"reason\\\": \\\"session_missing\\\"}, {\\\"date\\\": \\\"2025-01-03\\\", \\\"reason\\\": \\\"session_missing\\\"}, {\\\"date\\\": \\\"2025-01-06\\\", \\\"reason\\\": \\\"session_missing\\\"}, {\\\"date\\\": \\\"2025-01-07\\\", \\\"reason\\\": \\\"session_missing\\\"}, {\\\"date\\\": \\\"2025-01-08\\\", \\\"reason\\\": \\\"session_missing\\\"}, {\\\"date\\\": \\\"2025-01-09\\\", \\\"reason\\\": \\\"session_missing\\\"}, {\\\"date\\\": \\\"2025-01-10\\\", \\\"reason\\\": \\\"session_missing\\\"}, {\\\"date\\\": \\\"2025-01-13\\\", \\\"reason\\\": \\\"session_missing\\\"}, {\\\"date\\\": \\\"2025-01-14\\\", \\\"reason\\\": \\\"session_missing\\\"}], \\\"production_eligible\\\": false, \\\"scope\\\": \\\"full_input_universe\\\", \\\"sessions\\\": 455, \\\"start_date\\\": \\\"2023-05-18\\\", \\\"status\\\": \\\"blocked\\\"}\"}],\"optional\":[{\"task\":\"weekly-optuna\",\"status\":\"sleep\"},{\"task\":\"sector-leaders\",\"status\":\"running\"},{\"task\":\"adaptive-meta-policy-replay\",\"status\":\"success\"},{\"task\":\"linucb-multiplier-replay\",\"status\":\"success\"}],\"paused_expected\":[\"active8-oof-weekly\"]}",
+   "lastError": "Error: weekly_readiness_blocked {\"missing\":[],\"blockers\":[{\"task\":\"storage-integrity-audit\",\"status\":\"failed\",\"reason\":\"Error: storage integrity audit failed {\\\"checked\\\":100,\\\"verified\\\":99,\\\"missing\\\":0,\\\"mismatched\\\":0,\\\"errors\\\":[\\\"artifact:s12_research_minute_bars:2026-08-07:168153c89b1a3f6c499ae940:D1_ERROR: D1 DB is overloaded. Too many resources consumed within a 10 second window.\\\"]}\"},{\"task\":\"weekly-backtest\",\"status\":\"failed\",\"reason\":\"CorporateCoverageError: research_corporate_coverage_incomplete:{\\\"candidate_search_started\\\": false, \\\"end_date\\\": \\\"2026-11-18\\\", \\\"issue_count\\\": 455, \\\"issues\\\": [{\\\"date\\\": \\\"2024-12-31\\\", \\\"reason\\\": \\\"session_missing\\\"}, {\\\"date\\\": \\\"2025-01-02\\\", \\\"reason\\\": \\\"session_missing\\\"}, {\\\"date\\\": \\\"2025-01-03\\\", \\\"reason\\\": \\\"session_missing\\\"}, {\\\"date\\\": \\\"2025-01-06\\\", \\\"reason\\\": \\\"session_missing\\\"}, {\\\"date\\\": \\\"2025-01-07\\\", \\\"reason\\\": \\\"session_missing\\\"}, {\\\"date\\\": \\\"2025-01-08\\\", \\\"reason\\\": \\\"session_missing\\\"}, {\\\"date\\\": \\\"2025-01-09\\\", \\\"reason\\\": \\\"session_missing\\\"}, {\\\"date\\\": \\\"2025-01-10\\\", \\\"reason\\\": \\\"session_missing\\\"}, {\\\"date\\\": \\\"2025-01-13\\\", \\\"reason\\\": \\\"session_missing\\\"}, {\\\"date\\\": \\\"2025-01-14\\\", \\\"reason\\\": \\\"session_missing\\\"}], \\\"production_eligible\\\": false, \\\"scope\\\": \\\"full_input_universe\\\", \\\"sessions\\\": 455, \\\"start_date\\\": \\\"2023-05-18\\\", \\\"status\\\": \\\"blocked\\\"}\"}],\"optional\":[{\"task\":\"weekly-optuna\",\"status\":\"sleep\"},{\"task\":\"sector-leaders\",\"status\":\"running\"},{\"task\":\"adaptive-meta-policy-replay\",\"status\":\"success\"},{\"task\":\"linucb-multiplier-replay\",\"status\":\"success\"}],\"paused_expected\":[\"active8-oof-weekly\"]}"
+  },
+  {
+   "id": "weekly-backtest",
+   "lastStatus": "sleep",
+   "summary": "CorporateCoverageError: research_corporate_coverage_incomplete:{\"candidate_search_started\": false, \"end_date\": \"2026-11-18\", \"issue_count\": 455, \"issues\": [{\"date\": \"2024-12-31\", \"reason\": \"session_missing\"}, {\"date\": \"2025-01-02\", \"reason\": \"session_missing\"}, {\"date\": \"2025-01-03\", \"reason\": \"session_missing\"}, {\"date\": \"2025-01-06\", \"reason\": \"session_missing\"}, {\"date\": \"2025-01-07\", \"reason\": \"session_missing\"}, {\"date\": \"2025-01-08\", \"reason\": \"session_missing\"}, {\"date\": \"2025-01-09\", \"reason\": \"session_missing\"}, {\"date\": \"2025-01-10\", \"reason\": \"session_missing\"}, {\"date\": \"2025-01-13\", \"reason\": \"session_missing\"}, {\"date\": \"2025-01-14\", \"reason\": \"session_missing\"}], \"production_eligible\": false, \"scope\": \"full_input_universe\", \"sessions\": 455, \"start_date\": \"2023-05-18\", \"status\": \"blocked\"}",
+   "lastError": "CorporateCoverageError: research_corporate_coverage_incomplete:{\"candidate_search_started\": false, \"end_date\": \"2026-11-18\", \"issue_count\": 455, \"issues\": [{\"date\": \"2024-12-31\", \"reason\": \"session_missing\"}, {\"date\": \"2025-01-02\", \"reason\": \"session_missing\"}, {\"date\": \"2025-01-03\", \"reason\": \"session_missing\"}, {\"date\": \"2025-01-06\", \"reason\": \"session_missing\"}, {\"date\": \"2025-01-07\", \"reason\": \"session_missing\"}, {\"date\": \"2025-01-08\", \"reason\": \"session_missing\"}, {\"date\": \"2025-01-09\", \"reason\": \"session_missing\"}, {\"date\": \"2025-01-10\", \"reason\": \"session_missing\"}, {\"date\": \"2025-01-13\", \"reason\": \"session_missing\"}, {\"date\": \"2025-01-14\", \"reason\": \"session_missing\"}], \"production_eligible\": false, \"scope\": \"full_input_universe\", \"sessions\": 455, \"start_date\": \"2023-05-18\", \"status\": \"blocked\"}"
+  },
+  {
+   "id": "optuna-queue",
+   "lastStatus": "skip",
+   "summary": "empty"
+  },
+  {
+   "id": "allocator-ev-lifecycle-watchdog",
+   "lastStatus": "error",
+   "summary": "status=failed allocator EV lifecycle post-verify dispatch incomplete date=2026-11-03 run_id=pipeline-dispatch:2026-11-03:3fbef844-8b32-457d-aacd-d91cab3a2a62 previous_status=error previous_attempts=9 previous_error=post_verify_chain_failed:price-horizon-projection:post_verify_evidence_maturity_invalid recovery_dispatch=post_verify_queued"
+  },
+  {
+   "id": "allocator-ev-lifecycle-watchdog",
+   "lastStatus": "success",
+   "summary": "status=success allocator EV lifecycle recovery_dispatch=post_verify_queued date=2026-11-18 run_id=pipeline-dispatch:2026-11-18:7683e392-fef0-48e3-85db-9562b1b324d7"
+  },
+  {
+   "id": "allocator-ev-lifecycle-watchdog",
+   "lastStatus": "success",
+   "summary": "status=success allocator EV lifecycle window=2026-11-19..2026-11-25 dates=4 incomplete=0 dispatched=none outside_window_new=0 outside_window_known=41; 2026-11-25=pending_pipeline_execution; 2026-11-24=complete; 2026-11-23=ok:status:success_allocator_EV_lifecycle_post-pipeline_unrecoverable_head_advanced_date=2026-11-23_head_signal_date=2026-11-24_post_pipeline_status:error_post_pipeline_attempts=9_post_pipeline_error=l4_distribution_original_plan_closure_incomplete_recovery_dispatch=not_queued_already_reported; 2026-11-20=complete"
+  },
+  {
+   "id": "model-ic-rolling",
+   "lastStatus": "success",
+   "summary": "rolling_ic owner=D1Registry run_date=2026-11-03 n_rows=80483 | none"
+  },
+  {
+   "id": "linucb-reward-ledger",
+   "lastStatus": "skipped",
+   "summary": "skipped non-production-authoritative callback run_date=2026-11-03; linucb-reward-ledger is live-canonical only"
+  },
+  {
+   "id": "linucb-reward-ledger",
+   "lastStatus": "success",
+   "summary": "linucb reward ledger updated: source_rows=5000 ledger_rows=6 total_samples=20000"
+  },
+  {
+   "id": "adapt",
+   "lastStatus": "skipped",
+   "summary": "skipped non-production-authoritative callback run_date=2026-11-03; adapt is live-canonical only"
+  },
+  {
+   "id": "daily-report",
+   "lastStatus": "skipped",
+   "summary": "skipped non-production-authoritative callback run_date=2026-11-03; daily-report is live-canonical only"
+  },
+  {
+   "id": "daily-report",
+   "lastStatus": "skipped",
+   "summary": "daily report sent via not_sent:no_channel_configured: 15 BUY / 10 SELL"
+  },
+  {
+   "id": "daily-report",
+   "lastStatus": "error",
+   "summary": "D1_ERROR: D1 DB is overloaded. Too many resources consumed within a 10 second window.",
+   "lastError": "D1_ERROR: D1 DB is overloaded. Too many resources consumed within a 10 second window."
+  },
+  {
+   "id": "paper-active-postmarket",
+   "lastStatus": "skipped",
+   "summary": "skipped non-production-authoritative callback run_date=2026-11-03; paper-active-postmarket is live-canonical only"
+  },
+  {
+   "id": "paper-active-postmarket",
+   "lastStatus": "success",
+   "summary": "paper-active-postmarket run_date=2026-11-20 candidate_count=0 evaluated=0 persisted candidates=0 metrics=0 audits=0"
+  },
+  {
+   "id": "obsidian-sync",
+   "lastStatus": "skipped",
+   "summary": "skipped non-production-authoritative callback run_date=2026-11-03; obsidian-sync is live-canonical only"
+  },
+  {
+   "id": "meta-learning-shadow",
+   "lastStatus": "skipped",
+   "summary": "skipped non-production-authoritative callback run_date=2026-11-03; meta-learning-shadow is live-canonical only"
+  },
+  {
+   "id": "meta-learning-shadow",
+   "lastStatus": "success",
+   "summary": "reward_hydrated=0 reward_unseekable_pending=0 decision_contexts=2375 registry_created=0 registry_total=33 neural_ucb={\"success\":true,\"mode\":\"persisted\",\"policy_id\":\"NeuralUCB\",\"source_rows\":5000,\"training_samples\":5000,\"training_report\":{\"policy_id\":\"NeuralUCB\",\"samples\":5000,\"context_dim\":12,\"arm_count\":5,\"loss_initial\":0.27769175,\"loss_final\":0.00349332,\"epochs\":120},\"shadow_summary\":{\"samples\":475,\"counterfactual_reward_mean\":null,\"changed_action_count\":277},\"persisted_rows\":475} neural_ts={\"success\":true,\"mode\":\"persisted\",\"policy_id\":\"NeuralTS\",\"source_rows\":5000,\"training_samples\":5000,\"training_report\":{\"policy_id\":\"NeuralTS\",\"samples\":5000,\"context_dim\":12,\"arm_count\":5,\"loss_initial\":0.53840929,\"loss_final\":0.00677851,\"epochs\":120},\"shadow_summary\":{\"samples\":475,\"counterfactual_reward_mean\":null,\"changed_action_count\":475},\"persisted_rows\":475} neucb={\"success\":true,\"mode\":\"persisted\",\"policy_id\":\"NeuCB\",\"source_rows\":5000,\"training_samples\":5000,\"training_report\":{\"policy_id\":\"NeuCB\",\"samples\":5000,\"context_dim\":12,\"arm_count\":5,\"loss_initial\":0.30293882,\"loss_final\":0.00307929,\"epochs\":120},\"shadow_summary\":{\"samples\":475,\"counterfactual_reward_mean\":null,\"changed_action_count\":475},\"persisted_rows\":475}"
+  },
+  {
+   "id": "strategy-learning",
+   "lastStatus": "success",
+   "summary": "materialized_complete candidates=858/858 rows=22308/22308 last_candidates=0 last_decision_rows=0 mature_recovery=mature_signal_date=2026-10-27 inspected_dates=69 scanned_dates=18 gaps_before=10 targeted=none projection_runs=0 labels_persisted=0 gaps_after=10 recoverable_after=0 blocked=2026-07-14,2026-07-15,2026-07-16,2026-07-17,2026-07-20,2026-07-21,2026-07-22,2026-07-27,2026-07-28,2026-08-06 selection_decisions=636/858 selection_ev_owner=0 strategy_pit_rebuild=0/0 strategy_pit_blocked=0 selection_labels=20960 selection_pending=3391 selection_unavailable=208 strategy_edge=shadow:eligible=1:dates=59 route_backfill_eligible=41 route_backfill_unavailable=28 route_backfill_pending=5 reward_source_rows=107205 reward_rows=29 policy=disabled_by_design:r33_monthly_promotion_owner production_policy=disabled_by_design:r33_monthly_promotion_owner evidence_closure=reference_identity=858/858 strategy_matrix=22308/22308 threshold_margin=2298/2298 threshold_projection=2298/2298:matrix=22308/22308:reference=858/858 similarity_artifact=pass sector_breadth=455/455 mature_date=2026-10-27 price_horizon=845+0/845 canonical_labels=845+0/845 mature_blocked=2026-07-14,2026-07-15,2026-07-16,2026-07-17,2026-07-20,2026-07-21,2026-07-22,2026-07-27,2026-07-28,2026-08-06 mature_backlog=none formal_latest=2026-10-27 formal_ready=2026-08-18,2026-08-19,2026-08-21,2026-08-24,2026-08-25,2026-08-26,2026-08-27,2026-08-28,2026-08-31,2026-09-01,2026-09-02,2026-09-03,2026-09-04,2026-09-07,2026-09-08,2026-09-09,2026-09-10,2026-09-11,2026-09-14,2026-09-15,2026-09-16,2026-09-17,2026-09-18,2026-09-21,2026-09-22,2026-09-23,2026-09-24,2026-09-29,2026-09-30,2026-10-01,2026-10-02,2026-10-05,2026-10-06,2026-10-07,2026-10-08,2026-10-12,2026-10-13,2026-10-14,2026-10-15,2026-10-16,2026-10-19,2026-10-20,2026-10-21,2026-10-22,2026-10-27 formal_backlog=none historical_excluded=2026-08-20 historical_coverage=known_missing_source run_scope=historical_replay production_authority=durable_run_not_marked_production_eligible late_completion=false production_authority_intent=false policy_mutation=false policy_closure=evidence_only"
+  },
+  {
+   "id": "strategy-learning",
+   "lastStatus": "success",
+   "summary": "durable strategy-learning finalize confirmed date=2026-11-20 run_id=pipeline-dispatch:2026-11-20:38b44c59-a8dd-4ca6-8060-60dd95769aca policy_closure=evidence_only candidates=839/839 decision_rows=21814/21814"
+  },
+  {
+   "id": "post-verify-chain",
+   "lastStatus": "success",
+   "summary": "strategy-learning durable finalize closed; materialized_complete candidates=858/858 rows=22308/22308 last_candidates=0 last_decision_rows=0 mature_recovery=mature_signal_date=2026-10-27 inspected_dates=69 scanned_dates=18 gaps_before=10 targeted=none projection_runs=0 labels_persisted=0 gaps_after=10 recoverable_after=0 blocked=2026-07-14,2026-07-15,2026-07-16,2026-07-17,2026-07-20,2026-07-21,2026-07-22,2026-07-27,2026-07-28,2026-08-06 selection_decisions=636/858 selection_ev_owner=0 strategy_pit_rebuild=0/0 strategy_pit_blocked=0 selection_labels=20960 selection_pending=3391 selection_unavailable=208 strategy_edge=shadow:eligible=1:dates=59 route_backfill_eligible=41 route_backfill_unavailable=28 route_backfill_pending=5 reward_source_rows=107205 reward_rows=29 policy=disabled_by_design:r33_monthly_promotion_owner production_policy=disabled_by_design:r33_monthly_promotion_owner evidence_closure=reference_identity=858/858 strategy_matrix=22308/22308 threshold_margin=2298/2298 threshold_projection=2298/2298:matrix=22308/22308:reference=858/858 similarity_artifact=pass sector_breadth=455/455 mature_date=2026-10-27 price_horizon=845+0/845 canonical_labels=845+0/845 mature_blocked=2026-07-14,2026-07-15,2026-07-16,2026-07-17,2026-07-20,2026-07-21,2026-07-22,2026-07-27,2026-07-28,2026-08-06 mature_backlog=none formal_latest=2026-10-27 formal_ready=2026-08-18,2026-08-19,2026-08-21,2026-08-24,2026-08-25,2026-08-26,2026-08-27,2026-08-28,2026-08-31,2026-09-01,2026-09-02,2026-09-03,2026-09-04,2026-09-07,2026-09-08,2026-09-09,2026-09-10,2026-09-11,2026-09-14,2026-09-15,2026-09-16,2026-09-17,2026-09-18,2026-09-21,2026-09-22,2026-09-23,2026-09-24,2026-09-29,2026-09-30,2026-10-01,2026-10-02,2026-10-05,2026-10-06,2026-10-07,2026-10-08,2026-10-12,2026-10-13,2026-10-14,2026-10-15,2026-10-16,2026-10-19,2026-10-20,2026-10-21,2026-10-22,2026-10-27 formal_backlog=none historical_excluded=2026-08-20 historical_coverage=known_missing_source run_scope=historical_replay production_authority=durable_run_not_marked_production_eligible late_completion=false production_authority_intent=false policy_mutation=false policy_closure=evidence_only"
+  },
+  {
+   "id": "post-verify-chain",
+   "lastStatus": "success",
+   "summary": "durable learning recovery complete policy_closure=evidence_only"
+  },
+  {
+   "id": "evening-chain",
+   "lastStatus": "success",
+   "summary": "evening-chain durable DAG complete date=2026-11-03 run_id=pipeline-dispatch:2026-11-03:3fbef844-8b32-457d-aacd-d91cab3a2a62 stages=5 strategy_learning=success dataset_snapshot=success active8_oof_daily=success historical_excluded=2026-08-20 run_scope=historical_replay"
+  },
+  {
+   "id": "evening-chain",
+   "lastStatus": "error",
+   "summary": "evening-chain durable DAG failed date=2026-11-20 run_id=pipeline-dispatch:2026-11-20:38b44c59-a8dd-4ca6-8060-60dd95769aca blockers=active8_oof_daily:error run_scope=historical_replay",
+   "lastError": "active8_oof_daily:error"
+  },
+  {
+   "id": "evening-chain",
+   "lastStatus": "triggered",
+   "summary": "awaiting_premarket l3_sealed=true cloud_compute_stopped=true run_id=pipeline-dispatch:2026-11-27:346a999a-ba06-437b-90dc-0a5e9f52fee0"
+  },
+  {
+   "id": "strategy-learning-watchdog",
+   "lastStatus": "success",
+   "summary": "success strategy-learning recovery date=2026-11-20 reason=run_success root=closed_error"
+  },
+  {
+   "id": "audit-json-retention",
+   "lastStatus": "running",
+   "summary": "durable_drain queued; completion_pending=true"
+  },
+  {
+   "id": "audit-json-retention",
+   "lastStatus": "error",
+   "summary": "audit_json_retention status=error durable=true queued=false reason=failure_cooldown run_id=audit-json-retention-1795542301232-x1rxx2nc"
+  },
+  {
+   "id": "artifact-reconcile",
+   "lastStatus": "skipped",
+   "summary": "maintenance_lease_busy:audit-json-retention:queue:2026-11-23 18:06:31"
+  },
+  {
+   "id": "retention-archive-only",
+   "lastStatus": "success",
+   "summary": "retention_archive_only status=success date=2026-11-20 policies=9/9 scanned=215 archived=215 deleted=0 bytes=217912 backlog_remaining=true failed=none"
+  },
+  {
+   "id": "retention-hot-window-drain",
+   "lastStatus": "success",
+   "summary": "retention_hot_window_drain status=dry_run dry_run=true policies=7 attempts=7 stop=preflight pending=learning_lineage_v1,price_horizon_rejections_v1 scanned=236 archived=0 deleted=0 backlog=true failed=none blocked=10"
+  },
+  {
+   "id": "r2-retention-sweep",
+   "lastStatus": "success",
+   "summary": "r2_retention_sweep candidates=100 deleted=70 skipped=0 backlog_remaining=true budget_exhausted=true"
+  },
+  {
+   "id": "debate-memory-retention",
+   "lastStatus": "skipped",
+   "summary": "maintenance_lease_busy:audit-json-retention:2026-11-19 19:05:02"
+  },
+  {
+   "id": "orphan-reachability-gc",
+   "lastStatus": "skipped",
+   "summary": "maintenance_lease_busy:unknown:unknown"
+  },
+  {
+   "id": "orphan-reachability-gc",
+   "lastStatus": "skipped",
+   "summary": "maintenance_lease_busy:audit-json-retention:2026-11-21 19:05:02"
+  },
+  {
+   "id": "news-analyst",
+   "lastStatus": "triggered",
+   "summary": "status=pending premarket_wait:news-analyst:running:attempt=1:next=2026-11-19 22:55:03"
+  },
+  {
+   "id": "news-analyst",
+   "lastStatus": "success",
+   "summary": "bias=negative conf=0.70 factors=5"
+  },
+  {
+   "id": "news-analyst",
+   "lastStatus": "success",
+   "summary": "bias=neutral conf=0.35 factors=4"
+  },
+  {
+   "id": "storage-capacity-report",
+   "lastStatus": "success",
+   "summary": "storage_capacity_report observed_date=2026-11-20 lineage_run_date=2026-11-20 health={\"enforcement_scope\":\"scheduler_and_producer_admission\",\"admission_control\":true,\"blocks_storage_producers\":true,\"blocks_trading_path\":false,\"healthy\":true,\"integrity_blocked\":0,\"cleanup_backlog_over_24h\":0,\"dlq_pending\":0,\"allocator_ev_snapshot_rows\":7319,\"allocator_ev_snapshot_dates\":35,\"allocator_snapshot_incomplete_runs\":0,\"allocator_snapshot_staging_orphans\":0,\"artifact_hard_ref_drift\":0,\"artifact_active_references\":1110,\"artifact_true_orphan_references\":0,\"artifact_true_orphan_ids\":[],\"domain_schema\":[{\"domain\":\"execution\",\"migration_catalog\":\"domain_baseline\",\"expected_migration\":\"0001_execution_baseline.sql\",\"applied_migrations\":[\"0001_execution_baseline.sql\",\"0002_data_domain_cutover_probe_canary.sql\",\"0002_runtime_owned_tables.sql\",\"0003_retention_source_release.sql\",\"0004_retention_reference_indexes.sql\"],\"pending_migrations\":0,\"expected_tables\":5,\"present_tables\":5,\"missing_tables\":[],\"ready\":true,\"error\":null},{\"domain\":\"paper\",\"migration_catalog\":\"domain_baseline\",\"expected_migration\":\"0001_paper_baseline.sql\",\"applied_migrations\":[\"0001_paper_baseline.sql\",\"0002_data_domain_cutover_probe_canary.sql\",\"0002_runtime_owned_tables.sql\",\"0003_paper_kelly_calibration.sql\",\"0004_corporate_action_accounting.sql\",\"0005_l4_distribution.sql\",\"0006_p5_rearm.sql\",\"0007_daily_plan_reviews.sql\",\"0008_rotation_audit.sql\",\"0009_atr_once.sql\",\"0010_intraday_nav_risk.sql\",\"0011_second_breakout.sql\"],\"pending_migrations\":0,\"expected_tables\":36,\"present_tables\":36,\"missing_tables\":[],\"ready\":true,\"error\":null}],\"expected_lineage_date\":\"2026-11-19\",\"canonical_execution_lineage_ready\":true,\"paper_shadow_lineage_ready\":true,\"legacy_retention_backlog_cohorts\":4,\"legacy_retention_progress_24h\":0,\"legacy_retention_stalled\":true,\"d1_bytes\":9125703680,\"d1_utilization\":0.912570368,\"capacity_status\":\"critical\",\"capacity_error\":null,\"legacy_capacity_role\":\"frozen_rollback_source\",\"blocking_capacity_domains\":[],\"capacity_domains\":[{\"domain\":\"legacy\",\"binding_name\":\"DB\",\"utilization_pct\":91.257,\"status\":\"critical\"},{\"domain\":\"core\",\"binding_name\":\"CORE_DB\",\"utilization_pct\":9.6402,\"status\":\"healthy\"},{\"domain\":\"market\",\"binding_name\":\"MARKET_DB\",\"utilization_pct\":68.9647,\"status\":\"warning\"},{\"domain\":\"learning\",\"binding_name\":\"LEARNING_DB\",\"utilization_pct\":70.5459,\"status\":\"warning\"},{\"domain\":\"ops\",\"binding_name\":\"OPS_DB\",\"utilization_pct\":25.9396,\"status\":\"healthy\"},{\"domain\":\"execution\",\"binding_name\":\"EXECUTION_DB\",\"utilization_pct\":0.1204,\"status\":\"healthy\"},{\"domain\":\"paper\",\"binding_name\":\"PAPER_DB\",\"utilization_pct\":6.029,\"status\":\"healthy\"},{\"domain\":\"research\",\"binding_name\":\"RESEARCH_DB\",\"utilization_pct\":0.5036,\"status\":\"healthy\"}],\"capacity_runway\":[{\"domain\":\"legacy\",\"binding_name\":\"DB\",\"utilization_pct\":91.257,\"forecast_status\":\"ready\",\"daily_growth_bytes\":0,\"projected_days_to_critical_90pct\":0},{\"domain\":\"core\",\"binding_name\":\"CORE_DB\",\"utilization_pct\":9.6402,\"forecast_status\":\"ready\",\"daily_growth_bytes\":13242368,\"projected_days_to_critical_90pct\":606},{\"domain\":\"market\",\"binding_name\":\"MARKET_DB\",\"utilization_pct\":68.9647,\"forecast_status\":\"ready\",\"daily_growth_bytes\":53903360,\"projected_days_to_critical_90pct\":39},{\"domain\":\"learning\",\"binding_name\":\"LEARNING_DB\",\"utilization_pct\":70.5459,\"forecast_status\":\"ready\",\"daily_growth_bytes\":43171840,\"projected_days_to_critical_90pct\":45},{\"domain\":\"ops\",\"binding_name\":\"OPS_DB\",\"utilization_pct\":25.9396,\"forecast_status\":\"ready\",\"daily_growth_bytes\":15530212,\"projected_days_to_critical_90pct\":412},{\"domain\":\"execution\",\"binding_name\":\"EXECUTION_DB\",\"utilization_pct\":0.1204,\"forecast_status\":\"ready\",\"daily_growth_bytes\":208259,\"projected_days_to_critical_90pct\":43157},{\"domain\":\"paper\",\"binding_name\":\"PAPER_DB\",\"utilization_pct\":6.029,\"forecast_status\":\"ready\",\"daily_growth_bytes\":3250950,\"projected_days_to_critical_90pct\":2582},{\"domain\":\"research\",\"binding_name\":\"RESEARCH_DB\",\"utilization_pct\":0.5036,\"forecast_status\":\"ready\",\"daily_growth_bytes\":107133,\"projected_days_to_critical_90pct\":83537}],\"capacity_runway_alert_days\":30,\"capacity_runway_alert_domains\":[],\"capacity_runway_error\":null} d1=[{\"domain\":\"legacy\",\"binding\":\"DB\",\"used\":9125703680,\"max\":10000000000,\"utilization_pct\":91.257,\"status\":\"critical\",\"forecast_status\":\"ready\",\"baseline_after\":\"2026-08-20\",\"observation_count\":46,\"required_observations\":7,\"daily_growth_bytes\":0,\"median_daily_growth_bytes\":0,\"net_daily_growth_bytes\":0,\"projected_days_to_warning_65pct\":0,\"projected_days_to_critical_90pct\":0,\"projected_days_to_max\":null},{\"domain\":\"core\",\"binding\":\"CORE_DB\",\"used\":964022272,\"max\":10000000000,\"utilization_pct\":9.6402,\"status\":\"healthy\",\"forecast_status\":\"ready\",\"baseline_after\":\"2026-08-19\",\"observation_count\":46,\"required_observations\":7,\"daily_growth_bytes\":13242368,\"median_daily_growth_bytes\":13242368,\"net_daily_growth_bytes\":10072064,\"projected_days_to_warning_65pct\":418,\"projected_days_to_critical_90pct\":606,\"projected_days_to_max\":682},{\"domain\":\"market\",\"binding\":\"MARKET_DB\",\"used\":6896467968,\"max\":10000000000,\"utilization_pct\":68.9647,\"status\":\"warning\",\"forecast_status\":\"ready\",\"baseline_after\":\"2026-08-20\",\"observation_count\":46,\"required_observations\":7,\"daily_growth_bytes\":53903360,\"median_daily_growth_bytes\":53903360,\"net_daily_growth_bytes\":41634930,\"projected_days_to_warning_65pct\":0,\"projected_days_to_critical_90pct\":39,\"projected_days_to_max\":57},{\"domain\":\"learning\",\"binding\":\"LEARNING_DB\",\"used\":7054594048,\"max\":10000000000,\"utilization_pct\":70.5459,\"status\":\"warning\",\"forecast_status\":\"ready\",\"baseline_after\":\"2026-08-19\",\"observation_count\":46,\"required_observations\":7,\"daily_growth_bytes\":43171840,\"median_daily_growth_bytes\":43171840,\"net_daily_growth_bytes\":-12700513,\"projected_days_to_warning_65pct\":0,\"projected_days_to_critical_90pct\":45,\"projected_days_to_max\":68},{\"domain\":\"ops\",\"binding\":\"OPS_DB\",\"used\":2593964032,\"max\":10000000000,\"utilization_pct\":25.9396,\"status\":\"healthy\",\"forecast_status\":\"ready\",\"baseline_after\":\"2026-08-19\",\"observation_count\":46,\"required_observations\":7,\"daily_growth_bytes\":15530212,\"median_daily_growth_bytes\":14110720,\"net_daily_growth_bytes\":15530212,\"projected_days_to_warning_65pct\":251,\"projected_days_to_critical_90pct\":412,\"projected_days_to_max\":476},{\"domain\":\"execution\",\"binding\":\"EXECUTION_DB\",\"used\":12042240,\"max\":10000000000,\"utilization_pct\":0.1204,\"status\":\"healthy\",\"forecast_status\":\"ready\",\"baseline_after\":\"2026-08-19\",\"observation_count\":46,\"required_observations\":7,\"daily_growth_bytes\":208259,\"median_daily_growth_bytes\":4096,\"net_daily_growth_bytes\":208259,\"projected_days_to_warning_65pct\":31153,\"projected_days_to_critical_90pct\":43157,\"projected_days_to_max\":47959},{\"domain\":\"paper\",\"binding\":\"PAPER_DB\",\"used\":602902528,\"max\":10000000000,\"utilization_pct\":6.029,\"status\":\"healthy\",\"forecast_status\":\"ready\",\"baseline_after\":\"2026-08-19\",\"observation_count\":46,\"required_observations\":7,\"daily_growth_bytes\":3250950,\"median_daily_growth_bytes\":1642496,\"net_daily_growth_bytes\":3250950,\"projected_days_to_warning_65pct\":1813,\"projected_days_to_critical_90pct\":2582,\"projected_days_to_max\":2890},{\"domain\":\"research\",\"binding\":\"RESEARCH_DB\",\"used\":50360320,\"max\":10000000000,\"utilization_pct\":0.5036,\"status\":\"healthy\",\"forecast_status\":\"ready\",\"baseline_after\":\"2026-08-19\",\"observation_count\":46,\"required_observations\":7,\"daily_growth_bytes\":107133,\"median_daily_growth_bytes\":0,\"net_daily_growth_bytes\":107133,\"projected_days_to_warning_65pct\":60202,\"projected_days_to_critical_90pct\":83537,\"projected_days_to_max\":92871}] classes=[{\"retention_class\":\"canonical_execution\",\"status\":\"ready\",\"artifacts\":121,\"bytes\":153545},{\"retention_class\":\"canonical_model_evidence\",\"status\":\"ready\",\"artifacts\":15190,\"bytes\":10942719671},{\"retention_class\":\"failed_debug\",\"status\":\"payload_deleted\",\"artifacts\":1,\"bytes\":173},{\"retention_class\":\"incident_pinned\",\"status\":\"ready\",\"artifacts\":9,\"bytes\":1068770},{\"retention_class\":\"paper_shadow\",\"status\":\"ready\",\"artifacts\":93,\"bytes\":72977},{\"retention_class\":\"raw_market_unreferenced\",\"status\":\"payload_deleted\",\"artifacts\":2402,\"bytes\":246719361},{\"retention_class\":\"raw_market_unreferenced\",\"status\":\"ready\",\"artifacts\":13158,\"bytes\":1345351775},{\"retention_class\":\"superseded_run\",\"status\":\"ready\",\"artifacts\":2028,\"bytes\":1480335784},{\"retention_class\":\"ten_year_cold_archive\",\"status\":\"ready\",\"artifacts\":3150,\"bytes\":600880258}]"
+  },
+  {
+   "id": "premarket-evidence-watchdog",
+   "lastStatus": "error",
+   "summary": "status=error premarket_event_chain overdue=true ready_target=08:45 stage=premarket_v3:context"
+  },
+  {
+   "id": "morning-setup",
+   "lastStatus": "triggered",
+   "summary": "status=pending premarket_event_chain queued=0 ready_target=08:45 overdue=false stage=premarket_v3:context"
+  },
+  {
+   "id": "intraday-check",
+   "lastStatus": "success",
+   "summary": "{\"status\":\"healthy_empty\",\"positions\":0,\"quoted\":0,\"missing_symbols\":[]}"
+  },
+  {
+   "id": "rescore-10",
+   "lastStatus": "skipped",
+   "summary": "No open positions"
+  },
+  {
+   "id": "rescore-11",
+   "lastStatus": "skipped",
+   "summary": "No open positions"
+  },
+  {
+   "id": "rescore-12",
+   "lastStatus": "skipped",
+   "summary": "No open positions"
+  },
+  {
+   "id": "rescore-1230",
+   "lastStatus": "skipped",
+   "summary": "No open positions"
+  },
+  {
+   "id": "post-close-price-refresh",
+   "lastStatus": "success",
+   "summary": "post_close_price_cache_refreshed=0/0 date=2026-11-20"
+  },
+  {
+   "id": "hmm-maintenance",
+   "lastStatus": "success",
+   "summary": "status=success hmm=not_due coverage=true call=none"
+  },
+  {
+   "id": "daily-snapshot",
+   "lastStatus": "success",
+   "summary": "{\"date\":\"2026-11-20\",\"valuation\":{\"settled_cash\":948203.63,\"cash\":948203.63,\"positions\":{},\"corporate_receivables\":[],\"corporate_receivables_value\":0,\"marks\":{},\"mark_evidence\":{},\"nav\":948203.63,\"nav_lower_bound\":948203.63,\"nav_upper_bound\":948203.63,\"unpriced_rights\":[],\"valuation_complete\":true},\"l4Reward\":{\"status\":\"unavailable\",\"reason\":\"l4_reward_session_plan_missing\",\"learning_eligible\":false},\"valuation_session\":\"2026-11-20\",\"rerun\":true}"
+  },
+  {
+   "id": "postclose-research-dispatch",
+   "lastStatus": "success",
+   "summary": "no_published_work; research_jobs=0; publication_check=none_for_trade_date signal_run=pipeline-dispatch:2026-11-19:99dd5436-1147-427c-b01d-63c0677e563f"
+  },
+  {
+   "id": "daily-execution-paper-lineage",
+   "lastStatus": "success",
+   "summary": "daily_execution_paper_lineage {\"status\":\"written\",\"business_date\":\"2026-11-20\",\"execution_ready\":true,\"paper_ready\":true}"
+  },
+  {
+   "id": "daily-execution-paper-lineage",
+   "lastStatus": "success",
+   "summary": "daily_execution_paper_lineage {\"status\":\"reused\",\"business_date\":\"2026-11-24\",\"execution_ready\":true,\"paper_ready\":true}"
+  },
+  {
+   "id": "market-close-refresh",
+   "lastStatus": "success",
+   "summary": "market-close refresh complete; date=2026-11-20; price_latest=2026-11-20; price_rows=2124; official_prices=2124; wave2=attempted; taifex_day=missing; taifex_night=35893; post_close_price_cache_refreshed=0/0 date=2026-11-20"
+  },
+  {
+   "id": "weekly-audit",
+   "lastStatus": "success",
+   "summary": "report verified date=2026-11-20"
+  },
+  {
+   "id": "model-ic-full-check",
+   "lastStatus": "success",
+   "summary": "IC n_rows=65983 queue=70 config=no_challenger"
+  },
+  {
+   "id": "indicator-queue-watchdog",
+   "lastStatus": "skipped",
+   "summary": "skipped: indicator queue and finalizer already complete for 2026-11-20; run_id=2026-11-20-bff2f630-8b71-4c17-9cbd-78f6cb4310ac"
+  },
+  {
+   "id": "finlab-backfill-watchdog",
+   "lastStatus": "skipped",
+   "summary": "skipped: FinLab canonical handoff already completed market update for 2026-11-20"
+  },
+  {
+   "id": "screener-v2-watchdog",
+   "lastStatus": "success",
+   "summary": "status=success screener={success funnel=screener-v2-1795184867-2e31bb69 universe=839 continuation=already_success pipeline_recovery=pipeline_not_error} strategy_learning={SKIPPED strategy-learning recovery recoverable_run_missing}"
+  },
+  {
+   "id": "finlab-v4-backfill",
+   "lastStatus": "success",
+   "summary": "FinLab V4 backfill run_id=finlab-v4-daily-20261120-1795182310458 status=ready canonical=True rows=109761 macro_context=ok external_evidence=ok dispatch_attempt=1 function_call_id=fc-01M7WK99WV1AE64R1ZER1H5290"
+  },
+  {
+   "id": "update",
+   "lastStatus": "success",
+   "summary": "market data update ready for 2026-11-20; FinLab primary canonical ready; official market summary ready; TWSE/TPEX supplemental refresh complete; FinLab canonical ready for 2026-11-20: canonical_market_daily=2413; canonical_chip_daily=2411; canonical_institutional_amount_daily=14; canonical_broker_flow_daily=2397 source_date=2026-11-20; canonical_broker_rank_daily=2379 source_date=2026-11-20; canonical_trading_restrictions:daily_micro_lane finlab=ok materialized=2026-11-20T13:46:02.990443+00:00; canonical_market_index_daily:twii=1; canonical_market_index_daily:twoii=1; canonical_futures_daily:txf_day=1; canonical_regime_context_daily:pcr=7; canonical_regime_context_daily:large_trader=11985; canonical_regime_context_daily:materialized=15576 receipt_rows=15576; canonical_fundamental_features:valuation_daily_pe canonical=1545 raw=1545 parity=exact; canonical_fundamental_features:valuation_daily_pb canonical=1981 raw=1981 parity=exact; official market summary refreshed for 2026-11-20: rows=2 LISTED:2026-11-20:twse.mi_margn.official,OTC:2026-11-20:finlab.canonical_chip_minus_twse; market data ready for 2026-11-20: price=2215 TWSE=1327 OTC=888, chip=2231, margin=2108, indicators=2208; FinLab canonical projected to Market owner serving tables for 2026-11-20: stock_prices=2215 chip_data=2231 margin_data=2108; TWSE/TPEX supplemental bulk fetch skipped; source_role=finlab_primary_canonical_mirror; supplemental_mode=fallback"
+  },
+  {
+   "id": "indicator-queue",
+   "lastStatus": "running",
+   "summary": "indicator queue finalize wait 1/4 for 2026-11-20; run_id=2026-11-20-bff2f630-8b71-4c17-9cbd-78f6cb4310ac; attempt=1"
+  },
+  {
+   "id": "indicator-queue",
+   "lastStatus": "success",
+   "summary": "indicator queue complete for 2026-11-24; run_id=2026-11-24-307d7a77-f742-420d-8755-26f5628ac884; shards=4; source=lock-acquired"
+  },
+  {
+   "id": "regime-compute",
+   "lastStatus": "success",
+   "summary": "pre-screener regime=bear_market idx=3 kv=verified source=matching_hmm_version; source=post-screener-callback"
+  },
+  {
+   "id": "strategy-learning-mature-evidence",
+   "lastStatus": "success",
+   "summary": "mature_recovery=mature_signal_date=2026-11-13 inspected_dates=81 scanned_dates=19 gaps_before=11 targeted=2026-11-13 projection_runs=1 labels_persisted=860 gaps_after=10 recoverable_after=0 blocked=2026-07-14,2026-07-15,2026-07-16,2026-07-17,2026-07-20,2026-07-21,2026-07-22,2026-07-27,2026-07-28,2026-08-06 labels=29488 pending=3407 unavailable=224 edge=shadow:eligible=0:dates=71 reward_source=130690 reward_rows=29"
+  },
+  {
+   "id": "sector-flow-pre-screener",
+   "lastStatus": "success",
+   "summary": "sector_flow date=2026-11-20 status=computed rebuild_run_id=sector-flow:2026-11-20:native:20261120T142644954016Z"
+  },
+  {
+   "id": "screener",
+   "lastStatus": "success",
+   "summary": "run_id=screener-v2-1795184867-2e31bb69 screener_funnel_run_id=screener-v2-1795184867-2e31bb69 universe=839 candidates=839 final=475 emerging=0 hot_sectors=0 duration_ms=609418"
+  },
+  {
+   "id": "screener",
+   "lastStatus": "success",
+   "summary": "run_id=screener-v2-1795444661-f245a5d9 screener_funnel_run_id=screener-v2-1795444661-f245a5d9 universe=842 candidates=842 final=737 emerging=0 hot_sectors=0 duration_ms=582207"
+  },
+  {
+   "id": "screener",
+   "lastStatus": "success",
+   "summary": "run_id=screener-v2-1795530159-0305a0f8 screener_funnel_run_id=screener-v2-1795530159-0305a0f8 universe=849 candidates=849 final=702 emerging=0 hot_sectors=0 duration_ms=544789"
+  },
+  {
+   "id": "screener",
+   "lastStatus": "success",
+   "summary": "run_id=screener-v2-1795615939-7813f4dc screener_funnel_run_id=screener-v2-1795615939-7813f4dc universe=854 candidates=854 final=476 emerging=0 hot_sectors=0 duration_ms=506407"
+  },
+  {
+   "id": "screener",
+   "lastStatus": "success",
+   "summary": "run_id=screener-v2-1795714140-beec72a8 screener_funnel_run_id=screener-v2-1795714140-beec72a8 universe=847 candidates=847 final=651 emerging=0 hot_sectors=0 duration_ms=521470"
+  },
+  {
+   "id": "allocator-ev-readiness",
+   "lastStatus": "success",
+   "summary": "L4 allocation readiness before pipeline for 2026-11-20 | knowledge_cutoff_date=2026-11-20 | expected_return_serving_state=production_primary | expected_return_owner=l4_distribution | legacy_ev_oof=retired_incompatible | action_ready=1 | readiness_state=ready"
+  },
+  {
+   "id": "pipeline",
+   "lastStatus": "success",
+   "summary": "run_id=pipeline-dispatch:2026-11-20:38b44c59-a8dd-4ca6-8060-60dd95769aca preds=2375 recos_updated=475 seed_rows=475 llm_reasons=0 snapshot=queued_postclose errors=0"
+  },
+  {
+   "id": "pipeline",
+   "lastStatus": "success",
+   "summary": "run_id=pipeline-dispatch:2026-11-23:5e15e016-0762-4544-989a-aefb7918b1b5 preds=3677 recos_updated=737 seed_rows=737 llm_reasons=0 snapshot=queued_postclose errors=0"
+  },
+  {
+   "id": "pipeline",
+   "lastStatus": "success",
+   "summary": "run_id=pipeline-dispatch:2026-11-24:a28c1157-6856-40b8-b950-076984f831e0 preds=3502 recos_updated=702 seed_rows=702 llm_reasons=0 snapshot=queued_postclose errors=0"
+  },
+  {
+   "id": "pipeline",
+   "lastStatus": "success",
+   "summary": "run_id=pipeline-dispatch:2026-11-25:6e1fda2b-8712-41f9-848b-fff49c1a2f29 preds=2380 recos_updated=476 seed_rows=476 llm_reasons=0 snapshot=queued_postclose errors=0"
+  },
+  {
+   "id": "pipeline",
+   "lastStatus": "success",
+   "summary": "run_id=pipeline-dispatch:2026-11-26:c1eee7fa-4fec-4c1e-9ef0-42d88b48a204 preds=3255 recos_updated=651 seed_rows=651 llm_reasons=0 snapshot=queued_postclose errors=0"
+  },
+  {
+   "id": "pipeline",
+   "lastStatus": "triggered",
+   "summary": "awaiting_premarket l3_sealed=true cloud_compute_stopped=true atomic_inputs=waiting"
+  },
+  {
+   "id": "external-evidence",
+   "lastStatus": "success",
+   "summary": "external evidence receipt=ready target=2026-11-20 gdelt=fetch_failed items=1 stock_theme_features=603 d1_queries=106 d1_http_attempts=106 d1_retries=0 write_batches=94"
+  },
+  {
+   "id": "active8-oof-daily",
+   "lastStatus": "success",
+   "summary": "run_id=active8-oof-daily:2026-11-20:resolve-after-prep status=native_l4_daily_accounted cohort=none promoted=False reason=none full_fit=none comparison_review=disabled_by_single_b_policy completion_scope=verified_formal_paper_plan forward_data=refreshed_with_exclusions forward_observed=2026-11-23 forward_mature=none forward_training_eligible=none forward_excluded=2026-11-20,2026-11-23"
+  },
+  {
+   "id": "active8-oof-daily",
+   "lastStatus": "triggered",
+   "summary": "active8_oof_lifecycle status=spawned cadence=daily cohort=none promoted=false reason=durable_prep_first_oof_job_dispatched"
+  },
+  {
+   "id": "post-pipeline-chain",
+   "lastStatus": "success",
+   "summary": "active8-action-authority:success allocator-ev-feature-snapshot-backfill:success pit-residual-funnel-enrichment:waiting pit-residual-funnel-recovery:success verify-v2:triggered"
+  },
+  {
+   "id": "post-pipeline-chain",
+   "lastStatus": "waiting",
+   "summary": "Serving published; research and verification wait for the after-close dispatch at 2026-11-24 14:20 run_id=pipeline-dispatch:2026-11-23:5e15e016-0762-4544-989a-aefb7918b1b5"
+  },
+  {
+   "id": "ml-predict",
+   "lastStatus": "success",
+   "summary": "run_id=pipeline-dispatch:2026-11-20:38b44c59-a8dd-4ca6-8060-60dd95769aca symbols=475/475 rows=2375 models=4 incomplete_active_model_symbols=0 symbol_closure=True active_model_closure=True"
+  },
+  {
+   "id": "ml-predict",
+   "lastStatus": "success",
+   "summary": "run_id=pipeline-dispatch:2026-11-23:5e15e016-0762-4544-989a-aefb7918b1b5 symbols=737/737 rows=3677 models=4 incomplete_active_model_symbols=0 symbol_closure=True active_model_closure=True"
+  },
+  {
+   "id": "ml-predict",
+   "lastStatus": "success",
+   "summary": "run_id=pipeline-dispatch:2026-11-24:a28c1157-6856-40b8-b950-076984f831e0 symbols=702/702 rows=3502 models=4 incomplete_active_model_symbols=0 symbol_closure=True active_model_closure=True"
+  },
+  {
+   "id": "ml-predict",
+   "lastStatus": "success",
+   "summary": "run_id=pipeline-dispatch:2026-11-25:6e1fda2b-8712-41f9-848b-fff49c1a2f29 symbols=476/476 rows=2380 models=4 incomplete_active_model_symbols=0 symbol_closure=True active_model_closure=True"
+  },
+  {
+   "id": "ml-predict",
+   "lastStatus": "success",
+   "summary": "run_id=pipeline-dispatch:2026-11-26:c1eee7fa-4fec-4c1e-9ef0-42d88b48a204 symbols=651/651 rows=3255 models=4 incomplete_active_model_symbols=0 symbol_closure=True active_model_closure=True"
+  },
+  {
+   "id": "recommendation",
+   "lastStatus": "success",
+   "summary": "run_id=pipeline-dispatch:2026-11-20:38b44c59-a8dd-4ca6-8060-60dd95769aca recos_updated=475 filtered=0 seed_rows=475 closure=True"
+  },
+  {
+   "id": "recommendation",
+   "lastStatus": "success",
+   "summary": "run_id=pipeline-dispatch:2026-11-23:5e15e016-0762-4544-989a-aefb7918b1b5 recos_updated=737 filtered=0 seed_rows=737 closure=True"
+  },
+  {
+   "id": "recommendation",
+   "lastStatus": "success",
+   "summary": "run_id=pipeline-dispatch:2026-11-24:a28c1157-6856-40b8-b950-076984f831e0 recos_updated=702 filtered=0 seed_rows=702 closure=True"
+  },
+  {
+   "id": "recommendation",
+   "lastStatus": "success",
+   "summary": "run_id=pipeline-dispatch:2026-11-25:6e1fda2b-8712-41f9-848b-fff49c1a2f29 recos_updated=476 filtered=0 seed_rows=476 closure=True"
+  },
+  {
+   "id": "recommendation",
+   "lastStatus": "success",
+   "summary": "run_id=pipeline-dispatch:2026-11-26:c1eee7fa-4fec-4c1e-9ef0-42d88b48a204 recos_updated=651 filtered=0 seed_rows=651 closure=True"
+  },
+  {
+   "id": "allocator-ev-feature-snapshot-backfill",
+   "lastStatus": "success",
+   "summary": "allocator snapshot already ready date=2026-11-20 rows=475"
+  },
+  {
+   "id": "verify-v2",
+   "lastStatus": "success",
+   "summary": "verified 5588/5624 written 5588 correct 0 pnl 0.0% arf 0"
+  },
+  {
+   "id": "kv-config-drift",
+   "lastStatus": "success",
+   "summary": "kv_config_drift trading:config=match:7e8264d95c17 trading:risk_config=match:b1f9c64776dd"
+  },
+  {
+   "id": "kv-config-drift",
+   "lastStatus": "error",
+   "summary": "kv_config_drift trading:config=drift:0bf52c5366e7 trading:risk_config=match:b1f9c64776dd | stored_risk_v2_drift since=2026-10-11 checked=1 skipped_pre_v2=29 failed=0 policy_changed=0",
+   "lastError": "Error: kv_config_drift trading:config=drift:0bf52c5366e7 trading:risk_config=match:b1f9c64776dd | stored_risk_v2_drift since=2026-10-11 checked=1 skipped_pre_v2=29 failed=0 policy_changed=0"
+  },
+  {
+   "id": "kv-config-drift",
+   "lastStatus": "success",
+   "summary": "kv_config_drift trading:config=match:0bf52c5366e7 trading:risk_config=match:b1f9c64776dd | stored_risk_v2_drift since=2026-10-12 checked=2 skipped_pre_v2=29 failed=0 policy_changed=0"
+  },
+  {
+   "id": "dataset-snapshot-export",
+   "lastStatus": "success",
+   "summary": "run_id=pipeline-dispatch:2026-11-23:5e15e016-0762-4544-989a-aefb7918b1b5:postclose backtest=backtest_dataset:2026-11-23:pipeline-dispatch:2026-11-23:5e15e016-0762-4544-989a-aefb7918b1b5:postclose rows=4119529 price=price_history:2026-11-23:pipeline-dispatch:2026-11-23:5e15e016-0762-4544-989a-aefb7918b1b5:postclose rows=995867"
+  },
+  {
+   "id": "dataset-snapshot-export",
+   "lastStatus": "success",
+   "summary": "run_id=pipeline-dispatch:2026-11-25:6e1fda2b-8712-41f9-848b-fff49c1a2f29:postclose backtest=backtest_dataset:2026-11-25:pipeline-dispatch:2026-11-25:6e1fda2b-8712-41f9-848b-fff49c1a2f29:postclose rows=4146981 price=price_history:2026-11-25:pipeline-dispatch:2026-11-25:6e1fda2b-8712-41f9-848b-fff49c1a2f29:postclose rows=1000290"
+  },
+  {
+   "id": "finlab-v4-backfill",
+   "lastStatus": "triggered",
+   "summary": "triggered finlab-v4-backfill run_id=finlab-v4-daily-20261127-1795820079966 function_call_id=fc-01M8FKFM3HN78Z4B9Y2S2NBHR5 dispatch_attempt=1 callback expected"
+  },
+  {
+   "id": "audit-json-retention",
+   "lastStatus": "success",
+   "summary": "durable_drain complete audit-json-retention confirmed date=2026-11-28 cutoff=2026-10-29 retention_days=30 total_archived=0 total_scrubbed=0 bytes=0; strategy_decision_log:skipped:candidates=0:archived=0:scrubbed=0 screener_funnel_items:skipped:candidates=0:archived=0:scrubbed=0 canonical_screener_funnel_items:skipped:candidates=0:archived=0:scrubbed=0 paper_execution_events:skipped:candidates=0:archived=0:scrubbed=0 strategy_decision_log_ref_v2:skipped:candidates=0:archived=0:scrubbed=0:cutoff=2"
+  },
+  {
+   "id": "audit-json-retention",
+   "lastStatus": "skipped",
+   "summary": "audit_json_retention status=skipped durable=true queued=false reason=active run_id=audit-json-retention-1795798801159-nkrcvzl4"
+  },
+  {
+   "id": "screener-v2-watchdog",
+   "lastStatus": "success",
+   "summary": "status=success screener={SKIPPED canonical screener run missing for 2026-11-27} strategy_learning={success strategy-learning recovery date=2026-11-26 reason=run_success root=closed_success}"
+  },
+  {
+   "id": "allocator-ev-lifecycle-watchdog",
+   "lastStatus": "error",
+   "summary": "status=failed allocator EV lifecycle window=2026-11-23..2026-11-27 dates=5 incomplete=1 dispatched=none outside_window_new=0 outside_window_known=41 gap_scan=done_today swept=2026-11-22; 2026-11-23=failed:status:failed_allocator_EV_lifecycle_post-pipeline_unrecoverable_head_advanced_date=2026-11-23_head_signal_date=2026-11-26_post_pipeline_status:error_post_pipeline_attempts=9_post_pipeline_error=l4_distribution_original_plan_closure_incomplete_recovery_dispatch=not_queued_manual_review_required"
+  },
+  {
+   "id": "dataset-snapshot-export",
+   "lastStatus": "success",
+   "summary": "detached dataset snapshot ready snapshot_id=backtest_dataset:2026-11-26:pipeline-dispatch:2026-11-26:c1eee7fa-4fec-4c1e-9ef0-42d88b48a204:postclose"
+  },
+  {
+   "id": "daily-execution-paper-lineage",
+   "lastStatus": "error",
+   "summary": "daily_paper_snapshot_not_ready:2026-11-27",
+   "lastError": "Error: daily_paper_snapshot_not_ready:2026-11-27"
+  },
+  {
+   "id": "daily-snapshot",
+   "lastStatus": "error",
+   "summary": "paper_snapshot_mark_date_mismatch:2026-11-27:2072@undated,2206@undated,9925@undated",
+   "lastError": "Error: paper_snapshot_mark_date_mismatch:2026-11-27:2072@undated,2206@undated,9925@undated"
+  },
+  {
+   "id": "intraday-check",
+   "lastStatus": "success",
+   "summary": "{\"status\":\"ok\",\"positions\":3,\"quoted\":3,\"missing_symbols\":[]}"
+  },
+  {
+   "id": "active8-oof-daily",
+   "lastStatus": "blocked",
+   "summary": "active8-oof-daily requires sync=1"
+  },
+  {
+   "id": "active8-oof-daily",
+   "lastStatus": "skipped",
+   "summary": "active8_oof_lifecycle status=skipped reason=awaiting_pipeline job_dispatched=false signal_date=2026-11-26 pipeline_status=waiting"
+  },
+  {
+   "id": "active8-oof-monthly",
+   "lastStatus": "error",
+   "summary": "run_id=active8-oof-monthly:2026-11-05:resolve-after-prep status=pending cohort=active8-oof-v9-feature-semantic-source-attested-v7-r33-exo131-core4-2025-12-17-2026-10-29-tr60-te21 promoted=False reason=full_fit_poll_only_terminal_failure full_fit=blocked oof_base_max=2026-10-29 effective_oof_max=2026-10-29 expected_oof_max=2026-10-29 coverage_mode=base_materialized error=RuntimeError: oof_dependency_continuation_exhausted:full_fit_poll_only_terminal_failure:attempt=12",
+   "lastError": "RuntimeError: oof_dependency_continuation_exhausted:full_fit_poll_only_terminal_failure:attempt=12"
+  },
+  {
+   "id": "active8-oof-monthly",
+   "lastStatus": "triggered",
+   "summary": "active8_oof_lifecycle status=spawned cadence=monthly cohort=none promoted=false reason=durable_prep_first_oof_job_dispatched"
+  },
+  {
+   "id": "active8-oof-weekly",
+   "lastStatus": "error",
+   "summary": "run_id=active8-oof-weekly:2026-11-15:resolve-after-prep status=unknown cohort=none promoted=False reason=none full_fit=none error=RuntimeError: immutable feature prep failed: prep_source_inventory_incomplete; detail=[{\"code\": \"object_missing\", \"path\": \"finlab/v4/backfill/finlab-v4-daily-20261113-1794577512325",
+   "lastError": "RuntimeError: immutable feature prep failed: prep_source_inventory_incomplete; detail=[{\"code\": \"object_missing\", \"path\": \"finlab/v4/backfill/finlab-v4-daily-20261113-1794577512325/raw/training_auxiliary_full_vintage/dividend_yield.parquet\"}, {\"code\": \"field_checksum_missing_or_invalid\", \"field\": \"d"
+  },
+  {
+   "id": "artifact-reconcile",
+   "lastStatus": "error",
+   "summary": "artifact reconcile failed {\"checked\":100,\"verified\":99,\"missing\":0,\"mismatched\":0,\"errors\":[\"artifact:s12_research_minute_bars:2026-08-05:03cbb2077ad9bd7fc1be4bd1:get: We encountered an internal error. Please try again. (10001)\"]}",
+   "lastError": "Error: artifact reconcile failed {\"checked\":100,\"verified\":99,\"missing\":0,\"mismatched\":0,\"errors\":[\"artifact:s12_research_minute_bars:2026-08-05:03cbb2077ad9bd7fc1be4bd1:get: We encountered an internal error. Please try again. (10001)\"]}"
+  },
+  {
+   "id": "external-evidence",
+   "lastStatus": "error",
+   "summary": "external evidence materialize HTTP524(error code: 524\n)",
+   "lastError": "Error: external evidence materialize HTTP524(error code: 524\n)"
+  },
+  {
+   "id": "finlab-backfill-watchdog",
+   "lastStatus": "triggered",
+   "summary": "status=pending FinLab canonical handoff already progressing market update for 2026-11-19"
+  },
+  {
+   "id": "finlab-v4-backfill",
+   "lastStatus": "blocked",
+   "summary": "finlab-v4-backfill requires sync=1"
+  },
+  {
+   "id": "hmm-maintenance",
+   "lastStatus": "error",
+   "summary": "admitted delivery ended before execution started",
+   "lastError": "abandoned_before_execution"
+  },
+  {
+   "id": "hmm-maintenance",
+   "lastStatus": "triggered",
+   "summary": "status=triggered hmm=dispatched coverage=true call=fc-01M8628E2NFXGZX2S0EZ6PG4MP"
+  },
+  {
+   "id": "indicator-queue-watchdog",
+   "lastStatus": "error",
+   "summary": "admitted delivery ended before execution started",
+   "lastError": "abandoned_before_execution"
+  },
+  {
+   "id": "indicator-queue-watchdog",
+   "lastStatus": "success",
+   "summary": "indicator finalizer re-enqueued for 2026-11-04; run_id=2026-11-04-91d33b7a-e11f-48e1-a087-b96fdcb8855e; recovery=6/6; done=4/4"
+  },
+  {
+   "id": "intraday-check",
+   "lastStatus": "error",
+   "summary": "admitted delivery ended before execution started",
+   "lastError": "abandoned_before_execution"
+  },
+  {
+   "id": "legacy-hot-data-retirement",
+   "lastStatus": "error",
+   "summary": "admitted delivery ended before execution started",
+   "lastError": "abandoned_before_execution"
+  },
+  {
+   "id": "legacy-hot-data-retirement",
+   "lastStatus": "skipped",
+   "summary": "maintenance_lease_busy:audit-json-retention:queue:2026-11-24 18:11:43"
+  },
+  {
+   "id": "legacy-strategy-evidence-migration",
+   "lastStatus": "blocked",
+   "summary": "blocked by storage admission: legacy_d1_capacity_unknown utilization=unknown%",
+   "lastError": "blocked by storage admission: legacy_d1_capacity_unknown utilization=unknown%"
+  },
+  {
+   "id": "legacy-strategy-evidence-migration",
+   "lastStatus": "skipped",
+   "summary": "maintenance_lease_busy:artifact-reconcile:2026-11-05 18:10:02"
+  },
+  {
+   "id": "legacy-strategy-evidence-migration",
+   "lastStatus": "success",
+   "summary": "legacy_strategy_evidence_migration durable=true queued=true run_id=legacy-strategy-evidence-migration:2026-11-06:ff5879d9-3a40-4a55-bd8c-224a96fedbca"
+  },
+  {
+   "id": "model-ic-full-check",
+   "lastStatus": "error",
+   "summary": "RuntimeError: D1 request failed: HTTP 400: {\"messages\":[],\"result\":[],\"success\":false,\"errors\":[{\"code\":7500,\"message\":\"D1 query result exceeded the maximum response size limit of 50 MB\"}]}",
+   "lastError": "RuntimeError: D1 request failed: HTTP 400: {\"messages\":[],\"result\":[],\"success\":false,\"errors\":[{\"code\":7500,\"message\":\"D1 query result exceeded the maximum response size limit of 50 MB\"}]}"
+  },
+  {
+   "id": "monthly-readiness",
+   "lastStatus": "error",
+   "summary": "monthly_readiness_blocked {\"missing\":[],\"blockers\":[{\"task\":\"monthly-strategy-mining\",\"status\":\"sleep\",\"reason\":\"terminal callback missing\"}],\"optional\":[],\"paused_expected\":[\"monthly-optuna\",\"active8-oof-monthly\"]}",
+   "lastError": "Error: monthly_readiness_blocked {\"missing\":[],\"blockers\":[{\"task\":\"monthly-strategy-mining\",\"status\":\"sleep\",\"reason\":\"terminal callback missing\"}],\"optional\":[],\"paused_expected\":[\"monthly-optuna\",\"active8-oof-monthly\"]}"
+  },
+  {
+   "id": "monthly-strategy-mining",
+   "lastStatus": "success",
+   "summary": "monthly Pymoo strategy mining success run_id=strategy-mining-2026-11-07-bbc791bd-2113-4a47-b8ae-a9eeb63aacf9 backend=modal"
+  },
+  {
+   "id": "optuna-queue",
+   "lastStatus": "error",
+   "summary": "sync delivery ended after execution started without settling its ticket",
+   "lastError": "abandoned_while_running"
+  },
+  {
+   "id": "optuna-queue",
+   "lastStatus": "success",
+   "summary": "success: dispatched per_regime:regime_shift:volatile:2026-11-27 cloud_run_job=optuna-research-sweep-bcxgp child_receipt_owner=optuna-per-regime"
+  },
+  {
+   "id": "pipeline",
+   "lastStatus": "blocked",
+   "summary": "historical learning lineage boundary blocked"
+  },
+  {
+   "id": "pipeline",
+   "lastStatus": "triggered",
+   "summary": "triggered run_id=pipeline-dispatch:2026-11-23:5e15e016-0762-4544-989a-aefb7918b1b5, callback expected"
+  },
+  {
+   "id": "postclose-research-dispatch",
+   "lastStatus": "error",
+   "summary": "postclose_dispatch_incomplete:ValueError:strategy_nav_producer_consumer_source_mismatch",
+   "lastError": "Error: postclose_dispatch_incomplete:ValueError:strategy_nav_producer_consumer_source_mismatch"
+  },
+  {
+   "id": "premarket-evidence-watchdog",
+   "lastStatus": "success",
+   "summary": "status=success premarket_event_chain queued=0 ready_target=08:45 overdue=false stage=complete"
+  },
+  {
+   "id": "premarket-evidence-watchdog",
+   "lastStatus": "triggered",
+   "summary": "status=pending premarket_event_chain queued=2 ready_target=08:45 overdue=false stage=premarket_v3:allocate"
+  },
+  {
+   "id": "r2-retention-sweep",
+   "lastStatus": "skipped",
+   "summary": "maintenance_lease_busy:audit-json-retention:queue:2026-11-12 18:41:57"
+  },
+  {
+   "id": "regime-compute",
+   "lastStatus": "success",
+   "summary": "regime=bear_market idx=3 kv=restored source=matching_hmm_version"
+  },
+  {
+   "id": "retention-archive-only",
+   "lastStatus": "error",
+   "summary": "maintenance_lease_busy:audit-json-retention:queue:2026-11-24 18:28:40",
+   "lastError": "Error: maintenance_lease_busy:audit-json-retention:queue:2026-11-24 18:28:40"
+  },
+  {
+   "id": "retention-hot-window-drain",
+   "lastStatus": "skipped",
+   "summary": "maintenance_lease_busy:audit-json-retention:queue:2026-11-03 18:39:18"
+  },
+  {
+   "id": "screener-v2-watchdog",
+   "lastStatus": "skipped",
+   "summary": "status=running screener={running screener watchdog reason=active_lease attempt=1} strategy_learning={success strategy-learning recovery date=2026-11-25 reason=run_success root=closed_success}"
+  },
+  {
+   "id": "screener-v2-watchdog",
+   "lastStatus": "triggered",
+   "summary": "status=triggered screener={SKIPPED canonical screener run missing for 2026-11-24} strategy_learning={triggered strategy-learning recovery date=2026-10-29 reason=lease_expired attempts=13 outside_window_dispatch=1/6 cursor=9958 production_authority_intent=false authority=revalidate_at_finalizer}"
+  },
+  {
+   "id": "sector-leaders",
+   "lastStatus": "error",
+   "summary": "sync delivery ended after execution started without settling its ticket",
+   "lastError": "abandoned_while_running"
+  },
+  {
+   "id": "sector-leaders",
+   "lastStatus": "success",
+   "summary": "sectors=45 leaders=132"
+  },
+  {
+   "id": "storage-integrity-audit",
+   "lastStatus": "success",
+   "summary": "storage_integrity_audit checked=100 verified=100"
+  },
+  {
+   "id": "strategy-learning-watchdog",
+   "lastStatus": "error",
+   "summary": "strategy-learning recovery blocked date=2026-11-17 reason=run_error:D1_ERROR: D1 DB is overloaded. Too many resources consumed within a 10 second window.",
+   "lastError": "Error: strategy-learning recovery blocked date=2026-11-17 reason=run_error:D1_ERROR: D1 DB is overloaded. Too many resources consumed within a 10 second window."
+  },
+  {
+   "id": "strategy-learning-watchdog",
+   "lastStatus": "triggered",
+   "summary": "triggered strategy-learning recovery date=2026-11-10 reason=queued_without_lease attempts=54 deferred_dispatch=1/6 override_backoff=true cursor=9958 production_authority_intent=false authority=revalidate_at_finalizer"
+  },
+  {
+   "id": "weekly-backtest",
+   "lastStatus": "triggered",
+   "summary": "triggered backtest research bundle run_id=weekly-backtest-2026-11-22-1795298403290-b7512dc8f916 remote=weekly-backtest-research-q2wm9 fence=running callback expected"
+  }
+ ]
+}

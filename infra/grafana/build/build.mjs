@@ -13,8 +13,8 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ERROR_FALLBACK, WATCHERS, chainCanvas, CHAIN_PIVOT, DOTS_PIVOT, laneCanvas, laneSlots, readinessCanvas, readinessPivot, SHORT_LABELS, slowPivot } from './canvas.mjs'
-import { ALERT_KIND, BIGQUERY_DS, C, COOL, STATUS, TONE, GCP_DS, KPI_KEY, N, NO_SOURCE, READINESS_VOCAB, S, STATUS_LABELS_JSONATA, T, dashboard, donut, gauges, gp, grid, hbars, heatmap, kpi, lcd,
-  cloudflareGet, cloudflareQuery, lit, querySource, spark, stackedBars, states, statusMappings, table, th } from './lib.mjs'
+import { ALERT_KIND, BIGQUERY_DS, C, CF_DS, COOL, STATUS, TONE, GCP_DS, KPI_KEY, N, NO_SOURCE, READINESS_VOCAB, S, STATUS_LABELS_JSONATA, T, dashboard, donut, gauges, gp, grid, hbars, heatmap, kpi, lcd,
+  cloudflareGet, cloudflareQuery, lit, marked, querySource, spark, stackedBars, states, statusMappings, table, th } from './lib.mjs'
 import { mockResponses } from './mock.mjs'
 import { rawErrorHits } from './rawErrors.mjs'
 
@@ -394,7 +394,8 @@ function costPanels(q, mode) {
       desc: `本月 1 日至今各服務的 GCP 淨額占比：前四大服務，其餘併成「其他」。${BILLING_NOTE}` }), { timeFrom: MONTH, hideTimeOverride: true, gridPos: gp(8, 9, 7, 8) }),
     // Day of month on x (a trend panel), so the projection can run past today to the month's last day.
     cumulative: { type: 'trend', title: '本月累計成本', gridPos: gp(15, 9, 9, 8), timeFrom: MONTH, hideTimeOverride: true,
-      description: `實線＝本月每天的累計淨額，虛線＝照目前日均推到月底，琥珀虛線＝每月預算 NT$${MONTH_BUDGET_TWD.toLocaleString('en-US')}（示範值）。${BILLING_NOTE}`,
+      // No budget line until Wei sets a monthly budget (a placeholder 2,000 was drawn here, 示範值; out 11/28 with the live switch).
+      description: `實線＝本月每天的累計淨額，虛線＝照目前日均推到月底。${BILLING_NOTE}`,
       targets: [billing(`WITH d AS (SELECT EXTRACT(DAY FROM DATE(usage_start_time, 'Asia/Taipei')) AS day, SUM(cost) + SUM(${CREDITS}) AS net FROM ${BILLING}
         WHERE ${BILLING_RANGE} GROUP BY day), c AS (SELECT day, SUM(net) OVER (ORDER BY day) AS actual FROM d), k AS (SELECT MAX(day) AS last, MAX(actual) AS mtd FROM c)
         SELECT g AS day, c.actual, IF(g >= k.last, k.mtd / k.last * g, NULL) AS forecast FROM k, UNNEST(GENERATE_ARRAY(1, EXTRACT(DAY FROM LAST_DAY(${TODAY_TW})))) AS g
@@ -403,11 +404,8 @@ function costPanels(q, mode) {
       transformations: [{ id: 'organize', options: { renameByName: { actual: '實際累計', forecast: '月底預估' } } }],
       options: { xField: 'day', legend: { showLegend: true, displayMode: 'list', placement: 'bottom', calcs: [] }, tooltip: { mode: 'multi' } },
       fieldConfig: { defaults: { unit: TWD, decimals: 0, min: 0, noValue: NO_SOURCE, color: { mode: 'fixed', fixedColor: COOL.cat[0] },
-        thresholds: th(['transparent', null], [C.warn, MONTH_BUDGET_TWD]),
-        custom: { drawStyle: 'line', lineWidth: 2, fillOpacity: 12, showPoints: 'never', spanNulls: false, thresholdsStyle: { mode: 'dashed' } } },
-      // The amount axis reaches past the budget so its line is always drawn. On both amount fields (one shared axis; a setting on
-      // only one gives it an axis of its own), not in the defaults (the day axis would take it too).
-      overrides: [{ matcher: { id: 'byRegexp', options: '^(實際累計|月底預估)$' }, properties: [{ id: 'custom.axisSoftMax', value: MONTH_BUDGET_TWD * 1.1 }] },{ matcher: { id: 'byName', options: '月底預估' }, properties: [{ id: 'color', value: { mode: 'fixed', fixedColor: COOL.cat[2] } },
+        custom: { drawStyle: 'line', lineWidth: 2, fillOpacity: 12, showPoints: 'never', spanNulls: false } },
+      overrides: [{ matcher: { id: 'byName', options: '月底預估' }, properties: [{ id: 'color', value: { mode: 'fixed', fixedColor: COOL.cat[2] } },
         { id: 'custom.lineStyle', value: { fill: 'dash', dash: [6, 4] } }, { id: 'custom.fillOpacity', value: 0 }] },
       { matcher: { id: 'byName', options: 'day' }, properties: [{ id: 'unit', value: 'none' }, { id: 'custom.axisLabel', value: '本月第幾天' }] }] } },
     byService: { type: 'timeseries', title: '每日成本（依服務堆疊）', description: BILLING_NOTE, gridPos: gp(0, 4, 14, 9),
@@ -825,8 +823,6 @@ const OTHER_TITLES = { weekly_research: '每週研究', monthly_artifact: '每�
 
 const REQUESTS = ['resource.type', '=', 'cloud_run_revision', 'AND', 'metric.type', '=', 'run.googleapis.com/request_count']
 const LATENCIES = ['resource.type', '=', 'cloud_run_revision', 'AND', 'metric.type', '=', 'run.googleapis.com/request_latencies']
-/** Placeholder monthly budget for the cost line (示範值; Wei has not set one). */
-const MONTH_BUDGET_TWD = 2000
 const HOURS = Array.from({ length: 24 }, (_, h) => String(h).padStart(2, '0'))
 
 /** The D1 databases by their Worker binding (worker/src/monitoring/env.ts D1_BINDINGS). */
@@ -903,16 +899,17 @@ const CF_COST_NOTE = '來源：Cloudflare 帳單用量 API（美元，Cloudflare
 
 function resources5(q, mode) {
   const cost = costPanels(q, mode)
-  // Fixture builds draw the authored Cloudflare rows; every other build reads Cloudflare through sv-cloudflare-api.
+  // Fixture builds draw the authored Cloudflare rows (mock:, as the billing rows stand in for BigQuery); every other build
+  // reads Cloudflare through sv-cloudflare-api.
   const cloudflare = mode !== 'fixture'
   const d1Grid = (prefix, field) => {
     const columns = [T('time', 'time'), ...HOURS.map((h) => N(`${prefix}${h}`, h))]
     return cloudflare ? cloudflareQuery(CF_D1_HOURLY, { since: '${__from:date:iso}', until: '${__to:date:iso}' }, { root: cfD1GridRoot(prefix, field), columns })
-      : q('plan:cloudflare-d1-grid', { root: 'rows', columns })
+      : q('mock:cloudflare-d1-grid', { root: 'rows', columns })
   }
   const quotaColumns = [S('product', 'product'), N('pct', '用量')]
   const quota = cloudflare ? cloudflareQuery(CF_PERIOD, { start: '${cf_period_start}', until: '${__to:date:iso}', day: '${__from:date:YYYY-MM-DD}' },
-    { root: CF_QUOTA_ROOT, columns: quotaColumns }) : q('plan:cloudflare-quota', { root: 'rows', columns: quotaColumns })
+    { root: CF_QUOTA_ROOT, columns: quotaColumns }) : q('mock:cloudflare-quota', { root: 'rows', columns: quotaColumns })
   const cfCost = (mock, root, columns) => (cloudflare ? cloudflareGet(CF_USAGE, { root, columns }) : q(mock, { root: 'rows', columns }))
   const usd = [N('usd', '金額')]
   // Cost split by provider (Wei 11/28): the GCP panels say GCP in their titles, Cloudflare has its own. Six units wide
@@ -921,9 +918,9 @@ function resources5(q, mode) {
   const gcp = (panels, title) => { [panels].flat()[0].title = title; return panels }
   return [
     ...moveSpark(gcp(cost.month, 'GCP 本月累計'), 0, 6), ...moveSpark(gcp(cost.forecast, 'GCP 月底預估'), 6, 6),
-    spark('Cloudflare 本期累計', cfCost('plan:cloudflare-cost-period', cfPeriodTotal('$sd'), usd), 12, 0, 6, 4, { line: false, unit: USD, dec: 2,
+    spark('Cloudflare 本期累計', cfCost('mock:cloudflare-cost-period', cfPeriodTotal('$sd'), usd), 12, 0, 6, 4, { line: false, unit: USD, dec: 2,
       desc: `本期到昨天的 Cloudflare 帳單金額，含方案月費。內含額度先扣，用完才開始計費，所以每期前幾天通常只有月費。${CF_COST_NOTE}` }),
-    spark('Cloudflare 上期帳單', cfCost('plan:cloudflare-cost-last', cfPeriodTotal('$p'), usd), 18, 0, 6, 4, { line: false, unit: USD, dec: 2,
+    spark('Cloudflare 上期帳單', cfCost('mock:cloudflare-cost-last', cfPeriodTotal('$p'), usd), 18, 0, 6, 4, { line: false, unit: USD, dec: 2,
       desc: `上一個帳單週期的 Cloudflare 總額，含方案月費。${CF_COST_NOTE}` }),
     ...spark('Cloud Run 請求', gcpSeries('A', REQUESTS, null, 'ALIGN_SUM', '+3600s', '請求'), 19, 4, 5, 5,
       { calc: 'sum', unit: 'short', desc: '所選時間內所有 Cloud Run 服務的請求數合計；折線＝每小時。' }),
@@ -934,7 +931,7 @@ function resources5(q, mode) {
       { unit: 'percent', dec: 1, softMin: 0, softMax: 100, th: th([C.ok, null], [C.warn, 100]),
         desc: 'Workers Paid 方案每個帳單週期（依續約日，不是每月 1 日）內含的用量。請求、讀寫列＝照本期到目前的速度，到期末會用掉內含量的幾成；儲存＝最新一天的大小 ÷ 內含量。超過 100% 的部分照量計費（琥珀）。內含量：Workers 1,000 萬請求；D1 讀 250 億列、寫 5,000 萬列、存 5 GB；KV 讀 1,000 萬、寫 100 萬、存 1 GB。' }),
     // Bars, not the donut: at the docked-menu width the donut's legend table cut the service names and scrolled sideways.
-    hbars('Cloudflare 上期各項', cfCost('plan:cloudflare-cost-items', CF_ITEMS_ROOT, [S('item', 'item'), N('usd', '金額')]), 'item', 6, 9, 6, 8,
+    hbars('Cloudflare 上期各項', cfCost('mock:cloudflare-cost-items', CF_ITEMS_ROOT, [S('item', 'item'), N('usd', '金額')]), 'item', 6, 9, 6, 8,
       // One decimal: with two, the axis's last tick (US$20.00) ran past the panel's edge at 1440.
       { unit: USD, dec: 1, desc: `上一個帳單週期各收費項目的金額，最多的在上，只列有收費的項目。D1 與 R2 儲存依累計 GB-月計費，超過內含量後每 1 GB-月收一次。各項分別四捨五入，加總可能與上期帳單差 US$0.01。${CF_COST_NOTE}` }),
     // BigQuery names the amount by its SQL alias; the tooltip shows the field's name.
@@ -1233,6 +1230,8 @@ const IC_TIER6 = toneMappings([['ok', CALM_OK], ['warn', C.warn], ['bad', C.bad]
 
 /** ④ v6: model5 moved down one strip; the strip answers is OPB learning, is today's plan sealed, is the serving guard
  * holding; the bottom row is each model's serving days and the latest monthly retrain. */
+/** A model version as the date it was trained ('v20261109102955' → '2026/11/09 版'); another form is shown as it is. */
+const VERSION_WORDS = (field) => `($v := ${field}; $contains($v ? $v : '', /^v[0-9]{14}$/) ? $substring($v, 1, 4) & '/' & $substring($v, 5, 2) & '/' & $substring($v, 7, 2) & ' 版' : $v ? $v : '')`
 function model6(q) {
   const panels = model5(q).flat()
   for (const panel of panels) panel.gridPos = { ...panel.gridPos, y: panel.gridPos.y + 4 }
@@ -1259,11 +1258,11 @@ function model6(q) {
   columns: [T('time', 'time'), S('row', 'row'), S('cell', 'cell')] }), 'row', 18, 0, 6, 4,
   { mappings: TONE6, timeFrom: '14d', opts: { mergeValues: false, rowHeight: 0.8 }, empty: '14 天內沒有交易日', desc: '每個交易日一格：青＝盤前已封存（滑鼠停在格子上看封存時間）、紅＝過了 cutoff 沒有封存、灰＝今天還在 cutoff 前。' })
   const serving = states('state-timeline', '模型服務狀態（14 日）', q(SERVING, { root: `rows.{ 'time': ${DAY_TIME('date')}, 'model': model_name,
-      'cell': (state = 'serving' ? 'ok|' : state = 'switched' ? 'info|換版 ' : state = 'pending' ? 'wait|待今晚 ' : 'bad|缺 ') & (version ? version : '') }`,
+      'cell': (state = 'serving' ? 'ok|' : state = 'switched' ? 'info|換版 ' : state = 'pending' ? 'wait|待今晚 ' : 'bad|缺 ') & ${VERSION_WORDS('version')} }`,
   columns: [T('time', 'time'), S('model', 'model'), S('cell', 'cell')] }), 'model', 0, 29, 14, 7,
   { mappings: TONE6, timeFrom: '14d', opts: { mergeValues: true, rowHeight: 0.8 }, empty: '沒有已發布的模型',
     desc: '上線 roster 的每個模型一列、每個交易日一段：青＝當天有預測（predictions 有該模型該日的列）、藍＝當天換了 champion 版本、'
-      + '紅＝那天的夜間流程已結束卻沒有預測、灰＝今晚的流程還沒跑完。滑鼠停在色帶上看版本。' })
+      + '紅＝那天的夜間流程已結束卻沒有預測、灰＝今晚的流程還沒跑完。滑鼠停在色帶上看是哪一天訓練的版本。' })
   const retrain = table('最近一次月訓結果', q(ROSTER, { root: `($run := latest_monthly_run; $run.models.{ 'model': model_name, 'gate': gate_decision, 'ic': ${IC_CELL},
       'failed': $type(failed_gates) = 'array' and $count(failed_gates) > 0 ? $join([failed_gates.($w := $lookup(${GATE_WORDS}, $); $w ? $w : '其他閘門')], '、') : '—',
       'state': ($w := $lookup(${REGISTRY_WORDS}, state); $w ? $w : state ? state : '—'), 'live': $run.is_live ? '上線中' : '未上線',
@@ -1284,15 +1283,16 @@ const V5 = { 'sv-today': today5, 'sv-health': health5, 'sv-resources': resources
 
 /** Header buttons on every desktop page: the four pages, then the phone page. */
 const PAGE_LINKS = [['① 今天', 'sv-today'], ['② 執行品質', 'sv-health'], ['③ 資源與成本', 'sv-resources'], ['④ 策略與模型', 'sv-model'], ['手機版', 'sv-mobile']]
-/** Live header links to a page not in the StockVision folder yet go to the page that holds that content today:
- * ③ 資源與成本 (sv-resources) is still sv-gcp-runtime until its v5 page is published. */
-const LIVE_LINK_UIDS = { 'sv-resources': 'sv-gcp-runtime' }
+/** Live header links to a page not in the StockVision folder yet go to the page that holds that content today. */
+const LIVE_LINK_UIDS = {}
+/** The four desktop pages are the v6 pages (Wei go 11/28: ③ with the Cloudflare / GCP cost split), in the v6 palette
+ * (`recolor`); the phone page keeps its own. */
 const PAGES = [
-  // Published to the StockVision folder on 11/26 (Wei go): the v5 page under the folder's own title.
-  { uid: 'sv-today', title: 'StockVision 今天', build: today5, live: { from: 'now-24h', to: 'now' }, hours: 24, refresh: '1m', links: PAGE_LINKS },
-  { uid: 'sv-health', title: 'StockVision ② 執行品質', build: health, live: { from: 'now-14d', to: 'now' }, hours: 14 * 24, refresh: '5m', links: PAGE_LINKS },
-  { uid: 'sv-resources', title: 'StockVision ③ 資源與成本', build: resources, live: { from: 'now-30d', to: 'now' }, hours: 30 * 24, refresh: '15m', links: PAGE_LINKS },
-  { uid: 'sv-model', title: 'StockVision ④ 策略與模型', build: model, live: { from: 'now-90d', to: 'now' }, hours: 90 * 24, refresh: '15m', links: PAGE_LINKS },
+  // ① keeps the title it was first published under in the StockVision folder (11/26), without the number.
+  { uid: 'sv-today', title: 'StockVision 今天', build: today6, recolor: true, live: { from: 'now-24h', to: 'now' }, hours: 24, refresh: '1m', links: PAGE_LINKS },
+  { uid: 'sv-health', title: 'StockVision ② 執行品質', build: health6, recolor: true, live: { from: 'now-14d', to: 'now' }, hours: 14 * 24, refresh: '5m', links: PAGE_LINKS },
+  { uid: 'sv-resources', title: 'StockVision ③ 資源與成本', build: resources5, recolor: true, live: { from: 'now-30d', to: 'now' }, hours: 30 * 24, refresh: '15m', links: PAGE_LINKS },
+  { uid: 'sv-model', title: 'StockVision ④ 策略與模型', build: model6, recolor: true, live: { from: 'now-90d', to: 'now' }, hours: 90 * 24, refresh: '15m', links: PAGE_LINKS },
   { uid: 'sv-mobile', title: 'SV 手機', build: mobile, live: { from: 'now-24h', to: 'now' }, hours: 24, refresh: '1m', links: [['看完整版', 'sv-today']] },
 ]
 
@@ -1302,7 +1302,8 @@ const PAGES = [
 // TIMELINE: the usual run times behind ①'s slow tags on the chain (v5 ② does not read it).
 const PREVIEW_LIVE = new Set([STATE, ALERTS, READINESS, CAPACITY, CLOCKS, TIMELINE, '/v1/trading-day'])
 /** preview: v4 (the v4 page builders); preview5: v5 (dashboard_rethink_v5.md). Each is its own uid suffix and folder. */
-const PREVIEWS = { preview: { version: 'v4', pages: PAGES }, preview5: { version: 'v5', pages: PAGES.map((page) => ({ ...page, build: V5[page.uid] ?? page.build })) } }
+const V4 = { 'sv-today': today, 'sv-health': health, 'sv-resources': resources, 'sv-model': model }
+const PREVIEWS = { preview: { version: 'v4', pages: PAGES.map((page) => ({ ...page, build: V4[page.uid] ?? page.build })) }, preview5: { version: 'v5', pages: PAGES.map((page) => ({ ...page, build: V5[page.uid] ?? page.build })) } }
 function previewSource(fixtures) {
   const live = querySource('live', null, { liveRoutes: LIVE_ROUTES })
   const inline = querySource('fixture', fixtures.responses, { liveRoutes: LIVE_ROUTES, demo: new Set(Object.keys(fixtures.responses)) })
@@ -1356,6 +1357,24 @@ function recolor6(panel) {
 const V6_PREVIEW = { version: 'v6live', recolor: recolor6, pages: ['sv-today', 'sv-health', 'sv-resources', 'sv-model'],
   builders: { 'sv-today': today6, 'sv-health': health6, 'sv-resources': resources5, 'sv-model': model6 },
   links: { 'sv-today': 'sv-today-v6live', 'sv-health': 'sv-health-v6live', 'sv-resources': 'sv-resources-v6live', 'sv-model': 'sv-model-v6live' } }
+/** recolor6 copies the panel, so the targets' build-time flags (marked: not enumerable) are set again on the copy;
+ * --check compares the live and fixture pages by them. */
+function recolorKeepingMarks(panel) {
+  const out = recolor6(panel)
+  out.targets?.forEach((target, i) => { const from = panel.targets[i]
+    marked(target, Object.fromEntries(Object.getOwnPropertyNames(from).filter((key) => !from.propertyIsEnumerable(key)).map((key) => [key, from[key]]))) })
+  return out
+}
+/** Live pages leave planned panels out; a panel directly left of one, on the same rows, takes its width so no hole is
+ * left (v6 ③ Cloud Run 服務執行個體 beside Job 成敗, ④ 模型名冊 beside 訓練與研究 Job). */
+function withoutPlanned(panels) {
+  const kept = panels.filter((panel) => !isPlanned(panel))
+  for (const gone of panels.filter(isPlanned)) {
+    const left = kept.find((panel) => panel.gridPos.y === gone.gridPos.y && panel.gridPos.h === gone.gridPos.h && panel.gridPos.x + panel.gridPos.w === gone.gridPos.x)
+    if (left) left.gridPos = { ...left.gridPos, w: left.gridPos.w + gone.gridPos.w }
+  }
+  return kept
+}
 function buildLivePreview(preview = LIVE_PREVIEW) {
   const mock = mockResponses(new Date().toISOString())
   const live = querySource('live', null, { liveRoutes: LIVE_ROUTES })
@@ -1386,8 +1405,10 @@ function build(mode) {
   const q = querySource(mode, fixtures?.responses, { liveRoutes: LIVE_ROUTES, demo: fixtures?.demo })
   return PAGES.map((page) => {
     const built = page.build(q, mode).flat()
-    const panels = mode === 'live' ? built.filter((panel) => !isPlanned(panel))
+    // Mark 示範資料 before recolouring (recolor copies the panel; recolorKeepingMarks carries the target flags over).
+    const kept = mode === 'live' ? withoutPlanned(built)
       : built.map((panel) => (isDemo(panel) ? Object.assign(panel, { description: `${DEMO}${panel.description ?? ''}` }) : panel))
+    const panels = page.recolor ? kept.map(recolorKeepingMarks) : kept
     return mode === 'live'
       ? dashboard({ uid: page.uid, title: page.title, panels, time: page.live, refresh: page.refresh,
         links: page.links.map(([title, uid]) => [title, LIVE_LINK_UIDS[uid] ?? uid]) })
@@ -1410,17 +1431,18 @@ function buildPreview({ version, pages }) {
   })
 }
 
-/** Panels with everything that may differ between the two modes removed: where a query reads from (a billing query is
- * BigQuery live and authored rows in the fixture, so only its refId is compared), ids, the 示範資料 note, planned panels.
+/** Panels with everything that may differ between the two modes removed: where a query reads from (a billing or
+ * Cloudflare query is BigQuery / the Cloudflare API live and authored rows in the fixture, so only its refId is compared), ids, the 示範資料 note, planned panels.
  * A Worker route over mock.mjs in the fixture is the live query over other data: compared in full. */
 function comparable(board) {
   const strip = (target) => {
-    if (target.datasource?.type === BIGQUERY_DS.type || target.standIn) return { refId: target.refId }
+    if (target.datasource?.type === BIGQUERY_DS.type || target.datasource?.uid === CF_DS.uid || target.standIn) return { refId: target.refId }
     const { datasource, source, url, url_options, data, ...rest } = target
     return rest
   }
   const panel = ({ id, datasource, description, targets, ...rest }) => ({ ...rest, description: (description ?? '').replace(DEMO, ''), targets: targets?.map(strip) })
-  return JSON.stringify(board.panels.filter((p) => !isPlanned(p)).map(panel))
+  // The live page's layout without its planned panels (copies: the fixture page keeps its own).
+  return JSON.stringify(withoutPlanned(board.panels.map((p) => ({ ...p }))).map(panel))
 }
 
 /** Words build.mjs makes from a raw field (rawErrors.mjs skips them): a readiness detail is the Worker's own description,

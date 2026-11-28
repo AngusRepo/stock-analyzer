@@ -3192,7 +3192,7 @@
   {
    "type": "state-timeline",
    "title": "模型服務狀態（14 日）",
-   "description": "上線 roster 的每個模型一列、每個交易日一段：青＝當天有預測（predictions 有該模型該日的列）、藍＝當天換了 champion 版本、紅＝那天的夜間流程已結束卻沒有預測、灰＝今晚的流程還沒跑完。滑鼠停在色帶上看版本。",
+   "description": "上線 roster 的每個模型一列、每個交易日一段：青＝當天有預測（predictions 有該模型該日的列）、藍＝當天換了 champion 版本、紅＝那天的夜間流程已結束卻沒有預測、灰＝今晚的流程還沒跑完。滑鼠停在色帶上看是哪一天訓練的版本。",
    "gridPos": {
     "x": 0,
     "y": 29,
@@ -3209,7 +3209,7 @@
      "type": "json",
      "parser": "backend",
      "format": "table",
-     "root_selector": "([rows.{ 'time': $fromMillis($toMillis(date & 'T00:00:00.000Z') - 28800000), 'model': model_name,\n      'cell': (state = 'serving' ? 'ok|' : state = 'switched' ? 'info|換版 ' : state = 'pending' ? 'wait|待今晚 ' : 'bad|缺 ') & (version ? version : '') }])",
+     "root_selector": "([rows.{ 'time': $fromMillis($toMillis(date & 'T00:00:00.000Z') - 28800000), 'model': model_name,\n      'cell': (state = 'serving' ? 'ok|' : state = 'switched' ? 'info|換版 ' : state = 'pending' ? 'wait|待今晚 ' : 'bad|缺 ') & ($v := version; $contains($v ? $v : '', /^v[0-9]{14}$/) ? $substring($v, 1, 4) & '/' & $substring($v, 5, 2) & '/' & $substring($v, 7, 2) & ' 版' : $v ? $v : '') }])",
      "columns": [
       {
        "selector": "time",

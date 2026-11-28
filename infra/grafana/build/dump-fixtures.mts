@@ -248,7 +248,9 @@ try {
   // The paths the dashboards query, parameters included. The p4 and v6 routes read tables this fixture does not seed:
   // the fixture build draws them over mock.mjs.
   const paths = [...Object.keys(ROUTES).filter((path) => !(path in P4_ROUTES) && !(path in V6_ROUTES)).map((path) => (path === '/v1/chain/timeline' ? `${path}?days=14` : path === '/v1/chain/history' ? `${path}?days=14` : path)),
-    ...(CHAIN_IDS as string[]).filter((id) => id !== CHAIN_ID).flatMap((id) => [`/v1/chain/state?chain=${id}`, `/v1/chain/history?days=14&chain=${id}`])]
+    ...(CHAIN_IDS as string[]).filter((id) => id !== CHAIN_ID).flatMap((id) => [`/v1/chain/state?chain=${id}`, `/v1/chain/history?days=14&chain=${id}`]),
+    // v6 ① reads the last two days for the chain's slow tags.
+    '/v1/chain/timeline?days=2']
   const index: Record<string, string> = {}
   for (const path of paths) {
     const response = await handler(new Request(`https://monitoring.test${path}`, { headers: await accessHeaders(keys, NOW) }), env)

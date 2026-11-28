@@ -1288,7 +1288,7 @@
    },
    "timeFrom": "now/M",
    "hideTimeOverride": true,
-   "description": "實線＝本月每天的累計淨額，虛線＝照目前日均推到月底，琥珀虛線＝每月預算 NT$2,000（示範值）。BigQuery 帳單明細匯出（新台幣，已扣抵免）；資料晚幾小時到一兩天才齊，最近一天偏低。不含 Cloudflare、Modal。",
+   "description": "實線＝本月每天的累計淨額，虛線＝照目前日均推到月底。BigQuery 帳單明細匯出（新台幣，已扣抵免）；資料晚幾小時到一兩天才齊，最近一天偏低。不含 Cloudflare、Modal。",
    "targets": [
     {
      "refId": "A",
@@ -1336,43 +1336,15 @@
       "mode": "fixed",
       "fixedColor": "#199cb8"
      },
-     "thresholds": {
-      "mode": "absolute",
-      "steps": [
-       {
-        "color": "transparent",
-        "value": null
-       },
-       {
-        "color": "#ff9830",
-        "value": 2000
-       }
-      ]
-     },
      "custom": {
       "drawStyle": "line",
       "lineWidth": 2,
       "fillOpacity": 12,
       "showPoints": "never",
-      "spanNulls": false,
-      "thresholdsStyle": {
-       "mode": "dashed"
-      }
+      "spanNulls": false
      }
     },
     "overrides": [
-     {
-      "matcher": {
-       "id": "byRegexp",
-       "options": "^(實際累計|月底預估)$"
-      },
-      "properties": [
-       {
-        "id": "custom.axisSoftMax",
-        "value": 2200
-       }
-      ]
-     },
      {
       "matcher": {
        "id": "byName",

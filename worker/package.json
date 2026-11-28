@@ -13,7 +13,7 @@
     "db:migrations:ops:apply:remote": "wrangler d1 migrations apply stockvision-ops-db --remote"
   },
   "dependencies": {
-    "hono": "4.12.25"
+    "hono": "4.13.16"
   },
   "devDependencies": {
     "@types/node": "^25.9.3",

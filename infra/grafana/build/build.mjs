@@ -515,7 +515,7 @@ function model(q) {
     { mappings: ARM_MAPPINGS, legend: true, desc: '每個訊號日的計畫用了哪個 arm；灰＝風控把所有 arm 壓成同一組，那天學不到差別。' }),
     stackedBars('各 arm 累積樣本（最新有統計的計畫）', [q(OPB, { root: `latest_arm_statistics.{ 'arm': arm_id, 'samples': samples }`,
       columns: [S('arm', 'arm'), N('samples', '樣本數')] })], 'arm', 14, 8, 10, 5, [['樣本數', COOL.cat[0]]],
-    { horizontal: true, desc: '最新一筆有 arm 統計的計畫：每個 arm 累積多少樣本（v2 從 replay 學）。所有 arm 被壓成同一組或固定 arm 那天的計畫統計是空的，往前取；統計按 context 算，可能早於目前的 context。' }),
+    { horizontal: true, desc: '最新一筆有 arm 統計的計畫：每個 arm 累積多少樣本（v2 從回放學）。所有 arm 被壓成同一組或固定 arm 那天的計畫統計是空的，往前取；統計按情境算，可能早於目前的情境。' }),
     table('模型名冊', q(ROSTER, { root: `rows.{ 'model': model_name, 'gate': gate_decision, 'ic': oos_ic, 'min': min_oos_ic_mean, 'state': state,
       'version': '版本 ' & champion_version, 'run': source_run_date ? '訓練資料 ' & source_run_date : '訓練資料 —' }`,
       columns: [S('model', '模型'), S('gate', '閘門'), N('ic', 'OOS IC'), N('min', 'IC 門檻'), S('state', '狀態'), S('version', '版本'), S('run', '訓練')] }),
@@ -960,7 +960,7 @@ function resources5(q, mode) {
         scaleDistribution: { type: 'log', log: 10 } } },
       overrides: [['A', COOL.cat[0]], ['B', COOL.cat[2]]].map(([refId, color]) => ({ matcher: { id: 'byFrameRefID', options: refId }, properties: [{ id: 'color', value: { mode: 'fixed', fixedColor: color } }] })) } },
     gcpStates('Cloud Run 服務執行個體', gcpSeries('A', INSTANCES, 'resource.label.service_name', 'ALIGN_MAX', '+3600s', '{{resource.label.service_name}}'), 0, 28, 12, 7,
-      { on: '有執行個體', empty: '沒有', desc: '每個服務每小時有沒有執行個體醒著（scale-to-zero 下，藍＝那一小時有執行個體在跑）。滑鼠停在色段上看持續多久。' }),
+      { on: '有執行個體', empty: '沒有', desc: '每個服務每小時有沒有執行個體醒著（沒有流量時會縮到 0 個；藍＝那一小時有執行個體在跑）。滑鼠停在色段上看持續多久。' }),
     // Cloud Run Jobs and Scheduler over Cloud Monitoring (moved from the old GCP 執行狀態 page, 11/28; the planned
     // per-run source never came).
     gcpStates('Cloud Run Job 執行時段', gcpSeries('A', RUNNING, 'resource.label.job_name', 'ALIGN_MAX', '+3600s', '{{resource.label.job_name}}'), 12, 28, 12, 7,
@@ -1067,11 +1067,11 @@ function model5(q) {
     // Bars, not the xychart bubbles: Grafana's xychart passes PanelDataErrorView its own "No data" warning, so its noValue never
     // shows; a barchart with no rows shows noValue centred (a new context: every arm has 0 samples and no mean reward).
     hbars('OPB arm：樣本數 × 平均 reward', opbBars, 'name', 14, 8, 10, 6, { unit: 'percentunit', dec: 2, colorBy: 'arm', labelMax: 20,
-      empty: '目前 context 還沒有 reward 樣本',
+      empty: '目前情境還沒有 reward 樣本',
       overrides: [{ matcher: { id: 'byName', options: 'arm' }, properties: [{ id: 'mappings', value: ARM_NAME_MAPPINGS }, { id: 'custom.hideFrom', value: { legend: true, tooltip: true, viz: false } }] }],
       desc: '一條＝一個 arm：長度＝平均 reward（往右＝正、往左＝負），名稱後＝累積樣本數與近 60 天被選用的比例，顏色同左邊「每天選到的 OPB arm」。'
         + '有在學的話，樣本多、選用比例高的 arm 會是 reward 較高的那幾條；每條都差不多長＝沒有在分辨 arm。'
-        + '樣本與 reward 取最新一筆有 arm 統計的計畫（所有 arm 被壓成同一組的那天不存統計）；換 context 後各 arm 還沒有 reward 時不畫，顯示「目前 context 還沒有 reward 樣本」。' }),
+        + '樣本與 reward 取最新一筆有 arm 統計的計畫（所有 arm 被壓成同一組的那天不存統計）；換情境後各 arm 還沒有 reward 時不畫，顯示「目前情境還沒有 reward 樣本」。' }),
     roster,
     // One cell per job and day (status-history): a run of minutes is invisible as a state-timeline segment over 14 days.
     // A state timeline, not a status history: the status history labels every sample on its time axis, so 14 dates overlap
@@ -1225,8 +1225,8 @@ function bgKpi(title, targets, x, y, w, h, fields, desc, textMode = 'value_and_n
 /** The T+5 serving guard as one cell (expected_return_serving_forward_guard.py: 3 jointly inferior dates bypass, 3 passing recover). */
 const GUARD_CELL = `($s := summary.status; $s = 'not_applicable' ? 'na|未啟用' : $s = 'mismatch' ? 'bad|版本不符' : $s = 'bypass' ? 'bad|已旁路・恢復 ' & $string(summary.recovery_streak) & '／' & $string(thresholds.pass_streak_to_recover)
   : $s = 'warning' ? 'warn|惡化 ' & $string(summary.degraded_streak) & '／' & $string(thresholds.degraded_streak_to_bypass) & ' 日' : 'ok|正常')`
-const GUARD_DESC = 'Fusion 模型上線後的 T+5 前向檢查：連續 3 個預測日 IC 與價差都輸 L4 就旁路 residual，旁路後要連續 3 日通過才恢復（至少 5 個可評估日）。'
-  + '未啟用＝目前沒有 Fusion residual 在服務，不需要這道保護（灰）；正常＝青；惡化中＝琥珀；已旁路＝紅；'
+const GUARD_DESC = 'Fusion 模型上線後的 T+5 前向檢查：連續 3 個預測日 IC 與價差都輸 L4 就旁路殘差修正，旁路後要連續 3 日通過才恢復（至少 5 個可評估日）。'
+  + '未啟用＝目前沒有 Fusion 殘差修正在服務，不需要這道保護（灰）；正常＝青；惡化中＝琥珀；已旁路＝紅；'
   + '版本不符＝這道檢查綁的模型檔或版本指紋不是目前服務中的 Fusion（紅，日數不顯示）。'
 function guardCell(q, x, y, w, h) {
   return bgKpi('T+5 guard', [q(GUARD, { root: `{ 'g': ${GUARD_CELL} }`, columns: [S('g', 'guard')] })], x, y, w, h,
@@ -1253,16 +1253,16 @@ function model6(q) {
   const panels = model5(q).flat()
   for (const panel of panels) panel.gridPos = { ...panel.gridPos, y: panel.gridPos.y + 4 }
   const ledger = bgKpi('OPB reward 帳本落後', [q(LEDGER, { root: `{ 'lag': ${orNone('summary.lag_trading_days')}, 'ctx': summary.current_context_rows }`,
-    columns: [N('lag', '落後交易日'), N('ctx', '目前 context 樣本')] })], 0, 0, 6, 4,
+    columns: [N('lag', '落後交易日'), N('ctx', '目前情境樣本')] })], 0, 0, 6, 4,
   [{ name: '落後交易日', th: th([CALM_OK, null], [C.warn, 2]), mappings: noneMapping('帳本無資料', C.warn) },
-    { name: '目前 context 樣本', th: th([C.warn, null], [CALM_OK, 1]) }],
-  'OPB v2 只從 arm replay 帳本學。落後交易日＝帳本最新的 reward 可知日距「最近一次盤後收尾能補到的日期」（收尾日的前一個交易日）幾個交易日：'
-    + '0＝即時、≥2 琥珀（最多算到 20；落後不是失敗，所以不轉紅）；帳本沒有任何 replay 或算不出參考日＝「帳本無資料」（琥珀）。目前 context 樣本＝最新計畫的 context 已有幾筆 replay；0＝這個 context 還沒學到東西（換 L3 版本或風控設定會換 context，要等 5 個交易日後才有第一筆）。')
+    { name: '目前情境樣本', th: th([C.warn, null], [CALM_OK, 1]) }],
+  'OPB v2 只從 arm 回放帳本學。落後交易日＝帳本最新的 reward 可知日距「最近一次盤後收尾能補到的日期」（收尾日的前一個交易日）幾個交易日：'
+    + '0＝即時、≥2 琥珀（最多算到 20；落後不是失敗，所以不轉紅）；帳本沒有任何回放或算不出參考日＝「帳本無資料」（琥珀）。目前情境樣本＝最新計畫的情境已有幾筆回放；0＝這個情境還沒學到東西（換 L3 版本或風控設定會換情境，要等 5 個交易日後才有第一筆）。')
   const seal = bgKpi('今日正式政策', [q(SEAL, { root: `{ 'today': ($s := summary.today_status; $s = 'sealed' ? 'ok|已封存' : $s = 'waiting' ? 'wait|等待中'
       : $s = 'missing' ? 'bad|未封存' : 'na|休市'), 'at': summary.today_sealed_at ? $fromMillis($toMillis(summary.today_sealed_at), '[H01]:[m01]', '+0800') : '—',
       'miss': summary.missing_days }`, columns: [S('today', '今日'), S('at', '封存時間'), N('miss', '14 日未封存')] })], 6, 0, 6, 4,
   [{ name: '今日', mappings: TONE6 }, { name: '封存時間', th: NEUTRAL }, { name: '14 日未封存', th: th([CALM_OK, null], [C.warn, 1], [C.bad, 3]) }],
-  '今天的正式計畫有沒有在盤前 08:45 cutoff 前封存：已封存＝青、cutoff 前還沒有＝灰（等待中）、過了 cutoff 還沒有＝紅；休市日不算。'
+  '今天的正式計畫有沒有在盤前 08:45 截止前封存：已封存＝青、截止前還沒有＝灰（等待中）、過了截止還沒有＝紅；休市日不算。'
     + '14 日未封存＝近 14 天的交易日裡沒封存的天數。')
   const guard = bgKpi('serving guard（T+5）', [q(GUARD, { root: `{ 'g': ${GUARD_CELL}, 'd': ${orNone('summary.degraded_streak')},
       'r': ${orNone('summary.recovery_streak')}, 'n': ${orNone('summary.evaluable_date_count')} }`, columns: [S('g', '狀態'), N('d', '連續惡化'), N('r', '連續恢復'), N('n', '可評估日')] })], 12, 0, 6, 4,
@@ -1273,7 +1273,7 @@ function model6(q) {
   const sealDays = states('state-timeline', '封存紀錄（14 日）', q(SEAL, { root: `rows.{ 'time': ${DAY_TIME('date')}, 'row': '封存',
       'cell': status = 'sealed' ? 'ok|' & $fromMillis($toMillis(sealed_at), '[H01]:[m01]', '+0800') & ' 封存' : status = 'waiting' ? 'wait|等待中' : 'bad|未封存' }`,
   columns: [T('time', 'time'), S('row', 'row'), S('cell', 'cell')] }), 'row', 18, 0, 6, 4,
-  { mappings: TONE6, timeFrom: '14d', opts: { mergeValues: false, rowHeight: 0.8 }, empty: '14 天內沒有交易日', desc: '每個交易日一格：青＝盤前已封存（滑鼠停在格子上看封存時間）、紅＝過了 cutoff 沒有封存、灰＝今天還在 cutoff 前。' })
+  { mappings: TONE6, timeFrom: '14d', opts: { mergeValues: false, rowHeight: 0.8 }, empty: '14 天內沒有交易日', desc: '每個交易日一格：青＝盤前已封存（滑鼠停在格子上看封存時間）、紅＝過了截止還沒有封存、灰＝今天還在截止前。' })
   const serving = states('state-timeline', '模型服務狀態（14 日）', q(SERVING, { root: `rows.{ 'time': ${DAY_TIME('date')}, 'model': model_name,
       'cell': (state = 'serving' ? 'ok|' : state = 'switched' ? 'info|換版 ' : state = 'pending' ? 'wait|待寫入 ' : 'bad|缺 ') & ${VERSION_WORDS('version')} }`,
   columns: [T('time', 'time'), S('model', 'model'), S('cell', 'cell')] }), 'model', 0, 29, 14, 7,

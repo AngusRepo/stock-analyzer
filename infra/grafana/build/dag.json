@@ -734,7 +734,7 @@
    "phases": [
     {
      "id": "monthly",
-     "title": "每月 artifact",
+     "title": "每月產出",
      "caption": "每月第一個週六 strategy mining → monthly search；第一個週日 Active-8 monthly → monthly root 收尾",
      "main": [
       "monthly-strategy-mining",

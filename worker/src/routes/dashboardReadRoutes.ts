@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { readStockModelSignals } from '../lib/retentionPredictionsReader'
 import { twToday } from '../lib/dateUtils'
 import { requireValidToken, requireAdminOrServiceToken } from '../lib/auth'
 import { controllerJson } from '../lib/controllerClient'
@@ -111,13 +112,7 @@ dashboardReadRoutes.get('/api/dashboard/v4/stocks/:id/chart', async (c) => {
     databaseForDataDomain(c.env, 'market').prepare(
       'SELECT date, open, high, low, close, volume FROM stock_prices WHERE stock_id=? AND date>=? ORDER BY date',
     ).bind(id, since).all<any>().then((r) => r.results ?? []),
-    databaseForDataDomain(c.env, 'learning').prepare(`
-      SELECT prediction_date, generated_at, model_name, trade_signal, direction_accuracy
-      FROM predictions
-      WHERE stock_id=? AND prediction_date IS NOT NULL
-      ORDER BY prediction_date DESC, generated_at DESC
-      LIMIT ?
-    `).bind(id, signalLimit).all<any>().then((r) => r.results ?? []),
+    readStockModelSignals(c.env, id, signalLimit) as Promise<any[]>,
     readMarketRegimeState(c.env.KV).catch(() => null),
     import('../lib/dataQualityMonitor')
       .then(({ buildDataQualityReport }) => buildDataQualityReport(c.env, { date: c.req.query('date') }))

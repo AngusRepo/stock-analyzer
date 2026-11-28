@@ -2330,6 +2330,10 @@ def load_allocator_ev_fusion_training_rows(
     knowledge_cutoff_date: str | None = None,
     forecast_archive_download: Callable[[str], bytes] | None = None,
 ) -> list[dict[str, Any]]:
+    from services.retention_prediction_reads import require_hot_prediction_lookback
+
+    # Both paths below read Learning predictions; archived rows past the hot window are not merged.
+    require_hot_prediction_lookback(end_date, lookback_days, 'allocator_ev_fusion_training_rows')
     outcome_cutoff = knowledge_cutoff_date or end_date
     snapshot_rows: list[dict[str, Any]] = []
     snapshot_available = False

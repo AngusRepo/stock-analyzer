@@ -256,6 +256,7 @@ export async function refreshLinUcbLedgerForAdaptive(env: AdaptiveEngineEnv, end
       startDate: dateDaysAgo(90),
       endDate,
       limit: 5000,
+      coldEnv: env,
     }
     const sourceRows = await listLinUcbRewardSourceRowsAcrossDomains(
       predictionDb,

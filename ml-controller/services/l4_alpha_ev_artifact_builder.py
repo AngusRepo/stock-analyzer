@@ -980,6 +980,9 @@ def load_l4_alpha_ev_training_rows(
     lookback_days: int = 90,
     limit: int = 6000,
 ) -> list[dict[str, Any]]:
+    from services.retention_prediction_reads import require_hot_prediction_lookback
+
+    require_hot_prediction_lookback(end_date, lookback_days, 'l4_alpha_ev_training_rows')
     outcome_cutoff = knowledge_cutoff_date or end_date
     if core_query_fn is not None:
         learning_rows = query_fn(

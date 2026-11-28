@@ -4,6 +4,7 @@ import {
   type LinUcbRewardSourceRow,
 } from './metaLearningRewardLedger'
 import type { MetaLearningTrackId } from './metaLearningResearchTrack'
+import { oldestArchivablePredictionDate, readArchivedPredictions, sqliteOrder, type ArchivedPredictionsEnv } from './retentionPredictionsReader'
 
 export type ShadowPolicyId = Extract<MetaLearningTrackId, 'NeuralUCB' | 'NeuralTS' | 'NeuCB'>
 
@@ -160,6 +161,8 @@ export interface MetaShadowRewardHydrationReport {
   unmatched_decisions: number
   /** Pending decisions the seekable join cannot match (non-canonical business_date or symbol). */
   unseekable_pending_decisions: number
+  /** Pre-floor decisions marked outcome_unavailable_after_cold_scan this run (reward stays NULL). */
+  cold_unavailable_decisions: number
   end_date: string
 }
 
@@ -191,9 +194,96 @@ function decisionArmMatchesModel(armId: string, modelName: unknown): boolean {
   return family === armId
 }
 
+const hydrationOrder = sqliteOrder<HydrationSourceRow>(
+  [(row) => String(row.business_date).slice(0, 10), 'asc'], [(row) => row.decision_id, 'asc'], [(row) => row.model_name, 'asc'])
+
+export const META_SHADOW_COLD_UNAVAILABLE_STATUS = 'outcome_unavailable_after_cold_scan'
+
+interface ArchivedHydrationMerge {
+  rows: HydrationSourceRow[]
+  /** Pending pre-floor decisions whose hot and released cold predictions were both read in full. */
+  coldScanned: HydrationSourceRow[]
+}
+
+// Pending decisions whose predictions left the hot window join their R2 archive with the same
+// predicates as the seekable join; the merged rows keep its order and limit. A decision already
+// marked outcome_unavailable_after_cold_scan is not selected again, so its chunks are read once.
+async function mergeArchivedHydrationRows(db: D1Database, env: ArchivedPredictionsEnv, hotRows: HydrationSourceRow[],
+  endDate: string, limit: number): Promise<ArchivedHydrationMerge> {
+  // Only dates older than the hot floor can have archived predictions.
+  const floor = oldestArchivablePredictionDate()
+  const decisions = (await db.prepare(`
+    SELECT decision_id, business_date, symbol, arm_id, evidence_json
+      FROM meta_shadow_decisions d
+     WHERE d.counterfactual_reward IS NULL
+       AND d.business_date <= date(?) AND date(d.business_date) <= date(?)
+       AND d.business_date < ?
+       AND instr(COALESCE(d.evidence_json, ''), '"${META_SHADOW_COLD_UNAVAILABLE_STATUS}"') = 0
+     ORDER BY d.business_date ASC, d.decision_id ASC
+     LIMIT ?
+  `).bind(endDate, endDate, floor, limit).all<HydrationSourceRow>()).results ?? []
+  const wanted = decisions.filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d.business_date) && d.symbol === String(Number.parseInt(d.symbol, 10)))
+  if (!wanted.length) return { rows: hotRows, coldScanned: [] }
+  const dates = wanted.map((d) => d.business_date).sort()
+  const cold = await readArchivedPredictions(env, { start: dates[0], end: dates.at(-1)!,
+    stockIds: [...new Set(wanted.map((d) => Number(d.symbol)))],
+    filter: (p) => p.verified_at != null && (p.direction_correct != null || p.trade_pnl_pct != null || p.actual_return_pct != null) })
+  const byKey = new Map<string, typeof cold>()
+  for (const p of cold) {
+    const key = `${p.prediction_date}|${p.stock_id}`
+    byKey.set(key, [...(byKey.get(key) ?? []), p])
+  }
+  const joined = wanted.flatMap((d) => (byKey.get(`${d.business_date}|${Number(d.symbol)}`) ?? []).map((p) => ({
+    decision_id: d.decision_id, business_date: d.business_date, symbol: d.symbol, arm_id: d.arm_id, evidence_json: d.evidence_json,
+    model_name: p.model_name as string, direction_correct: p.direction_correct as any,
+    trade_pnl_pct: p.trade_pnl_pct as any, actual_return_pct: p.actual_return_pct as any,
+  })))
+  const merged = [...hotRows, ...joined].sort(hydrationOrder)
+  // A truncated hot page or merged page may have dropped a decision's rows: no decision is
+  // declared unavailable from an incomplete read.
+  const complete = hotRows.length < limit && merged.length <= limit
+  return { rows: merged.slice(0, limit), coldScanned: complete ? wanted : [] }
+}
+
+// A pre-floor decision that still has no reward after the full hot + released-cold read gets an
+// explicit terminal status instead of staying pending (and re-reading its chunks every night).
+// Its counterfactual_reward stays NULL: it is never counted as a reward, and policy sample counts
+// (COUNT(*) per policy) are unchanged. The mark is final: the cold path skips marked decisions, so
+// an archive written or re-released for that date later is not joined again (clear the mark to retry). Hot rows for the same (date, stock) mean the drain has not
+// finished that day (an unverified row could still verify), so such a decision stays pending.
+async function markColdUnavailableDecisions(db: D1Database, decisions: HydrationSourceRow[], nowIso: string): Promise<number> {
+  let marked = 0
+  const floor = oldestArchivablePredictionDate()
+  for (const decision of decisions) {
+    const hot = await db.prepare(`
+      SELECT 1 AS present FROM predictions INDEXED BY idx_pred_date_stock_model_generated
+       WHERE prediction_date = ? AND stock_id = ? LIMIT 1
+    `).bind(decision.business_date, Number(decision.symbol)).first<{ present: number }>()
+    if (hot) continue
+    const evidence = {
+      ...parseEvidence(decision.evidence_json),
+      outcome_hydration: {
+        status: META_SHADOW_COLD_UNAVAILABLE_STATUS,
+        reason: 'no_verified_prediction_in_hot_window_or_released_cold_archive',
+        model_family_arm: decision.arm_id,
+        hot_floor: floor,
+        scanned_at: nowIso,
+      },
+    }
+    const result = await db.prepare(`
+      UPDATE meta_shadow_decisions
+         SET evidence_json = ?
+       WHERE decision_id = ?
+         AND counterfactual_reward IS NULL
+    `).bind(JSON.stringify(evidence), decision.decision_id).run()
+    marked += Number(result.meta?.changes ?? 0)
+  }
+  return marked
+}
+
 export async function hydrateMatureMetaShadowDecisionRewards(
   db: D1Database,
-  options: { endDate: string; limit?: number; nowIso?: string },
+  options: { endDate: string; limit?: number; nowIso?: string; coldEnv?: ArchivedPredictionsEnv },
 ): Promise<MetaShadowRewardHydrationReport> {
   const limit = Math.max(1, Math.min(options.limit ?? 20000, 50000))
   const nowIso = options.nowIso ?? new Date().toISOString()
@@ -247,13 +337,17 @@ export async function hydrateMatureMetaShadowDecisionRewards(
      ORDER BY date(d.business_date) ASC, d.decision_id ASC, p.model_name ASC
      LIMIT ?
   `).bind(options.endDate, options.endDate, limit).all<HydrationSourceRow>()
+  const merge = options.coldEnv
+    ? await mergeArchivedHydrationRows(db, options.coldEnv, results ?? [], options.endDate, limit)
+    : { rows: results ?? [], coldScanned: [] as HydrationSourceRow[] }
+  const sourceRows = merge.rows
 
   const buckets = new Map<string, {
     row: HydrationSourceRow
     rewards: number[]
     models: Set<string>
   }>()
-  for (const row of results ?? []) {
+  for (const row of sourceRows) {
     const bucket = buckets.get(row.decision_id) ?? { row, rewards: [], models: new Set<string>() }
     if (row.arm_id === 'do_nothing') {
       bucket.rewards.push(0)
@@ -289,12 +383,17 @@ export async function hydrateMatureMetaShadowDecisionRewards(
     hydrated += Number(result.meta?.changes ?? 0)
   }
 
+  const rewarded = new Set([...buckets].filter(([, bucket]) => bucket.rewards.length > 0).map(([id]) => id))
+  const coldUnavailable = await markColdUnavailableDecisions(db,
+    merge.coldScanned.filter((decision) => !rewarded.has(decision.decision_id)), nowIso)
+
   return {
-    source_rows: (results ?? []).length,
+    source_rows: sourceRows.length,
     eligible_decisions: buckets.size,
     hydrated_decisions: hydrated,
     unmatched_decisions: Math.max(0, buckets.size - hydrated),
     unseekable_pending_decisions: unseekablePending,
+    cold_unavailable_decisions: coldUnavailable,
     end_date: options.endDate,
   }
 }

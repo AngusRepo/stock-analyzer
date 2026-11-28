@@ -247,6 +247,7 @@ import { loadMarketRegimeFactorPacket } from '../lib/marketRegimeFactorPacket'
 import { resolveCanonicalMarketRisk } from '../lib/marketRiskRuntime'
 import { getRiskConfig } from '../lib/riskConfig'
 import { runtimeMarketRiskDisplay } from '../lib/marketRiskDisplay'
+import { readDailyRecommendationPredictions, readPredictionTradeHistory } from '../lib/retentionPredictionsReader'
 import { buildMarketOptimisticOutlook } from '../lib/marketOutlook'
 import { loadRecommendationEvidenceLinks } from '../lib/recommendationEvidenceLinks'
 import { SCORE_V2_VERSION } from '../lib/scoreV2Taxonomy'
@@ -2959,19 +2960,7 @@ ml.get('/trade-history/:stockId', async (c) => {
   const stockId = parseId(c.req.param('stockId'))
   if (!stockId) return c.json({ error: '無效 ID' }, 400)
   const limit   = parsePosInt(c.req.query('limit'), 50)
-  const { results } = await databaseForDataDomain(c.env, 'learning').prepare(`
-    SELECT generated_at, model_name, trade_signal,
-           predicted_direction, actual_direction, direction_correct,
-           entry_price, stop_loss, target1, target2,
-           trade_outcome, trade_pnl_pct, trade_pnl_r,
-           max_favorable_pct, max_adverse_pct,
-           actual_return_pct, market_risk_level, verified_at
-    FROM predictions
-    WHERE stock_id=? AND trade_pnl_pct IS NOT NULL
-    ORDER BY generated_at DESC
-    LIMIT ?
-  `).bind(stockId, limit).all<any>()
-  return c.json(results ?? [])
+  return c.json(await readPredictionTradeHistory(c.env, stockId, limit))
 })
 
 // ─── ML 準確率查詢 ────────────────────────────────────────────────────────────
@@ -4250,26 +4239,7 @@ recommendations.get('/daily', async (c) => {
   if (stockIds.length > 0 && view !== 'card') {
     const learningDb = databaseForDataDomain(c.env, 'learning')
     for (const stockIdChunk of d1SafeInChunks(stockIds)) {
-      const placeholders = stockIdChunk.map(() => '?').join(',')
-      const [ensembleRows, perModelRows] = await Promise.all([
-      learningDb.prepare(`
-        SELECT stock_id, forecast_data
-          FROM predictions
-         WHERE stock_id IN (${placeholders})
-           AND model_name = 'ensemble'
-           AND prediction_date = ?
-         ORDER BY stock_id, generated_at DESC, id DESC
-      `).bind(...stockIdChunk, date).all<any>().catch(() => ({ results: [] as any[] })),
-      learningDb.prepare(`
-        SELECT stock_id, model_name, signal_raw, direction_accuracy, forecast_data
-          FROM predictions
-         WHERE stock_id IN (${placeholders})
-           AND model_name != 'ensemble'
-           AND model_name NOT LIKE '%::challenger'
-           AND prediction_date = ?
-         ORDER BY stock_id, model_name
-      `).bind(...stockIdChunk, date).all<any>().catch(() => ({ results: [] as any[] })),
-    ])
+      const { ensembleRows, perModelRows } = await readDailyRecommendationPredictions(c.env, learningDb, date, stockIdChunk)
       for (const row of ensembleRows.results ?? []) {
       if (!ensembleByStock.has(Number(row.stock_id))) ensembleByStock.set(Number(row.stock_id), row)
     }

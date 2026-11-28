@@ -60,6 +60,11 @@ CHECKS: tuple[tuple[str, str, list[Any]], ...] = (
              OR verification_label_known_date <= prediction_date
            )
     """, [CANONICAL_LABEL_VERSION]),
+    # Rows past the 120-day hot window: the retention drain counts their violations into
+    # prediction_cold_stats_v1 (same predicate) in the batch that deletes them.
+    ("canonical_prediction_label_archived", """
+        SELECT COALESCE(SUM(label_v4_violations), 0) AS violations FROM prediction_cold_stats_v1
+    """, []),
     ("canonical_selection_label", """
         SELECT COUNT(*) AS violations FROM canonical_selection_labels_v4
          WHERE entry_date <= signal_date

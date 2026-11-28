@@ -360,6 +360,13 @@ async function loadPriceRows(
   })
 }
 
+/**
+ * Archived (past the predictions hot window) ensemble stock ids per prediction_date. Callers pass
+ * retentionPredictionsReader.readArchivedEnsembleStockDates; it is injected, not imported, so the
+ * native Paper bundle that includes this module does not pull in the retention reader.
+ */
+export type ArchivedEnsembleStockDates = (startDate: string, endDate: string) => Promise<Map<string, Set<number>>>
+
 type CandidateIdentityCoverage = {
   stockIds: number[]
   referenceRows: number
@@ -370,6 +377,7 @@ export async function loadCandidateSignalDates(
   db: D1Database,
   startDate: string,
   endDate: string,
+  archivedEnsemble?: ArchivedEnsembleStockDates,
 ): Promise<Set<string>> {
   const result = await db.prepare(`
     SELECT DISTINCT signal_date
@@ -400,11 +408,14 @@ export async function loadCandidateSignalDates(
     SELECT DISTINCT price_date AS signal_date FROM price_horizon_labels_v2
      WHERE price_date >= ? AND price_date <= ?
   `).bind(startDate, endDate, startDate, endDate).all<{ signal_date: string }>()
+  // Ensemble prediction dates past the 120-day hot window come from the archive manifests.
+  const archived = archivedEnsemble ? [...(await archivedEnsemble(startDate, endDate)).keys()] : []
   return new Set([...(result.results ?? []), ...(retained.results ?? [])]
-    .map((row) => String(row.signal_date ?? '').slice(0, 10)).filter(Boolean))
+    .map((row) => String(row.signal_date ?? '').slice(0, 10)).filter(Boolean).concat(archived))
 }
 
-export async function loadCandidateStockIds(db: D1Database, signalDate: string, horizonDays?: number): Promise<CandidateIdentityCoverage> {
+export async function loadCandidateStockIds(db: D1Database, signalDate: string, horizonDays?: number,
+  archivedEnsemble?: ArchivedEnsembleStockDates): Promise<CandidateIdentityCoverage> {
   const reference = await db.prepare(`
     SELECT COUNT(DISTINCT symbol) reference_rows,
            COUNT(DISTINCT CASE WHEN stock_id IS NOT NULL THEN symbol END) identified_reference_rows
@@ -447,8 +458,11 @@ export async function loadCandidateStockIds(db: D1Database, signalDate: string, 
   const existing = horizonDays == null
     ? await db.prepare('SELECT stock_id FROM price_horizon_labels_v1 WHERE price_date=?').bind(signalDate).all<{ stock_id: number }>()
     : await db.prepare('SELECT stock_id FROM price_horizon_labels_v2 WHERE price_date=? AND horizon_days=?').bind(signalDate, horizonDays).all<{ stock_id: number }>()
+  // An old signal date (forced mature-evidence recovery) keeps its archived ensemble candidates.
+  const archived = archivedEnsemble ? [...((await archivedEnsemble(signalDate, signalDate)).get(signalDate) ?? [])]
+    .map((stock_id) => ({ stock_id })) : []
   return {
-    stockIds: [...new Set([...(results ?? []), ...(existing.results ?? [])].map((row) => Number(row.stock_id))
+    stockIds: [...new Set([...(results ?? []), ...(existing.results ?? []), ...archived].map((row) => Number(row.stock_id))
       .filter((value) => Number.isInteger(value) && value > 0))].sort((a, b) => a - b),
     referenceRows: Number(reference?.reference_rows ?? 0),
     identifiedReferenceRows: Number(reference?.identified_reference_rows ?? 0),
@@ -539,6 +553,8 @@ export async function materializePriceHorizonLabels(
     maxSignalDates?: number
     maxProcessDates?: number
     force?: boolean
+    /** Candidate dates/ids older than the predictions hot window (see ArchivedEnsembleStockDates). */
+    archivedEnsemble?: ArchivedEnsembleStockDates
   } = {},
 ): Promise<PriceHorizonProjectionResult> {
   const today = new Date(paperExecutionNow() + 8 * 3600_000).toISOString().slice(0, 10)
@@ -608,7 +624,7 @@ export async function materializePriceHorizonLabels(
       exit_date: string
     }>()
 
-    const candidateSignalDates = await loadCandidateSignalDates(learningDb, startDate, endDate)
+    const candidateSignalDates = await loadCandidateSignalDates(learningDb, startDate, endDate, options.archivedEnsemble)
     const horizons = (horizonRows ?? []).filter((row) => candidateSignalDates.has(row.signal_date))
     const existingStatuses = await loadProjectionStatuses(opsDb, horizons)
     const plan = planPriceHorizonWork(horizons, existingStatuses, {
@@ -624,7 +640,7 @@ export async function materializePriceHorizonLabels(
     const processedHorizonKeys: Array<{ signalDate: string; horizonDays: number }> = []
 
     for (const horizon of plan.work) {
-      const candidateCoverage = await loadCandidateStockIds(learningDb, horizon.signal_date)
+      const candidateCoverage = await loadCandidateStockIds(learningDb, horizon.signal_date, undefined, options.archivedEnsemble)
       const candidates = candidateCoverage.stockIds
       if (
         candidateCoverage.referenceRows > 0
@@ -829,6 +845,8 @@ export async function materializeStrategyMultiHorizonPriceLabels(
     maxSignalDates?: number
     maxProcessDates?: number
     force?: boolean
+    /** Candidate dates/ids older than the predictions hot window (see ArchivedEnsembleStockDates). */
+    archivedEnsemble?: ArchivedEnsembleStockDates
   } = {},
 ): Promise<StrategyMultiHorizonProjectionResult> {
   const today = new Date(paperExecutionNow() + 8 * 3600_000).toISOString().slice(0, 10)
@@ -843,7 +861,7 @@ export async function materializeStrategyMultiHorizonPriceLabels(
   const targetLearningDb = shadowDatabaseForDataDomain(env, 'learning') ?? sourceLearningDb
   const sourceOpsDb = databaseForDataDomain(env, 'ops')
   const targetOpsDb = shadowDatabaseForDataDomain(env, 'ops') ?? sourceOpsDb
-  const candidateSignalDates = await loadCandidateSignalDates(sourceLearningDb, startDate, endDate)
+  const candidateSignalDates = await loadCandidateSignalDates(sourceLearningDb, startDate, endDate, options.archivedEnsemble)
   await verifiedCanonicalSessions(marketDb, startDate, outcomeAsOfDate)
   let eligibleSignalDates = 0
   let processedSignalDates = 0
@@ -889,7 +907,7 @@ export async function materializeStrategyMultiHorizonPriceLabels(
     skippedCompleteDates += plan.skippedCompleteDates
     deferredSignalDates += plan.deferredSignalDates
     for (const horizon of plan.work) {
-      const coverage = await loadCandidateStockIds(sourceLearningDb, horizon.signal_date, horizonDays)
+      const coverage = await loadCandidateStockIds(sourceLearningDb, horizon.signal_date, horizonDays, options.archivedEnsemble)
       if (coverage.referenceRows > 0 && coverage.identifiedReferenceRows !== coverage.referenceRows) {
         throw new Error(`multi_horizon_reference_identity_incomplete:${horizonDays}:${horizon.signal_date}`)
       }

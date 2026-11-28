@@ -503,6 +503,7 @@ adminWriteRoutes.post('/api/admin/meta-learning/linucb/reward-ledger/refresh', a
     endDate: body.end_date,
     limit: body.limit,
     dryRun,
+    coldEnv: c.env,
   })
   return c.json({
     ...report,

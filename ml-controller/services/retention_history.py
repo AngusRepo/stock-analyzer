@@ -60,6 +60,12 @@ def archived_predictions(start_date, end_date, *, date_column='prediction_date',
                 for row in relevant:
                     if row['id'] in present:continue  # Updated/recovered online data remains authoritative.
                     if not manifest.get('release_verified_at'):
+                        # Receipt table present but no receipt: the delete never committed (the receipt
+                        # shares its batch), so this orphan released nothing. A missing table or a wrong
+                        # receipt is still an error.
+                        if (hot("SELECT name FROM sqlite_master WHERE type='table' AND name=?", ['learning_retention_releases_v1'])
+                                and not hot('SELECT 1 AS ok FROM learning_retention_releases_v1 WHERE artifact_id=?', [manifest['artifact_id']])):
+                            break
                         if not source_release_verified(hot, manifest, 'learning', 'predictions'):
                             raise RuntimeError('retention_prediction_release_receipt_incomplete:'+manifest['artifact_id'])
                         manifest['release_verified_at'] = 'source_transaction'

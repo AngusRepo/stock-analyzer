@@ -30,6 +30,9 @@ const rules = [
   rule('sv-chain-failed', '流程鏈：有階段失敗', count('failed'), { severity: 'critical', summary: '四條鏈（每日、盤中、每週、每月）有階段以 error 結束（含只看失敗的階段）。看「今天」頁的要處理清單（有鏈別）。' }),
   rule('sv-chain-overdue', '流程鏈：必要階段逾時或卡住', q('/v1/chain/alerts', { root: `{ 'n': counts.overdue + counts.stuck }`, columns: [N('n', 'n')] }),
     { severity: 'critical', summary: '必要階段過了截止還沒完成；或執行中但 heartbeat 停了超過 15 分鐘；或盤中 intraday-check 超過 10 分鐘沒有新結果。', forDuration: '2m' }),
+  // Older Workers have no counts.blocked: 0, not no data.
+  rule('sv-chain-blocked', '流程鏈：盤中監控被擋住', q('/v1/chain/alerts', { root: `{ 'n': $exists(counts.blocked) ? counts.blocked : 0 }`, columns: [N('n', 'n')] }),
+    { severity: 'warning', summary: '盤中 intraday-check 過了 09:10 第一筆結果的截止，當天結果仍是 blocked：監控被擋住，不是逾時。看「今天」頁的要處理清單。', forDuration: '2m' }),
   rule('sv-chain-missed', '流程鏈：該跑的鏈沒有起跑', count('missed'), { severity: 'critical', summary: '過了第一站截止還沒有任何狀態列：每日 18:30、盤中 09:10（交易日）、每週週五 19:00、每月第一個週六 13:00。前一期也沒資料時（剛上線）不算。' }),
   // checks are judged against the expected-completed data date, so `fail` is data that should be there; `warn` (one day of lag) is not paged.
   rule('sv-data-not-ready', '資料就緒：該到的資料沒到', q('/v1/data-readiness', { root: `{ 'n': $count(checks[status = 'fail']) }`, columns: [N('n', 'n')] }),

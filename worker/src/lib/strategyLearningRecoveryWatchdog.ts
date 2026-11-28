@@ -2,6 +2,7 @@ import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { twToday } from './dateUtils'
 import { logSchedulerResult } from './schedulerRunLogger'
+import { isD1CapacityError } from './d1CapacityErrors'
 
 // Trading days (strategyLearningRecoveryWindowStart): a weekend must not consume the lookback.
 export const RECOVERY_LOOKBACK_DAYS = 4
@@ -114,13 +115,11 @@ export function strategyLearningDeferredBackoffMinutes(dispatch: number): number
   return Math.min(DEFERRED_FAILURE_BACKOFF_CAP_MINUTES, DEFERRED_FAILURE_BACKOFF_BASE_MINUTES * 2 ** (dispatch - 2))
 }
 
-/** D1 capacity errors only (same class as isRetryableRetentionArchiveD1Error). Unlike isTransientD1Reset,
+/** D1 capacity errors only (d1CapacityErrors.ts; same class as isRetryableRetentionArchiveD1Error). Unlike isTransientD1Reset,
  * a deterministic D1_ERROR (bad SQL, constraint) does not match, so it stays terminal. Kept here, not in
  * d1TransientRetry.ts, which is a native paper identity input. */
 export function isTransientD1Overload(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error ?? '')
-  return /D1 DB is overloaded|Requests queued for too long|SQLITE_BUSY|database is locked|storage operation exceeded timeout|Network connection lost/i.test(message)
-    || /D1 request failed:\s*HTTP\s*(?:429|5\d\d)/i.test(message)
+  return isD1CapacityError(error instanceof Error ? error.message : String(error ?? ''))
 }
 
 /** Queue delay before materialize transient retry n (1-based): 1, 20, 40, 80, 160, 160 minutes. */

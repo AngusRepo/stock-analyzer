@@ -204,6 +204,104 @@
      ]
     },
     {
+     "uid": "sv-chain-blocked",
+     "title": "流程鏈：盤中監控被擋住",
+     "condition": "C",
+     "for": "2m",
+     "isPaused": true,
+     "noDataState": "OK",
+     "execErrState": "Error",
+     "labels": {
+      "severity": "warning",
+      "system": "stockvision",
+      "source": "monitoring-worker"
+     },
+     "annotations": {
+      "summary": "盤中 intraday-check 過了 09:10 第一筆結果的截止，當天結果仍是 blocked：監控被擋住，不是逾時。看「今天」頁的要處理清單。",
+      "dashboard": "/d/sv-today"
+     },
+     "data": [
+      {
+       "refId": "A",
+       "relativeTimeRange": {
+        "from": 600,
+        "to": 0
+       },
+       "datasourceUid": "sv-monitoring",
+       "model": {
+        "refId": "A",
+        "type": "json",
+        "parser": "backend",
+        "format": "table",
+        "root_selector": "([{ 'n': $exists(counts.blocked) ? counts.blocked : 0 }])",
+        "columns": [
+         {
+          "selector": "n",
+          "text": "n",
+          "type": "number"
+         }
+        ],
+        "filters": [],
+        "datasource": {
+         "type": "yesoreyeram-infinity-datasource",
+         "uid": "sv-monitoring"
+        },
+        "source": "url",
+        "url": "/v1/chain/alerts",
+        "url_options": {
+         "method": "GET",
+         "data": ""
+        }
+       }
+      },
+      {
+       "refId": "B",
+       "relativeTimeRange": {
+        "from": 600,
+        "to": 0
+       },
+       "datasourceUid": "__expr__",
+       "model": {
+        "refId": "B",
+        "type": "reduce",
+        "datasource": {
+         "type": "__expr__",
+         "uid": "__expr__"
+        },
+        "expression": "A",
+        "reducer": "last"
+       }
+      },
+      {
+       "refId": "C",
+       "relativeTimeRange": {
+        "from": 600,
+        "to": 0
+       },
+       "datasourceUid": "__expr__",
+       "model": {
+        "refId": "C",
+        "type": "threshold",
+        "datasource": {
+         "type": "__expr__",
+         "uid": "__expr__"
+        },
+        "expression": "B",
+        "conditions": [
+         {
+          "evaluator": {
+           "type": "gt",
+           "params": [
+            0
+           ]
+          }
+         }
+        ]
+       }
+      }
+     ]
+    },
+    {
      "uid": "sv-chain-missed",
      "title": "流程鏈：該跑的鏈沒有起跑",
      "condition": "C",

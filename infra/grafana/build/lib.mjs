@@ -54,6 +54,10 @@ export const STATUS = {
   skipped: ['略過', 'skip'],
   at_risk: ['趕不上截止', 'warn'], attention: ['應跑未跑', 'warn'], overdue: ['逾時', 'warn'],
   stuck: ['卡住', 'bad'], missed: ['漏跑', 'bad'], failed: ['失敗', 'bad'], error: ['失敗', 'bad'], blocked: ['中止', 'bad'],
+  // A watcher (intraday-check) held back: the alert kind `blocked` and a watcher's display_status `blocked` (Wei 11/26:
+  // a warning, not overdue). Panels translate both into this key (ALERT_KIND, canvas $ds, build.mjs RESULT); a chain stage's
+  // blocked (aborted there) stays 中止.
+  watcher_blocked: ['被擋住', 'warn'],
   ready: ['就緒', 'ok'], ok: ['正常', 'ok'], warn: ['注意', 'warn'], fail: ['未過', 'bad'], critical: ['重大', 'bad'], warning: ['注意', 'warn'],
   healthy: ['正常', 'ok'], pending_maturity: ['等待成熟', 'idle'], pass: ['通過', 'ok'], collecting: ['收集中', 'run'],
   not_applicable_no_real_intents: ['不適用（沒有真實下單）', 'idle'], owner_read_unavailable: ['讀不到來源', 'warn'],
@@ -63,6 +67,8 @@ export const STATUS = {
  * (ready / waiting / blocked / pending / running, from the quality ok / warn / fail), the freshness checks use ok / warn / fail. */
 export const READINESS_VOCAB = { ready: ['正常', 'ok'], ok: ['正常', 'ok'], waiting: ['遲到', 'warn'], warn: ['遲到', 'warn'],
   blocked: ['缺漏', 'bad'], fail: ['缺漏', 'bad'], pending: ['未到', 'idle'], running: ['未到', 'idle'] }
+/** JSONata: an alert's kind as a STATUS key (the alert kind `blocked` is only ever a watcher's). */
+export const ALERT_KIND = (kind = 'kind') => `(${kind} = 'blocked' ? 'watcher_blocked' : ${kind})`
 export const STATUS_COLOR = (status, use = 'text') => TONE[STATUS[status][1]][use]
 /** JSONata object literal: status → label, for text the Worker's status vocabulary is turned into. */
 export const STATUS_LABELS_JSONATA = JSON.stringify(Object.fromEntries(Object.entries(STATUS).map(([key, [label]]) => [key, label])))
@@ -97,6 +103,9 @@ export function querySource(mode, fixtures, { liveRoutes, demo = new Set() } = {
       { planned, demo: mode !== 'live' && demo.has(path), standIn: path.startsWith('mock:') })
   }
 }
+/** A value as a JSONata literal: its JSON, with `<`, `>` and the two JSON-legal line separators escaped (the same string to
+ * JSONata, and no text from a catalog can close or split the query it is written into). */
+export const lit = (value) => JSON.stringify(value).replace(/[<>\u2028\u2029]/g, (ch) => `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`)
 /** Build-time flags on a target, kept out of the JSON (not enumerable). */
 export const marked = (target, flags) => {
   for (const [flag, on] of Object.entries(flags)) if (on) Object.defineProperty(target, flag, { value: true })
@@ -121,6 +130,8 @@ const overridesFor = (o) => {
     { id: 'mappings', value: [{ type: 'special', options: { match: 'null', result: { text: '—', color: C.sub, index: 0 } } }] }] })
   for (const [name, unit] of Object.entries(o.unit ?? {})) out.push({ matcher: { id: 'byName', options: name }, properties: [{ id: 'unit', value: unit }] })
   for (const [name, width] of Object.entries(o.wd ?? {})) out.push({ matcher: { id: 'byName', options: name }, properties: [{ id: 'custom.width', value: width }] })
+  // A floor, not a fixed width: the column still takes its share of a wide panel, and its header never truncates on a phone.
+  for (const [name, width] of Object.entries(o.mw ?? {})) out.push({ matcher: { id: 'byName', options: name }, properties: [{ id: 'custom.minWidth', value: width }] })
   // Detail columns stay in the frame for the links but are not drawn; the links' titles are the detail.
   for (const name of o.hidden ?? []) out.push({ matcher: { id: 'byName', options: name }, properties: [{ id: 'custom.hidden', value: true }] })
   for (const [name, fields] of Object.entries(o.details ?? {})) out.push({ matcher: { id: 'byName', options: name }, properties: [{ id: 'links', value: detailLinks(fields) }] })
@@ -148,7 +159,7 @@ export function table(title, target, x, y, w, h, o = {}) {
   return { type: 'table', title, description: o.desc ?? '', gridPos: gp(x, y, w, h), datasource: targets[0].datasource, targets,
     transformations: [...(targets.length > 1 ? [{ id: 'merge', options: {} }] : []), ...sort, declaredOrder(targets, o.hide)],
     options: { showHeader: true, cellHeight: 'sm', footer: { show: false } },
-    fieldConfig: { defaults: { custom: { align: 'left', inspect: false }, noValue: o.empty ?? NO_SOURCE }, overrides: overridesFor(o) } }
+    fieldConfig: { defaults: { custom: { align: 'left', inspect: false, ...(o.minWidth ? { minWidth: o.minWidth } : {}) }, noValue: o.empty ?? NO_SOURCE }, overrides: overridesFor(o) } }
 }
 
 /** The join key of a multi-query KPI strip: each query's selector returns `'k': 1` and lists this column. */
@@ -291,6 +302,23 @@ export function lcd(title, target, nameField, valueField, x, y, w, h, o = {}) {
     fieldConfig: { defaults: { unit: o.unit ?? 'percent', decimals: o.dec ?? 0, min: 0, max: o.max ?? 100,
       noValue: o.empty ?? NO_SOURCE, color: { mode: 'thresholds' }, thresholds: o.th ?? th([C.ok, null], [C.warn, 80], [C.bad, 90]) },
     overrides: [rowName(valueField, nameField)] } }
+}
+
+/** Horizontal bars, one per row in the query's order (the first on top), named by `nameField`. Unlike a bar gauge, whose
+ * noValue is drawn as a grey bar with the words at its end, an empty result here is the panel's noValue centred:
+ * Grafana's barchart hands PanelDataErrorView an empty warning when every frame has no rows, and that view then shows
+ * fieldConfig.defaults.noValue. `o.colorBy`: a sibling field whose colour (thresholds or value mappings) fills each bar. */
+export function hbars(title, target, nameField, x, y, w, h, o = {}) {
+  return { type: 'barchart', title, description: o.desc ?? '', gridPos: gp(x, y, w, h), datasource: target.datasource, targets: [target],
+    transformations: [declaredOrder([target])],
+    options: { xField: nameField, orientation: 'horizontal', stacking: 'none', showValue: 'always', barWidth: 0.75, groupWidth: 0.7, barRadius: 0,
+      xTickLabelRotation: 0, xTickLabelSpacing: 0, xTickLabelMaxLength: o.labelMax ?? 24, fullHighlight: false, tooltip: { mode: 'single' },
+      ...(o.colorBy ? { colorByField: o.colorBy } : {}), text: { valueSize: 12 },
+      legend: { showLegend: false, displayMode: 'list', placement: 'bottom', calcs: [] } },
+    fieldConfig: { defaults: { unit: o.unit ?? 'none', decimals: o.dec ?? 0, noValue: o.empty ?? NO_SOURCE, color: { mode: 'thresholds' },
+      thresholds: o.th ?? th([C.txt, null]), custom: { fillOpacity: 90, lineWidth: 0, gradientMode: 'none', axisPlacement: 'auto',
+        ...(o.softMin != null ? { axisSoftMin: o.softMin } : {}), ...(o.softMax != null ? { axisSoftMax: o.softMax } : {}) } },
+    overrides: o.overrides ?? [] } }
 }
 
 /** Stacked bars over a string x field: one query per series, joined on `xField`. `series`: [[field name, colour]].

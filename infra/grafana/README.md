@@ -13,7 +13,7 @@ Stack：`narrowpeacock3250.grafana.net`，資料夾 `StockVision`。儀表板 JS
 | `dashboards/sv-mobile.json` | 手機：今天能不能出手、要處理、未完成必要階段、資料就緒（只列有問題的）、失敗中的階段；單欄 w=24 |
 | `dashboards/gcp-cloud-run-scheduler.json` | Cloud Run／Scheduler 面板的來源（資源與成本、策略與模型兩頁從這裡取） |
 | `dashboards/fixture/` | 同五頁，查詢改讀內嵌的測試夾具回應與 `build/mock.mjs` 的示範資料（看版面用），規劃中的面板也畫出來。產生物，不進 repo |
-| `alerts/sv-chain-rules.json` | 六條告警規則（流程鏈 4、資料就緒、D1 容量），全部 `isPaused: true` |
+| `alerts/sv-chain-rules.json` | 七條告警規則（流程鏈 4：失敗、逾時／卡住、被擋住、漏跑；資料就緒、D1 容量、監控端點沒回應），全部 `isPaused: true` |
 | `build/` | 產生器 |
 
 ## 資料來源

@@ -61,6 +61,8 @@ RUN python -c "from scripts.repair_native_prestart import run"
 ARG NATIVE_IDENTITY_ASSERT=1
 RUN if [ "$NATIVE_IDENTITY_ASSERT" = 0 ]; then echo 'native identity assertion skipped (CI build)'; else python -c "import json; from pathlib import Path; from services.native_paper_sandbox import native_execution_identity; declared=json.loads(Path('/app/services/native_execution_behavior_release.json').read_text()); actual=native_execution_identity(); assert actual == declared['execution_owner_version'], 'native_release_owner_mismatch:' + actual"; fi
 RUN python -c "from scripts.l4_distribution_refresh_job import execute, training_recipe_signature; training_recipe_signature()"
+# The Saturday corporate-history job (dataset-snapshot-export, corporate_history_weekly mode) runs these scripts.
+RUN python -c "import scripts.compile_corporate_history, scripts.fetch_corporate_history_sources, scripts.estimate_corporate_exclusion_share, scripts.export_corporate_history_snapshot; from services.corporate_history_weekly import PIN_PATH; assert PIN_PATH.is_file(), PIN_PATH"
 RUN mkdir -p /app/data/finlab_research
 COPY data/finlab_research/dagster_asset_graph.json /app/data/finlab_research/dagster_asset_graph.json
 RUN mkdir -p /app/data/feature_registry /app/output/feature_universe_triage /app/worker

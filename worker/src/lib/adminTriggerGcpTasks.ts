@@ -119,6 +119,10 @@ export function buildAdminGcpTriggerTaskMap(
     'weekly-backtest': () => c.req.query('reconcile') === '1'
       ? runWeeklyBacktestEvidenceReconciliation(c.env, requestedRunDate())
       : runWeeklyValidationChain(c.env, requestedRunDate()),
+    'corporate-history-weekly': async () => {
+      const { runCorporateHistoryWeeklyExport } = await import('./corporateHistoryWeekly')
+      return runCorporateHistoryWeeklyExport(c.env, requestedRunDate())
+    },
     'weekly-drift-retrain': async () => {
       const runDate = requestedRunDate() || twToday()
       const detection = await runWeeklyDriftDetection(c.env, runDate)

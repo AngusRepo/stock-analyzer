@@ -313,7 +313,9 @@ def prepare(source: Path, admission: Path, out: Path, expected_live: str) -> dic
         relative = path.removeprefix('ml-controller/')
         core = not relative.startswith(('scripts/', 'runbooks/', 'research_receipts/'))
         core |= relative in ('scripts/repair_active8_source_and_evaluation.py',
-                             'scripts/repair_native_prestart.py', 'scripts/l4_distribution_refresh_job.py')
+                             'scripts/repair_native_prestart.py', 'scripts/l4_distribution_refresh_job.py',
+                             'scripts/compile_corporate_history.py', 'scripts/fetch_corporate_history_sources.py',
+                             'scripts/estimate_corporate_exclusion_share.py', 'scripts/export_corporate_history_snapshot.py')
         if core and path.endswith(('.py', '.json', '.txt', '.cjs')):
             all_runtime[relative] = sha(raw)
     for sources, destination in copies:

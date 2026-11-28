@@ -999,7 +999,7 @@ const TASK_ZH: Record<string, string> = {
   'retention-archive-only': '保留期封存', 'retention-hot-window-drain': '熱資料視窗清理', 'legacy-hot-data-retirement': '舊熱資料退役',
   'r2-retention-sweep': 'R2 保留期清理', 'orphan-reachability-gc': '孤兒資料回收', 'debate-memory-retention': '辯論記憶保留期清理',
   'legacy-strategy-evidence-migration': '舊策略證據搬遷', 'storage-integrity-audit': '儲存完整性稽核', 'storage-health-check': '儲存健康檢查',
-  'weekly-backtest': '每週回測', 'weekly-optuna': '每週 Optuna', 'sector-leaders': '產業龍頭', 'adaptive-meta-policy-replay': '自適應元策略回放',
+  'weekly-backtest': '每週回測', 'corporate-history-weekly': '每週公司行為快照匯出', 'weekly-optuna': '每週 Optuna', 'sector-leaders': '產業龍頭', 'adaptive-meta-policy-replay': '自適應元策略回放',
   'linucb-multiplier-replay': 'LinUCB 乘數回放', 'active8-oof-weekly': 'Active-8 每週 OOF', 'active8-oof-monthly': 'Active-8 每月 OOF',
   'active8-oof-daily': 'Active-8 每日證據', 'monthly-strategy-mining': '每月策略挖掘', 'monthly-optuna': '每月 Optuna',
   'weekly-drift-retrain': '每週漂移重訓', 'weekly-cleanup': '每週清理', 'weekly-audit': '週稽核', 'alpha-quality': 'Alpha 品質檢查',
@@ -1711,6 +1711,34 @@ const MORE_FORMATTERS: Record<string, Formatter> = {
     const example = reasons.size === 1 && reasons.has('session_missing') ? '（列出的缺口都是該日公司行為快照缺漏）'
       : reasons.size === 1 && reasons.has('source_incomplete') ? '（列出的缺口都是來源資料不完整）' : ''
     return `每週回測被擋：公司行為資料覆蓋不足，${r.start_date}～${r.end_date} 共 ${n(r.sessions)} 個交易日中 ${n(r.issue_count)} 日有缺口${example}${r.candidate_search_started === false ? '，候選搜尋未開始' : ''}`
+  },
+
+  'corporate-history-weekly': (p) => {
+    const head = '研究用公司行為快照'
+    const failed = /^failed: corporate-history-weekly (.*)$/s.exec(p.raw)?.[1]
+    if (failed !== undefined) {
+      if (/^execution already running\b/.test(failed)) return `${head}匯出未派送：已有匯出工作在執行中`
+      if (/^run identity rejected HTTP 422\b/.test(failed)) return `${head}匯出未派送：Controller 拒絕執行識別碼（日期不符）`
+      const http = /^controller dispatch HTTP (\d{3})\b/.exec(failed)?.[1]
+      if (http) return `${head}匯出派送失敗（Controller 回應 HTTP ${http}）`
+      if (/^controller dispatch error\b/.test(failed)) return `${head}匯出派送失敗（無法連上 Controller）`
+      return `${head}匯出派送未確認（原因見明細）`
+    }
+    const history = /^(\d{4}-\d{2}-\d{2})~(\d{4}-\d{2}-\d{2})$/.exec(p.map.get('history') ?? '')
+    if (p.map.has('snapshot') && history) {
+      const worst = /^(\d+)d:(\d+)\/(\d+)$/.exec(p.map.get('max_exclusion') ?? '')
+      return join(
+        `${head}已匯出（${history[1]}～${history[2]}）`,
+        clause(
+          p.map.has('sessions') && `${n(p.map.get('sessions'))} 個交易日`,
+          p.map.has('blocked_issuers') && `封鎖 ${n(p.map.get('blocked_issuers'))} 家發行人`,
+          worst && `${worst[1]} 日窗口最多排除 ${n(worst[2])}／${n(worst[3])} 檔`,
+        ),
+      )
+    }
+    // The controller job writes `run_id=<id> <ExceptionType>: <message>`; FinLab auth stops raise SystemExit.
+    if (/^run_id=\S+ (?:[A-Za-z]+(?:Error|Exception)|SystemExit)\b/.test(p.raw)) return `${head}匯出失敗（原因見明細）`
+    return undefined
   },
 
   'optuna-queue': (p) => {

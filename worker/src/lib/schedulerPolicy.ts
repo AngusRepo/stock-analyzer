@@ -101,6 +101,7 @@ export const TASK_POLICIES: Record<string, SchedulerTaskPolicy> = {
   'data-domain-shadow-backfill-next': { kind: 'maintenance', holidayGated: false, description: 'sequential one-domain-at-a-time shadow backfill coordinator; never activates routing' },
   'weekly-cleanup': { kind: 'maintenance', holidayGated: false, description: 'weekly cleanup and lifecycle check; no retrain' },
   'weekly-readiness': { kind: 'maintenance', holidayGated: false, description: 'weekly cycle terminal closure and fail-close summary' },
+  'corporate-history-weekly': { kind: 'research', holidayGated: false, description: 'Saturday research corporate-history snapshot export ahead of the Sunday weekly-backtest freshness gate' },
   'weekly-backtest': { kind: 'research', holidayGated: false, description: 'weekly lightweight backtest, Monte Carlo, PBO validation' },
   'alpha-quality': { kind: 'research', holidayGated: false, description: 'weekly alpha quality research' },
   'weekly-optuna': { kind: 'research', holidayGated: false, description: 'weekly lightweight Optuna/GA calibration' },

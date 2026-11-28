@@ -4,7 +4,7 @@ import {
   type LinUcbRewardSourceRow,
 } from './metaLearningRewardLedger'
 import type { MetaLearningTrackId } from './metaLearningResearchTrack'
-import { oldestArchivablePredictionDate, readArchivedPredictions, sqliteOrder, type ArchivedPredictionsEnv } from './retentionPredictionsReader'
+import { oldestArchivablePredictionDate, readArchivedPredictions, releasedPredictionFrontier, sqliteOrder, type ArchivedPredictionsEnv } from './retentionPredictionsReader'
 
 export type ShadowPolicyId = Extract<MetaLearningTrackId, 'NeuralUCB' | 'NeuralTS' | 'NeuCB'>
 
@@ -207,7 +207,7 @@ interface ArchivedHydrationMerge {
 
 // Pending decisions whose predictions left the hot window join their R2 archive with the same
 // predicates as the seekable join; the merged rows keep its order and limit. A decision already
-// marked outcome_unavailable_after_cold_scan is not selected again, so its chunks are read once.
+// marked outcome_unavailable_after_cold_scan is not selected again, so once marked its chunks are not read again.
 async function mergeArchivedHydrationRows(db: D1Database, env: ArchivedPredictionsEnv, hotRows: HydrationSourceRow[],
   endDate: string, limit: number): Promise<ArchivedHydrationMerge> {
   // Only dates older than the hot floor can have archived predictions.
@@ -242,8 +242,20 @@ async function mergeArchivedHydrationRows(db: D1Database, env: ArchivedPredictio
   // A truncated hot page or merged page may have dropped a decision's rows: no decision is
   // declared unavailable from an incomplete read.
   const complete = hotRows.length < limit && merged.length <= limit
-  return { rows: merged.slice(0, limit), coldScanned: complete ? wanted : [] }
+  if (!complete) return { rows: merged.slice(0, limit), coldScanned: [] }
+  // Only a date the drain has reached can be declared unavailable: before the drain the predictions
+  // were never archived, so the decision stays pending (no presence seek, no write). Rows of the
+  // frontier date that are still hot keep their decision pending in markColdUnavailableDecisions.
+  const frontier = await releasedPredictionFrontier(env, dates[0])
+  return { rows: merged.slice(0, limit), coldScanned: frontier ? wanted.filter((d) => d.business_date <= frontier) : [] }
 }
+
+// Per-run ceiling on terminal marks: each costs a hot presence seek and an UPDATE. Decisions dated
+// before the oldest prediction row (pending since before predictions were kept) are all released by
+// the first drain at once; how many there are in prod was not measured (3,022 pre-floor pending
+// decisions in total on 2026-11-28). The rest stay pending and are marked on later runs, oldest
+// first; until then their released chunks are read again each night.
+export const META_SHADOW_COLD_MARK_LIMIT = 200
 
 // A pre-floor decision that still has no reward after the full hot + released-cold read gets an
 // explicit terminal status instead of staying pending (and re-reading its chunks every night).
@@ -254,7 +266,7 @@ async function mergeArchivedHydrationRows(db: D1Database, env: ArchivedPredictio
 async function markColdUnavailableDecisions(db: D1Database, decisions: HydrationSourceRow[], nowIso: string): Promise<number> {
   let marked = 0
   const floor = oldestArchivablePredictionDate()
-  for (const decision of decisions) {
+  for (const decision of decisions.slice(0, META_SHADOW_COLD_MARK_LIMIT)) {
     const hot = await db.prepare(`
       SELECT 1 AS present FROM predictions INDEXED BY idx_pred_date_stock_model_generated
        WHERE prediction_date = ? AND stock_id = ? LIMIT 1

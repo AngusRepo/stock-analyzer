@@ -9,6 +9,7 @@ import { RETENTION_HOT_WINDOW_DRAIN_CONFIRM_PHRASE, runRetentionHotWindowDrain }
 import {
   oldestArchivablePredictionDate,
   readArchivedPredictions,
+  releasedPredictionFrontier,
   readDailyRecommendationPredictions,
   readArchivedEnsembleStockDates,
   readPredictionTradeHistory,
@@ -18,7 +19,7 @@ import {
 import { loadCandidateSignalDates, loadCandidateStockIds } from './priceHorizonProjection'
 import { listLinUcbRewardSourceRows, listLinUcbRewardSourceRowsAcrossDomains } from './metaLearningRewardLedger'
 import { listAdaptiveMetaPolicyReplayRowsAcrossDomains } from './adaptiveMetaPolicyReplayRunner'
-import { hydrateMatureMetaShadowDecisionRewards } from './metaLearningShadowDecisions'
+import { META_SHADOW_COLD_MARK_LIMIT, hydrateMatureMetaShadowDecisionRewards } from './metaLearningShadowDecisions'
 import { PREDICTION_COLD_STATS_COLUMNS } from './retentionPredictionColdStats'
 import type { Bindings } from '../types'
 
@@ -399,6 +400,77 @@ test('meta shadow hydration reads each pre-floor chunk once: unmatched decisions
   const pendingOld = after.sql.prepare(`SELECT COUNT(*) n FROM meta_shadow_decisions WHERE counterfactual_reward IS NULL
     AND business_date < ? AND instr(evidence_json, '"outcome_unavailable_after_cold_scan"') = 0`).get(CUTOFF) as { n: number }
   assert.equal(pendingOld.n, 0, 'every pre-floor decision is hydrated or explicitly unavailable')
+})
+
+test('before the drain reaches a date, its pending decisions stay pending with no presence seek or write', async () => {
+  const before = await fixture(false)
+  // Old decisions with no prediction rows at all: before the drain nothing proves they are unavailable.
+  for (const [date, sym] of [['2026-05-05', '2330'], ['2026-07-20', '2317']]) {
+    before.sql.prepare(`INSERT INTO meta_shadow_decisions(decision_id, policy_id, business_date, symbol, arm_id, evidence_json)
+      VALUES(?,?,?,?,?,?)`).run(`${date}:${sym}:stuck`, 'NeuralUCB', date, sym, 'tree_family', '{}')
+  }
+  const statements: string[] = []
+  const learning = { prepare(query: string) { statements.push(query); return before.learning.prepare(query) } } as unknown as D1Database
+  const report = await hydrateMatureMetaShadowDecisionRewards(learning,
+    { endDate: BUSINESS_DATE, limit: 50000, nowIso: `${BUSINESS_DATE}T05:00:00.000Z`, coldEnv: before.env })
+  assert.equal(report.cold_unavailable_decisions, 0)
+  assert.equal(statements.filter((q) => /idx_pred_date_stock_model_generated/.test(q) && /SELECT 1 AS present/.test(q)).length, 0,
+    'no per-decision presence seek before the drain')
+  assert.equal(statements.filter((q) => /UPDATE meta_shadow_decisions\s+SET evidence_json/.test(q)).length, 0)
+  const marked = before.sql.prepare(`SELECT COUNT(*) n FROM meta_shadow_decisions
+    WHERE instr(evidence_json, '"outcome_unavailable_after_cold_scan"') > 0`).get() as { n: number }
+  assert.equal(marked.n, 0)
+})
+
+test('a partly drained history marks only decisions up to the released frontier', async () => {
+  const partial = await fixture(false)
+  for (const [date, sym] of [['2026-05-05', '2330'], ['2026-07-20', '2317']]) {
+    partial.sql.prepare(`INSERT INTO meta_shadow_decisions(decision_id, policy_id, business_date, symbol, arm_id, evidence_json)
+      VALUES(?,?,?,?,?,?)`).run(`${date}:${sym}:stuck`, 'NeuralUCB', date, sym, 'tree_family', '{}')
+  }
+  // One small round: only the oldest rows (2026-05-04) leave the hot table.
+  const result = await runRetentionHotWindowDrain(partial.env, { policyIds: ['learning_lineage_v1'], businessDate: BUSINESS_DATE,
+    confirmPhrase: RETENTION_HOT_WINDOW_DRAIN_CONFIRM_PHRASE, limitPerDataset: 5, maxRounds: 1, budgetMs: 120_000 })
+  assert.notEqual(result.status, 'error', JSON.stringify(result))
+  const frontier = await releasedPredictionFrontier(partial.env as any, '2026-01-01')
+  assert.ok(frontier && frontier < '2026-05-05', String(frontier))
+  const seeks: unknown[][] = []
+  const learning = { prepare(query: string) {
+    const statement = partial.learning.prepare(query)
+    if (!/SELECT 1 AS present/.test(query)) return statement
+    return { bind(...values: unknown[]) { seeks.push(values); return statement.bind(...values) } }
+  } } as unknown as D1Database
+  await hydrateMatureMetaShadowDecisionRewards(learning,
+    { endDate: BUSINESS_DATE, limit: 50000, nowIso: `${BUSINESS_DATE}T05:00:00.000Z`, coldEnv: partial.env })
+  assert.ok(seeks.every(([date]) => String(date) <= frontier!), 'no presence seek past the frontier')
+  const marked = partial.sql.prepare(`SELECT decision_id, business_date FROM meta_shadow_decisions
+    WHERE instr(evidence_json, '"outcome_unavailable_after_cold_scan"') > 0`).all() as any[]
+  assert.ok(marked.every((row) => row.business_date <= frontier!), JSON.stringify(marked))
+  const stuck = partial.sql.prepare(`SELECT evidence_json FROM meta_shadow_decisions WHERE decision_id LIKE '%:stuck'`).all() as any[]
+  assert.equal(stuck.length, 2)
+  assert.ok(stuck.every((row) => row.evidence_json === '{}'), 'dates past the frontier stay pending')
+})
+
+test('terminal marks are capped per run and the backlog drains oldest first on later runs', async () => {
+  const after = await fixture(true)
+  for (let i = 0; i < META_SHADOW_COLD_MARK_LIMIT + 50; i++) {
+    after.sql.prepare(`INSERT INTO meta_shadow_decisions(decision_id, policy_id, business_date, symbol, arm_id, evidence_json)
+      VALUES(?,?,?,?,?,?)`).run(`2026-05-05:${9000 + i}:stuck`, 'NeuralUCB', '2026-05-05', String(9000 + i), 'tree_family', '{}')
+  }
+  const run = () => hydrateMatureMetaShadowDecisionRewards(after.learning,
+    { endDate: BUSINESS_DATE, limit: 50000, nowIso: `${BUSINESS_DATE}T05:00:00.000Z`, coldEnv: after.env })
+  const first = await run()
+  assert.equal(first.cold_unavailable_decisions, META_SHADOW_COLD_MARK_LIMIT)
+  const stuckMarked = (after.sql.prepare(`SELECT decision_id, instr(evidence_json, '"outcome_unavailable_after_cold_scan"') > 0 AS marked
+    FROM meta_shadow_decisions WHERE decision_id LIKE '2026-05-05:%:stuck' ORDER BY decision_id`).all() as any[]).map((row) => Number(row.marked))
+  const firstPending = stuckMarked.indexOf(0)
+  assert.ok(firstPending >= 0 && stuckMarked.slice(firstPending).every((m) => m === 0), 'marked oldest first, in decision order')
+  let total = first.cold_unavailable_decisions
+  for (let night = 0; night < 3; night++) total += (await run()).cold_unavailable_decisions
+  const pendingOld = after.sql.prepare(`SELECT COUNT(*) n FROM meta_shadow_decisions WHERE counterfactual_reward IS NULL
+    AND business_date < ? AND instr(evidence_json, '"outcome_unavailable_after_cold_scan"') = 0`).get(CUTOFF) as { n: number }
+  assert.equal(pendingOld.n, 0, 'later runs finish the backlog')
+  assert.ok(total >= META_SHADOW_COLD_MARK_LIMIT + 50)
 })
 
 test('the drain keeps whole-history totals of the deleted rows for verify period=all', async () => {

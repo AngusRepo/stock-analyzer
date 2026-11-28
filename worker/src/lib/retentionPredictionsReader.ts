@@ -216,6 +216,24 @@ export async function readArchivedPredictionsLatest(env: ArchivedPredictionsEnv,
   return out
 }
 
+/**
+ * Newest prediction_date the drain has released at or after `start` (null when none). The drain
+ * deletes oldest-first, so every date before it left the hot table through a released archive;
+ * rows of that same date may still be hot. Ops metadata only, no R2: newest coverage end first,
+ * stopping at the first manifest with the release proof.
+ */
+export async function releasedPredictionFrontier(env: ArchivedPredictionsEnv, start: string): Promise<string | null> {
+  const query = { start, end: oldestArchivablePredictionDate() }
+  if (windowOf(query).empty) return null
+  for await (const manifest of manifestsNewestFirst(env, query)) {
+    if (!manifest.release_verified_at) continue
+    // A manifest without a dated coverage_end sorts first ('9999-12-31') and proves no frontier: skip it.
+    const end = JSON.parse(manifest.metadata_json || '{}').coverage_end
+    if (typeof end === 'string' && /^\d{4}-\d{2}-\d{2}/.test(end)) return end.slice(0, 10)
+  }
+  return null
+}
+
 /** True when the archive holds at least one row in the window (fail-closed readers; stops at the first one). */
 export async function archivedPredictionsExist(env: ArchivedPredictionsEnv, query: ArchivedPredictionsQuery,
   observe?: { onGet?: () => void }): Promise<boolean> {

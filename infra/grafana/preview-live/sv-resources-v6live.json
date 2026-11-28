@@ -776,7 +776,7 @@
     "x": 19,
     "y": 6,
     "w": 5,
-    "h": 3
+    "h": 6
    },
    "datasource": {
     "type": "stackdriver",
@@ -851,7 +851,7 @@
     "x": 0,
     "y": 4,
     "w": 19,
-    "h": 5
+    "h": 8
    },
    "datasource": {
     "type": "yesoreyeram-infinity-datasource",
@@ -863,7 +863,7 @@
      "type": "json",
      "parser": "backend",
      "format": "table",
-     "root_selector": "([$sort(rows, function($a, $b) { $a.utilization_pct < $b.utilization_pct }).{ 'db': ($n := $lookup({\"DB\":\"主庫\",\"CORE_DB\":\"核心\",\"MARKET_DB\":\"行情\",\"LEARNING_DB\":\"學習\",\"OPS_DB\":\"營運\",\"EXECUTION_DB\":\"執行\",\"PAPER_DB\":\"模擬交易\",\"RESEARCH_DB\":\"研究\"}, binding_name); $n ? $n : '其他庫'), 'pct': utilization_pct }])",
+     "root_selector": "([$sort(rows, function($a, $b) { $a.utilization_pct < $b.utilization_pct }).{ 'db': $not($exists(binding_name)) ? 'UNKNOWN' : $contains(binding_name, '_DB') ? $substringBefore(binding_name, '_DB') : binding_name, 'pct': utilization_pct }])",
      "columns": [
       {
        "selector": "db",
@@ -899,13 +899,10 @@
     "orientation": "auto",
     "showThresholdMarkers": true,
     "showThresholdLabels": false,
-    "sizing": "auto",
-    "minVizWidth": 60,
-    "minVizHeight": 60,
-    "text": {
-     "titleSize": 12,
-     "valueSize": 20
-    }
+    "sizing": "manual",
+    "minVizWidth": 105,
+    "minVizHeight": 80,
+    "text": {}
    },
    "fieldConfig": {
     "defaults": {
@@ -958,8 +955,8 @@
    "description": "Workers Paid 方案每個帳單週期（依續約日，不是每月 1 日）內含的用量。請求、讀寫列＝照本期到目前的速度，到期末會用掉內含量的幾成；儲存＝最新一天的大小 ÷ 內含量。超過 100% 的部分照量計費（琥珀）。內含量：Workers 1,000 萬請求；D1 讀 250 億列、寫 5,000 萬列、存 5 GB；KV 讀 1,000 萬、寫 100 萬、存 1 GB。",
    "gridPos": {
     "x": 0,
-    "y": 9,
-    "w": 6,
+    "y": 12,
+    "w": 8,
     "h": 8
    },
    "datasource": {
@@ -1074,124 +1071,12 @@
   },
   {
    "type": "barchart",
-   "title": "Cloudflare 上期各項",
-   "description": "上一個帳單週期各收費項目的金額，最多的在上，只列有收費的項目。D1 與 R2 儲存依累計 GB-月計費，超過內含量後每 1 GB-月收一次。各項分別四捨五入，加總可能與上期帳單差 US$0.01。來源：Cloudflare 帳單用量 API（美元，Cloudflare 以美元計費；GCP 面板是新台幣），資料到昨天。帳單週期從續約日起算（不是每月 1 日）。",
-   "gridPos": {
-    "x": 6,
-    "y": 9,
-    "w": 6,
-    "h": 8
-   },
-   "datasource": {
-    "type": "yesoreyeram-infinity-datasource",
-    "uid": "sv-cloudflare-api"
-   },
-   "targets": [
-    {
-     "refId": "A",
-     "datasource": {
-      "type": "yesoreyeram-infinity-datasource",
-      "uid": "sv-cloudflare-api"
-     },
-     "type": "json",
-     "source": "url",
-     "parser": "backend",
-     "format": "table",
-     "url": "https://api.cloudflare.com/client/v4/accounts/${cf_account}/billable-usage?from=${cf_usage_from}&to=${cf_usage_to}",
-     "url_options": {
-      "method": "GET",
-      "data": ""
-     },
-     "root_selector": "([($sd := ($d := '${cf_period_start}'; $contains($d, /^[0-9]{4}-[0-9]{2}-[0-9]{2}/) ? $substring($d, 0, 10) : '');\n  $fs := '${cf_plan_fee}'; $fee := $number($contains($fs, /^[0-9]+(\\.[0-9]+)?$/) ? $fs : '0'); $r := result;\n  $p := $sort($distinct($r.$substring(BillingPeriodStart, 0, 10))[$ < $sd])[-1]; $names := [{\"k\":\"D1 - Storage\",\"v\":\"D1 儲存\"},{\"k\":\"D1 - Rows Read\",\"v\":\"D1 讀取列\"},{\"k\":\"D1 - Rows Written\",\"v\":\"D1 寫入列\"},{\"k\":\"R2 Data Storage\",\"v\":\"R2 儲存\"},{\"k\":\"R2 Storage Class A\",\"v\":\"R2 寫入類操作\"},{\"k\":\"R2 Storage Class B\",\"v\":\"R2 讀取類操作\"},{\"k\":\"Workers Standard Requests\",\"v\":\"Workers 請求\"},{\"k\":\"Workers CPU ms\",\"v\":\"Workers CPU 時間\"},{\"k\":\"KV Read Operations\",\"v\":\"KV 讀取\"},{\"k\":\"KV Write Operations\",\"v\":\"KV 寫入\"},{\"k\":\"KV Delete Operations\",\"v\":\"KV 刪除\"},{\"k\":\"KV List Operations\",\"v\":\"KV 列出\"},{\"k\":\"KV Storage\",\"v\":\"KV 儲存\"},{\"k\":\"Queues - \",\"v\":\"Queues 操作\"}];\n  $name := function($n, $family) { ($m := $filter($names, function($x) { $substring($n, 0, $length($x.k)) = $x.k })[0];\n    $m ? $m.v : $family ? $family : $n) };\n  $g := $append($r[$substring(BillingPeriodStart, 0, 10) = $p and BilledCost != 0].{ 'item': $name(ServiceName, ServiceFamilyName), 'usd': BilledCost },\n    [{ 'item': '-', 'usd': 0 }]){ item: $sum(usd) };\n  $exists($p) ? $sort($append($each($g, function($v, $k) { { 'item': $k, 'usd': $round($v, 2) } })[item != '-'], $fee ? [{ 'item': '方案月費', 'usd': $fee }] : []),\n    function($a, $b) { $a.usd < $b.usd }) : [])])",
-     "columns": [
-      {
-       "selector": "item",
-       "text": "item",
-       "type": "string"
-      },
-      {
-       "selector": "usd",
-       "text": "金額",
-       "type": "number"
-      }
-     ],
-     "filters": []
-    }
-   ],
-   "transformations": [
-    {
-     "id": "organize",
-     "options": {
-      "excludeByName": {},
-      "renameByName": {},
-      "indexByName": {
-       "item": 0,
-       "金額": 1
-      }
-     }
-    }
-   ],
-   "options": {
-    "xField": "item",
-    "orientation": "horizontal",
-    "stacking": "none",
-    "showValue": "always",
-    "barWidth": 0.75,
-    "groupWidth": 0.7,
-    "barRadius": 0,
-    "xTickLabelRotation": 0,
-    "xTickLabelSpacing": 0,
-    "xTickLabelMaxLength": 24,
-    "fullHighlight": false,
-    "tooltip": {
-     "mode": "single"
-    },
-    "text": {
-     "valueSize": 12
-    },
-    "legend": {
-     "showLegend": false,
-     "displayMode": "list",
-     "placement": "bottom",
-     "calcs": []
-    }
-   },
-   "fieldConfig": {
-    "defaults": {
-     "unit": "prefix:US$",
-     "decimals": 1,
-     "noValue": "尚未接資料",
-     "color": {
-      "mode": "thresholds"
-     },
-     "thresholds": {
-      "mode": "absolute",
-      "steps": [
-       {
-        "color": "#e8e9ec",
-        "value": null
-       }
-      ]
-     },
-     "custom": {
-      "fillOpacity": 90,
-      "lineWidth": 0,
-      "gradientMode": "none",
-      "axisPlacement": "auto"
-     }
-    },
-    "overrides": []
-   },
-   "id": 10
-  },
-  {
-   "type": "barchart",
    "title": "GCP 本月各服務",
    "description": "本月 1 日至今各服務的 GCP 淨額占比：前四大服務，其餘併成「其他」。BigQuery 帳單明細匯出（新台幣，已扣抵免）；資料晚幾小時到一兩天才齊，最近一天偏低。不含 Cloudflare、Modal。",
    "gridPos": {
-    "x": 12,
-    "y": 9,
-    "w": 6,
+    "x": 8,
+    "y": 12,
+    "w": 8,
     "h": 8
    },
    "datasource": {
@@ -1237,6 +1122,7 @@
     "tooltip": {
      "mode": "single"
     },
+    "colorByField": "svc",
     "text": {
      "valueSize": 12
     },
@@ -1259,7 +1145,7 @@
       "mode": "absolute",
       "steps": [
        {
-        "color": "#e8e9ec",
+        "color": "#c2b45a",
         "value": null
        }
       ]
@@ -1271,19 +1157,62 @@
       "axisPlacement": "auto"
      }
     },
-    "overrides": []
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "svc"
+      },
+      "properties": [
+       {
+        "id": "mappings",
+        "value": [
+         {
+          "type": "value",
+          "options": {
+           "Cloud Run": {
+            "color": "#199cb8",
+            "index": 0
+           },
+           "Cloud Storage": {
+            "color": "#035ede",
+            "index": 1
+           },
+           "Artifact Registry": {
+            "color": "#a573fe",
+            "index": 2
+           },
+           "Cloud Build": {
+            "color": "#ac27ae",
+            "index": 3
+           },
+           "Cloud Scheduler": {
+            "color": "#4fb286",
+            "index": 4
+           },
+           "其他": {
+            "color": "#3b5874",
+            "index": 5
+           }
+          }
+         }
+        ]
+       }
+      ]
+     }
+    ]
    },
    "timeFrom": "now/M",
    "hideTimeOverride": true,
-   "id": 11
+   "id": 10
   },
   {
    "type": "trend",
    "title": "GCP 本月累計成本",
    "gridPos": {
-    "x": 18,
-    "y": 9,
-    "w": 6,
+    "x": 16,
+    "y": 12,
+    "w": 8,
     "h": 8
    },
    "timeFrom": "now/M",
@@ -1392,7 +1321,7 @@
      }
     ]
    },
-   "id": 12,
+   "id": 11,
    "datasource": {
     "type": "grafana-bigquery-datasource",
     "uid": "sv-bigquery"
@@ -1404,7 +1333,7 @@
    "description": "一格＝一天的一個小時（台灣時間），所有 D1 庫讀取的列數合計，越亮越多（沒有讀取＝與背景同色）；看晚鏈 21:45–23:30 的尖峰是否變寬或變亮。來源：Cloudflare GraphQL Analytics。",
    "gridPos": {
     "x": 0,
-    "y": 17,
+    "y": 20,
     "w": 8,
     "h": 8
    },
@@ -1653,7 +1582,7 @@
     },
     "overrides": []
    },
-   "id": 13
+   "id": 12
   },
   {
    "type": "heatmap",
@@ -1661,7 +1590,7 @@
    "description": "一格＝一天的一個小時（台灣時間），所有 D1 庫寫入的列數合計，越亮越多。來源：Cloudflare GraphQL Analytics。",
    "gridPos": {
     "x": 8,
-    "y": 17,
+    "y": 20,
     "w": 8,
     "h": 8
    },
@@ -1910,14 +1839,14 @@
     },
     "overrides": []
    },
-   "id": 14
+   "id": 13
   },
   {
    "type": "timeseries",
    "title": "Cloud Run 延遲 p50／p95",
    "gridPos": {
     "x": 16,
-    "y": 17,
+    "y": 20,
     "w": 8,
     "h": 8
    },
@@ -2039,7 +1968,7 @@
      }
     ]
    },
-   "id": 15
+   "id": 14
   },
   {
    "type": "state-timeline",
@@ -2047,7 +1976,7 @@
    "description": "每個服務每小時有沒有執行個體醒著（scale-to-zero 下，藍＝那一小時有執行個體在跑）。滑鼠停在色段上看持續多久。",
    "gridPos": {
     "x": 0,
-    "y": 25,
+    "y": 28,
     "w": 12,
     "h": 7
    },
@@ -2151,7 +2080,7 @@
     },
     "overrides": []
    },
-   "id": 16
+   "id": 15
   },
   {
    "type": "state-timeline",
@@ -2159,7 +2088,7 @@
    "description": "每個 Cloud Run Job 一列、每小時一格：藍＝那一小時有執行中的 Job。滑鼠停在色段上看持續多久。",
    "gridPos": {
     "x": 12,
-    "y": 25,
+    "y": 28,
     "w": 12,
     "h": 7
    },
@@ -2260,7 +2189,7 @@
     },
     "overrides": []
    },
-   "id": 17
+   "id": 16
   },
   {
    "type": "timeseries",
@@ -2392,12 +2321,12 @@
    },
    "gridPos": {
     "x": 0,
-    "y": 32,
+    "y": 35,
     "w": 8,
     "h": 9
    },
    "hideTimeOverride": true,
-   "id": 18
+   "id": 17
   },
   {
    "type": "barchart",
@@ -2405,7 +2334,7 @@
    "description": "14 天內有失敗的 Cloud Run Job 與失敗次數，最多的在上。名稱超過 18 字時中間以「…」省略（ml-controller 縮成 ml-ctl）。",
    "gridPos": {
     "x": 8,
-    "y": 32,
+    "y": 35,
     "w": 8,
     "h": 9
    },
@@ -2575,7 +2504,7 @@
    },
    "timeFrom": "14d",
    "hideTimeOverride": true,
-   "id": 19
+   "id": 18
   },
   {
    "type": "barchart",
@@ -2583,7 +2512,7 @@
    "description": "14 天內每個排程寫出的錯誤日誌筆數，最多的在上。錯誤日誌不一定是最終失敗（重試後成功也會留一筆），要看最終結果請對照 ② 執行品質。名稱超過 18 字時中間以「…」省略（ml-controller 縮成 ml-ctl）。",
    "gridPos": {
     "x": 16,
-    "y": 32,
+    "y": 35,
     "w": 8,
     "h": 9
    },
@@ -2753,7 +2682,7 @@
    },
    "timeFrom": "14d",
    "hideTimeOverride": true,
-   "id": 20
+   "id": 19
   }
  ]
 }

@@ -138,7 +138,6 @@ export function mockResponses(nowIso) {
     'mock:cloudflare-d1-grid': { rows: d1Grid },
     'mock:cloudflare-cost-period': { rows: [{ usd: 5 }] },
     'mock:cloudflare-cost-last': { rows: [{ usd: 37.97 }] },
-    'mock:cloudflare-cost-items': { rows: [['D1 儲存', 18.75], ['D1 讀取列', 14.03], ['方案月費', 5], ['R2 儲存', 0.2]].map(([item, usd]) => ({ item, usd })) },
     'mock:billing-month-by-service': { rows: monthByService },
     'mock:billing-month-cumulative': { rows: cumulative },
     'plan:cloud-run-job-days': { rows: jobDays },

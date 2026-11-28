@@ -66,6 +66,8 @@ export const C = { ok: '#00c076', run: '#8ab8ff', warn: '#ff9830', bad: '#f2495c
 export const COOL = {
   cat: ['#199cb8', '#035ede', '#a573fe', '#ac27ae'],
   other: '#dcdfe4', calm: '#3b5874', loss: '#b05a68',
+  // Two more service colours, apart from cat and from the warn amber / bad red (GCP 本月各服務, 11/28).
+  service: '#4fb286', unnamed: '#c2b45a',
   seq: { reads: '#b7d3f6', writes: '#d2c4ff', latency: '#9fe3ea' },
   margin: ['#a7bacd', '#1f93b8', '#16587f'],
 }
@@ -242,11 +244,13 @@ export function states(kind, title, target, by, x, y, w, h, o = {}) {
 }
 
 /** One gauge per row (a quota, a capacity, progress to a threshold): `nameField` names it, `valueField` fills it from
- * o.min to o.max; the threshold steps colour the arc and mark the band. */
+ * o.min to o.max; the threshold steps colour the arc and mark the band. `o.minViz`: [width, height] of each gauge (sizing
+ * manual: they wrap to fit instead of shrinking); `o.autoText`: Grafana sizes the text to the gauge. */
 export function gauges(title, target, nameField, valueField, x, y, w, h, o = {}) {
   return { type: 'gauge', title, description: o.desc ?? '', gridPos: gp(x, y, w, h), datasource: target.datasource, targets: [target],
     options: { reduceOptions: { values: true, calcs: [], fields: allBut(target, valueField), limit: 40 }, orientation: 'auto', showThresholdMarkers: true,
-      showThresholdLabels: false, sizing: 'auto', minVizWidth: 60, minVizHeight: 60, text: { titleSize: 12, valueSize: 20 } },
+      showThresholdLabels: false, sizing: o.minViz ? 'manual' : 'auto', minVizWidth: o.minViz?.[0] ?? 60, minVizHeight: o.minViz?.[1] ?? 60,
+      text: o.autoText ? {} : { titleSize: 12, valueSize: 20 } },
     fieldConfig: { defaults: { unit: o.unit ?? 'percent', decimals: o.dec ?? 0, min: o.min ?? 0, max: o.max ?? 100, noValue: o.empty ?? NO_SOURCE,
       color: { mode: 'thresholds' }, thresholds: o.th ?? th([C.ok, null], [C.warn, 80], [C.bad, 90]) }, overrides: [rowName(valueField, nameField)] } }
 }

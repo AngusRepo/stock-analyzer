@@ -9,6 +9,42 @@ export const LIVE_DS = { type: INFINITY, uid: 'sv-monitoring' }
  * same in live and fixture builds. */
 export const GCP_DS = { type: 'stackdriver', uid: 'bg59sppgm7v9cb' }
 export const BIGQUERY_DS = { type: 'grafana-bigquery-datasource', uid: 'sv-bigquery' }
+/** Cloudflare's API through an Infinity datasource that holds a read-only token (Account Analytics, Billing). */
+export const CF_DS = { type: INFINITY, uid: 'sv-cloudflare-api' }
+const CF_API = 'https://api.cloudflare.com/client/v4'
+/** Hidden variables a Cloudflare query reads, so no account id is written into the repo: the token's account, and the
+ * Workers Paid billing period (its included usage resets on the subscription's renewal day, not on the 1st). */
+const cfVariable = (name, url, root) => ({ type: 'query', name, hide: 2, refresh: 1, skipUrlSync: true, datasource: CF_DS, options: [], current: {},
+  query: { queryType: 'infinity', refId: 'variable', infinityQuery: { refId: 'variable', type: 'json', source: 'url', parser: 'backend', format: 'table',
+    url: `${CF_API}${url}`, url_options: { method: 'GET', data: '' }, root_selector: `([${root}])`, columns: [{ selector: 'v', text: 'v', type: 'string' }], filters: [] } } })
+export const CF_VARIABLES = [
+  cfVariable('cf_account', '/accounts', `result[0].{ 'v': id }`),
+  cfVariable('cf_period_start', '/accounts/${cf_account}/subscriptions', `result[rate_plan.id = 'workers_paid'][0].{ 'v': current_period_start }`),
+  cfVariable('cf_period_end', '/accounts/${cf_account}/subscriptions', `result[rate_plan.id = 'workers_paid'][0].{ 'v': current_period_end }`),
+  // The billable-usage range (dates, the end exclusive): from 31 days before this period's start, so it holds the whole
+  // previous period too, to this period's end.
+  // Without a Workers Paid subscription both are 1970 dates: an empty range (no rows, the panels' noValue), not `from=&to=`,
+  // which the API answers with HTTP 400 (shown as an error).
+  cfVariable('cf_usage_from', '/accounts/${cf_account}/subscriptions', `($w := result[rate_plan.id = 'workers_paid'][0];
+    { 'v': $w ? $substring($fromMillis($toMillis($w.current_period_start) - 31 * 86400000), 0, 10) : '1970-01-01' })`),
+  cfVariable('cf_usage_to', '/accounts/${cf_account}/subscriptions', `($w := result[rate_plan.id = 'workers_paid'][0];
+    { 'v': $w ? $substring($w.current_period_end, 0, 10) : '1970-01-02' })`),
+  // Every monthly plan's fee (Workers Paid US$5; R2 Paid and Teams Free are 0), charged once a period.
+  cfVariable('cf_plan_fee', '/accounts/${cf_account}/subscriptions', `{ 'v': $string($sum(result[frequency = 'monthly'].price)) }`),
+]
+/** A GET on Cloudflare's REST API (`path` after /client/v4, may read the variables above); `root` is JSONata over the response. */
+export function cloudflareGet(path, { root, columns = [], refId = 'A' }) {
+  return { refId, datasource: CF_DS, type: 'json', source: 'url', parser: 'backend', format: 'table', url: `${CF_API}${path}`,
+    url_options: { method: 'GET', data: '' }, root_selector: `([${root}])`, columns, filters: [] }
+}
+/** A Cloudflare GraphQL Analytics query. `graphql` reads `$a` (the account) plus the variables given as Grafana
+ * expressions (`{ since: '${__from:date:iso}' }`); `root` is JSONata over the response. */
+export function cloudflareQuery(graphql, variables, { root, columns = [], refId = 'A' }) {
+  return { refId, datasource: CF_DS, type: 'json', source: 'url', parser: 'backend', format: 'table', url: `${CF_API}/graphql`,
+    url_options: { method: 'POST', body_type: 'raw', body_content_type: 'application/json',
+      data: JSON.stringify({ query: graphql.replace(/\s+/g, ' ').trim(), variables: { a: '${cf_account}', ...variables } }) },
+    root_selector: `([${root}])`, columns, filters: [] }
+}
 
 /** Status colours (one set for every status panel): green = done (#00c076, the OBS page's --chart-3), blue = running, light grey = waiting / not started,
  * dark grey = skipped, amber = late or at risk, red = failed. No red/green pair; saturated tones only where something
@@ -309,8 +345,9 @@ export function lcd(title, target, nameField, valueField, x, y, w, h, o = {}) {
  * Grafana's barchart hands PanelDataErrorView an empty warning when every frame has no rows, and that view then shows
  * fieldConfig.defaults.noValue. `o.colorBy`: a sibling field whose colour (thresholds or value mappings) fills each bar. */
 export function hbars(title, target, nameField, x, y, w, h, o = {}) {
+  // A SQL target (BigQuery) has no declared columns: its SELECT already orders the fields.
   return { type: 'barchart', title, description: o.desc ?? '', gridPos: gp(x, y, w, h), datasource: target.datasource, targets: [target],
-    transformations: [declaredOrder([target])],
+    transformations: target.columns ? [declaredOrder([target])] : [],
     options: { xField: nameField, orientation: 'horizontal', stacking: 'none', showValue: 'always', barWidth: 0.75, groupWidth: 0.7, barRadius: 0,
       xTickLabelRotation: 0, xTickLabelSpacing: 0, xTickLabelMaxLength: o.labelMax ?? 24, fullHighlight: false, tooltip: { mode: 'single' },
       ...(o.colorBy ? { colorByField: o.colorBy } : {}), text: { valueSize: 12 },
@@ -345,5 +382,6 @@ export function dashboard({ uid, title, panels, time, refresh = '', tag = 'stock
   return { uid, title, tags: [tag], timezone: 'Asia/Taipei', editable: true, schemaVersion: 39, refresh, time,
     links: links.map(([linkTitle, target]) => ({ title: linkTitle, type: 'link', url: `/d/${target}`, icon: 'dashboard', asDropdown: false, includeVars: false,
       keepTime: false, targetBlank: false, tags: [], tooltip: '' })),
-    templating: { list: [] }, panels }
+    // A page with a Cloudflare query carries the hidden variables it reads.
+    templating: { list: panels.some((panel) => panel.targets?.some((target) => target.datasource?.uid === CF_DS.uid)) ? structuredClone(CF_VARIABLES) : [] }, panels }
 }

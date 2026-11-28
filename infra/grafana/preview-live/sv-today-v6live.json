@@ -40,7 +40,7 @@
   {
    "title": "③ 資源與成本",
    "type": "link",
-   "url": "/d/sv-resources-v5",
+   "url": "/d/sv-resources-v6live",
    "icon": "dashboard",
    "asDropdown": false,
    "includeVars": false,
@@ -936,7 +936,7 @@
    },
    "datasource": {
     "type": "yesoreyeram-infinity-datasource",
-    "uid": "grafanacloud-infinity"
+    "uid": "sv-monitoring"
    },
    "targets": [
     {
@@ -955,10 +955,14 @@
      "filters": [],
      "datasource": {
       "type": "yesoreyeram-infinity-datasource",
-      "uid": "grafanacloud-infinity"
+      "uid": "sv-monitoring"
      },
-     "source": "inline",
-     "data": "{\"generated_at\":\"2026-11-27T22:21:07.484Z\",\"rows_read\":0,\"queries\":0,\"cache_ttl_s\":300,\"hours\":24,\"since\":\"2026-11-26T22:21:07.484Z\",\"tickets_read\":40,\"summary\":{\"count\":3,\"tasks\":2,\"last_at\":\"2026-11-27T20:21:07.484Z\"},\"by_task\":[{\"task\":\"daily-snapshot\",\"count\":2,\"last_at\":\"2026-11-27T20:21:07.484Z\"},{\"task\":\"strategy-learning-watchdog\",\"count\":1,\"last_at\":\"2026-11-27T13:21:07.484Z\"}],\"rows\":[{\"ticket_id\":\"t-0\",\"job_id\":\"daily-snapshot\",\"task\":\"daily-snapshot\",\"business_date\":\"2026-11-28\",\"status\":\"error\",\"error\":\"Error: D1_ERROR: D1 DB is overloaded. Too many resources consumed within a 10 second window.\",\"updated_at\":\"2026-11-27T20:21:07.484Z\"},{\"ticket_id\":\"t-1\",\"job_id\":\"daily-snapshot\",\"task\":\"daily-snapshot\",\"business_date\":\"2026-11-28\",\"status\":\"error\",\"error\":\"Error: D1_ERROR: D1 DB is overloaded. Too many resources consumed within a 10 second window.\",\"updated_at\":\"2026-11-27T17:21:07.484Z\"},{\"ticket_id\":\"t-2\",\"job_id\":\"strategy-learning-watchdog\",\"task\":\"strategy-learning-watchdog\",\"business_date\":\"2026-11-28\",\"status\":\"error\",\"error\":\"Error: D1_ERROR: D1 DB is overloaded. Too many resources consumed within a 10 second window.\",\"updated_at\":\"2026-11-27T13:21:07.484Z\"}]}"
+     "source": "url",
+     "url": "/v1/d1/overloaded",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
     }
    ],
    "transformations": [
@@ -1071,7 +1075,7 @@
    },
    "datasource": {
     "type": "yesoreyeram-infinity-datasource",
-    "uid": "grafanacloud-infinity"
+    "uid": "sv-monitoring"
    },
    "targets": [
     {
@@ -1090,10 +1094,14 @@
      "filters": [],
      "datasource": {
       "type": "yesoreyeram-infinity-datasource",
-      "uid": "grafanacloud-infinity"
+      "uid": "sv-monitoring"
      },
-     "source": "inline",
-     "data": "{\"generated_at\":\"2026-11-27T22:21:07.484Z\",\"rows_read\":0,\"queries\":0,\"cache_ttl_s\":900,\"thresholds\":{\"degraded_streak_to_bypass\":3,\"pass_streak_to_recover\":3,\"min_evaluable_dates\":5},\"definitions\":{},\"summary\":{\"status\":\"not_applicable\",\"state\":null,\"degraded_streak\":null,\"recovery_streak\":null,\"evaluable_date_count\":null,\"last_prediction_date\":null,\"model_version\":null,\"reason\":null,\"updated_at\":null},\"rows\":[]}"
+     "source": "url",
+     "url": "/v1/serving-guard",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
     }
    ],
    "transformations": [

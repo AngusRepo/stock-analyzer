@@ -40,7 +40,7 @@
   {
    "title": "③ 資源與成本",
    "type": "link",
-   "url": "/d/sv-resources-v5",
+   "url": "/d/sv-resources-v6live",
    "icon": "dashboard",
    "asDropdown": false,
    "includeVars": false,
@@ -89,7 +89,7 @@
    },
    "datasource": {
     "type": "yesoreyeram-infinity-datasource",
-    "uid": "grafanacloud-infinity"
+    "uid": "sv-monitoring"
    },
    "targets": [
     {
@@ -113,10 +113,14 @@
      "filters": [],
      "datasource": {
       "type": "yesoreyeram-infinity-datasource",
-      "uid": "grafanacloud-infinity"
+      "uid": "sv-monitoring"
      },
-     "source": "inline",
-     "data": "{\"generated_at\":\"2026-11-27T22:21:07.484Z\",\"rows_read\":0,\"queries\":0,\"cache_ttl_s\":900,\"today\":\"2026-11-28\",\"expected_known_date\":\"2026-11-26\",\"last_closure_date\":\"2026-11-28\",\"definitions\":{},\"summary\":{\"ledger_last_known_date\":\"2026-11-19\",\"lag_trading_days\":6,\"lag_capped\":false,\"current_context_identity\":\"ctx-current\",\"current_context_since\":\"2026-11-25\",\"current_context_rows\":0,\"current_context_last_known_date\":null,\"current_context_lag_trading_days\":null,\"current_context_lag_capped\":false,\"latest_plan_signal_date\":\"2026-11-26\"},\"rows\":[{\"ledger\":\"all_contexts\",\"last_known_date\":\"2026-11-19\",\"lag_trading_days\":6},{\"ledger\":\"current_context\",\"last_known_date\":null,\"lag_trading_days\":null}]}"
+     "source": "url",
+     "url": "/v1/opb/ledger",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
     }
    ],
    "transformations": [
@@ -273,7 +277,7 @@
    },
    "datasource": {
     "type": "yesoreyeram-infinity-datasource",
-    "uid": "grafanacloud-infinity"
+    "uid": "sv-monitoring"
    },
    "targets": [
     {
@@ -302,10 +306,14 @@
      "filters": [],
      "datasource": {
       "type": "yesoreyeram-infinity-datasource",
-      "uid": "grafanacloud-infinity"
+      "uid": "sv-monitoring"
      },
-     "source": "inline",
-     "data": "{\"generated_at\":\"2026-11-27T22:21:07.484Z\",\"rows_read\":0,\"queries\":0,\"cache_ttl_s\":300,\"account_id\":1,\"today\":\"2026-11-28\",\"since\":\"2026-11-15\",\"days\":14,\"definitions\":{},\"summary\":{\"today_trading\":false,\"today_status\":\"not_trading\",\"today_sealed_at\":null,\"today_cutoff_at\":null,\"trading_days\":10,\"sealed_days\":9,\"missing_days\":1,\"latest_missing_date\":\"2026-11-23\"},\"rows\":[{\"date\":\"2026-11-16\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-16\",\"sealed_at\":\"2026-11-15T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-16T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-17\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-17\",\"sealed_at\":\"2026-11-16T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-17T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-18\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-18\",\"sealed_at\":\"2026-11-17T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-18T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-19\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-19\",\"sealed_at\":\"2026-11-18T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-19T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-20\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-20\",\"sealed_at\":\"2026-11-19T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-20T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-23\",\"status\":\"missing\",\"plan_id\":null,\"sealed_at\":null,\"revised_at\":null,\"revision\":null,\"cutoff_at\":\"2026-11-23T00:45:00.000Z\",\"minutes_before_cutoff\":null},{\"date\":\"2026-11-24\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-24\",\"sealed_at\":\"2026-11-23T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-24T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-25\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-25\",\"sealed_at\":\"2026-11-24T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-25T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-26\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-26\",\"sealed_at\":\"2026-11-25T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-26T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-27\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-27\",\"sealed_at\":\"2026-11-26T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-27T00:45:00.000Z\",\"minutes_before_cutoff\":76}]}"
+     "source": "url",
+     "url": "/v1/policy/seal",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
     }
    ],
    "transformations": [
@@ -547,7 +555,7 @@
    },
    "datasource": {
     "type": "yesoreyeram-infinity-datasource",
-    "uid": "grafanacloud-infinity"
+    "uid": "sv-monitoring"
    },
    "targets": [
     {
@@ -581,10 +589,14 @@
      "filters": [],
      "datasource": {
       "type": "yesoreyeram-infinity-datasource",
-      "uid": "grafanacloud-infinity"
+      "uid": "sv-monitoring"
      },
-     "source": "inline",
-     "data": "{\"generated_at\":\"2026-11-27T22:21:07.484Z\",\"rows_read\":0,\"queries\":0,\"cache_ttl_s\":900,\"thresholds\":{\"degraded_streak_to_bypass\":3,\"pass_streak_to_recover\":3,\"min_evaluable_dates\":5},\"definitions\":{},\"summary\":{\"status\":\"not_applicable\",\"state\":null,\"degraded_streak\":null,\"recovery_streak\":null,\"evaluable_date_count\":null,\"last_prediction_date\":null,\"model_version\":null,\"reason\":null,\"updated_at\":null},\"rows\":[]}"
+     "source": "url",
+     "url": "/v1/serving-guard",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
     }
    ],
    "transformations": [
@@ -901,7 +913,7 @@
    },
    "datasource": {
     "type": "yesoreyeram-infinity-datasource",
-    "uid": "grafanacloud-infinity"
+    "uid": "sv-monitoring"
    },
    "targets": [
     {
@@ -930,10 +942,14 @@
      "filters": [],
      "datasource": {
       "type": "yesoreyeram-infinity-datasource",
-      "uid": "grafanacloud-infinity"
+      "uid": "sv-monitoring"
      },
-     "source": "inline",
-     "data": "{\"generated_at\":\"2026-11-27T22:21:07.484Z\",\"rows_read\":0,\"queries\":0,\"cache_ttl_s\":300,\"account_id\":1,\"today\":\"2026-11-28\",\"since\":\"2026-11-15\",\"days\":14,\"definitions\":{},\"summary\":{\"today_trading\":false,\"today_status\":\"not_trading\",\"today_sealed_at\":null,\"today_cutoff_at\":null,\"trading_days\":10,\"sealed_days\":9,\"missing_days\":1,\"latest_missing_date\":\"2026-11-23\"},\"rows\":[{\"date\":\"2026-11-16\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-16\",\"sealed_at\":\"2026-11-15T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-16T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-17\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-17\",\"sealed_at\":\"2026-11-16T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-17T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-18\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-18\",\"sealed_at\":\"2026-11-17T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-18T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-19\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-19\",\"sealed_at\":\"2026-11-18T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-19T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-20\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-20\",\"sealed_at\":\"2026-11-19T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-20T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-23\",\"status\":\"missing\",\"plan_id\":null,\"sealed_at\":null,\"revised_at\":null,\"revision\":null,\"cutoff_at\":\"2026-11-23T00:45:00.000Z\",\"minutes_before_cutoff\":null},{\"date\":\"2026-11-24\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-24\",\"sealed_at\":\"2026-11-23T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-24T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-25\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-25\",\"sealed_at\":\"2026-11-24T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-25T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-26\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-26\",\"sealed_at\":\"2026-11-25T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-26T00:45:00.000Z\",\"minutes_before_cutoff\":76},{\"date\":\"2026-11-27\",\"status\":\"sealed\",\"plan_id\":\"plan-2026-11-27\",\"sealed_at\":\"2026-11-26T23:29:00.000Z\",\"revised_at\":null,\"revision\":0,\"cutoff_at\":\"2026-11-27T00:45:00.000Z\",\"minutes_before_cutoff\":76}]}"
+     "source": "url",
+     "url": "/v1/policy/seal",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
     }
    ],
    "timeFrom": "14d",
@@ -2803,8 +2819,8 @@
   },
   {
    "type": "state-timeline",
-   "title": "訓練與研究 Job（每天）",
-   "description": "每個 Cloud Run Job 一列、每天一格：青＝當天的執行都成功，紅＝當天有失敗，空白＝當天沒跑。滑鼠停在格子上看當天跑了幾次、共幾分鐘。尚未接資料：每個 Job 每天的成敗要監控 Worker 新增一條 route（資料來源待查），目前畫的是示範資料。",
+   "title": "訓練與研究 Job（每天）（示範資料）",
+   "description": "示範資料。每個 Cloud Run Job 一列、每天一格：青＝當天的執行都成功，紅＝當天有失敗，空白＝當天沒跑。滑鼠停在格子上看當天跑了幾次、共幾分鐘。尚未接資料：每個 Job 每天的成敗要監控 Worker 新增一條 route（資料來源待查），目前畫的是示範資料。",
    "gridPos": {
     "x": 14,
     "y": 18,
@@ -3185,7 +3201,7 @@
    },
    "datasource": {
     "type": "yesoreyeram-infinity-datasource",
-    "uid": "grafanacloud-infinity"
+    "uid": "sv-monitoring"
    },
    "targets": [
     {
@@ -3214,10 +3230,14 @@
      "filters": [],
      "datasource": {
       "type": "yesoreyeram-infinity-datasource",
-      "uid": "grafanacloud-infinity"
+      "uid": "sv-monitoring"
      },
-     "source": "inline",
-     "data": "{\"generated_at\":\"2026-11-27T22:21:07.484Z\",\"rows_read\":0,\"queries\":0,\"cache_ttl_s\":900,\"today\":\"2026-11-28\",\"since\":\"2026-11-15\",\"days\":14,\"models\":[\"LightGBM\",\"ExtraTrees\",\"TabM\",\"GNN\"],\"definitions\":{},\"summary\":{\"model_count\":4,\"trading_days\":10,\"latest_finished_date\":\"2026-11-26\",\"missing_cells\":1,\"latest_missing_models\":[]},\"rows\":[{\"date\":\"2026-11-16\",\"model_name\":\"LightGBM\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-16\",\"model_name\":\"ExtraTrees\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-16\",\"model_name\":\"TabM\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-16\",\"model_name\":\"GNN\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-17\",\"model_name\":\"LightGBM\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-17\",\"model_name\":\"ExtraTrees\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-17\",\"model_name\":\"TabM\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-17\",\"model_name\":\"GNN\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-18\",\"model_name\":\"LightGBM\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-18\",\"model_name\":\"ExtraTrees\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-18\",\"model_name\":\"TabM\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-18\",\"model_name\":\"GNN\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-19\",\"model_name\":\"LightGBM\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-19\",\"model_name\":\"ExtraTrees\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-19\",\"model_name\":\"TabM\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-19\",\"model_name\":\"GNN\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-20\",\"model_name\":\"LightGBM\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-20\",\"model_name\":\"ExtraTrees\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-20\",\"model_name\":\"TabM\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-20\",\"model_name\":\"GNN\",\"state\":\"serving\",\"version\":\"v20260921071259\",\"cell\":\"serving|v20260921071259\"},{\"date\":\"2026-11-23\",\"model_name\":\"LightGBM\",\"state\":\"switched\",\"version\":\"v20261109102955\",\"cell\":\"switched|v20261109102955\"},{\"date\":\"2026-11-23\",\"model_name\":\"ExtraTrees\",\"state\":\"switched\",\"version\":\"v20261109102955\",\"cell\":\"switched|v20261109102955\"},{\"date\":\"2026-11-23\",\"model_name\":\"TabM\",\"state\":\"missing\",\"version\":\"v20261109102955\",\"cell\":\"missing|v20261109102955\"},{\"date\":\"2026-11-23\",\"model_name\":\"GNN\",\"state\":\"switched\",\"version\":\"v20261109102955\",\"cell\":\"switched|v20261109102955\"},{\"date\":\"2026-11-24\",\"model_name\":\"LightGBM\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-24\",\"model_name\":\"ExtraTrees\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-24\",\"model_name\":\"TabM\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-24\",\"model_name\":\"GNN\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-25\",\"model_name\":\"LightGBM\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-25\",\"model_name\":\"ExtraTrees\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-25\",\"model_name\":\"TabM\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-25\",\"model_name\":\"GNN\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-26\",\"model_name\":\"LightGBM\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-26\",\"model_name\":\"ExtraTrees\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-26\",\"model_name\":\"TabM\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-26\",\"model_name\":\"GNN\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-27\",\"model_name\":\"LightGBM\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-27\",\"model_name\":\"ExtraTrees\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-27\",\"model_name\":\"TabM\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"},{\"date\":\"2026-11-27\",\"model_name\":\"GNN\",\"state\":\"serving\",\"version\":\"v20261109102955\",\"cell\":\"serving|v20261109102955\"}]}"
+     "source": "url",
+     "url": "/v1/models/serving",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
     }
    ],
    "timeFrom": "14d",

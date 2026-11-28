@@ -1,5 +1,5 @@
 ﻿import { useQuery } from '@tanstack/react-query'
-import { humanJobSummary } from '@/lib/humanLabels'
+import { humanJobSummary, jobSummaryText } from '@/lib/humanLabels'
 import { AlertTriangle, Clock, ExternalLink, RefreshCw } from 'lucide-react'
 import { lazy, Suspense } from 'react'
 import AppShell from '@/components/AppShell'
@@ -131,13 +131,15 @@ function JobRow({ job }: { job: SchedulerJob }) {
           {(suspicious || attention) && <AlertTriangle className="h-3.5 w-3.5 text-warn" />}
         </div>
         <p className={`mt-1 break-all ${attention ? 'text-warn' : 'text-[#70809b]'}`}>
-          {GROUP_LABELS[job.group] ?? String(job.group).replace(/_/g, ' ')}／{humanJobSummary(attention || job.summary || job.schedule || '')}
+          {GROUP_LABELS[job.group] ?? String(job.group).replace(/_/g, ' ')}／{attention ? humanJobSummary(attention) : jobSummaryText(job, job.schedule)}
         </p>
         {consolidation && (
           <p className="mt-1 break-words text-[#8a92a6]">
-            {consolidation.replacementOwner
-              ? `建議：${String(consolidation.replacementOwner).replace(/_/g, " ")}`
-              : consolidation.recommendation}
+            {consolidation.suggestionZh
+              ? `建議：${consolidation.suggestionZh}`
+              : consolidation.replacementOwner
+                ? `建議：${String(consolidation.replacementOwner).replace(/_/g, " ")}`
+                : consolidation.recommendation}
           </p>
         )}
         <div className="mt-2 max-w-[220px]">
@@ -247,7 +249,7 @@ export default function SchedulerPage() {
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0">
                       <p className="break-words sv-num text-[11px] normal-case text-slate-100">{job.name}</p>
-                      <p className="mt-1 break-all text-xs leading-5 text-[#8a92a6]">{attentionSkipReason(job) ? `${attentionSkipReason(job)} · ` : ''}{humanJobSummary(job.summary || job.schedule || '')}</p>
+                      <p className="mt-1 break-all text-xs leading-5 text-[#8a92a6]">{attentionSkipReason(job) ? `${attentionSkipReason(job)} · ` : ''}{jobSummaryText(job, job.schedule)}</p>
                       {job.consolidation && (
                         <p className="mt-1 text-xs leading-5 text-[#70809b]">
                           Consolidation: {consolidationLabel(job)} / risk {job.consolidation.operatorRisk}

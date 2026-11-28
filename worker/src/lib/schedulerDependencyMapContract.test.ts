@@ -1,6 +1,8 @@
 import * as fs from 'node:fs'
 import {
   SCHEDULER_DEPENDENCY_MAP,
+  SCHEDULER_SUGGESTION_ZH,
+  getSchedulerDependencySpec,
   schedulerConsolidationCandidates,
   type SchedulerDependencySpec,
 } from './schedulerDependencyMap'
@@ -147,3 +149,14 @@ for (const spec of Object.values(SCHEDULER_DEPENDENCY_MAP)) {
 const activeConsolidations = schedulerConsolidationCandidates()
   .filter((spec) => spec.consolidationClass !== 'keep_scheduler')
 assert(activeConsolidations.length >= 8, 'scheduler consolidation map should explicitly track the reviewed cleanup surface')
+
+// 11/28 Wei：排程頁「建議」只顯示中文；每個 task 都要有中文建議，且不得殘留 snake_case 識別字。
+for (const task of Object.keys(SCHEDULER_DEPENDENCY_MAP)) {
+  const zh = SCHEDULER_SUGGESTION_ZH[task]
+  assert(zh && /[\u4e00-\u9fff]/.test(zh), `${task} needs a Chinese scheduler suggestion`)
+  assert(!/\b[a-z]+_[a-z0-9_]+\b/.test(zh), `${task} Chinese suggestion must not leak snake_case ids`)
+  assert(getSchedulerDependencySpec(task)?.suggestionZh === zh, `${task} spec must carry suggestionZh to the scheduler API`)
+}
+for (const task of Object.keys(SCHEDULER_SUGGESTION_ZH)) {
+  assert(SCHEDULER_DEPENDENCY_MAP[task], `${task} Chinese suggestion has no scheduler dependency spec`)
+}

@@ -16,6 +16,8 @@ export interface SchedulerDependencySpec {
   requiredBeforeDisable: string[]
   operatorRisk: 'low' | 'medium' | 'high'
   recommendation: string
+  /** 排程頁「建議」的中文版（11/28 Wei：畫面只顯示人看的部分）；由 getSchedulerDependencySpec 帶出。 */
+  suggestionZh?: string
 }
 
 export const SCHEDULER_DEPENDENCY_MAP: Record<string, SchedulerDependencySpec> = {
@@ -495,8 +497,57 @@ export const SCHEDULER_DEPENDENCY_MAP: Record<string, SchedulerDependencySpec> =
   },
 }
 
+export const SCHEDULER_SUGGESTION_ZH: Record<string, string> = {
+  'postclose-research-dispatch': '保留。派發狀態要和研究完成狀態分開；盤前服務路徑不得跑 NAV。',
+  'strategy-nav-execution': '停用候選，已由 R33 分層評估與正式單一 B 帳戶 Paper 取代。舊入口保持移除；Worker 處理器等 R33 刪除切片拿掉原生比較引擎時一起移除。',
+  'paired-native-execution': '停用候選，已由正式單一 B 帳戶 Paper 取代（配對研究帳戶已退役）。舊入口保持移除；Worker 不喚醒 Controller，直接回停用收據。',
+  'daily-execution-paper-lineage': '保留，作為快照後執行與 Paper 紀錄收尾的看門狗（可重跑）。',
+  'external-evidence': '保留，只當參考證據；外部證據不得直接擋交易。',
+  'debate-memory-retention': '保留，只要辯論記憶還在產生；清理範圍必須以日期為界。',
+  'artifact-reconcile': '保留，排在儲存健檢之前，讓完整性錯誤一定看得到。',
+  'retention-archive-only': '保留，只做封存；任何清除動作都要另外核准，且以封存完成為前提。',
+  'retention-hot-window-drain': '保留唯讀，直到另外核准「先封存再刪除」的規則。',
+  'data-domain-shadow-backfill-next': '停用候選，改由每日回補退役資格監控接手。舊入口保持移除；協調器只在明確手動維護時執行。',
+  'legacy-strategy-evidence-migration': '手動維護候選，依舊策略證據遷移結案手冊處理。舊入口保持移除；只有出現新的舊策略證據時才手動重跑。',
+  'legacy-hot-data-retirement': '手動維護候選，依「先封存再刪除」退役手冊處理。排程執行維持唯讀，任何寫入都要明確手動維護。',
+  'r2-retention-sweep': '保留，必須先通過封存驗證與硬參照可達性檢查。',
+  'orphan-reachability-gc': '保留，排在 reconcile 之後；是否刪除一律以可達性判定為準。',
+  'storage-health-check': '保留，作為儲存寫入方的正式准入關卡；交易路徑不受限。',
+  'learning-retention-readiness': '保留，作為清理或回滾前的唯讀判定依據。',
+  'legacy-learning-deletion-readiness': '手動維護候選，依舊 Learning 刪除就緒手冊處理。維持唯讀，任何刪除仍需明確核准。',
+  'storage-capacity-report': '保留，負責每日容量與預測報告。',
+  'screener-v2-watchdog': '下游證據，由選股 callback 復原機制負責。保留為復原看門狗，顯示在主流程鏈之外。',
+  'strategy-learning-watchdog': '下游證據，由 strategy-learning 持久佇列與收尾檢查點負責。保留在盤後看門狗排程內，直到佇列在 DLQ 用盡後能自行續跑。',
+  'kv-config-drift': '保留，作為獨立的每日維護入口；預期內的漂移（Optuna、切換）以上傳 GCS 並開 PR 釘 manifest 結案。',
+  'audit-json-retention': '保留，作為獨立的每日儲存生命週期入口。',
+  'data-domain-shadow-backfill': '下游證據，由回補協調器負責。歸在同一個 Worker 負責者下，不要把每次重試觸發顯示成獨立流程站。',
+  'dataset-snapshot-export': '下游證據，由 pipeline 延後快照後續步驟負責。保留為非同步證據分支，用持久工單收尾。',
+  'active8-oof-daily': '下游證據，主要由資料集快照就緒 callback 觸發；固定排程只當可重跑的看門狗。',
+  'active8-oof-weekly': '保留，作為每週發版機會；整合模型包通過才會晉升。',
+  'active8-oof-monthly': '保留，作為每月發版機會；晉升不限於這個週期。',
+  'evening-chain': '保留，作為唯一的盤後根排程。',
+  'allocator-ev-readiness': '併入盤後鏈，放在 pipeline 之前的階段；不要變成只能手動的維護作業。',
+  'allocator-ev-feature-snapshot-backfill': '併入 pipeline 成功後的 callback 階段；快照為空時必須擋住 callback 收尾。',
+  'morning-setup': '保留，負責早上建立待買單的界線。',
+  'premarket-evidence-watchdog': '保留；不得擋保護性出場，也不得重建選股。',
+  'pre-market-warmup': '併入早盤鏈（開盤前報價檢查）。先不要刪，對齊測試通過後再改成鏈中的一步。',
+  'daily-snapshot': '併入盤後／收盤鏈，但要先驗證帳戶指標一致。',
+  'us-leading': '下游證據，由盤前證據看門狗補漏。保留原本的產出排程。',
+  'news-analyst': '下游證據，由新聞佇列與盤前證據看門狗負責。保留原本的產出排程；看門狗只重試缺漏或無效的證據。',
+  'weekly-audit': '併入每週驗證總結報告。',
+  'alpha-quality': '併入每週驗證總結，和週回測／Monte Carlo／PBO 一起，因為都屬於驗證證據。',
+  'sector-leaders': '下游證據，改到選股／盤後鏈的證據建置流程；產業資料應隨行情一起更新。',
+  'model-ic-rolling': '併入 post-verify 鏈，作為子步驟，不再有固定時間排程。',
+  'model-ic-full-check': '保留，作為獨立的週五證據稽核；不得共用 rolling 的狀態 key。',
+  'paper-active-postmarket': '下游證據，留在 post-verify 鏈且不列為關鍵；不得寫入委託或真實交易狀態。',
+  'weekly-cleanup': '手動維護候選，由手動維護與模型註冊／晉升 controller 負責。每週清理只做稽核；正式生命週期的變動要由晉升 controller 明確執行。',
+  'optuna-queue': '停用候選，改由每週／每月 Optuna 研究參數搜尋或手動清佇列接手。讀回確認佇列為空後停用排程輪詢，只保留手動清空。',
+  'monthly-strategy-mining': '保留，負責每月策略挖掘；通過晉升關卡且 Wei 核准前只做研究。',
+}
+
 export function getSchedulerDependencySpec(task: string): SchedulerDependencySpec | undefined {
-  return SCHEDULER_DEPENDENCY_MAP[task]
+  const spec = SCHEDULER_DEPENDENCY_MAP[task]
+  return spec ? { ...spec, suggestionZh: SCHEDULER_SUGGESTION_ZH[task] } : undefined
 }
 
 export function schedulerConsolidationCandidates(kind?: SchedulerConsolidationClass): SchedulerDependencySpec[] {

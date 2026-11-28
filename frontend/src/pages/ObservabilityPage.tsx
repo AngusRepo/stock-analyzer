@@ -17,7 +17,7 @@ import {
 } from '@/components/workstation/WorkstationChrome'
 import { STATUS_CHIP, TW_COLORS } from '@/lib/colorTokens'
 import { StatusIcon } from '@/components/ui/status'
-import { humanSource, humanStatus, humanJobSummary } from '@/lib/humanLabels'
+import { humanSource, humanStatus, humanJobSummary, jobErrorText, jobSummaryText } from '@/lib/humanLabels'
 import {
   ApprovalReviewPanel,
   type ApprovalReviewGate,
@@ -287,7 +287,7 @@ function stageFromDefinition(def: typeof READINESS_STAGES[number], jobs: Schedul
     id: def.id,
     label: def.label,
     owner: def.owner,
-    detail: job?.summary || def.detail,
+    detail: job?.summary ? jobSummaryText(job) : def.detail,
     status,
     tone: readinessTone(status),
     job,
@@ -815,6 +815,8 @@ function schedulerPlainSummary(job: SchedulerJob): string {
   if (/blocked by storage admission/i.test(raw)) {
     return `D1 容量保護已阻擋這個高寫入工作${utilization ? `；legacy D1 目前使用 ${utilization}%` : ''}。這不是策略或模型失敗，而是為避免資料庫碰到 10 GB 上限而停止新增研究資料。`
   }
+  if (job.lastError) return jobErrorText(job)
+  if (job.summary) return jobSummaryText(job)
   return humanJobSummary(raw)
 }
 
@@ -1567,7 +1569,7 @@ function schedulerHasRootCause(job: SchedulerJob) {
 function schedulerRootCause(job: SchedulerJob) {
   if (job.lastError) return schedulerPlainSummary(job)
   if (job.durationConcern && job.durationConcern !== 'expected_short') {
-    return job.durationConcernReason || job.summary || job.durationConcern
+    return job.durationConcernReason || (job.summary ? jobSummaryText(job) : job.durationConcern)
   }
   if (schedulerHasRootCause(job) && job.summary) return schedulerPlainSummary(job)
   if (job.lastStatus === 'waiting') return '等待前序 stage callback 完成。'

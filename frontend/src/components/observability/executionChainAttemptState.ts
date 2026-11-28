@@ -57,6 +57,7 @@ export function buildAttemptAwareJobMap(
       lastDuration: derivedFromParent ? 'N/A' : current.lastDuration,
       lastError: undefined,
       summary: derivedFromParent ? runtimeAuthority.summary : current.summary,
+      summaryZh: derivedFromParent ? runtimeAuthority.summaryZh : current.summaryZh,
       statusScope: runtimeAuthority.statusScope,
       statusRunDate: runtimeAuthority.statusRunDate,
       displayNote: derivedFromParent
@@ -79,6 +80,7 @@ export function buildAttemptAwareJobMap(
       lastStatus: 'waiting',
       lastError: undefined,
       summary: `Waiting for current replay stage ${currentStageId}`,
+      summaryZh: undefined,
       statusScope: runtimeAuthority.statusScope,
       statusRunDate: runtimeAuthority.statusRunDate,
       displayNote: 'Previous-attempt terminal state is suppressed while the current replay is still upstream.',

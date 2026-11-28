@@ -204,8 +204,8 @@ export default function TradePerformancePanel({ stockId }: { stockId: number }) 
       {history.length > 0 && (
         <div>
           <p className="text-xs text-gray-400 mb-2">最近交易記錄（{history.length} 筆）</p>
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs border-collapse">
+          <div className="md:overflow-x-auto">
+            <table className="sv-stack-table w-full text-xs border-collapse">
               <thead>
                 <tr className="text-muted-foreground border-b border-gray-700">
                   <th className="text-left py-1 pr-2">日期</th>
@@ -223,21 +223,21 @@ export default function TradePerformancePanel({ stockId }: { stockId: number }) 
                   const pnl = h.trade_pnl_pct
                   return (
                     <tr key={i} className="border-b border-gray-800 hover:bg-gray-800/50">
-                      <td className="py-1 pr-2 text-gray-400">{h.generated_at.slice(0, 10)}</td>
-                      <td className="py-1 pr-2">{h.model_name}</td>
-                      <td className="py-1 pr-2">
+                      <td data-label="日期" className="py-1 pr-2 text-gray-400">{h.generated_at.slice(0, 10)}</td>
+                      <td data-label="模型" className="py-1 pr-2">{h.model_name}</td>
+                      <td data-label="訊號" className="py-1 pr-2">
                         <span className={h.predicted_direction === 'up' ? 'text-up' : 'text-down'}>
                           {h.trade_signal}
                         </span>
                       </td>
-                      <td className={`py-1 pr-2 ${oc.color}`}>{oc.label}</td>
-                      <td className={`py-1 pr-2 text-right sv-num ${pnl == null ? 'text-muted-foreground' : priceToneClass(pnl)}`}>
+                      <td data-label="出場" className={`py-1 pr-2 ${oc.color}`}>{oc.label}</td>
+                      <td data-label="損益%" className={`py-1 pr-2 text-right sv-num ${pnl == null ? 'text-muted-foreground' : priceToneClass(pnl)}`}>
                         {pnl == null ? '-' : `${pnl >= 0 ? '+' : ''}${(pnl * 100).toFixed(2)}%`}
                       </td>
-                      <td className={`py-1 pr-2 text-right sv-num ${!h.trade_pnl_r ? 'text-muted-foreground' : priceToneClass(h.trade_pnl_r)}`}>
+                      <td data-label="R" className={`py-1 pr-2 text-right sv-num ${!h.trade_pnl_r ? 'text-muted-foreground' : priceToneClass(h.trade_pnl_r)}`}>
                         {h.trade_pnl_r == null ? '-' : r(h.trade_pnl_r)}
                       </td>
-                      <td className={`py-1 text-xs ${marketRiskLevelStyle(h.market_risk_level).color}`}>
+                      <td data-label="市況" className={`py-1 text-xs ${marketRiskLevelStyle(h.market_risk_level).color}`}>
                         {h.market_risk_level ?? '-'}
                       </td>
                     </tr>

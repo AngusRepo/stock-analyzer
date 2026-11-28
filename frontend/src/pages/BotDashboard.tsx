@@ -737,16 +737,16 @@ function TradeHistory() {
     <div className="space-y-2 pt-1">
       {listState === 'list-stale' && <DataState kind="stale" title="更新失敗，顯示上次的資料" onRetry={() => { void refetch() }} className="px-3 py-1" />}
       <div>
-      <table className="w-full text-[13px]">
+      <table className="sv-stack-table w-full text-[13px] [--sv-stack-pad-x:1rem]">
         <thead>
           <tr className="text-muted-foreground text-[11px] border-b border-border">
             <th className="font-normal text-left px-1 py-1.5 sm:px-2">時間</th>
             <th className="font-normal text-left px-1 py-1.5 sm:px-2">股票</th>
             <th className="font-normal text-left px-1 py-1.5 sm:px-2">方向</th>
-            <th className="font-normal text-right px-1 py-1.5 sm:px-2 hidden sm:table-cell">股數</th>
+            <th className="font-normal text-right px-1 py-1.5 sm:px-2">股數</th>
             <th className="font-normal text-right px-1 py-1.5 sm:px-2">價格</th>
             <th className="font-normal text-right px-1 py-1.5 sm:px-2">已實現</th>
-            <th className="font-normal text-left px-1 py-1.5 sm:px-2 hidden md:table-cell">原因</th>
+            <th className="font-normal text-left px-1 py-1.5 sm:px-2">原因</th>
           </tr>
         </thead>
         <tbody>
@@ -756,22 +756,22 @@ function TradeHistory() {
             const noteView = humanOrderReason(o)
             return (
               <tr key={o.id ?? i} className="border-b border-border/50 hover:bg-muted/30">
-                <td className="px-1 py-1.5 sm:px-2 text-[12px] text-muted-foreground sv-num sm:whitespace-nowrap">
+                <td data-label="時間" className="px-1 py-1.5 sm:px-2 text-[12px] text-muted-foreground sv-num sm:whitespace-nowrap">
                   {formatTwOrderTime(o.created_at)}
                 </td>
-                <td className="px-1 py-1.5 sm:px-2">
+                <td data-label="股票" className="px-1 py-1.5 sm:px-2">
                   <span className="sv-num text-foreground">{o.symbol}</span>
                   <span className="block text-xs text-muted-foreground sm:ml-1 sm:inline">{o.name}</span>
                 </td>
-                <td className="px-1 py-1.5 sm:px-2">
+                <td data-label="方向" className="px-1 py-1.5 sm:px-2">
                   <span className={`inline-flex items-center text-xs font-medium ${isBuy ? 'text-up' : 'text-down'}`}>
                     {isBuy ? <ArrowUpRight className="w-3 h-3 mr-0.5" /> : <ArrowDownRight className="w-3 h-3 mr-0.5" />}
                     {isBuy ? '買進' : '賣出'}
                   </span>
                 </td>
-                <td className="px-1 py-1.5 sm:px-2 text-right sv-num text-foreground/80 hidden sm:table-cell">{fmt(o.shares)}</td>
-                <td className="px-1 py-1.5 sm:px-2 text-right sv-num text-foreground/80">${fmt(o.price, 1)}</td>
-                <td className="px-1 py-1.5 sm:px-2 text-right sv-num">
+                <td data-label="股數" className="px-1 py-1.5 sm:px-2 text-right sv-num text-foreground/80">{fmt(o.shares)}</td>
+                <td data-label="價格" className="px-1 py-1.5 sm:px-2 text-right sv-num text-foreground/80">${fmt(o.price, 1)}</td>
+                <td data-label="已實現" className="px-1 py-1.5 sm:px-2 text-right sv-num">
                   {isBuy ? (
                     <span className="text-muted-foreground">—</span>
                   ) : realized ? (
@@ -783,7 +783,7 @@ function TradeHistory() {
                     <span className="text-xs text-warn" title="這筆賣出缺成本或成交資料，還算不出已實現損益">待補</span>
                   )}
                 </td>
-                <td className="px-1 py-1.5 sm:px-2 text-[12px] text-muted-foreground hidden md:table-cell min-w-[220px] break-words">
+                <td data-label="原因" className="sv-stack-wide px-1 py-1.5 sm:px-2 text-[12px] text-muted-foreground md:min-w-[220px] break-words">
                   {noteView.text}
                 </td>
               </tr>

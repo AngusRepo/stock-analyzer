@@ -234,7 +234,7 @@ export type PipelineDecisionMaturityPacket = {
     plan_id: string; signal_date: string; model_checksum: string; nav_at_decision: number;
     weights: Record<string, number>; cash_weight: number;
     prediction_coverage?: { available: number; candidate_count: number; unavailable: Record<string, string[]> };
-    targets: Record<string, { weight: number; expected_return_gross: number | null; current_weight: number; locked: boolean; distribution?: {p_loss:number;gain:number;loss:number}|null }>;
+    targets: Record<string, { weight: number; expected_return_gross: number | null; current_weight: number; locked: boolean; distribution?: {p_loss?:number;gain?:number;loss?:number;mean_policy?:string}|null }>;
     proof: { evaluated_candidate_count: number; absolute_objective_gap: number };
     constraints: { max_positions: number | null; exposure_cap: number };
     opb: { status: string; arm_id: string; samples?: number };

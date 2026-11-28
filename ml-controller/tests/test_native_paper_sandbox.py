@@ -176,6 +176,8 @@ def snapshot_state():
                                           (1,'2026-09-09',110),(2,'2026-09-09',200),(1,'2026-09-10',110),(2,'2026-09-10',200);
           CREATE TABLE market_risk(date TEXT,twii_close REAL);
           INSERT INTO market_risk VALUES('2026-09-07',22000);
+          -- market canonical TAIEX: the snapshot's second TWII source when market_risk(D) is not written yet
+          CREATE TABLE canonical_market_index_daily(symbol TEXT,date TEXT,close REAL,source TEXT);
           CREATE TABLE broker_execution_intents(trade_date TEXT);
           CREATE TABLE broker_execution_events(event_time TEXT,received_at TEXT);
           CREATE TABLE system_logs(level TEXT,cron_name TEXT,message TEXT,meta TEXT,created_at TEXT);

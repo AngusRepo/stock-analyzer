@@ -1,6 +1,6 @@
 /** /v1/paper/nav: the paper account's daily NAV against the TAIEX, window return, drawdown, current positions
  * and today's orders (p4_sources.md §1). Account 1, as paperAccountId() outside an execution scope.
- * The index is CORE_DB market_risk.twii_close: paper_daily_snapshots.twii_value is NULL from 10/30 (p4 F4);
+ * The index is CORE_DB market_risk.twii_close (paper_daily_snapshots.twii_value was NULL 10/30 until the session-close fix);
  * benchmark_value is the 0050 close, not the index. No ORDER BY: every read is an index range, sorted in JS. */
 import { addDays, twDate, type MonitoringEnv } from './env'
 

@@ -287,3 +287,22 @@ test('a cold proxy at the settle: the exact session close wins over the dated Ya
     })
   } finally { f.close() }
 })
+
+test('TWII is the valuation session close and a later run without it keeps the stored value', async () => {
+  const f = fixture()
+  try {
+    f.price('2026-09-14', 2, 150)
+    // 14:20 run: the evening chain has not written market_risk(09-14); the canonical index has it.
+    f.sqls.market.exec(`INSERT INTO canonical_market_index_daily(symbol,date,close,source,lineage_json,as_of_date)
+      VALUES('TWII','2026-09-13',29900,'finlab.taiex_total_index','{}','2026-09-13'),
+            ('TWII','2026-09-14',30010,'finlab.taiex_total_index','{}','2026-09-14')`)
+    await f.snapshot('2026-09-14')
+    const twii = () => f.sqls.paper.prepare("SELECT twii_value FROM paper_daily_snapshots WHERE date='2026-09-14'").get()?.twii_value
+    assert.equal(twii(), 30010)
+    // 18:25 re-run that can no longer see any session close (row removed): the stored close stays.
+    f.sqls.market.exec("DELETE FROM canonical_market_index_daily WHERE date='2026-09-14'")
+    await f.snapshot('2026-09-14')
+    assert.equal(twii(), 30010)
+    assert.equal(JSON.parse(f.events('benchmark_mark_missing').at(-1).detail_json).twii_source, null)
+  } finally { f.close() }
+})

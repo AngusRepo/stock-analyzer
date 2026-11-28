@@ -17,6 +17,7 @@ import { writeDailyExecutionPaperClosureArtifacts } from './dailyExecutionPaperL
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { paperDomainDatabase } from './paperDomainDatabase'
 import { outstandingCorporateEntitlements, corporateReceivableBounds } from './paperCorporateActions'
+import { resolveSessionTwiiClose } from './paperTwiiMark'
 
 
 export type DailySnapshotOptions = {
@@ -132,18 +133,17 @@ export async function runDailySnapshot(env: Bindings, options: DailySnapshotOpti
   const pnlPct = updatedAcc.initial_cash > 0 ? pnl / updatedAcc.initial_cash * 100 : 0
 
   // AUD-20: benchmarks are the valuation session's exact closes; a gap stays null, never an older close.
-  const [benchmarkPrices, twiiRow] = await Promise.all([
+  // TWII: market_risk(D) is only written by the evening chain, after both snapshot runs; see paperTwiiMark.
+  const [benchmarkPrices, twiiMark] = await Promise.all([
     batchGetClosingPricesByDomain(env, ['0050'], valuationSession),
-    databaseForDataDomain(env, 'core').prepare(
-      'SELECT twii_close FROM market_risk WHERE date = ? AND twii_close > 0',
-    ).bind(valuationSession).first<any>(),
+    resolveSessionTwiiClose(env, valuationSession),
   ])
   const normalizedBenchmarkValue: number | null = benchmarkPrices.get('0050') ?? null
-  const twiiValue: number | null = twiiRow?.twii_close ?? null
+  const twiiValue: number | null = twiiMark.value
   if (normalizedBenchmarkValue == null || twiiValue == null) {
     await recordPaperExecutionEvent(env, {
       tradeDate: today, eventType: 'snapshot_audit', status: 'warn', reason: 'benchmark_mark_missing',
-      detail: { valuation_session: valuationSession, benchmark_0050: normalizedBenchmarkValue, twii: twiiValue },
+      detail: { valuation_session: valuationSession, benchmark_0050: normalizedBenchmarkValue, twii: twiiValue, twii_source: twiiMark.source },
       source: 'daily-snapshot',
     })
   }
@@ -211,7 +211,9 @@ export async function runDailySnapshot(env: Bindings, options: DailySnapshotOpti
     ON CONFLICT(account_id, date) DO UPDATE SET
       cash=excluded.cash, positions_value=excluded.positions_value,
       total_value=excluded.total_value, pnl=excluded.pnl, pnl_pct=excluded.pnl_pct,
-      benchmark_value=excluded.benchmark_value, twii_value=excluded.twii_value,
+      benchmark_value=excluded.benchmark_value,
+      -- Same row date, same session: a later run that cannot see the close keeps the one already stored.
+      twii_value=COALESCE(excluded.twii_value, paper_daily_snapshots.twii_value),
       max_drawdown_to_date=excluded.max_drawdown_to_date,
       sharpe_30d=excluded.sharpe_30d,
       sortino_30d=excluded.sortino_30d, calmar=excluded.calmar, cagr=excluded.cagr

@@ -175,7 +175,7 @@ export const SCHEDULER_DEPENDENCY_MAP: Record<string, SchedulerDependencySpec> =
     task: 'corporate-history-weekly',
     owner: 'gcp_scheduler',
     consolidationClass: 'keep_scheduler',
-    currentFunction: 'Saturday TW 10:00 research corporate-history snapshot export (FinLab refetch, frozen reviewed MOPS rules, compile, 1/5 exclusion gate, ga_research_dataset) in one Cloud Run execution; its scheduler-callback closes the run.',
+    currentFunction: 'Saturday TW 17:30 research corporate-history snapshot export (FinLab refetch, frozen reviewed MOPS rules, compile, 1/5 exclusion gate, ga_research_dataset) in one Cloud Run execution; its scheduler-callback closes the run.',
     upstream: [],
     downstream: ['weekly-backtest'],
     requiredBeforeDisable: ['another owner exports the research corporate-history snapshot before the Sunday weekly-backtest freshness gate'],

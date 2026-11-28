@@ -199,7 +199,7 @@ test('registered as a sync research root that weekly-readiness does not require'
   const job = manifest.jobs.filter((row) => row.task === 'corporate-history-weekly')
   assert.equal(job.length, 1)
   assert.equal(job[0].id, 'corporate-history-weekly')
-  assert.equal(job[0].schedule, '0 2 * * 6', 'Saturday 02:00 UTC = TW 10:00, the day before weekly-backtest')
+  assert.equal(job[0].schedule, '30 9 * * 6', 'Saturday 09:30 UTC = TW 17:30: after the first-Saturday monthly jobs, the day before weekly-backtest')
   assert.equal(job[0].timeZone, undefined, 'manifest default time zone is UTC')
   assert.equal(job[0].query, 'sync=1')
   const triggerRoutes = readFileSync('src/routes/adminTriggerRoutes.ts', 'utf8')

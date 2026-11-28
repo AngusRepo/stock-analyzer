@@ -1,7 +1,7 @@
 """Weekly research corporate-history snapshot (ga_research_dataset), Wei 2026-11-28 P3a option A.
 
 Runs in the dataset-snapshot-export Cloud Run Job (DATASET_SNAPSHOT_MODE=corporate_history_weekly),
-Saturday TW 10:00, so Sunday's weekly-backtest freshness gate (history may trail the newest
+Saturday TW 17:30, so Sunday's weekly-backtest freshness gate (history may trail the newest
 backtest_dataset by at most 5 sessions) never depends on a hand export.
 
 Each run, in a fresh work directory:

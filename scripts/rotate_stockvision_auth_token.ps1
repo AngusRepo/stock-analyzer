@@ -12,7 +12,8 @@ param(
   [string]$ExpectedSourceSha = $env:STOCKVISION_RELEASE_SHA,
   [string]$ManifestPath = (Join-Path (Split-Path -Parent $PSScriptRoot) 'infra/gcp-scheduler-jobs.json'),
   [string]$WranglerConfig = (Join-Path (Split-Path -Parent $PSScriptRoot) 'worker/wrangler.toml'),
-  [string]$ModalPython = (Join-Path (Split-Path -Parent $PSScriptRoot) 'ml-service/.venv/Scripts/python.exe'),
+  # venv layout differs by OS: Scripts/python.exe on Windows, bin/python on macOS and Linux.
+  [string]$ModalPython = (Join-Path (Split-Path -Parent $PSScriptRoot) $(if ($IsWindows -or $env:OS -eq 'Windows_NT') { 'ml-service/.venv/Scripts/python.exe' } else { 'ml-service/.venv/bin/python' })),
   [string]$ModalSecretName = 'stockvision-cf',
   [string]$ModalEnvironment = $env:MODAL_ENVIRONMENT,
   [string]$AuthSecretId = 'stockvision-stockvision-auth-token',
@@ -22,15 +23,9 @@ param(
   [string]$KvNamespaceId = $env:CF_KV_NAMESPACE_ID,
   [string]$WorkerProbePath = '',
   [string]$PreviousSecretVersion = '',
-  [string[]]$AllowedSchedulerCreateIds = @(
-    'screener-v2-watchdog',
-    'indicator-queue-watchdog',
-    'data-domain-shadow-backfill-ops',
-    'learning-retention-readiness',
-    'legacy-learning-deletion-readiness',
-    'retention-archive-only',
-    'retention-hot-window-drain'
-  ),
+  # Jobs this run may create. No default: each release names the new manifest jobs it ships
+  # (a stale default list broke Sync once a listed job left the manifest).
+  [string[]]$AllowedSchedulerCreateIds = @(),
   [int]$ExpectedSchedulerCount = 54
 )
 

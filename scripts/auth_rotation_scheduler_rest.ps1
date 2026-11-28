@@ -350,7 +350,7 @@ function Assert-SchedulerCreatePlanAllowed {
   param(
     [Parameter(Mandatory = $true)][object]$Manifest,
     [Parameter(Mandatory = $true)][object]$Plan,
-    [Parameter(Mandatory = $true)][string[]]$AllowedCreateIds
+    [Parameter(Mandatory = $true)][AllowEmptyCollection()][string[]]$AllowedCreateIds
   )
   $manifestIds = [System.Collections.Generic.HashSet[string]]::new(
     [string[]]@($Manifest.jobs | ForEach-Object { [string]$_.id })

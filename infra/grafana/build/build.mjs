@@ -14,7 +14,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { ERROR_FALLBACK, WATCHERS, chainCanvas, CHAIN_PIVOT, DOTS_PIVOT, laneCanvas, laneSlots, readinessCanvas, readinessPivot, SHORT_LABELS, slowPivot } from './canvas.mjs'
 import { ALERT_KIND, BIGQUERY_DS, C, COOL, STATUS, TONE, GCP_DS, KPI_KEY, N, NO_SOURCE, READINESS_VOCAB, S, STATUS_LABELS_JSONATA, T, dashboard, donut, gauges, gp, grid, hbars, heatmap, kpi, lcd,
-  lit, querySource, spark, stackedBars, states, statusMappings, table, th } from './lib.mjs'
+  cloudflareGet, cloudflareQuery, lit, querySource, spark, stackedBars, states, statusMappings, table, th } from './lib.mjs'
 import { mockResponses } from './mock.mjs'
 import { rawErrorHits } from './rawErrors.mjs'
 
@@ -370,7 +370,9 @@ const BILLING_NOTE = 'BigQuery 帳單明細匯出（新台幣，已扣抵免）�
 /** A service keeps its colour whatever its rank; a service not listed here takes the 其他 grey (its name is still in the legend). */
 const SERVICE_COLORS = [['Cloud Run', COOL.cat[0]], ['Cloud Storage', COOL.cat[1]], ['Artifact Registry', COOL.cat[2]], ['Cloud Build', COOL.cat[3]]]
 function costPanels(q, mode) {
-  const billing = (rawSql, mock, columns) => (mode === 'live'
+  // Only the fixture build draws authored rows; the previews read the same BigQuery billing export as the live page.
+  const real = mode !== 'fixture'
+  const billing = (rawSql, mock, columns) => (real
     ? { refId: 'A', datasource: BIGQUERY_DS, editorMode: 'code', rawQuery: true, format: 1, project: GCP_PROJECT, rawSql: rawSql.replace(/\s+/g, ' ').trim() }
     : q(mock, { root: 'rows', columns }))
   const perDay = (mock) => billing(`SELECT ${BILLING_DAY} AS time, SUM(cost) + SUM(${CREDITS}) AS net FROM ${BILLING} WHERE ${BILLING_RANGE} GROUP BY time ORDER BY time`,
@@ -382,7 +384,7 @@ function costPanels(q, mode) {
     { line: false, unit: TWD, timeFrom: MONTH, desc: `本月累計 ÷ 今天是本月第幾天 × 本月天數（最近一天帳單不齊，會略偏低）。${BILLING_NOTE}` }),
     latest: spark('最近一天', perDay('mock:billing-recent-daily'), 10, 0, 5, 4, { unit: TWD, desc: `帳單裡最新一天的淨額；折線＝所選時間每天。${BILLING_NOTE}` }),
     // The four largest services by name, the rest as 其他 (at most five colours in one chart).
-    byServiceDonut: Object.assign(donut('本月成本（依服務）', mode === 'live'
+    byServiceDonut: Object.assign(donut('本月成本（依服務）', real
       ? billing(`WITH s AS (SELECT service.description AS svc, SUM(cost) + SUM(${CREDITS}) AS net FROM ${BILLING} WHERE ${BILLING_RANGE} GROUP BY svc HAVING net > 0),
         r AS (SELECT IF(ROW_NUMBER() OVER (ORDER BY net DESC) <= 4, svc, '其他') AS label, net, ROW_NUMBER() OVER (ORDER BY net DESC) AS rk FROM s)
         SELECT label AS svc, SUM(net) AS net FROM r GROUP BY label ORDER BY MIN(rk)`)
@@ -392,14 +394,16 @@ function costPanels(q, mode) {
       desc: `本月 1 日至今各服務的 GCP 淨額占比：前四大服務，其餘併成「其他」。${BILLING_NOTE}` }), { timeFrom: MONTH, hideTimeOverride: true, gridPos: gp(8, 9, 7, 8) }),
     // Day of month on x (a trend panel), so the projection can run past today to the month's last day.
     cumulative: { type: 'trend', title: '本月累計成本', gridPos: gp(15, 9, 9, 8), timeFrom: MONTH, hideTimeOverride: true,
-      description: `實線＝本月每天的累計淨額，虛線＝照目前日均推到月底，紅色虛線＝每月預算 NT$${MONTH_BUDGET_TWD.toLocaleString('en-US')}（示範值）。${BILLING_NOTE}`,
+      description: `實線＝本月每天的累計淨額，虛線＝照目前日均推到月底，琥珀虛線＝每月預算 NT$${MONTH_BUDGET_TWD.toLocaleString('en-US')}（示範值）。${BILLING_NOTE}`,
       targets: [billing(`WITH d AS (SELECT EXTRACT(DAY FROM DATE(usage_start_time, 'Asia/Taipei')) AS day, SUM(cost) + SUM(${CREDITS}) AS net FROM ${BILLING}
         WHERE ${BILLING_RANGE} GROUP BY day), c AS (SELECT day, SUM(net) OVER (ORDER BY day) AS actual FROM d), k AS (SELECT MAX(day) AS last, MAX(actual) AS mtd FROM c)
         SELECT g AS day, c.actual, IF(g >= k.last, k.mtd / k.last * g, NULL) AS forecast FROM k, UNNEST(GENERATE_ARRAY(1, EXTRACT(DAY FROM LAST_DAY(${TODAY_TW})))) AS g
         LEFT JOIN c ON c.day = g ORDER BY day`, 'mock:billing-month-cumulative', [N('day', 'day'), N('actual', '實際累計'), N('forecast', '月底預估')])],
+      // BigQuery names the fields by their SQL alias; the authored rows are already in the words.
+      transformations: [{ id: 'organize', options: { renameByName: { actual: '實際累計', forecast: '月底預估' } } }],
       options: { xField: 'day', legend: { showLegend: true, displayMode: 'list', placement: 'bottom', calcs: [] }, tooltip: { mode: 'multi' } },
       fieldConfig: { defaults: { unit: TWD, decimals: 0, min: 0, noValue: NO_SOURCE, color: { mode: 'fixed', fixedColor: COOL.cat[0] },
-        thresholds: th(['transparent', null], [C.bad, MONTH_BUDGET_TWD]),
+        thresholds: th(['transparent', null], [C.warn, MONTH_BUDGET_TWD]),
         custom: { drawStyle: 'line', lineWidth: 2, fillOpacity: 12, showPoints: 'never', spanNulls: false, thresholdsStyle: { mode: 'dashed' } } },
       // The amount axis reaches past the budget so its line is always drawn. On both amount fields (one shared axis; a setting on
       // only one gives it an axis of its own), not in the defaults (the day axis would take it too).
@@ -825,24 +829,122 @@ const LATENCIES = ['resource.type', '=', 'cloud_run_revision', 'AND', 'metric.ty
 const MONTH_BUDGET_TWD = 2000
 const HOURS = Array.from({ length: 24 }, (_, h) => String(h).padStart(2, '0'))
 
+/** The D1 databases by their Worker binding (worker/src/monitoring/env.ts D1_BINDINGS). */
+const D1_NAMES = lit({ DB: '主庫', CORE_DB: '核心', MARKET_DB: '行情', LEARNING_DB: '學習', OPS_DB: '營運', EXECUTION_DB: '執行', PAPER_DB: '模擬交易', RESEARCH_DB: '研究' })
+/** Workers Paid included usage per billing period (developers.cloudflare.com workers / d1 / kv pricing, read 2026-11-28):
+ * Workers 10M requests; D1 25B rows read, 50M rows written, 5 GB stored (all databases summed); KV 10M reads, 1M writes, 1 GB. */
+const CF_INCLUDED = { requests: 1e7, rowsRead: 25e9, rowsWritten: 5e7, d1Bytes: 5e9, kvReads: 1e7, kvWrites: 1e6, kvBytes: 1e9 }
+/** Rows read and written in every D1 database, per hour (UTC), over the page's time range. */
+const CF_D1_HOURLY = `query($a: string!, $since: Time!, $until: Time!) { viewer { accounts(filter: { accountTag: $a }) {
+  d: d1AnalyticsAdaptiveGroups(limit: 10000, filter: { datetimeHour_geq: $since, datetimeHour_lt: $until }, orderBy: [datetimeHour_ASC]) { dimensions { datetimeHour } sum { rowsRead rowsWritten } } } } }`
+/** This billing period's usage so far, and the latest stored size of every D1 database and KV namespace. */
+const CF_PERIOD = `query($a: string!, $start: Time!, $until: Time!, $day: Date!) { viewer { accounts(filter: { accountTag: $a }) {
+  w: workersInvocationsAdaptive(limit: 10000, filter: { datetime_geq: $start, datetime_lt: $until }) { sum { requests } }
+  d: d1AnalyticsAdaptiveGroups(limit: 10000, filter: { datetimeHour_geq: $start, datetimeHour_lt: $until }) { sum { rowsRead rowsWritten } }
+  ds: d1StorageAdaptiveGroups(limit: 10000, filter: { date_geq: $day }, orderBy: [date_DESC]) { dimensions { date databaseId } max { databaseSizeBytes } }
+  k: kvOperationsAdaptiveGroups(limit: 10000, filter: { datetime_geq: $start, datetime_lt: $until }) { dimensions { actionType } sum { requests } }
+  ks: kvStorageAdaptiveGroups(limit: 10000, filter: { date_geq: $day }, orderBy: [date_DESC]) { dimensions { date namespaceId } max { byteCount } } } } }`
+/** A billing-period variable as the UTC midnight of its date. A value that did not resolve (empty, or the literal
+ * \${…}) reads as 1970-01-01, so nothing here throws (Go JSONata evaluates both sides of `and` / `or` and of nothing
+ * else is that assumed); the roots then return no rows and the panel shows its noValue. */
+const cfDay = (name) => `$toMillis(($d := '\${${name}}'; $contains($d, /^[0-9]{4}-[0-9]{2}-[0-9]{2}/) ? $substring($d, 0, 10) : '1970-01-01') & 'T00:00:00Z')`
+/** Each product's share of its included amount: what this period's pace comes to by the period's end for requests and
+ * rows, the latest stored size for storage. The elapsed share is at least a day's, or the first hours of a period would
+ * multiply a few requests into hundreds of times the included amount. A GraphQL error (HTTP 200, `data: null`) gives no
+ * rows, not seven zeros. */
+const CF_QUOTA_ROOT = `($a := data.viewer.accounts[0]; $s := ${cfDay('cf_period_start')}; $e := ${cfDay('cf_period_end')};
+  $len := $e > $s ? $e - $s : 86400000; $f := $max([($toMillis($now()) - $s) / $len, 86400000 / $len]);
+  $pace := function($used, $included) { $round(($used ? $used : 0) / $f / $included * 100, 1) };
+  $d1 := $a.ds[0].dimensions.date; $kv := $a.ks[0].dimensions.date;
+  $exists($a) and $s > 0 and $e > $s ? [{ 'product': 'Workers 請求', 'pct': $pace($sum($a.w.sum.requests), ${CF_INCLUDED.requests}) },
+   { 'product': 'D1 讀取列', 'pct': $pace($sum($a.d.sum.rowsRead), ${CF_INCLUDED.rowsRead}) },
+   { 'product': 'D1 寫入列', 'pct': $pace($sum($a.d.sum.rowsWritten), ${CF_INCLUDED.rowsWritten}) },
+   { 'product': 'D1 儲存', 'pct': $round(($b := $sum($a.ds[dimensions.date = $d1].max.databaseSizeBytes); $b ? $b : 0) / ${CF_INCLUDED.d1Bytes} * 100, 1) },
+   { 'product': 'KV 讀取', 'pct': $pace($sum($a.k[dimensions.actionType = 'read'].sum.requests), ${CF_INCLUDED.kvReads}) },
+   { 'product': 'KV 寫入', 'pct': $pace($sum($a.k[dimensions.actionType = 'write'].sum.requests), ${CF_INCLUDED.kvWrites}) },
+   { 'product': 'KV 儲存', 'pct': $round(($b := $sum($a.ks[dimensions.date = $kv].max.byteCount); $b ? $b : 0) / ${CF_INCLUDED.kvBytes} * 100, 1) }]
+  : [])`
+/** One row per Taiwan day, one column per Taiwan hour (`r00`…`r23`): the hours with no D1 traffic stay empty. */
+const cfD1GridRoot = (prefix, field) => `($h := data.viewer.accounts[0].d.{ 'ms': $toMillis(dimensions.datetimeHour) + 28800000, 'v': sum.${field} };
+  $distinct($h.$floor(ms / 86400000)).($d := $; $merge($append([{ 'time': $fromMillis($d * 86400000 - 28800000) }],
+    $h[$floor(ms / 86400000) = $d].($hh := $floor((ms % 86400000) / 3600000); { '${prefix}' & ($hh < 10 ? '0' : '') & $string($hh): v })))))`
+
+/** Cloudflare's charges per day and line item (USD, the account's billing currency; a day behind), this period and the one before. */
+const CF_USAGE = '/accounts/${cf_account}/billable-usage?from=${cf_usage_from}&to=${cf_usage_to}'
+/** Line items in words, matched by the start of Cloudflare's own name (every item name the account's billable usage listed
+ * on 2026-11-28; the rest of a name states the included amount, which can change). An item not listed reads as its
+ * product family (Workers AI, Artifacts), or its own name when it has none. */
+const CF_ITEM_NAMES = lit([['D1 - Storage', 'D1 儲存'], ['D1 - Rows Read', 'D1 讀取列'], ['D1 - Rows Written', 'D1 寫入列'], ['R2 Data Storage', 'R2 儲存'],
+  ['R2 Storage Class A', 'R2 寫入類操作'], ['R2 Storage Class B', 'R2 讀取類操作'], ['Workers Standard Requests', 'Workers 請求'], ['Workers CPU ms', 'Workers CPU 時間'],
+  ['KV Read Operations', 'KV 讀取'], ['KV Write Operations', 'KV 寫入'], ['KV Delete Operations', 'KV 刪除'], ['KV List Operations', 'KV 列出'], ['KV Storage', 'KV 儲存'],
+  ['Queues - ', 'Queues 操作']].map(([k, v]) => ({ k, v })))
+/** Periods by their start date (YYYY-MM-DD): `$sd` this one's ('' when the variable did not resolve), `$p` the previous
+ * one's (the latest earlier start in the range; absent in an account's first period), `$fee` the plan fee (0 when its
+ * variable did not resolve). No call here can throw on an unresolved variable. */
+const CF_PERIODS = `$sd := ($d := '\${cf_period_start}'; $contains($d, /^[0-9]{4}-[0-9]{2}-[0-9]{2}/) ? $substring($d, 0, 10) : '');
+  $fs := '\${cf_plan_fee}'; $fee := $number($contains($fs, /^[0-9]+(\\.[0-9]+)?$/) ? $fs : '0'); $r := result;
+  $p := $sort($distinct($r.$substring(BillingPeriodStart, 0, 10))[$ < $sd])[-1];`
+/** One period's bill so far: its line items plus the plan fee. `[…]` around the amounts makes no rows yet (the day the
+ * period starts; the export runs a day behind) sum to 0, so the card reads the fee alone. No period, no row. */
+const cfPeriodTotal = (period) => `(${CF_PERIODS} $exists(${period}) and ${period} != '' ?
+  { 'usd': $round($sum([$r[$substring(BillingPeriodStart, 0, 10) = ${period}].BilledCost]) + $fee, 2) } : {})`
+/** The previous period's charged items (credits and adjustments too: any amount but 0), largest first, with the plan fee
+ * as one of them. No previous period, no rows (not a fee for a period that did not exist). The '-' row keeps the grouping
+ * from ever running on nothing: Go JSONata then fails (object key item does not evaluate to a string; seen 2026-11-28). */
+const CF_ITEMS_ROOT = `(${CF_PERIODS} $names := ${CF_ITEM_NAMES};
+  $name := function($n, $family) { ($m := $filter($names, function($x) { $substring($n, 0, $length($x.k)) = $x.k })[0];
+    $m ? $m.v : $family ? $family : $n) };
+  $g := $append($r[$substring(BillingPeriodStart, 0, 10) = $p and BilledCost != 0].{ 'item': $name(ServiceName, ServiceFamilyName), 'usd': BilledCost },
+    [{ 'item': '-', 'usd': 0 }]){ item: $sum(usd) };
+  $exists($p) ? $sort($append($each($g, function($v, $k) { { 'item': $k, 'usd': $round($v, 2) } })[item != '-'], $fee ? [{ 'item': '方案月費', 'usd': $fee }] : []),
+    function($a, $b) { $a.usd < $b.usd }) : [])`
+const USD = 'prefix:US$'
+const CF_COST_NOTE = '來源：Cloudflare 帳單用量 API（美元，Cloudflare 以美元計費；GCP 面板是新台幣），資料到昨天。帳單週期從續約日起算（不是每月 1 日）。'
+
 function resources5(q, mode) {
   const cost = costPanels(q, mode)
-  const d1Grid = (prefix) => q('plan:cloudflare-d1-grid', { root: 'rows', columns: [T('time', 'time'), ...HOURS.map((h) => N(`${prefix}${h}`, h))] })
+  // Fixture builds draw the authored Cloudflare rows; every other build reads Cloudflare through sv-cloudflare-api.
+  const cloudflare = mode !== 'fixture'
+  const d1Grid = (prefix, field) => {
+    const columns = [T('time', 'time'), ...HOURS.map((h) => N(`${prefix}${h}`, h))]
+    return cloudflare ? cloudflareQuery(CF_D1_HOURLY, { since: '${__from:date:iso}', until: '${__to:date:iso}' }, { root: cfD1GridRoot(prefix, field), columns })
+      : q('plan:cloudflare-d1-grid', { root: 'rows', columns })
+  }
+  const quotaColumns = [S('product', 'product'), N('pct', '用量')]
+  const quota = cloudflare ? cloudflareQuery(CF_PERIOD, { start: '${cf_period_start}', until: '${__to:date:iso}', day: '${__from:date:YYYY-MM-DD}' },
+    { root: CF_QUOTA_ROOT, columns: quotaColumns }) : q('plan:cloudflare-quota', { root: 'rows', columns: quotaColumns })
+  const cfCost = (mock, root, columns) => (cloudflare ? cloudflareGet(CF_USAGE, { root, columns }) : q(mock, { root: 'rows', columns }))
+  const usd = [N('usd', '金額')]
+  // Cost split by provider (Wei 11/28): the GCP panels say GCP in their titles, Cloudflare has its own. Six units wide
+  // each: at 1440 with the menu docked a 4-unit panel is 162 px and its title gets 72 px. 最近一天 is the last point of
+  // 本月累計's line (hover), so it has no card of its own here.
+  const gcp = (panels, title) => { [panels].flat()[0].title = title; return panels }
   return [
-    ...moveSpark(cost.month, 0, 6), ...moveSpark(cost.forecast, 6, 5), ...moveSpark(cost.latest, 11, 6),
-    ...spark('Cloud Run 請求', gcpSeries('A', REQUESTS, null, 'ALIGN_SUM', '+3600s', '請求'), 17, 0, 7, 4,
+    ...moveSpark(gcp(cost.month, 'GCP 本月累計'), 0, 6), ...moveSpark(gcp(cost.forecast, 'GCP 月底預估'), 6, 6),
+    spark('Cloudflare 本期累計', cfCost('plan:cloudflare-cost-period', cfPeriodTotal('$sd'), usd), 12, 0, 6, 4, { line: false, unit: USD, dec: 2,
+      desc: `本期到昨天的 Cloudflare 帳單金額，含方案月費。內含額度先扣，用完才開始計費，所以每期前幾天通常只有月費。${CF_COST_NOTE}` }),
+    spark('Cloudflare 上期帳單', cfCost('plan:cloudflare-cost-last', cfPeriodTotal('$p'), usd), 18, 0, 6, 4, { line: false, unit: USD, dec: 2,
+      desc: `上一個帳單週期的 Cloudflare 總額，含方案月費。${CF_COST_NOTE}` }),
+    ...spark('Cloud Run 請求', gcpSeries('A', REQUESTS, null, 'ALIGN_SUM', '+3600s', '請求'), 19, 4, 5, 5,
       { calc: 'sum', unit: 'short', desc: '所選時間內所有 Cloud Run 服務的請求數合計；折線＝每小時。' }),
-    gauges('D1 各資料庫用量', q(CAPACITY, { root: `$sort(rows, function($a, $b) { $a.utilization_pct < $b.utilization_pct }).{ 'db': binding_name, 'pct': utilization_pct }`,
-      columns: [S('db', 'db'), N('pct', 'pct')] }), 'db', 'pct', 0, 4, 24, 5,
+    gauges('D1 各資料庫用量', q(CAPACITY, { root: `$sort(rows, function($a, $b) { $a.utilization_pct < $b.utilization_pct }).{ 'db': ($n := $lookup(${D1_NAMES}, binding_name); $n ? $n : '其他庫'), 'pct': utilization_pct }`,
+      columns: [S('db', 'db'), N('pct', 'pct')] }), 'db', 'pct', 0, 4, 19, 5,
     { dec: 1, desc: '每個 D1 庫用了 10 GB 上限的幾成，最滿的在左；80% 起琥珀、90% 起紅（硬門檻）。成長速度與到門檻天數在 /v1/capacity。' }),
-    gauges('Cloudflare 免費額度', q('plan:cloudflare-quota', { root: 'rows', columns: [S('product', 'product'), N('pct', 'pct')] }), 'product', 'pct', 0, 9, 8, 8,
-      { desc: '用量 ÷ 方案含量：Workers 請求、D1 讀寫為本月，KV 讀取為今日，儲存為目前。來源規劃：Cloudflare GraphQL＋Billing（資料源 sv-cloudflare-api，token 未設）。' }),
-    cost.byServiceDonut,
-    cost.cumulative,
-    heatmap('D1 讀取列（日 × 時）', d1Grid('r'), 0, 17, 8, 8, { fill: COOL.seq.reads, steps: 5, unit: 'short', top: true,
-      desc: '一格＝一天的一個小時（台灣時間）讀取的列數，越亮越多（沒有讀取＝與背景同色）；看晚鏈 21:45–23:30 的尖峰是否變寬或變亮。來源規劃：Cloudflare GraphQL d1AnalyticsAdaptiveGroups。' }),
-    heatmap('D1 寫入列（日 × 時）', d1Grid('w'), 8, 17, 8, 8, { fill: COOL.seq.writes, steps: 5, unit: 'short', top: true,
-      desc: '一格＝一天的一個小時（台灣時間）寫入的列數，越亮越多。來源規劃：Cloudflare GraphQL d1AnalyticsAdaptiveGroups。' }),
+    hbars('Cloudflare 內含額度', quota, 'product', 0, 9, 6, 8,
+      { unit: 'percent', dec: 1, softMin: 0, softMax: 100, th: th([C.ok, null], [C.warn, 100]),
+        desc: 'Workers Paid 方案每個帳單週期（依續約日，不是每月 1 日）內含的用量。請求、讀寫列＝照本期到目前的速度，到期末會用掉內含量的幾成；儲存＝最新一天的大小 ÷ 內含量。超過 100% 的部分照量計費（琥珀）。內含量：Workers 1,000 萬請求；D1 讀 250 億列、寫 5,000 萬列、存 5 GB；KV 讀 1,000 萬、寫 100 萬、存 1 GB。' }),
+    // Bars, not the donut: at the docked-menu width the donut's legend table cut the service names and scrolled sideways.
+    hbars('Cloudflare 上期各項', cfCost('plan:cloudflare-cost-items', CF_ITEMS_ROOT, [S('item', 'item'), N('usd', '金額')]), 'item', 6, 9, 6, 8,
+      // One decimal: with two, the axis's last tick (US$20.00) ran past the panel's edge at 1440.
+      { unit: USD, dec: 1, desc: `上一個帳單週期各收費項目的金額，最多的在上，只列有收費的項目。D1 與 R2 儲存依累計 GB-月計費，超過內含量後每 1 GB-月收一次。各項分別四捨五入，加總可能與上期帳單差 US$0.01。${CF_COST_NOTE}` }),
+    // BigQuery names the amount by its SQL alias; the tooltip shows the field's name.
+    Object.assign(hbars('GCP 本月各服務', cost.byServiceDonut.targets[0], 'svc', 12, 9, 6, 8, { unit: TWD, desc: cost.byServiceDonut.description }),
+      { timeFrom: MONTH, hideTimeOverride: true, transformations: [{ id: 'organize', options: { renameByName: { net: '淨額' } } }] }),
+    Object.assign(cost.cumulative, { title: 'GCP 本月累計成本', gridPos: gp(18, 9, 6, 8) }),
+    heatmap('D1 讀取列（日 × 時）', d1Grid('r', 'rowsRead'), 0, 17, 8, 8, { fill: COOL.seq.reads, steps: 5, unit: 'short', top: true,
+      desc: '一格＝一天的一個小時（台灣時間），所有 D1 庫讀取的列數合計，越亮越多（沒有讀取＝與背景同色）；看晚鏈 21:45–23:30 的尖峰是否變寬或變亮。來源：Cloudflare GraphQL Analytics。' }),
+    heatmap('D1 寫入列（日 × 時）', d1Grid('w', 'rowsWritten'), 8, 17, 8, 8, { fill: COOL.seq.writes, steps: 5, unit: 'short', top: true,
+      desc: '一格＝一天的一個小時（台灣時間），所有 D1 庫寫入的列數合計，越亮越多。來源：Cloudflare GraphQL Analytics。' }),
     // Percentiles, not a bucket heatmap: the distribution has 103 buckets and about 22k requests in 30 days, so even daily
     // cells are 62 % empty and the 0 ms bucket alone holds 40 % of the requests (measured 2026-11-26).
     { type: 'timeseries', title: 'Cloud Run 延遲 p50／p95', gridPos: gp(16, 17, 8, 8), datasource: GCP_DS,
@@ -1092,8 +1194,9 @@ const SERVING = '/v1/models/serving'
 const GUARD = '/v1/serving-guard'
 const D1_OVERLOADED = '/v1/d1/overloaded'
 /** Worker routes this checkout serves that prod does not yet: preview6live draws them over mock.mjs (示範資料).
- * Remove a path once the monitoring Worker that serves it is deployed. */
-const NOT_DEPLOYED = new Set([SEAL, LEDGER, SERVING, GUARD, D1_OVERLOADED])
+ * Remove a path once the monitoring Worker that serves it is deployed. Empty since monitoring ee37596f (c28e81c0, 11/28)
+ * serves seal, ledger, serving, serving-guard and d1/overloaded. */
+const NOT_DEPLOYED = new Set([])
 /** '<tone>|<text>' cells: the tone picks the colour, the text is what the cell or tooltip shows. */
 const toneMappings = (pairs) => pairs.map(([key, color], index) => ({ type: 'regex', options: { pattern: `^${key}\\|(.*)$`, result: { text: '$1', color, index } } }))
 const TONE6 = toneMappings([['ok', CALM_OK], ['info', COOL.cat[1]], ['wait', C.idle], ['na', C.idle], ['warn', C.warn], ['bad', C.bad]])
@@ -1211,7 +1314,7 @@ function previewSource(fixtures) {
  * Header links go to the preview uids: ② ④ here, ① ③ their v5 previews (preview5). */
 const LIVE_PREVIEW = { version: 'v5live', pages: ['sv-health', 'sv-model'],
   links: { 'sv-today': 'sv-today-v5', 'sv-health': 'sv-health-v5live', 'sv-resources': 'sv-resources-v5', 'sv-model': 'sv-model-v5live' } }
-/** preview6live: v6 ① ② ④ (today6, health6, model6) over the live monitoring Worker; routes not deployed yet (NOT_DEPLOYED) over mock.mjs. */
+/** preview6live: v6 ① ② ③ ④ (today6, health6, resources5 with Cloudflare, model6) over the live monitoring Worker; routes not deployed yet (NOT_DEPLOYED) over mock.mjs. */
 /** CALM_OK's hue lifted for text and borders (Wei 11/26): 6.58:1 on the canvas card #1e2228, 7.1:1 on the page #181b1f
  * (CALM_OK itself is 2.59:1 there, below the 4.5:1 text minimum). Fills keep CALM_OK. */
 const CALM_OK_LINE = '#5fb3bb'
@@ -1250,8 +1353,9 @@ function recolor6(panel) {
   }
   return walk(panel)
 }
-const V6_PREVIEW = { version: 'v6live', recolor: recolor6, pages: ['sv-today', 'sv-health', 'sv-model'], builders: { 'sv-today': today6, 'sv-health': health6, 'sv-model': model6 },
-  links: { 'sv-today': 'sv-today-v6live', 'sv-health': 'sv-health-v6live', 'sv-resources': 'sv-resources-v5', 'sv-model': 'sv-model-v6live' } }
+const V6_PREVIEW = { version: 'v6live', recolor: recolor6, pages: ['sv-today', 'sv-health', 'sv-resources', 'sv-model'],
+  builders: { 'sv-today': today6, 'sv-health': health6, 'sv-resources': resources5, 'sv-model': model6 },
+  links: { 'sv-today': 'sv-today-v6live', 'sv-health': 'sv-health-v6live', 'sv-resources': 'sv-resources-v6live', 'sv-model': 'sv-model-v6live' } }
 function buildLivePreview(preview = LIVE_PREVIEW) {
   const mock = mockResponses(new Date().toISOString())
   const live = querySource('live', null, { liveRoutes: LIVE_ROUTES })
@@ -1259,8 +1363,10 @@ function buildLivePreview(preview = LIVE_PREVIEW) {
   const deployed = (route) => LIVE_ROUTES.has(route) && !NOT_DEPLOYED.has(route)
   const q = (path, o) => (path.startsWith('/v1/') && deployed(path.split('?')[0]) ? live(path, o) : inline(path, o))
   return PAGES.filter((page) => preview.pages.includes(page.uid)).map((page) => {
-    const panels = (preview.builders ?? V5)[page.uid](q, 'preview').flat().map((panel) => (preview.recolor ? preview.recolor(panel) : panel)).map((panel) => (isDemo(panel)
+    // Mark 示範資料 before recolouring: recolor copies the panel, and a target's demo flag is not enumerable, so the copy loses it.
+    const panels = (preview.builders ?? V5)[page.uid](q, 'preview').flat().map((panel) => (isDemo(panel)
       ? Object.assign(panel, { title: panel.title && `${panel.title}（示範資料）`, description: `${DEMO}${panel.description ?? ''}` }) : panel))
+      .map((panel) => (preview.recolor ? preview.recolor(panel) : panel))
     return dashboard({ uid: `${page.uid}-${preview.version}`, title: `${page.title}（預覽・真資料）`, panels, tag: 'stockvision-preview',
       time: page.live, refresh: page.refresh, links: page.links.map(([title, uid]) => [title, preview.links[uid] ?? uid]) })
   })

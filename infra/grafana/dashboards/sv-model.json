@@ -79,6 +79,1519 @@
  },
  "panels": [
   {
+   "type": "stat",
+   "title": "Paper 報酬",
+   "description": "Paper 帳戶 NAV 相對 90 天窗口第一天的報酬；折線＝每天。",
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 5,
+    "h": 2
+   },
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "sv-monitoring"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "type": "json",
+     "parser": "backend",
+     "format": "table",
+     "root_selector": "([rows.{ 'time': $fromMillis($toMillis(date & 'T00:00:00.000Z') - 28800000), 'v': nav_return_pct }])",
+     "columns": [
+      {
+       "selector": "time",
+       "text": "time",
+       "type": "timestamp"
+      },
+      {
+       "selector": "v",
+       "text": "報酬",
+       "type": "number"
+      }
+     ],
+     "filters": [],
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-monitoring"
+     },
+     "source": "url",
+     "url": "/v1/paper/nav?days=90",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
+    }
+   ],
+   "hideTimeOverride": true,
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "orientation": "auto",
+    "textMode": "value",
+    "wideLayout": false,
+    "colorMode": "value",
+    "graphMode": "none",
+    "justifyMode": "auto",
+    "showPercentChange": false,
+    "text": {
+     "titleSize": 12,
+     "valueSize": 20
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percent",
+     "decimals": 2,
+     "noValue": "尚未接資料",
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#e8e9ec",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "id": 1
+  },
+  {
+   "type": "timeseries",
+   "title": "",
+   "description": "Paper 帳戶 NAV 相對 90 天窗口第一天的報酬；折線＝每天。",
+   "transparent": true,
+   "gridPos": {
+    "x": 0,
+    "y": 2,
+    "w": 5,
+    "h": 2
+   },
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "sv-monitoring"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "type": "json",
+     "parser": "backend",
+     "format": "table",
+     "root_selector": "([rows.{ 'time': $fromMillis($toMillis(date & 'T00:00:00.000Z') - 28800000), 'v': nav_return_pct }])",
+     "columns": [
+      {
+       "selector": "time",
+       "text": "time",
+       "type": "timestamp"
+      },
+      {
+       "selector": "v",
+       "text": "報酬",
+       "type": "number"
+      }
+     ],
+     "filters": [],
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-monitoring"
+     },
+     "source": "url",
+     "url": "/v1/paper/nav?days=90",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
+    }
+   ],
+   "hideTimeOverride": true,
+   "options": {
+    "legend": {
+     "showLegend": false,
+     "displayMode": "list",
+     "placement": "bottom",
+     "calcs": []
+    },
+    "tooltip": {
+     "mode": "single"
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percent",
+     "decimals": 2,
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#7b808b"
+     },
+     "custom": {
+      "drawStyle": "line",
+      "lineInterpolation": "smooth",
+      "lineWidth": 1,
+      "fillOpacity": 20,
+      "showPoints": "never",
+      "spanNulls": true,
+      "axisPlacement": "hidden"
+     }
+    },
+    "overrides": []
+   },
+   "id": 2
+  },
+  {
+   "type": "stat",
+   "title": "相對加權指數",
+   "description": "Paper 報酬減加權指數報酬（同一窗口、各自以第一天為基準）。",
+   "gridPos": {
+    "x": 5,
+    "y": 0,
+    "w": 5,
+    "h": 2
+   },
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "sv-monitoring"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "type": "json",
+     "parser": "backend",
+     "format": "table",
+     "root_selector": "([rows.{ 'time': $fromMillis($toMillis(date & 'T00:00:00.000Z') - 28800000), 'v': excess_return_pct }])",
+     "columns": [
+      {
+       "selector": "time",
+       "text": "time",
+       "type": "timestamp"
+      },
+      {
+       "selector": "v",
+       "text": "超額",
+       "type": "number"
+      }
+     ],
+     "filters": [],
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-monitoring"
+     },
+     "source": "url",
+     "url": "/v1/paper/nav?days=90",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
+    }
+   ],
+   "hideTimeOverride": true,
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "orientation": "auto",
+    "textMode": "value",
+    "wideLayout": false,
+    "colorMode": "value",
+    "graphMode": "none",
+    "justifyMode": "auto",
+    "showPercentChange": false,
+    "text": {
+     "titleSize": 12,
+     "valueSize": 20
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percent",
+     "decimals": 2,
+     "noValue": "尚未接資料",
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#e8e9ec",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "id": 3
+  },
+  {
+   "type": "timeseries",
+   "title": "",
+   "description": "Paper 報酬減加權指數報酬（同一窗口、各自以第一天為基準）。",
+   "transparent": true,
+   "gridPos": {
+    "x": 5,
+    "y": 2,
+    "w": 5,
+    "h": 2
+   },
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "sv-monitoring"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "type": "json",
+     "parser": "backend",
+     "format": "table",
+     "root_selector": "([rows.{ 'time': $fromMillis($toMillis(date & 'T00:00:00.000Z') - 28800000), 'v': excess_return_pct }])",
+     "columns": [
+      {
+       "selector": "time",
+       "text": "time",
+       "type": "timestamp"
+      },
+      {
+       "selector": "v",
+       "text": "超額",
+       "type": "number"
+      }
+     ],
+     "filters": [],
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-monitoring"
+     },
+     "source": "url",
+     "url": "/v1/paper/nav?days=90",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
+    }
+   ],
+   "hideTimeOverride": true,
+   "options": {
+    "legend": {
+     "showLegend": false,
+     "displayMode": "list",
+     "placement": "bottom",
+     "calcs": []
+    },
+    "tooltip": {
+     "mode": "single"
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percent",
+     "decimals": 2,
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#7b808b"
+     },
+     "custom": {
+      "drawStyle": "line",
+      "lineInterpolation": "smooth",
+      "lineWidth": 1,
+      "fillOpacity": 20,
+      "showPoints": "never",
+      "spanNulls": true,
+      "axisPlacement": "hidden"
+     }
+    },
+    "overrides": []
+   },
+   "id": 4
+  },
+  {
+   "type": "stat",
+   "title": "回撤",
+   "description": "離窗口內最高 NAV 的距離；低於 −10% 標琥珀。",
+   "gridPos": {
+    "x": 10,
+    "y": 0,
+    "w": 5,
+    "h": 2
+   },
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "sv-monitoring"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "type": "json",
+     "parser": "backend",
+     "format": "table",
+     "root_selector": "([rows.{ 'time': $fromMillis($toMillis(date & 'T00:00:00.000Z') - 28800000), 'v': drawdown_pct }])",
+     "columns": [
+      {
+       "selector": "time",
+       "text": "time",
+       "type": "timestamp"
+      },
+      {
+       "selector": "v",
+       "text": "回撤",
+       "type": "number"
+      }
+     ],
+     "filters": [],
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-monitoring"
+     },
+     "source": "url",
+     "url": "/v1/paper/nav?days=90",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
+    }
+   ],
+   "hideTimeOverride": true,
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "orientation": "auto",
+    "textMode": "value",
+    "wideLayout": false,
+    "colorMode": "value",
+    "graphMode": "none",
+    "justifyMode": "auto",
+    "showPercentChange": false,
+    "text": {
+     "titleSize": 12,
+     "valueSize": 20
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percent",
+     "decimals": 2,
+     "noValue": "尚未接資料",
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#ff9830",
+        "value": null
+       },
+       {
+        "color": "#e8e9ec",
+        "value": -10
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "id": 5
+  },
+  {
+   "type": "timeseries",
+   "title": "",
+   "description": "離窗口內最高 NAV 的距離；低於 −10% 標琥珀。",
+   "transparent": true,
+   "gridPos": {
+    "x": 10,
+    "y": 2,
+    "w": 5,
+    "h": 2
+   },
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "sv-monitoring"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "type": "json",
+     "parser": "backend",
+     "format": "table",
+     "root_selector": "([rows.{ 'time': $fromMillis($toMillis(date & 'T00:00:00.000Z') - 28800000), 'v': drawdown_pct }])",
+     "columns": [
+      {
+       "selector": "time",
+       "text": "time",
+       "type": "timestamp"
+      },
+      {
+       "selector": "v",
+       "text": "回撤",
+       "type": "number"
+      }
+     ],
+     "filters": [],
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-monitoring"
+     },
+     "source": "url",
+     "url": "/v1/paper/nav?days=90",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
+    }
+   ],
+   "hideTimeOverride": true,
+   "options": {
+    "legend": {
+     "showLegend": false,
+     "displayMode": "list",
+     "placement": "bottom",
+     "calcs": []
+    },
+    "tooltip": {
+     "mode": "single"
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percent",
+     "decimals": 2,
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#7b808b"
+     },
+     "custom": {
+      "drawStyle": "line",
+      "lineInterpolation": "smooth",
+      "lineWidth": 1,
+      "fillOpacity": 20,
+      "showPoints": "never",
+      "spanNulls": true,
+      "axisPlacement": "hidden"
+     }
+    },
+    "overrides": []
+   },
+   "id": 6
+  },
+  {
+   "type": "stat",
+   "title": "OPB",
+   "gridPos": {
+    "x": 15,
+    "y": 0,
+    "w": 5,
+    "h": 4
+   },
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "sv-monitoring"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "type": "json",
+     "parser": "backend",
+     "format": "table",
+     "root_selector": "([{ 'clip': summary.clip_rate, 'reward': summary.complete_receipts, 'days': summary.plan_days }])",
+     "columns": [
+      {
+       "selector": "clip",
+       "text": "被壓成一組",
+       "type": "number"
+      },
+      {
+       "selector": "reward",
+       "text": "可學 reward",
+       "type": "number"
+      },
+      {
+       "selector": "days",
+       "text": "計畫天數",
+       "type": "number"
+      }
+     ],
+     "filters": [],
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-monitoring"
+     },
+     "source": "url",
+     "url": "/v1/opb?days=60",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
+    }
+   ],
+   "transformations": [
+    {
+     "id": "organize",
+     "options": {
+      "excludeByName": {},
+      "renameByName": {},
+      "indexByName": {
+       "被壓成一組": 0,
+       "可學 reward": 1,
+       "計畫天數": 2
+      }
+     }
+    }
+   ],
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "/.*/",
+     "values": false
+    },
+    "orientation": "auto",
+    "textMode": "value_and_name",
+    "wideLayout": false,
+    "colorMode": "value",
+    "graphMode": "none",
+    "justifyMode": "auto",
+    "showPercentChange": false,
+    "text": {
+     "titleSize": 12,
+     "valueSize": 20
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#e8e9ec",
+        "value": null
+       }
+      ]
+     },
+     "noValue": "尚未接資料"
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byRegexp",
+       "options": ".*"
+      },
+      "properties": [
+       {
+        "id": "noValue",
+        "value": "—"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "被壓成一組"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "percentunit"
+       },
+       {
+        "id": "decimals",
+        "value": 0
+       },
+       {
+        "id": "thresholds",
+        "value": {
+         "mode": "absolute",
+         "steps": [
+          {
+           "color": "#e8e9ec",
+           "value": null
+          },
+          {
+           "color": "#ff9830",
+           "value": 0.5
+          }
+         ]
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "可學 reward"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "none"
+       },
+       {
+        "id": "decimals",
+        "value": 0
+       },
+       {
+        "id": "thresholds",
+        "value": {
+         "mode": "absolute",
+         "steps": [
+          {
+           "color": "#e8e9ec",
+           "value": null
+          }
+         ]
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "計畫天數"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "none"
+       },
+       {
+        "id": "decimals",
+        "value": 0
+       },
+       {
+        "id": "thresholds",
+        "value": {
+         "mode": "absolute",
+         "steps": [
+          {
+           "color": "#e8e9ec",
+           "value": null
+          }
+         ]
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "id": 7
+  },
+  {
+   "type": "stat",
+   "title": "模型",
+   "gridPos": {
+    "x": 20,
+    "y": 0,
+    "w": 4,
+    "h": 4
+   },
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "sv-monitoring"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "type": "json",
+     "parser": "backend",
+     "format": "table",
+     "root_selector": "([{ 'pass': $string($count(rows[gate_decision in ['STRONG_PASS', 'PASS']])) & '／' & $string(model_count),\n      'next': next_monthly_run.repo_desired_state = 'PAUSED' ? '暫停'\n  : next_monthly_run.next_run_at ? $fromMillis($toMillis(next_monthly_run.next_run_at), '[M01]/[D01]', '+0800') : '—' }])",
+     "columns": [
+      {
+       "selector": "pass",
+       "text": "閘門通過",
+       "type": "string"
+      },
+      {
+       "selector": "next",
+       "text": "下次月訓",
+       "type": "string"
+      }
+     ],
+     "filters": [],
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-monitoring"
+     },
+     "source": "url",
+     "url": "/v1/models/roster",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
+    }
+   ],
+   "transformations": [
+    {
+     "id": "organize",
+     "options": {
+      "excludeByName": {},
+      "renameByName": {},
+      "indexByName": {
+       "閘門通過": 0,
+       "下次月訓": 1
+      }
+     }
+    }
+   ],
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "/.*/",
+     "values": false
+    },
+    "orientation": "auto",
+    "textMode": "value_and_name",
+    "wideLayout": false,
+    "colorMode": "value",
+    "graphMode": "none",
+    "justifyMode": "auto",
+    "showPercentChange": false,
+    "text": {
+     "titleSize": 12,
+     "valueSize": 20
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#e8e9ec",
+        "value": null
+       }
+      ]
+     },
+     "noValue": "尚未接資料"
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byRegexp",
+       "options": ".*"
+      },
+      "properties": [
+       {
+        "id": "noValue",
+        "value": "—"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "閘門通過"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "none"
+       },
+       {
+        "id": "decimals",
+        "value": 0
+       },
+       {
+        "id": "thresholds",
+        "value": {
+         "mode": "absolute",
+         "steps": [
+          {
+           "color": "#e8e9ec",
+           "value": null
+          }
+         ]
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "下次月訓"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "none"
+       },
+       {
+        "id": "decimals",
+        "value": 0
+       },
+       {
+        "id": "thresholds",
+        "value": {
+         "mode": "absolute",
+         "steps": [
+          {
+           "color": "#e8e9ec",
+           "value": null
+          }
+         ]
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "id": 8
+  },
+  {
+   "type": "timeseries",
+   "title": "Paper NAV 與加權指數",
+   "gridPos": {
+    "x": 0,
+    "y": 4,
+    "w": 14,
+    "h": 9
+   },
+   "description": "兩條線都以 90 天窗口第一天為 0%。加權指數收盤晚於 paper 快照，最後一天可能還沒有指數。",
+   "targets": [
+    {
+     "refId": "A",
+     "type": "json",
+     "parser": "backend",
+     "format": "table",
+     "root_selector": "([rows.{ 'time': $fromMillis($toMillis(date & 'T00:00:00.000Z') - 28800000), 'nav': nav_return_pct, 'twii': twii_return_pct }])",
+     "columns": [
+      {
+       "selector": "time",
+       "text": "time",
+       "type": "timestamp"
+      },
+      {
+       "selector": "nav",
+       "text": "Paper NAV",
+       "type": "number"
+      },
+      {
+       "selector": "twii",
+       "text": "加權指數",
+       "type": "number"
+      }
+     ],
+     "filters": [],
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-monitoring"
+     },
+     "source": "url",
+     "url": "/v1/paper/nav?days=90",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
+    }
+   ],
+   "options": {
+    "legend": {
+     "showLegend": true,
+     "displayMode": "list",
+     "placement": "bottom",
+     "calcs": [
+      "lastNotNull"
+     ]
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percent",
+     "decimals": 1,
+     "noValue": "尚未接資料",
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "spanNulls": true
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "Paper NAV"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#199cb8"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "加權指數"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#a9abb3"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "id": 9,
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "sv-monitoring"
+   }
+  },
+  {
+   "type": "state-timeline",
+   "title": "每天選到的 OPB arm",
+   "description": "每個 signal date 的計畫用了哪個 arm；灰＝風控把所有 arm 壓成同一組，那天學不到差別。",
+   "gridPos": {
+    "x": 14,
+    "y": 4,
+    "w": 10,
+    "h": 4
+   },
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "sv-monitoring"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "type": "json",
+     "parser": "backend",
+     "format": "table",
+     "root_selector": "([rows.{ 'time': $fromMillis($toMillis(signal_date & 'T00:00:00.000Z') - 28800000), 'row': '選到的 arm', 'arm': arm_inert ? 'arm_inert' : arm_id }])",
+     "columns": [
+      {
+       "selector": "time",
+       "text": "time",
+       "type": "timestamp"
+      },
+      {
+       "selector": "row",
+       "text": "row",
+       "type": "string"
+      },
+      {
+       "selector": "arm",
+       "text": "arm",
+       "type": "string"
+      }
+     ],
+     "filters": [],
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-monitoring"
+     },
+     "source": "url",
+     "url": "/v1/opb?days=60",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
+    }
+   ],
+   "hideTimeOverride": true,
+   "transformations": [
+    {
+     "id": "partitionByValues",
+     "options": {
+      "fields": [
+       "row"
+      ],
+      "keepFields": false,
+      "naming": {
+       "asLabels": true
+      }
+     }
+    }
+   ],
+   "options": {
+    "legend": {
+     "showLegend": true,
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "single"
+    },
+    "showValue": "never",
+    "rowHeight": 0.7
+   },
+   "fieldConfig": {
+    "defaults": {
+     "displayName": "${__field.labels.row}",
+     "noValue": "尚未接資料",
+     "mappings": [
+      {
+       "type": "value",
+       "options": {
+        "base": {
+         "text": "base",
+         "color": "#199cb8",
+         "index": 0
+        },
+        "diversified_alpha": {
+         "text": "diversified_alpha",
+         "color": "#035ede",
+         "index": 1
+        },
+        "diversified_all_eligible": {
+         "text": "diversified_all_eligible",
+         "color": "#a573fe",
+         "index": 2
+        },
+        "liquidity_diversified": {
+         "text": "liquidity_diversified",
+         "color": "#ac27ae",
+         "index": 3
+        },
+        "conservative_diversified": {
+         "text": "conservative_diversified",
+         "color": "#dcdfe4",
+         "index": 4
+        },
+        "high_score_conservative": {
+         "text": "high_score_conservative",
+         "color": "#dcdfe4",
+         "index": 5
+        },
+        "arm_inert": {
+         "text": "被風控壓成一組",
+         "color": "#464a52",
+         "index": 6
+        }
+       }
+      }
+     ],
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#2B2D33",
+        "value": null
+       }
+      ]
+     },
+     "custom": {
+      "fillOpacity": 100,
+      "lineWidth": 0
+     }
+    },
+    "overrides": []
+   },
+   "id": 10
+  },
+  {
+   "type": "barchart",
+   "title": "各 arm 累積樣本（最新有統計的計畫）",
+   "description": "最新一筆有 arm 統計的計畫：每個 arm 累積多少樣本（v2 從 replay 學）。所有 arm 被壓成同一組或固定 arm 那天的計畫統計是空的，往前取；統計按 context 算，可能早於目前的 context。",
+   "gridPos": {
+    "x": 14,
+    "y": 8,
+    "w": 10,
+    "h": 5
+   },
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "sv-monitoring"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "type": "json",
+     "parser": "backend",
+     "format": "table",
+     "root_selector": "([latest_arm_statistics.{ 'arm': arm_id, 'samples': samples }])",
+     "columns": [
+      {
+       "selector": "arm",
+       "text": "arm",
+       "type": "string"
+      },
+      {
+       "selector": "samples",
+       "text": "樣本數",
+       "type": "number"
+      }
+     ],
+     "filters": [],
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-monitoring"
+     },
+     "source": "url",
+     "url": "/v1/opb?days=60",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
+    }
+   ],
+   "transformations": [
+    {
+     "id": "sortBy",
+     "options": {
+      "fields": {},
+      "sort": [
+       {
+        "field": "arm",
+        "desc": false
+       }
+      ]
+     }
+    },
+    {
+     "id": "organize",
+     "options": {
+      "excludeByName": {},
+      "indexByName": {},
+      "renameByName": {
+       "樣本數 A": "樣本數"
+      }
+     }
+    }
+   ],
+   "options": {
+    "xField": "arm",
+    "orientation": "horizontal",
+    "stacking": "normal",
+    "showValue": "always",
+    "barWidth": 0.7,
+    "groupWidth": 0.7,
+    "barRadius": 0,
+    "xTickLabelRotation": 0,
+    "xTickLabelSpacing": 0,
+    "fullHighlight": false,
+    "tooltip": {
+     "mode": "multi"
+    },
+    "legend": {
+     "showLegend": false,
+     "displayMode": "list",
+     "placement": "bottom",
+     "calcs": []
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "none",
+     "decimals": 0,
+     "min": 0,
+     "noValue": "尚未接資料",
+     "custom": {
+      "fillOpacity": 90,
+      "lineWidth": 0,
+      "axisSoftMin": 0,
+      "axisPlacement": "auto"
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "樣本數"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#199cb8"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "id": 11
+  },
+  {
+   "type": "table",
+   "title": "模型名冊",
+   "description": "上線中的 alpha roster 與各模型最近一次月訓的離線閘門。點模型名稱看版本與訓練資料日。",
+   "gridPos": {
+    "x": 0,
+    "y": 13,
+    "w": 14,
+    "h": 7
+   },
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "sv-monitoring"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "type": "json",
+     "parser": "backend",
+     "format": "table",
+     "root_selector": "([rows.{ 'model': model_name, 'gate': gate_decision, 'ic': oos_ic, 'min': min_oos_ic_mean, 'state': state,\n      'version': '版本 ' & champion_version, 'run': source_run_date ? '訓練資料 ' & source_run_date : '訓練資料 —' }])",
+     "columns": [
+      {
+       "selector": "model",
+       "text": "模型",
+       "type": "string"
+      },
+      {
+       "selector": "gate",
+       "text": "閘門",
+       "type": "string"
+      },
+      {
+       "selector": "ic",
+       "text": "OOS IC",
+       "type": "number"
+      },
+      {
+       "selector": "min",
+       "text": "IC 門檻",
+       "type": "number"
+      },
+      {
+       "selector": "state",
+       "text": "狀態",
+       "type": "string"
+      },
+      {
+       "selector": "version",
+       "text": "版本",
+       "type": "string"
+      },
+      {
+       "selector": "run",
+       "text": "訓練",
+       "type": "string"
+      }
+     ],
+     "filters": [],
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-monitoring"
+     },
+     "source": "url",
+     "url": "/v1/models/roster",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
+    }
+   ],
+   "transformations": [
+    {
+     "id": "organize",
+     "options": {
+      "excludeByName": {},
+      "renameByName": {},
+      "indexByName": {
+       "模型": 0,
+       "閘門": 1,
+       "OOS IC": 2,
+       "IC 門檻": 3,
+       "狀態": 4,
+       "版本": 5,
+       "訓練": 6
+      }
+     }
+    }
+   ],
+   "options": {
+    "showHeader": true,
+    "cellHeight": "sm",
+    "footer": {
+     "show": false
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "custom": {
+      "align": "left",
+      "inspect": false
+     },
+     "noValue": "尚未接資料"
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byRegexp",
+       "options": ".*"
+      },
+      "properties": [
+       {
+        "id": "noValue",
+        "value": "—"
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "閘門"
+      },
+      "properties": [
+       {
+        "id": "custom.cellOptions",
+        "value": {
+         "type": "color-text"
+        }
+       },
+       {
+        "id": "mappings",
+        "value": [
+         {
+          "type": "value",
+          "options": {
+           "STRONG_PASS": {
+            "text": "強通過",
+            "color": "#00c076",
+            "index": 0
+           },
+           "PASS": {
+            "text": "通過",
+            "color": "#00c076",
+            "index": 1
+           },
+           "WEAK_PASS": {
+            "text": "弱通過",
+            "color": "#ffb357",
+            "index": 2
+           },
+           "FAIL": {
+            "text": "未過",
+            "color": "#ff7a8a",
+            "index": 3
+           },
+           "PENDING": {
+            "text": "待定",
+            "color": "#9a9ea8",
+            "index": 4
+           }
+          }
+         }
+        ]
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "閘門"
+      },
+      "properties": [
+       {
+        "id": "custom.width",
+        "value": 64
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "OOS IC"
+      },
+      "properties": [
+       {
+        "id": "custom.width",
+        "value": 84
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "IC 門檻"
+      },
+      "properties": [
+       {
+        "id": "custom.width",
+        "value": 84
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "版本"
+      },
+      "properties": [
+       {
+        "id": "custom.hidden",
+        "value": true
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "訓練"
+      },
+      "properties": [
+       {
+        "id": "custom.hidden",
+        "value": true
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "模型"
+      },
+      "properties": [
+       {
+        "id": "links",
+        "value": [
+         {
+          "title": "${__data.fields[\"版本\"]}",
+          "url": "/d/${__dashboard.uid}?${__url_time_range}",
+          "targetBlank": false
+         },
+         {
+          "title": "${__data.fields[\"訓練\"]}",
+          "url": "/d/${__dashboard.uid}?${__url_time_range}",
+          "targetBlank": false
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   "id": 12
+  },
+  {
    "type": "timeseries",
    "title": "訓練與研究 Job 每 24 小時執行時間",
    "description": "Cloud Run Job 每 24 小時執行中的分鐘數（每分鐘取樣的執行中 execution 數加總；同時兩個 execution 算兩倍），一點＝一個 job 一天。Cloud Monitoring 以查詢結束時間對齊，不是日曆日。",
@@ -146,7 +1659,308 @@
     "w": 10,
     "h": 7
    },
-   "id": 1
+   "id": 13
+  },
+  {
+   "type": "status-history",
+   "title": "KV 設定漂移（7 天）",
+   "description": "每晚 kv-config-drift 對 manifest digest 的比對結果；漂移＝KV 現值與 repo manifest 不同（Optuna 月搜直推後屬預期）。",
+   "gridPos": {
+    "x": 0,
+    "y": 20,
+    "w": 12,
+    "h": 4
+   },
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "sv-monitoring"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "type": "json",
+     "parser": "backend",
+     "format": "table",
+     "root_selector": "([$sort(rows, function($a, $b) { $a.business_date > $b.business_date }).($r := $; ['trading:config', 'trading:risk_config'].($k := $string($);\n        { 'time': $fromMillis($toMillis($r.business_date & 'T00:00:00.000Z') - 28800000), 'key': $k, 'status': $lookup($r, $k) }))])",
+     "columns": [
+      {
+       "selector": "time",
+       "text": "time",
+       "type": "timestamp"
+      },
+      {
+       "selector": "key",
+       "text": "key",
+       "type": "string"
+      },
+      {
+       "selector": "status",
+       "text": "status",
+       "type": "string"
+      }
+     ],
+     "filters": [],
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-monitoring"
+     },
+     "source": "url",
+     "url": "/v1/kv-drift",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
+    }
+   ],
+   "hideTimeOverride": true,
+   "transformations": [
+    {
+     "id": "partitionByValues",
+     "options": {
+      "fields": [
+       "key"
+      ],
+      "keepFields": false,
+      "naming": {
+       "asLabels": true
+      }
+     }
+    }
+   ],
+   "options": {
+    "legend": {
+     "showLegend": false,
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "single"
+    },
+    "showValue": "never",
+    "rowHeight": 0.8,
+    "colWidth": 0.9
+   },
+   "fieldConfig": {
+    "defaults": {
+     "displayName": "${__field.labels.key}",
+     "noValue": "尚未接資料",
+     "mappings": [
+      {
+       "type": "value",
+       "options": {
+        "completed": {
+         "text": "完成",
+         "color": "#00c076",
+         "index": 0
+        },
+        "success": {
+         "text": "完成",
+         "color": "#00c076",
+         "index": 1
+        },
+        "noop": {
+         "text": "無事可做",
+         "color": "#00c076",
+         "index": 2
+        },
+        "retry_success": {
+         "text": "重試後完成",
+         "color": "#00c076",
+         "index": 3
+        },
+        "running": {
+         "text": "執行中",
+         "color": "#8ab8ff",
+         "index": 4
+        },
+        "waiting": {
+         "text": "等待中",
+         "color": "#5c606b",
+         "index": 5
+        },
+        "not_started": {
+         "text": "未開始",
+         "color": "#5c606b",
+         "index": 6
+        },
+        "pending": {
+         "text": "未開始",
+         "color": "#5c606b",
+         "index": 7
+        },
+        "out_of_window": {
+         "text": "未到時段",
+         "color": "#5c606b",
+         "index": 8
+        },
+        "stale": {
+         "text": "待確認",
+         "color": "#5c606b",
+         "index": 9
+        },
+        "skipped": {
+         "text": "略過",
+         "color": "#464a52",
+         "index": 10
+        },
+        "at_risk": {
+         "text": "趕不上截止",
+         "color": "#ff9830",
+         "index": 11
+        },
+        "attention": {
+         "text": "應跑未跑",
+         "color": "#ff9830",
+         "index": 12
+        },
+        "overdue": {
+         "text": "逾時",
+         "color": "#ff9830",
+         "index": 13
+        },
+        "stuck": {
+         "text": "卡住",
+         "color": "#f2495c",
+         "index": 14
+        },
+        "missed": {
+         "text": "漏跑",
+         "color": "#f2495c",
+         "index": 15
+        },
+        "failed": {
+         "text": "失敗",
+         "color": "#f2495c",
+         "index": 16
+        },
+        "error": {
+         "text": "失敗",
+         "color": "#f2495c",
+         "index": 17
+        },
+        "blocked": {
+         "text": "中止",
+         "color": "#f2495c",
+         "index": 18
+        },
+        "watcher_blocked": {
+         "text": "被擋住",
+         "color": "#ff9830",
+         "index": 19
+        },
+        "ready": {
+         "text": "就緒",
+         "color": "#00c076",
+         "index": 20
+        },
+        "ok": {
+         "text": "正常",
+         "color": "#00c076",
+         "index": 21
+        },
+        "warn": {
+         "text": "注意",
+         "color": "#ff9830",
+         "index": 22
+        },
+        "fail": {
+         "text": "未過",
+         "color": "#f2495c",
+         "index": 23
+        },
+        "critical": {
+         "text": "重大",
+         "color": "#f2495c",
+         "index": 24
+        },
+        "warning": {
+         "text": "注意",
+         "color": "#ff9830",
+         "index": 25
+        },
+        "healthy": {
+         "text": "正常",
+         "color": "#00c076",
+         "index": 26
+        },
+        "pending_maturity": {
+         "text": "等待成熟",
+         "color": "#5c606b",
+         "index": 27
+        },
+        "pass": {
+         "text": "通過",
+         "color": "#00c076",
+         "index": 28
+        },
+        "collecting": {
+         "text": "收集中",
+         "color": "#8ab8ff",
+         "index": 29
+        },
+        "not_applicable_no_real_intents": {
+         "text": "不適用（沒有真實下單）",
+         "color": "#5c606b",
+         "index": 30
+        },
+        "owner_read_unavailable": {
+         "text": "讀不到來源",
+         "color": "#ff9830",
+         "index": 31
+        },
+        "match": {
+         "text": "一致",
+         "color": "#00c076",
+         "index": 32
+        },
+        "drift": {
+         "text": "漂移",
+         "color": "#ff9830",
+         "index": 33
+        },
+        "missing": {
+         "text": "缺少",
+         "color": "#f2495c",
+         "index": 34
+        },
+        "invalid": {
+         "text": "無效",
+         "color": "#f2495c",
+         "index": 35
+        },
+        "PASS": {
+         "text": "通過",
+         "color": "#00c076",
+         "index": 36
+        },
+        "FAIL": {
+         "text": "未過",
+         "color": "#f2495c",
+         "index": 37
+        }
+       }
+      }
+     ],
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#2B2D33",
+        "value": null
+       }
+      ]
+     },
+     "custom": {
+      "fillOpacity": 100,
+      "lineWidth": 0
+     }
+    },
+    "overrides": []
+   },
+   "id": 14
   },
   {
    "type": "stat",
@@ -561,95 +2375,100 @@
             "color": "#ff7a8a",
             "index": 18
            },
+           "watcher_blocked": {
+            "text": "被擋住",
+            "color": "#ffb357",
+            "index": 19
+           },
            "ready": {
             "text": "就緒",
             "color": "#00c076",
-            "index": 19
+            "index": 20
            },
            "ok": {
             "text": "正常",
             "color": "#00c076",
-            "index": 20
+            "index": 21
            },
            "warn": {
             "text": "注意",
             "color": "#ffb357",
-            "index": 21
+            "index": 22
            },
            "fail": {
             "text": "未過",
             "color": "#ff7a8a",
-            "index": 22
+            "index": 23
            },
            "critical": {
             "text": "重大",
             "color": "#ff7a8a",
-            "index": 23
+            "index": 24
            },
            "warning": {
             "text": "注意",
             "color": "#ffb357",
-            "index": 24
+            "index": 25
            },
            "healthy": {
             "text": "正常",
             "color": "#00c076",
-            "index": 25
+            "index": 26
            },
            "pending_maturity": {
             "text": "等待成熟",
             "color": "#9a9ea8",
-            "index": 26
+            "index": 27
            },
            "pass": {
             "text": "通過",
             "color": "#00c076",
-            "index": 27
+            "index": 28
            },
            "collecting": {
             "text": "收集中",
             "color": "#a8caff",
-            "index": 28
+            "index": 29
            },
            "not_applicable_no_real_intents": {
             "text": "不適用（沒有真實下單）",
             "color": "#9a9ea8",
-            "index": 29
+            "index": 30
            },
            "owner_read_unavailable": {
             "text": "讀不到來源",
             "color": "#ffb357",
-            "index": 30
+            "index": 31
            },
            "match": {
             "text": "一致",
             "color": "#00c076",
-            "index": 31
+            "index": 32
            },
            "drift": {
             "text": "漂移",
             "color": "#ffb357",
-            "index": 32
+            "index": 33
            },
            "missing": {
             "text": "缺少",
             "color": "#ff7a8a",
-            "index": 33
+            "index": 34
            },
            "invalid": {
             "text": "無效",
             "color": "#ff7a8a",
-            "index": 34
+            "index": 35
            },
            "PASS": {
             "text": "通過",
             "color": "#00c076",
-            "index": 35
+            "index": 36
            },
            "FAIL": {
             "text": "未過",
             "color": "#ff7a8a",
-            "index": 36
+            "index": 37
            }
           }
          }
@@ -687,8 +2506,8 @@
      }
     ]
    },
-   "description": "execution parity：真實下單意圖、paper 意圖與兩邊對得上的筆數。RFS allocator：候選數、收集狀態與已有證據的日數；被擋的收據與滿 20 日的日數要等 rfs_sparse_comparisons_v1(policy_identity) 有索引後 Worker 才提供（目前回 null）。",
-   "id": 2
+   "description": "execution parity：真實下單意圖、paper 意圖與兩邊對得上的筆數。RFS allocator：候選數、收集狀態與已有證據的日數；被擋的收據與滿 20 日的日數要等 RFS 比較表有索引後 Worker 才提供（目前回 null）。",
+   "id": 15
   }
  ]
 }

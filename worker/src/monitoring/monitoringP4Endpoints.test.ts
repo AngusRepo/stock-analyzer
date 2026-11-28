@@ -2,7 +2,8 @@ import assert from 'node:assert/strict'
 import { after, before, test } from 'node:test'
 import { createMonitoringHandler, KV_DRIFT_TTL_S, OPB_TTL_S, P4_ROUTES, ROSTER_TTL_S, SLOW_TTL_S, TIMELINE_TTL_S } from './index'
 import { day, domainDdl, insertRows, startFixture, tableScans, tempSorts, weekdays, type Fixture } from './monitoringFixture.testSupport'
-import { nextFirstWeekdayRun } from './modelRoster'
+import { MONTHLY_JOB_ID, nextFirstWeekdayRun } from './modelRoster'
+import schedulerManifest from '../../../infra/gcp-scheduler-jobs.json'
 import { latestArmStatistics } from './opb'
 import { parseKvDriftSummary } from './schedulerTickets'
 import type { ExecutedQuery } from './readOnlyD1'
@@ -267,10 +268,27 @@ test('/v1/models/roster: published core4, live gate thresholds, latest monthly r
   assert.equal(body.next_monthly_run.next_run_at, null)
 })
 
-test('nextFirstWeekdayRun: Taipei first Sunday, same-day before and after the run', () => {
-  assert.equal(nextFirstWeekdayRun('first sunday of month 02:00', 'Asia/Taipei', Date.parse('2026-12-05T17:59:00Z')), '2026-12-06T02:00+08:00')
-  assert.equal(nextFirstWeekdayRun('first sunday of month 02:00', 'Asia/Taipei', Date.parse('2026-12-05T18:00:00Z')), '2027-01-03T02:00+08:00')
+test('nextFirstWeekdayRun: Taipei first Sunday, same-day before and after the run, as a millisecond Z stamp', () => {
+  // 2026-12-06 (Sun) 02:00 TW and 2027-01-03 (Sun) 02:00 TW.
+  assert.equal(nextFirstWeekdayRun('first sunday of month 02:00', 'Asia/Taipei', Date.parse('2026-12-05T17:59:00Z')), '2026-12-05T18:00:00.000Z')
+  assert.equal(nextFirstWeekdayRun('first sunday of month 02:00', 'Asia/Taipei', Date.parse('2026-12-05T18:00:00Z')), '2027-01-02T18:00:00.000Z')
+  assert.equal(nextFirstWeekdayRun('first sunday of month 02:00', 'UTC', Date.parse('2026-12-05T17:59:00Z')), '2026-12-06T02:00:00.000Z')
   assert.equal(nextFirstWeekdayRun('0 2 * * *', 'Asia/Taipei', NOW), null)
+})
+
+test('/v1/models/roster: an enabled monthly job serves next_run_at as a millisecond Z stamp (Grafana $toMillis)', async () => {
+  // The repo manifest pauses the job; enable it for this call only. endpoint() checks every *_at against the Z shape.
+  const job = (schedulerManifest as { jobs: Array<{ id: string; desiredState?: string }> }).jobs.find((item) => item.id === MONTHLY_JOB_ID)!
+  const desired = job.desiredState
+  job.desiredState = 'ENABLED'
+  try {
+    const body = await endpoint('/v1/models/roster', 100, ROSTER_TTL_S)
+    assert.equal(body.next_monthly_run.repo_desired_state, 'ENABLED')
+    // NOW is 11/25: the next first Sunday 02:00 TW is 12/06.
+    assert.equal(body.next_monthly_run.next_run_at, '2026-12-05T18:00:00.000Z')
+  } finally {
+    job.desiredState = desired
+  }
 })
 
 test('/v1/opb: arm share, clip rate, receipts by rowid tail, current-context replay, LinUCB ledger', async () => {

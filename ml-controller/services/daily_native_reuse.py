@@ -46,8 +46,17 @@ def unchanged_native_fields(bucket, baseline, datasets, *, metadata_fetcher=None
         if key not in requested:
             continue
         item = metadata.get(key)
+        # Same as pinned SDK _resolve_recent_hit/_partition_recent_actionable: a missing or
+        # errored .recent status is not proof of "unchanged", so the field goes back to the
+        # original full-wire capture instead of failing the whole run (11/26 disclosure).
+        if item is not None and item.role == 'free':
+            # The pinned SDK truncates full downloads for a free role; never fall back into that.
+            raise ValueError('daily_native_vendor_role_free:' + field)
         if item is None or item.error:
-            raise ValueError('daily_native_update_status_unavailable:' + field)
+            # Fixed codes only; never vendor text (same rule as vendor_raw_resource_guard).
+            print(f'[daily-native-reuse] recent_status_unavailable field={field} '
+                  f'reason={"missing" if item is None else "error_present"}; full capture')
+            continue
         if item.expiry is None:
             raise ValueError('daily_native_update_status_incomplete:' + field)
         # Same condition as pinned SDK _resolve_recent_hit. An update always

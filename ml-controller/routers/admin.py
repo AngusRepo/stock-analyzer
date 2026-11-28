@@ -82,6 +82,23 @@ def _tw_today() -> str:
     return datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d")
 
 
+def _migration_safety_prediction_rows(start_date: str, end_date: str) -> list[dict]:
+    """Ensemble predictions of the window (forecast_data lives there), newest first, at most 50000."""
+    rows = LEARNING_D1_CLIENT.query(
+        "SELECT stock_id, generated_at, prediction_date, forecast_data FROM predictions "
+        "WHERE model_name='ensemble' "
+        "AND prediction_date >= ? "
+        "AND prediction_date <= ? "
+        "ORDER BY generated_at DESC LIMIT 50000",
+        [start_date, end_date],
+    )
+    # Windows past the 120-day hot window read the verified R2 archive; same rows, order and limit.
+    from services.retention_prediction_reads import archived_prediction_rows, merge_latest
+    return merge_latest(rows, ({k: r.get(k) for k in ("stock_id", "generated_at", "prediction_date", "forecast_data")}
+                               for r in archived_prediction_rows(start_date, end_date, model_name='ensemble')),
+                        key=lambda r: str(r.get("generated_at") or ""), reverse=True, limit=50000)
+
+
 @router.post("/migration_safety_check")
 def migration_safety_check(req: MigrationSafetyCheckReq = Body(default=None)):
     """Run 3-layer parity validation on predictions.forecast_data JSON.
@@ -105,15 +122,7 @@ def migration_safety_check(req: MigrationSafetyCheckReq = Body(default=None)):
         f"note={req.note!r}"
     )
 
-    # ── Fetch: predictions.model_name='ensemble' only (forecast_data lives there) ─
-    rows = LEARNING_D1_CLIENT.query(
-        "SELECT stock_id, generated_at, prediction_date, forecast_data FROM predictions "
-        "WHERE model_name='ensemble' "
-        "AND prediction_date >= ? "
-        "AND prediction_date <= ? "
-        "ORDER BY generated_at DESC LIMIT 50000",
-        [start_date, end_date],
-    )
+    rows = _migration_safety_prediction_rows(start_date, end_date)
     if not rows:
         return {
             "status": "insufficient_data",

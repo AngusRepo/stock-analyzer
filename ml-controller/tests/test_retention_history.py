@@ -161,3 +161,13 @@ def test_missing_and_invalid_knowledge_timestamps_are_not_labels():
  for verified in (None,'invalid',False):
   rows=[{'generated_at':'2025-01-01T00:00:00','direction_correct':1,'verified_at':verified}]
   assert compute_rolling_accuracy_30d(rows,'2025-01-03',min_samples=1)==.6
+
+
+def test_unreleased_orphan_archive_is_skipped_when_rows_left_hot():
+ # Delete never committed: no receipt although the receipt table exists. Its rows were deleted later
+ # by another (receipted) release, so this archive contributes nothing and must not block readers.
+ raw,m=fixture();m['release_verified_at']=None
+ def hot(sql,params):
+  if 'sqlite_master' in sql:return [{'name':'learning_retention_releases_v1'}]
+  return []
+ assert list(archived_predictions('2025-01-01','2025-01-02',query_ops=lambda *a:[m],query_hot=hot,download=lambda m:raw))==[]

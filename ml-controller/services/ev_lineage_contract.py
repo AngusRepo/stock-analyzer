@@ -296,6 +296,10 @@ def attach_same_run_model_version_evidence(
         for row in rows
         if str(row.get("prediction_date") or row.get("recommendation_date") or row.get("date") or "")[:10]
     })
+    if dates:
+        from services.retention_prediction_reads import require_hot_predictions
+
+        require_hot_predictions(dates[0], dates[-1], 'same_run_model_version_evidence')
     evidence_by_key: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
     loaded_rows = 0
     for signal_date in dates:

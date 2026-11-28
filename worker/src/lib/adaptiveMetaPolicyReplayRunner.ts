@@ -1,6 +1,7 @@
 import { publishedAlphaModelOrder } from './alphaModelRoster'
 import type { Bindings } from '../types'
 import { databaseForDataDomain } from './dataDomainRegistry'
+import { archivedPredictionsCouldChangeLatest, mergeArchivedLatestPredictions, predictionRankScore, sqliteOrder, type ArchivedPredictionsEnv } from './retentionPredictionsReader'
 
 export interface AdaptiveMetaPolicyReplayRow {
   date?: string | null
@@ -34,6 +35,8 @@ export interface AdaptiveMetaPolicyReplayOptions {
   startDate?: string
   endDate?: string
   limit?: number
+  /** R2 archive of rows past the 120-day hot window; production callers always pass it. */
+  coldEnv?: ArchivedPredictionsEnv
   minIcSamples?: number
   minWindows?: number
   neuralEpochs?: number
@@ -57,7 +60,7 @@ function daysAgoTw(days: number): string {
 
 export async function listAdaptiveMetaPolicyReplayRows(
   db: D1Database,
-  options: Pick<AdaptiveMetaPolicyReplayOptions, 'startDate' | 'endDate' | 'limit'> = {},
+  options: Pick<AdaptiveMetaPolicyReplayOptions, 'startDate' | 'endDate' | 'limit' | 'coldEnv'> = {},
 ): Promise<AdaptiveMetaPolicyReplayRow[]> {
   const limit = boundedInt(options.limit, 20000, 1, 50000)
   const activeModels = await publishedAlphaModelOrder(db)
@@ -163,6 +166,13 @@ export async function listAdaptiveMetaPolicyReplayRows(
      AND dr.date = p.prediction_date
     ORDER BY date(p.prediction_date) ASC, p.stock_id ASC, p.model_name ASC
   `).bind(...binds).all<AdaptiveMetaPolicyReplayRow>()
+  // The single-database join has no archived equivalent; never return a silently shorter window.
+  if (options.coldEnv && await archivedPredictionsCouldChangeLatest(options.coldEnv, {
+    hotDates: (results ?? []).map((row) => String(row.date ?? '').slice(0, 10)), limit,
+    start: options.startDate, end: options.endDate,
+    query: { filter: (row) => activeModels.includes(String(row.model_name)) && row.verified_at != null && row.actual_return_pct != null },
+  }))
+    throw new Error('adaptive_replay_archived_predictions_require_split_domains')
 
   return results ?? []
 }
@@ -177,6 +187,30 @@ type CoreReplayContextRow = {
   score_components?: string | null
   alpha_context?: string | null
   alpha_allocation?: string | null
+}
+
+const replayDescending = sqliteOrder<AdaptiveMetaPolicyReplayRow>(
+  [(row) => String(row.date ?? '').slice(0, 10), 'desc'], [(row) => row.stock_id, 'desc'], [(row) => row.model_name, 'desc'])
+const replayAscending = sqliteOrder<AdaptiveMetaPolicyReplayRow>(
+  [(row) => String(row.date ?? '').slice(0, 10), 'asc'], [(row) => row.stock_id, 'asc'], [(row) => row.model_name, 'asc'])
+
+/** Same rows as the `recent` CTE over hot plus archived predictions, in the same output order. */
+async function mergeArchivedReplayPredictions(env: ArchivedPredictionsEnv, hotRows: AdaptiveMetaPolicyReplayRow[],
+  options: { startDate?: string; endDate?: string; limit: number; activeModels: readonly string[] }) {
+  const merged = await mergeArchivedLatestPredictions<AdaptiveMetaPolicyReplayRow>(env, {
+    hotRows, limit: options.limit, start: options.startDate, end: options.endDate,
+    dateOf: (row) => String(row.date ?? '').slice(0, 10), order: replayDescending,
+    query: { filter: (row) => options.activeModels.includes(String(row.model_name))
+      && row.verified_at != null && row.actual_return_pct != null },
+    project: (row) => ({
+      date: row.prediction_date as string, stock_id: row.stock_id as any, model_name: row.model_name as string,
+      direction_correct: row.direction_correct as any, direction_accuracy: row.direction_accuracy as any,
+      price_error_pct: row.price_error_pct as any, actual_return_pct: row.actual_return_pct as any,
+      trade_pnl_pct: row.trade_pnl_pct as any, rank_score: predictionRankScore(row) as any,
+      market_risk_score: row.market_risk_score as any,
+    }),
+  })
+  return merged === hotRows ? hotRows : merged.sort(replayAscending)
 }
 
 function parseRecord(value: unknown): Record<string, any> {
@@ -200,7 +234,7 @@ function firstScalar(...values: unknown[]): string | number | null {
 export async function listAdaptiveMetaPolicyReplayRowsAcrossDomains(
   learningDb: D1Database,
   coreDb: D1Database,
-  options: Pick<AdaptiveMetaPolicyReplayOptions, 'startDate' | 'endDate' | 'limit'> = {},
+  options: Pick<AdaptiveMetaPolicyReplayOptions, 'startDate' | 'endDate' | 'limit' | 'coldEnv'> = {},
 ): Promise<AdaptiveMetaPolicyReplayRow[]> {
   const limit = boundedInt(options.limit, 20000, 1, 50000)
   const activeModels = await publishedAlphaModelOrder(learningDb)
@@ -247,7 +281,9 @@ export async function listAdaptiveMetaPolicyReplayRowsAcrossDomains(
     FROM recent p
     ORDER BY date(p.prediction_date) ASC, p.stock_id ASC, p.model_name ASC
   `).bind(...binds).all<AdaptiveMetaPolicyReplayRow>()
-  const predictions = predictionResult.results ?? []
+  const predictions = options.coldEnv
+    ? await mergeArchivedReplayPredictions(options.coldEnv, predictionResult.results ?? [], { ...options, limit, activeModels })
+    : predictionResult.results ?? []
   if (!predictions.length) return []
 
   const contextPairs = [...new Map(predictions
@@ -344,7 +380,7 @@ export async function runAdaptiveMetaPolicyReplay(
   const learningDb = databaseForDataDomain(env, 'learning')
   const coreDb = databaseForDataDomain(env, 'core')
   const activeModels = await publishedAlphaModelOrder(learningDb)
-  const rowOptions = { startDate, endDate, limit: options.limit ?? 20000 }
+  const rowOptions = { startDate, endDate, limit: options.limit ?? 20000, coldEnv: env }
   const rows = learningDb === coreDb
     ? await listAdaptiveMetaPolicyReplayRows(learningDb, rowOptions)
     : await listAdaptiveMetaPolicyReplayRowsAcrossDomains(learningDb, coreDb, rowOptions)

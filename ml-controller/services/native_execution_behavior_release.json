@@ -1,11 +1,11 @@
 {
   "schema_version": "native-paper-behavior-release-v1",
-  "execution_owner_version": "native-paper-v1:2d9ad9a6acb4e029b48912c51d2cdc2734399d6a1359aee351465e800b987151",
+  "execution_owner_version": "native-paper-v1:e612bc90f079295068d04d14fc6b9270c5df2a2cee91a0609ed91c69ba0ab5fa",
   "scope": "paper",
   "source_equivalence": false,
   "maturity_transfer": false,
   "efficacy_status": "unproven",
-  "authorization": "Wei 2026-11-25 AskUserQuestion: 併入 #278，只做一次 re-pin（建議）; 開始第二輪 merge（建議）; OR15: commit＋PR＋上今晚的車（建議）",
+  "authorization": "Wei 2026-11-28 AskUserQuestion: 併 #321 一起; 本 session 修＋準備（建議）; 11/30（一）盤後（建議）; commit＋re-pin＋push（建議）; 併 #293",
   "review": "output/herdr-handoff-20261018/sys-cleanup-20261028/runbook_k20_repin_grant.md",
-  "runtime_admission": "ml:active8:paper_runtime_approval:v1:entry-20261125"
+  "runtime_admission": "ml:active8:paper_runtime_approval:v1:quote-twii-20261130"
 }

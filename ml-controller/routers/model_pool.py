@@ -148,6 +148,9 @@ def _load_weekly_ic_rows(all_tracked, run_date: str | None, lookback_days: int) 
             raise HTTPException(status_code=400, detail=f"invalid run_date: {run_date}") from exc
     else:
         anchor = datetime.now(timezone.utc).date()
+    from services.retention_prediction_reads import require_hot_predictions
+
+    require_hot_predictions((anchor - timedelta(days=lookback_days)).isoformat(), anchor.isoformat(), 'weekly_ic')
     forecast_columns = ",\n                   ".join(
         _weekly_ic_column(f"CASE WHEN json_valid(forecast_data) THEN json_extract(forecast_data, '{path}') END", alias)
         for alias, path in _WEEKLY_IC_FORECAST_PATHS

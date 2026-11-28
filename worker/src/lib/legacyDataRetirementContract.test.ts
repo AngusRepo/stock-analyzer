@@ -5,6 +5,7 @@ const strategy = readFileSync('src/lib/legacyStrategyEvidenceMigration.ts', 'utf
 const retirement = readFileSync('src/lib/legacyHotDataRetirement.ts', 'utf8')
 const archive = readFileSync('src/lib/auditJsonArchive.ts', 'utf8')
 const dashboard = readFileSync('src/routes/dashboardReadRoutes.ts', 'utf8')
+const predictionsReader = readFileSync('src/lib/retentionPredictionsReader.ts', 'utf8')
 const manifest = readFileSync('../infra/gcp-scheduler-jobs.json', 'utf8')
 
 assert.match(strategy, /writeEvidenceArtifact/)
@@ -68,8 +69,10 @@ assert.match(archive, /strategy_decision_log\.context_id IS NOT NULL/)
 assert.match(archive, /strategy_decision_log\.evidence_artifact_id IS NOT NULL/)
 assert.match(archive, /cursor\?\.backlog_remaining/)
 assert.match(archive, /loadCandidateRows\(targetDb, target, cutoffDate, limitPerTable, minBlobBytes, null\)/)
-assert.match(dashboard, /prediction_date IS NOT NULL/)
+assert.match(dashboard, /readStockModelSignals\(c\.env, id, signalLimit\)/)
+assert.match(predictionsReader, /prediction_date IS NOT NULL/)
 assert.doesNotMatch(dashboard, /COALESCE\(prediction_date, substr\(generated_at/)
+assert.doesNotMatch(predictionsReader, /COALESCE\(prediction_date, substr\(generated_at/)
 // D9 step 4: the scheduled read-only audit root is retired; the task stays manual-only.
 const parsedManifest = JSON.parse(manifest)
 // The strategy migration cursor completed on 11/07 and its job was deleted; a scheduler sync must not recreate it.

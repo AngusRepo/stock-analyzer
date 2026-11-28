@@ -17,6 +17,7 @@ import { writeDailyExecutionPaperClosureArtifacts } from './dailyExecutionPaperL
 import { databaseForDataDomain } from './dataDomainRegistry'
 import { paperDomainDatabase } from './paperDomainDatabase'
 import { outstandingCorporateEntitlements, corporateReceivableBounds } from './paperCorporateActions'
+import { resolveSessionTwiiClose } from './paperTwiiMark'
 
 
 export type DailySnapshotOptions = {
@@ -29,6 +30,8 @@ function snapshotDate(raw?: string): string {
   if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value
   return new Date(paperExecutionNow() + 8 * 3600_000).toISOString().slice(0, 10)
 }
+
+const YAHOO_POST_CLOSE_SOURCE = 'post_close_yahoo'
 
 export async function runDailySnapshot(env: Bindings, options: DailySnapshotOptions = {}) {
   console.log('[Snapshot] Starting...')
@@ -49,14 +52,20 @@ export async function runDailySnapshot(env: Bindings, options: DailySnapshotOpti
   const stockRights = corporateRights.filter(row => row.shares_due > 0 || row.kind === 'subscription').map(row => row.symbol)
   const finalSymbols = [...new Set([...(finalPos ?? []).map((p: any) => p.symbol), ...stockRights])]
   const postCloseRefresh = await refreshOpenPositionPostClosePriceCache(env, { tradeDate: valuationSession, additionalSymbols: stockRights })
-  const finalPriceMap = new Map<string, number>(
-    [...postCloseRefresh.prices.entries()].map(([symbol, snapshot]) => [symbol, snapshot.price]),
-  )
+  // Mark order: broker post-close quote, then the stock_prices exact session close, then the Yahoo
+  // fallback (a third-party quote, used only when the exact close is not written yet).
+  const markQuotes = new Map([...postCloseRefresh.prices].filter(([, snapshot]) => snapshot.source !== YAHOO_POST_CLOSE_SOURCE))
+  const finalPriceMap = new Map<string, number>([...markQuotes].map(([symbol, snapshot]) => [symbol, snapshot.price]))
   const missingFinalSymbols = finalSymbols.filter((symbol: string) => !finalPriceMap.has(symbol))
   const eodMarks = await batchGetClosingMarksByDomain(env, missingFinalSymbols, valuationSession)
   for (const [symbol, mark] of eodMarks) finalPriceMap.set(symbol, mark.price)
+  for (const [symbol, snapshot] of postCloseRefresh.prices) {
+    if (finalPriceMap.has(symbol)) continue
+    finalPriceMap.set(symbol, snapshot.price)
+    markQuotes.set(symbol, snapshot)
+  }
   const markEvidence = Object.fromEntries(finalSymbols.filter(s => finalPriceMap.has(s)).map(symbol => {
-    const quote = postCloseRefresh.prices.get(symbol)
+    const quote = markQuotes.get(symbol)
     // price_date comes from the row that supplied the price, never from the session we asked for.
     return [symbol, { price: finalPriceMap.get(symbol), price_date: quote?.trade_date ?? eodMarks.get(symbol)?.date ?? null,
       source: quote?.source ?? 'stock_prices.exact_session_close',
@@ -124,18 +133,17 @@ export async function runDailySnapshot(env: Bindings, options: DailySnapshotOpti
   const pnlPct = updatedAcc.initial_cash > 0 ? pnl / updatedAcc.initial_cash * 100 : 0
 
   // AUD-20: benchmarks are the valuation session's exact closes; a gap stays null, never an older close.
-  const [benchmarkPrices, twiiRow] = await Promise.all([
+  // TWII: market_risk(D) is only written by the evening chain, after both snapshot runs; see paperTwiiMark.
+  const [benchmarkPrices, twiiMark] = await Promise.all([
     batchGetClosingPricesByDomain(env, ['0050'], valuationSession),
-    databaseForDataDomain(env, 'core').prepare(
-      'SELECT twii_close FROM market_risk WHERE date = ? AND twii_close > 0',
-    ).bind(valuationSession).first<any>(),
+    resolveSessionTwiiClose(env, valuationSession),
   ])
   const normalizedBenchmarkValue: number | null = benchmarkPrices.get('0050') ?? null
-  const twiiValue: number | null = twiiRow?.twii_close ?? null
+  const twiiValue: number | null = twiiMark.value
   if (normalizedBenchmarkValue == null || twiiValue == null) {
     await recordPaperExecutionEvent(env, {
       tradeDate: today, eventType: 'snapshot_audit', status: 'warn', reason: 'benchmark_mark_missing',
-      detail: { valuation_session: valuationSession, benchmark_0050: normalizedBenchmarkValue, twii: twiiValue },
+      detail: { valuation_session: valuationSession, benchmark_0050: normalizedBenchmarkValue, twii: twiiValue, twii_source: twiiMark.source },
       source: 'daily-snapshot',
     })
   }
@@ -203,7 +211,9 @@ export async function runDailySnapshot(env: Bindings, options: DailySnapshotOpti
     ON CONFLICT(account_id, date) DO UPDATE SET
       cash=excluded.cash, positions_value=excluded.positions_value,
       total_value=excluded.total_value, pnl=excluded.pnl, pnl_pct=excluded.pnl_pct,
-      benchmark_value=excluded.benchmark_value, twii_value=excluded.twii_value,
+      benchmark_value=excluded.benchmark_value,
+      -- Same row date, same session: a later run that cannot see the close keeps the one already stored.
+      twii_value=COALESCE(excluded.twii_value, paper_daily_snapshots.twii_value),
       max_drawdown_to_date=excluded.max_drawdown_to_date,
       sharpe_30d=excluded.sharpe_30d,
       sortino_30d=excluded.sortino_30d, calmar=excluded.calmar, cagr=excluded.cagr

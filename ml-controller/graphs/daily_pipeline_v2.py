@@ -2697,7 +2697,15 @@ async def node_recommend(state: PipelineStateV2) -> dict:
         sorted(set(active_family_counts)),
     )
     from services.paired_nav_collection import capture_allocator_return_history
-    opb_reward_ledger = [] if trading_cfg.get('l4Distribution') is not None else load_online_portfolio_bandit_reward_ledger()
+    if trading_cfg.get('l4Distribution') is not None:
+        opb_reward_ledger = []
+    else:
+        # Legacy (rollback) OPB ledger: 180 days of predictions from hot D1 only; its reader in
+        # recommendation_service is source-pinned. Past the 120-day retention drain it would lose its
+        # oldest days without notice, so stop with an explicit reason instead.
+        from services.retention_prediction_reads import require_hot_prediction_lookback
+        require_hot_prediction_lookback(datetime.now(timezone.utc).date().isoformat(), 180, 'legacy_opb_reward_ledger')
+        opb_reward_ledger = load_online_portfolio_bandit_reward_ledger()
     logger.info(
         "[Pipeline V2] OnlinePortfolioBandit reward ledger loaded arms=%s samples=%s",
         len(opb_reward_ledger),

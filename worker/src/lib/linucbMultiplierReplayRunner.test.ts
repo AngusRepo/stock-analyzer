@@ -15,7 +15,8 @@ function makeFakeDb(rows: any[] = []) {
         bind() {
           return {
             async all() {
-              return { results: rows }
+              // No R2-archived predictions chunk (retention cold reads look this up in ops first).
+              return { results: sql.includes('FROM run_artifacts') ? [] : rows }
             },
           }
         },

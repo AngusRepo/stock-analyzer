@@ -12,6 +12,8 @@ function makeFakeDb(rows: any[] = []) {
   const db = {
     prepare(sql: string) {
       if (sql.includes('active8_ensemble_pointer_v1')) return { first: async () => null }
+      // No R2-archived predictions chunk (retention cold reads look this up in ops first).
+      if (sql.includes('FROM run_artifacts')) return { bind: () => ({ all: async () => ({ results: [] }) }) }
       state.sql = sql
       return {
         bind(...binds: unknown[]) {

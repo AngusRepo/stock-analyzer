@@ -41,6 +41,56 @@ CREATE TABLE IF NOT EXISTS predictions (
 
 CREATE INDEX IF NOT EXISTS idx_pred_stock    ON predictions(stock_id, model_name);
 
+-- L-2: totals of archived predictions rows, written with each exact delete (migration 0073).
+CREATE TABLE IF NOT EXISTS prediction_cold_stats_v1 (
+  stock_id INTEGER NOT NULL,
+  model_name TEXT NOT NULL,
+  d_total INTEGER NOT NULL DEFAULT 0,
+  d_correct INTEGER NOT NULL DEFAULT 0,
+  d_err_sum REAL,
+  d_err_n INTEGER NOT NULL DEFAULT 0,
+  d_low_total INTEGER NOT NULL DEFAULT 0,
+  d_low_correct INTEGER NOT NULL DEFAULT 0,
+  d_high_total INTEGER NOT NULL DEFAULT 0,
+  d_high_correct INTEGER NOT NULL DEFAULT 0,
+  d_win_sum REAL,
+  d_win_n INTEGER NOT NULL DEFAULT 0,
+  d_loss_sum REAL,
+  d_loss_n INTEGER NOT NULL DEFAULT 0,
+  d_pnl_sum REAL,
+  d_pnl_n INTEGER NOT NULL DEFAULT 0,
+  d_r_sum REAL,
+  d_r_n INTEGER NOT NULL DEFAULT 0,
+  d_gross_profit REAL,
+  d_gross_loss REAL,
+  d_hit_target INTEGER NOT NULL DEFAULT 0,
+  d_hit_stop INTEGER NOT NULL DEFAULT 0,
+  t_total INTEGER NOT NULL DEFAULT 0,
+  t_wins INTEGER NOT NULL DEFAULT 0,
+  t_losses INTEGER NOT NULL DEFAULT 0,
+  t_pnl_sum REAL,
+  t_win_sum REAL,
+  t_loss_sum REAL,
+  t_max REAL,
+  t_min REAL,
+  t_gross_profit REAL,
+  t_gross_loss REAL,
+  t_r_sum REAL,
+  t_r_n INTEGER NOT NULL DEFAULT 0,
+  t_hit_t1 INTEGER NOT NULL DEFAULT 0,
+  t_hit_t2 INTEGER NOT NULL DEFAULT 0,
+  t_hit_stop INTEGER NOT NULL DEFAULT 0,
+  t_expired INTEGER NOT NULL DEFAULT 0,
+  t_mfe_sum REAL,
+  t_mfe_n INTEGER NOT NULL DEFAULT 0,
+  t_mae_sum REAL,
+  t_mae_n INTEGER NOT NULL DEFAULT 0,
+  label_v4_violations INTEGER NOT NULL DEFAULT 0,
+  archived_rows INTEGER NOT NULL DEFAULT 0 CHECK(archived_rows >= 0),
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY(stock_id, model_name)
+);
+
 CREATE INDEX IF NOT EXISTS idx_pred_verify   ON predictions(stock_id, verified_at);
 
 CREATE INDEX IF NOT EXISTS idx_pred_unverify ON predictions(stock_id, direction_correct) WHERE direction_correct IS NULL;

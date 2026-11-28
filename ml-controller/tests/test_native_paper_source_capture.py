@@ -204,3 +204,42 @@ def test_actual_native_snapshot_records_source_queries_and_replay_ignores_newer_
         assert len(reads) == read_count
     finally:
         source.close()
+
+
+def test_snapshot_twii_from_the_canonical_index_is_captured_replayed_and_fails_closed_without_its_record(native_runner):
+    # Snapshot before the evening chain writes market_risk(D): TWII comes from the market canonical index (a source table).
+    raw = snapshot_state()
+    source = sqlite3.connect(':memory:')
+    source.row_factory = sqlite3.Row
+    source.executescript(raw)
+    source.execute('DELETE FROM market_risk')
+    source.execute("INSERT INTO canonical_market_index_daily VALUES('TWII','2026-09-07',22111,'finlab.taiex_total_index')")
+    reads = []
+    def query(sql, args):
+        reads.append(sql)
+        return [dict(row) for row in source.execute(sql, args).fetchall()]
+    f = {**snapshot_input(), 'source_tables': {'stocks': 'core', 'stock_prices': 'market', 'market_risk': 'core',
+                                               'canonical_market_index_daily': 'market'}}
+    capture = NativeSourceCapture(objects=ImmutableNativeObjects(Bucket()), domain_queries={'core': query, 'market': query},
+        clock=lambda: datetime(2026, 9, 7, 6, 20, tzinfo=timezone.utc))
+    args = dict(state_sql=raw, state_checksum=checksum(raw), frames=[f], account_id=2, variables={}, runner=native_runner)
+    twii = lambda result: sqlite3.connect(':memory:').executescript(result['state_sql']).execute(
+        'SELECT twii_value FROM paper_daily_snapshots WHERE account_id=2').fetchone()[0]
+    try:
+        first = run_native_paper_frames(**args, frame_inputs={f['input_id']: f}, capture_source=capture)
+        canonical = [row for row in first['captured_inputs'][f['input_id']]['sql_responses']
+                     if 'canonical_market_index_daily' in row['request']['sql']]
+        assert len(canonical) == 1 and twii(first) == 22111
+        # A newer index value is never read at replay.
+        source.execute('UPDATE canonical_market_index_daily SET close=99999')
+        read_count = len(reads)
+        second = run_native_paper_frames(**args, frame_inputs=first['captured_inputs'])
+        assert second['state_checksum'] == first['state_checksum'] and len(reads) == read_count
+        # Without its captured record the replay fails closed instead of storing a null TWII.
+        stripped = {key: {**value, 'sql_responses': [row for row in value['sql_responses']
+                                                     if 'canonical_market_index_daily' not in row['request']['sql']]}
+                    for key, value in first['captured_inputs'].items()}
+        with pytest.raises(RuntimeError, match='paper_execution_scope_incomplete'):
+            run_native_paper_frames(**args, frame_inputs=stripped)
+    finally:
+        source.close()

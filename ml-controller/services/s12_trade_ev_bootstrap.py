@@ -1045,6 +1045,10 @@ def load_s12_replay_trade_rows(
         """.strip(),
         [run_date, start_date, safe_limit],
     )
+    # D1 only: a run_date more than the 7 buffer days older than the drain would read a window cut
+    # at the predictions hot window; stop with a reason instead (the archive is not merged here).
+    from services.retention_prediction_reads import require_hot_latest
+    require_hot_latest(list(rows or []), safe_limit, start_date, str(run_date)[:10], "s12_trade_ev_bootstrap")
     prediction_rows = [
         dict(row)
         for row in rows or []

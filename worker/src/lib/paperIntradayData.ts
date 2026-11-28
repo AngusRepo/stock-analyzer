@@ -542,38 +542,56 @@ async function enrichMissingOrderbookQuotes(
   if (failed > 0) console.warn(`[Price] orderbook enrichment failed for ${failed}/${missingExecutable.length} symbols`)
 }
 
-async function getIntradayPrice(symbol: string, env?: IntradayEnv): Promise<number | null> {
-  const proxyUrl = env?.SHIOAJI_PROXY_URL
-  if (proxyUrl) {
-    try {
-      const res = await paperExecutionFetch(`${proxyUrl}/quote/${symbol}`, {
-        headers: proxyHeaders(env),
-        signal: AbortSignal.timeout(5000),
-      })
-      if (res.ok) {
-        const json = await res.json() as any
-        const normalized = normalizeShioajiSnapshot(json?.data)
-        return normalized?.last ?? null
-      }
-    } catch {
-      // Shioaji proxy unavailable; continue with fallback.
-    }
-  }
+type YahooQuote = { price: number; quoteTime?: string }
 
-  if (env?.requireBrokerQuote) return null
+/**
+ * Yahoo chart meta quote. `regularMarketTime` (epoch seconds) is the quote's own time and is the only
+ * date evidence kept; without it the quote stays undated so the O04 mark-date guard still refuses it.
+ */
+export function parseYahooChartQuote(json: any): YahooQuote | null {
+  const meta = json?.chart?.result?.[0]?.meta
+  const price = Number(meta?.regularMarketPrice)
+  if (!Number.isFinite(price) || price <= 0) return null
+  const seconds = meta?.regularMarketTime
+  const stamp = typeof seconds === 'number' && seconds > 0 ? new Date(seconds * 1000) : null
+  const quoteTime = stamp && Number.isFinite(stamp.getTime()) ? stamp.toISOString() : undefined
+  return quoteTime ? { price, quoteTime } : { price }
+}
 
+async function fetchYahooQuote(symbol: string): Promise<YahooQuote | null> {
   try {
     const twSymbol = `${symbol}.TW`
     const res = await paperExecutionFetch(
-      `https://query1.finance.yahoo.com/v8/finance/chart/${twSymbol}?interval=1m&range=1d`,
+      `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(twSymbol)}?interval=1m&range=1d`,
       { headers: { 'User-Agent': 'Mozilla/5.0' } },
     )
     if (!res.ok) return null
-    const json = await res.json() as any
-    return json?.chart?.result?.[0]?.meta?.regularMarketPrice ?? null
+    return parseYahooChartQuote(await res.json())
   } catch {
     return null
   }
+}
+
+async function batchFetchYahooQuotes(symbols: string[]): Promise<Map<string, YahooQuote>> {
+  console.log(`[Price] Shioaji unavailable, using Yahoo fallback for ${symbols.length} symbols`)
+  const map = new Map<string, YahooQuote>()
+  const batchSize = 5
+  for (let i = 0; i < symbols.length; i += batchSize) {
+    const chunk = symbols.slice(i, i + batchSize)
+    const results = await Promise.allSettled(
+      chunk.map(async (symbol) => ({ symbol, quote: await fetchYahooQuote(symbol) })),
+    )
+    for (const result of results) {
+      if (result.status === 'fulfilled' && result.value.quote) map.set(result.value.symbol, result.value.quote)
+    }
+  }
+  return map
+}
+
+function yahooOHLC(quote: YahooQuote): IntradayOHLC {
+  const ohlc: IntradayOHLC = { last: quote.price, low: quote.price, source: 'yahoo' }
+  if (quote.quoteTime) ohlc.quoteTime = quote.quoteTime
+  return ohlc
 }
 
 export async function batchGetIntradayOHLC(
@@ -583,8 +601,11 @@ export async function batchGetIntradayOHLC(
   const map = new Map<string, IntradayOHLC>()
   const proxyUrl = env?.SHIOAJI_PROXY_URL
   if (!proxyUrl) {
-    const priceMap = await batchGetIntradayPrices(symbols, env)
-    for (const [symbol, price] of priceMap) map.set(symbol, { last: price, low: price, source: 'yahoo' })
+    if (env?.requireBrokerQuote) {
+      console.warn(`[Price] broker quote required; skip Yahoo fallback for ${symbols.length} symbols`)
+      return map
+    }
+    for (const [symbol, quote] of await batchFetchYahooQuotes(symbols)) map.set(symbol, yahooOHLC(quote))
     return map
   }
 
@@ -669,8 +690,7 @@ export async function batchGetIntradayOHLC(
     return map
   }
 
-  const priceMap = await batchGetIntradayPrices(symbols, undefined)
-  for (const [symbol, price] of priceMap) map.set(symbol, { last: price, low: price, source: 'yahoo' })
+  for (const [symbol, quote] of await batchFetchYahooQuotes(symbols)) map.set(symbol, yahooOHLC(quote))
   return map
 }
 
@@ -711,18 +731,6 @@ export async function batchGetIntradayPrices(
     return map
   }
 
-  console.log(`[Price] Shioaji unavailable, using Yahoo fallback for ${symbols.length} symbols`)
-  const batchSize = 5
-  for (let i = 0; i < symbols.length; i += batchSize) {
-    const chunk = symbols.slice(i, i + batchSize)
-    const results = await Promise.allSettled(
-      chunk.map(async (symbol) => ({ symbol, price: await getIntradayPrice(symbol) })),
-    )
-    for (const result of results) {
-      if (result.status === 'fulfilled' && result.value.price != null) {
-        map.set(result.value.symbol, result.value.price)
-      }
-    }
-  }
+  for (const [symbol, quote] of await batchFetchYahooQuotes(symbols)) map.set(symbol, quote.price)
   return map
 }

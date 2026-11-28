@@ -67,7 +67,7 @@ export async function runLinUcbMultiplierReplay(
   const endDate = options.endDate ?? todayTw()
   const learningDb = databaseForDataDomain(env, 'learning')
   const coreDb = databaseForDataDomain(env, 'core')
-  const rowOptions = { startDate, endDate, limit: options.limit ?? LINUCB_MULTIPLIER_REPLAY_DEFAULT_LIMIT }
+  const rowOptions = { startDate, endDate, limit: options.limit ?? LINUCB_MULTIPLIER_REPLAY_DEFAULT_LIMIT, coldEnv: env }
   const rows = learningDb === coreDb
     ? await listAdaptiveMetaPolicyReplayRows(learningDb, rowOptions)
     : await listAdaptiveMetaPolicyReplayRowsAcrossDomains(learningDb, coreDb, rowOptions)

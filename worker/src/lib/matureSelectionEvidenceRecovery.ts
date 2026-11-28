@@ -1,4 +1,5 @@
 import type { Bindings } from '../types'
+import { readArchivedEnsembleStockDates } from './retentionPredictionsReader'
 import { MATRIX_RUN_SUMMARY_CHALLENGER_VERSION, matrixRunSummaryUsableInline } from './strategyLabelMatrixRunSummary'
 import { databaseForDataDomain } from './dataDomainRegistry'
 import {
@@ -533,6 +534,7 @@ export async function recoverMatureSelectionEvidence(
   for (const gap of targeted) {
     if (gap.horizonRows + gap.horizonUnavailableRows !== gap.referenceRows) {
       await materializePriceHorizonLabels(env, {
+      archivedEnsemble: (start, end) => readArchivedEnsembleStockDates(env, start, end),
         startDate: gap.signalDate,
         endDate: gap.signalDate,
         outcomeAsOfDate: businessDate,

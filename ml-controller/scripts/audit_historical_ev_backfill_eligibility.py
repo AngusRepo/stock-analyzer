@@ -12,6 +12,7 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from services.d1_domain_client import D1DataDomain, client_proxy_for_domain  # noqa: E402
+from services.retention_prediction_reads import require_hot_predictions  # noqa: E402
 
 CORE_D1_CLIENT = client_proxy_for_domain(D1DataDomain.CORE)
 MARKET_D1_CLIENT = client_proxy_for_domain(D1DataDomain.MARKET)
@@ -25,6 +26,8 @@ from services.ev_lineage_contract import (  # noqa: E402
 
 
 def _candidate_rows(start_date: str, end_date: str) -> list[dict[str, Any]]:
+    # Hot D1 only: stop instead of auditing a window cut by the predictions retention drain.
+    require_hot_predictions(start_date, end_date, 'audit_historical_ev_backfill_eligibility')
     predictions = LEARNING_D1_CLIENT.query(
         """WITH latest AS (
              SELECT p.*, ROW_NUMBER() OVER (

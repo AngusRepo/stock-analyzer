@@ -33,11 +33,13 @@ function fixture() {
     VALUES(?,?,?,'evening-chain','evening-chain',?,?,'attempt','physical_root','running','scheduler_http','checksum',?)`)
     .run(id,id,id,date,run,updated)
   root('root-A','2026-10-16 01:00:00')
-  let queries = 0
+  let queries = 0, wakeChecks = 0
   const db = { prepare(sql:string) {
     let args:any[]=[]
     const statement = { bind(...values:any[]) { args=values;return statement },
-      async first(column?:string) { queries++; const row=sqlite.prepare(sql).get(...args) as any;return column ? row?.[column] ?? null:row ?? null },
+      async first(column?:string) { queries++; const row=sqlite.prepare(sql).get(...args) as any
+        if(WAKE_CHECK.test(sql))wakeChecks++
+        return column ? row?.[column] ?? null:row ?? null },
       async all() { queries++;return {results:sqlite.prepare(sql).all(...args),success:true} },
       async raw() { queries++;return sqlite.prepare(sql).all(...args).map(row=>Object.values(row)) },
       async run() { queries++;return {success:true,meta:{changes:Number(sqlite.prepare(sql).run(...args).changes)}} } }
@@ -55,7 +57,18 @@ function fixture() {
   const ctx={runDate:date,upstreamRunId:run,stageLeaseOwner:'lease-A',assertStageLease:async()=>{}}
   const authority=async()=>({allowed:true,runScope:'live_canonical' as const,reason:'fixture',queuedAt:'now',queuedTaipeiDate:date,nextSessionOpenUtc:null,liveEffectsAllowed:true,liveEffectsReason:'fixture'})
   const manager=()=>createPostVerifyTaskCheckpoints(env,{businessDate:date,canonicalRunId:run,leaseOwner:'lease-A',productionEligible:true,assertStageLease:ctx.assertStageLease})
-  return {sqlite,env,ctx,authority,manager,root,enqueued,effects,queries:()=>queries}
+  return {sqlite,env,ctx,authority,manager,root,enqueued,effects,queries:()=>queries,wakeChecks:()=>wakeChecks}
+}
+/** The timed-out producer's last step after it settles: the wake check, then (for a current root) the queue send. */
+const WAKE_CHECK=/^SELECT 1 AS ok FROM pipeline_stage_runs\s+WHERE business_date=\? AND stage='post_verify_chain'/
+/** Wait for a released late producer to finish. A fixed 10 ms sleep raced its async receipt digest when the suite ran
+ * loaded (flaky 11/28); this waits for the wake check instead, bounded so a producer that never settles still fails. */
+const lateProducerSettled=async(f:{wakeChecks:()=>number},before:number)=>{
+  for(const end=Date.now()+5_000;f.wakeChecks()<=before;){
+    if(Date.now()>end)throw new Error('late producer never reached its wake check')
+    await new Promise(resolve=>setTimeout(resolve,1))
+  }
+  await new Promise(resolve=>setImmediate(resolve))
 }
 const success=(task:string):PostVerifyTaskResult=>({task,status:'success',summary:`${task} validated`,critical:true})
 
@@ -203,8 +216,9 @@ test('timeout is unresolved until original producer settles; duplicate root cann
   let repeated=0
   await assert.rejects(second.run('slow',async()=>{repeated++;return success('slow')}),/unsettled_side_effect/)
   assert.equal(repeated,0)
+  const wakeChecks=f.wakeChecks()
   release(success('slow'))
-  await new Promise(resolve=>setTimeout(resolve,10))
+  await lateProducerSettled(f,wakeChecks)
   assert.equal(f.enqueued[0]?.runId,run)
   assert.equal((await second.run('slow',async()=>{repeated++;return success('slow')})).status,'success')
   assert.equal(repeated,0)
@@ -258,8 +272,9 @@ test('actual owner timeout survives real stage error/lease clear and late origin
   await assert.rejects(runPostVerifyCallbackChain(f.env,ctx,{productionAuthority:f.authority,taskRunner,taskTimeoutMs:2}),/timeout_unsettled/)
   assert.equal(await markPipelineStageFenced(f.env.OPS_DB,{businessDate:date,stage:'post_verify_chain',canonicalRunId:run,
     leaseOwner:'lease-A',status:'error',error:'outer timeout'}),true)
+  const wakeChecks=f.wakeChecks()
   finish(success(tasks[0]))
-  await new Promise(resolve=>setTimeout(resolve,10))
+  await lateProducerSettled(f,wakeChecks)
   assert.equal(f.enqueued[0]?.runId,run)
   f.sqlite.prepare("UPDATE pipeline_stage_runs SET status='queued' WHERE business_date=?").run(date)
   const claimed=await claimPipelineStage(f.env.OPS_DB,{businessDate:date,stage:'post_verify_chain',canonicalRunId:run,ownerId:'lease-A'})
@@ -350,8 +365,9 @@ test('stale old-root producer cannot write new data or wake a new root',async()=
     return success('old')
   },{timeoutMs:2}),/timeout_unsettled/)
   f.root('root-new','2026-10-16 04:00:00')
+  const wakeChecks=f.wakeChecks()
   release()
-  await new Promise(resolve=>setTimeout(resolve,10))
+  await lateProducerSettled(f,wakeChecks)
   assert.equal((f.sqlite.prepare('SELECT COUNT(*) n FROM writes').get() as any).n,0)
   assert.equal(f.enqueued.length,0)
   const old=f.sqlite.prepare('SELECT receipt_json FROM post_verify_task_receipts_v1').get() as any
@@ -664,8 +680,9 @@ test('expired stage lease reclaims an idempotent running receipt; the stale prod
     calls++;await env.DB.prepare("INSERT INTO writes VALUES(2,'fresh')").run();return success('projection')
   },{retrySafe:true})
   assert.equal(result.status,'success');assert.equal(calls,2)
+  const wakeChecks=f.wakeChecks()
   release()
-  await new Promise(resolve=>setTimeout(resolve,10))
+  await lateProducerSettled(f,wakeChecks)
   assert.deepEqual(f.sqlite.prepare('SELECT id FROM writes').all().map((row:any)=>row.id),[2])
   assert.equal((f.sqlite.prepare('SELECT state FROM post_verify_task_receipts_v1').get() as any).state,'post_verify_task_v1:success')
   f.sqlite.close()

@@ -60,8 +60,12 @@ void (async () => {
     },
   } as unknown as Parameters<typeof loadOr15ResearchSessionBars>[0]
   const originalFetch = globalThis.fetch
+  // The cache key carries the current minute; a wall clock crossing a minute between the two loads made this flaky.
+  const originalNow = Date.now
   let requests = 0
   try {
+    const pinnedNow = Date.parse('2026-10-01T09:05:30+08:00')
+    Date.now = () => pinnedNow
     globalThis.fetch = async (input) => {
       requests += 1
       assert(String(input).includes('/kbars/1101?start=2026-10-01&end=2026-10-01'),
@@ -79,6 +83,7 @@ void (async () => {
       'same-minute Paper checks must reuse the quota-aware research cache')
   } finally {
     globalThis.fetch = originalFetch
+    Date.now = originalNow
   }
 })().catch((error) => { console.error(error); process.exitCode = 1 })
 

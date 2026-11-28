@@ -120,6 +120,7 @@ const TASK_NAMES: Record<string, string> = {
   'weekly-cleanup': 'Weekly Cleanup',
   'external-evidence': 'External Evidence',
   'weekly-backtest': 'Weekly Backtest/MC',
+  'corporate-history-weekly': 'Corporate History Weekly Export',
   'alpha-quality': 'Alpha Quality',
   'weekly-optuna': 'Weekly Optuna',
   'allocator-ev-feature-snapshot-backfill': 'Allocator EV Feature Snapshot Backfill',

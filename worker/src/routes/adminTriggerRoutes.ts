@@ -42,6 +42,7 @@ const SYNC_REQUIRED_TASKS = new Set([
   'intraday-rescore',
   'alpha-quality', 'sector-leaders', 'optuna-queue',
   'weekly-backtest',
+  'corporate-history-weekly',
   'weekly-drift-retrain',
   'weekly-readiness', 'monthly-readiness',
   'model-ic-full-check',

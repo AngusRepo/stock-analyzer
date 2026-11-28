@@ -73,6 +73,10 @@ ml-controller/scripts/*
 !ml-controller/scripts/repair_active8_source_and_evaluation.py
 !ml-controller/scripts/repair_native_prestart.py
 !ml-controller/scripts/l4_distribution_refresh_job.py
+!ml-controller/scripts/compile_corporate_history.py
+!ml-controller/scripts/fetch_corporate_history_sources.py
+!ml-controller/scripts/estimate_corporate_exclusion_share.py
+!ml-controller/scripts/export_corporate_history_snapshot.py
 !ml-controller/scripts/training_indicators.cjs
 !ml-service/scripts/
 !ml-service/scripts/**

@@ -59,16 +59,17 @@ assert(recoveryJobs.length === 1 && recoveryJobs[0].timeZone === 'Asia/Taipei', 
 // their task handlers stay for manual triggers.
 // 54 roots: legacy-strategy-evidence-migration was deleted on 2026-11-07 once its cursor completed;
 // the manifest now lists it as a deletion target so a sync cannot recreate it.
+// 55 roots: + corporate-history-weekly (Saturday research corporate-history export, 2026-11-28).
 const d9Step4RetiredRoots = ['data-domain-shadow-backfill-next', 'data-domain-shadow-backfill-paper', 'legacy-hot-data-retirement']
 assert(d9Step4RetiredRoots.every(id => manifest.deleteJobIds.includes(id)), 'D9 step 4 retired roots must be explicit deletion targets')
 assert(!manifest.jobs.some(job => d9Step4RetiredRoots.includes(job.id)), 'D9 step 4 retired roots must not be scheduled')
 assert(!manifest.jobs.some(job => ['data-domain-shadow-backfill-next', 'data-domain-shadow-backfill', 'legacy-hot-data-retirement'].includes(job.task)),
   'no scheduler root may still drive a D9 step 4 retired task')
-assert(schedulerManifestJobs().length - recoveryJobs.length === 53, 'physical roots exclude retired strategy NAV collectors and other retired jobs')
-assert(manifestTasks.filter(task => task !== 'premarket-evidence-watchdog').length === 49, 'logical inventory excludes retired strategy NAV and other retired jobs')
-assert(summary.physicalRoots === 54, 'summary physical root count mismatch')
-assert(summary.uniqueLogicalTasks === 50 && summary.accountedLogicalTasks === 50, 'logical task accounting must be 50/50')
-assert(summary.reviewedDependencies === 32, 'reviewed dependencies include the post-close dispatcher and kv-config-drift and exclude retired jobs')
+assert(schedulerManifestJobs().length - recoveryJobs.length === 54, 'physical roots exclude retired strategy NAV collectors and other retired jobs')
+assert(manifestTasks.filter(task => task !== 'premarket-evidence-watchdog').length === 50, 'logical inventory excludes retired strategy NAV and other retired jobs')
+assert(summary.physicalRoots === 55, 'summary physical root count mismatch')
+assert(summary.uniqueLogicalTasks === 51 && summary.accountedLogicalTasks === 51, 'logical task accounting must be 51/51')
+assert(summary.reviewedDependencies === 33, 'reviewed dependencies include the post-close dispatcher, kv-config-drift and corporate-history-weekly and exclude retired jobs')
 assert(summary.unmappedDependencies === 18 && summary.unmappedTasks.length === 18, 'unreviewed non-daily dependency debt must remain fail-visible')
 assert(summary.pausedPhysicalRoots === 4, 'the weekly/monthly Active-8 OOF cohorts and the weekly/monthly Optuna sweeps stay paused')
 assert(summary.internalLogicalSteps === 23, 'internal logical step accounting must preserve caller total')

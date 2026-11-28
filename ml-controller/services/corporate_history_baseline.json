@@ -1,0 +1,8 @@
+{
+  "schema_version": "corporate-history-baseline-pin-v1",
+  "baseline_id": "corporate-history-baseline-20261122",
+  "object": "research/corporate_history/baseline/corporate-history-baseline-20261122/baseline.json",
+  "sha256": "2ce8df8a086c2764b1b374e8920f6029b5bfc34b400accfd439ac21ab8beb43b",
+  "source_spec": "audits/corporate-history-20261122-reviewed/spec_used.json",
+  "built_by": "ml-controller/scripts/build_corporate_history_baseline.py"
+}

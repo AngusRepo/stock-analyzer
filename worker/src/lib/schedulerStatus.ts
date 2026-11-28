@@ -127,6 +127,7 @@ const JOB_DEF_METADATA: JobDef[] = [
 
   { id: 'weekly-audit', name: 'Weekly Audit', schedule: 'Friday 18:30', cron: '30 10 * * 5', group: 'weekly' },
   { id: 'weekly-readiness', name: 'Weekly Readiness', schedule: 'Sunday 12:00', cron: '0 12 * * 0 taipei', group: 'weekly' },
+  { id: 'corporate-history-weekly', name: 'Corporate History Weekly Export', schedule: 'Saturday 10:00', cron: '0 2 * * 6', group: 'weekly' },
   { id: 'weekly-cleanup', name: 'Weekly Cleanup', schedule: 'Sunday 04:00 (no retrain)', cron: '0 20 * * 6', group: 'weekly' },
   { id: 'weekly-backtest', name: 'Weekly Validation/MC', schedule: 'Sunday 06:00', cron: '0 22 * * 6', group: 'weekly' },
   { id: 'alpha-quality', name: 'Alpha Quality', schedule: 'Sunday 06:00', cron: '0 22 * * 6', group: 'weekly' },

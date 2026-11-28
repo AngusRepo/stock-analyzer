@@ -67,7 +67,64 @@ def _format_snapshot_summary(run_id: str, combined: dict) -> str:
     )
 
 
+CORPORATE_HISTORY_WEEKLY_MODE = "corporate_history_weekly"
+CORPORATE_HISTORY_WEEKLY_TASK = "corporate-history-weekly"
+
+
+async def _run_corporate_history_weekly() -> int:
+    """Saturday research corporate-history export; its own scheduler task and callback.
+
+    Exit codes drive Cloud Run's task retries (maxRetries=2). Deterministic stops exit 0 after
+    their error callback: a named fail-closed stop (CorporateHistoryWeeklyError: gate, calendar,
+    baseline, refused export), a compile/validation ValueError, and the fetch script's SystemExit
+    (FinLab auth, role, empty window), which all need an operator fix. Anything else (D1, GCS,
+    FinLab transport) exits 1 and is retried. A retry exports under `<run_id>-a<attempt>`,
+    never over an earlier attempt.
+    """
+    import tempfile
+    from pathlib import Path
+    from scripts.export_corporate_history_snapshot import redact_bucket
+    from services.corporate_history_weekly import (
+        CorporateHistoryWeeklyError, format_summary, run_corporate_history_weekly)
+    run_date = os.environ.get("DATASET_SNAPSHOT_RUN_DATE", "").strip()
+    run_id = os.environ.get("DATASET_SNAPSHOT_PRODUCER_RUN_ID", "").strip()
+    attempt = os.environ.get("CLOUD_RUN_TASK_ATTEMPT", "0").strip() or "0"
+    producer_run_id = run_id if attempt == "0" else f"{run_id}-a{attempt}"
+    started = time.time()
+    status, summary, error, retry = "error", "", None, False
+    logger.info("[CorporateHistoryWeekly] Starting run_id=%s date=%s attempt=%s",
+                run_id or "missing", run_date or "missing", attempt)
+    try:
+        if not run_date or not run_id.startswith(f"{CORPORATE_HISTORY_WEEKLY_TASK}-{run_date}-") \
+                or not attempt.isdigit():
+            raise CorporateHistoryWeeklyError("corporate_history_weekly_run_identity_invalid")
+        with tempfile.TemporaryDirectory(prefix="corp-history-") as tmp:
+            result = await asyncio.to_thread(
+                run_corporate_history_weekly, run_date, run_id=producer_run_id, workdir=Path(tmp) / "run")
+        summary = format_summary(result)
+        status = "success"
+    except (Exception, SystemExit) as e:  # noqa: BLE001 - the fetch script stops on FinLab auth with SystemExit
+        logger.exception("[CorporateHistoryWeekly] Export failed")
+        retry = not isinstance(e, (CorporateHistoryWeeklyError, ValueError, SystemExit))
+        error = redact_bucket(f"{type(e).__name__}: {e}")
+        summary = f"run_id={producer_run_id} {error[:300]}"
+    payload: dict = {"task": CORPORATE_HISTORY_WEEKLY_TASK, "status": status, "summary": summary,
+                     "duration_ms": int((time.time() - started) * 1000), "run_id": run_id}
+    if run_date:
+        payload["run_date"] = run_date
+    if error:
+        payload["error"] = error
+    try:
+        await _callback_worker(payload)
+    except Exception:  # noqa: BLE001 - a lost callback must not re-run a finished export
+        logger.exception("[CorporateHistoryWeekly] Callback failed; run log stays triggered")
+    logger.info("[CorporateHistoryWeekly] Finished status=%s retry=%s elapsed_ms=%d", status, retry, payload["duration_ms"])
+    return 1 if retry else 0
+
+
 async def _run() -> int:
+    if os.environ.get("DATASET_SNAPSHOT_MODE", "").strip() == CORPORATE_HISTORY_WEEKLY_MODE:
+        return await _run_corporate_history_weekly()
     run_date = os.environ.get("DATASET_SNAPSHOT_RUN_DATE", "") or os.environ.get("PIPELINE_RUN_DATE", "") or ""
     parent_run_id = os.environ.get("DATASET_SNAPSHOT_PARENT_RUN_ID", "").strip()
     execution_id = os.environ.get(

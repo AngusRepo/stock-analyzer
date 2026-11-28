@@ -1,0 +1,2483 @@
+{
+ "uid": "sv-resources-v6live",
+ "title": "StockVision ③ 資源與成本（預覽・真資料）",
+ "tags": [
+  "stockvision-preview"
+ ],
+ "timezone": "Asia/Taipei",
+ "editable": true,
+ "schemaVersion": 39,
+ "refresh": "15m",
+ "time": {
+  "from": "now-30d",
+  "to": "now"
+ },
+ "links": [
+  {
+   "title": "① 今天",
+   "type": "link",
+   "url": "/d/sv-today-v6live",
+   "icon": "dashboard",
+   "asDropdown": false,
+   "includeVars": false,
+   "keepTime": false,
+   "targetBlank": false,
+   "tags": [],
+   "tooltip": ""
+  },
+  {
+   "title": "② 執行品質",
+   "type": "link",
+   "url": "/d/sv-health-v6live",
+   "icon": "dashboard",
+   "asDropdown": false,
+   "includeVars": false,
+   "keepTime": false,
+   "targetBlank": false,
+   "tags": [],
+   "tooltip": ""
+  },
+  {
+   "title": "③ 資源與成本",
+   "type": "link",
+   "url": "/d/sv-resources-v6live",
+   "icon": "dashboard",
+   "asDropdown": false,
+   "includeVars": false,
+   "keepTime": false,
+   "targetBlank": false,
+   "tags": [],
+   "tooltip": ""
+  },
+  {
+   "title": "④ 策略與模型",
+   "type": "link",
+   "url": "/d/sv-model-v6live",
+   "icon": "dashboard",
+   "asDropdown": false,
+   "includeVars": false,
+   "keepTime": false,
+   "targetBlank": false,
+   "tags": [],
+   "tooltip": ""
+  },
+  {
+   "title": "手機版",
+   "type": "link",
+   "url": "/d/sv-mobile",
+   "icon": "dashboard",
+   "asDropdown": false,
+   "includeVars": false,
+   "keepTime": false,
+   "targetBlank": false,
+   "tags": [],
+   "tooltip": ""
+  }
+ ],
+ "templating": {
+  "list": [
+   {
+    "type": "query",
+    "name": "cf_account",
+    "hide": 2,
+    "refresh": 1,
+    "skipUrlSync": true,
+    "datasource": {
+     "type": "yesoreyeram-infinity-datasource",
+     "uid": "sv-cloudflare-api"
+    },
+    "options": [],
+    "current": {},
+    "query": {
+     "queryType": "infinity",
+     "refId": "variable",
+     "infinityQuery": {
+      "refId": "variable",
+      "type": "json",
+      "source": "url",
+      "parser": "backend",
+      "format": "table",
+      "url": "https://api.cloudflare.com/client/v4/accounts",
+      "url_options": {
+       "method": "GET",
+       "data": ""
+      },
+      "root_selector": "([result[0].{ 'v': id }])",
+      "columns": [
+       {
+        "selector": "v",
+        "text": "v",
+        "type": "string"
+       }
+      ],
+      "filters": []
+     }
+    }
+   },
+   {
+    "type": "query",
+    "name": "cf_period_start",
+    "hide": 2,
+    "refresh": 1,
+    "skipUrlSync": true,
+    "datasource": {
+     "type": "yesoreyeram-infinity-datasource",
+     "uid": "sv-cloudflare-api"
+    },
+    "options": [],
+    "current": {},
+    "query": {
+     "queryType": "infinity",
+     "refId": "variable",
+     "infinityQuery": {
+      "refId": "variable",
+      "type": "json",
+      "source": "url",
+      "parser": "backend",
+      "format": "table",
+      "url": "https://api.cloudflare.com/client/v4/accounts/${cf_account}/subscriptions",
+      "url_options": {
+       "method": "GET",
+       "data": ""
+      },
+      "root_selector": "([result[rate_plan.id = 'workers_paid'][0].{ 'v': current_period_start }])",
+      "columns": [
+       {
+        "selector": "v",
+        "text": "v",
+        "type": "string"
+       }
+      ],
+      "filters": []
+     }
+    }
+   },
+   {
+    "type": "query",
+    "name": "cf_period_end",
+    "hide": 2,
+    "refresh": 1,
+    "skipUrlSync": true,
+    "datasource": {
+     "type": "yesoreyeram-infinity-datasource",
+     "uid": "sv-cloudflare-api"
+    },
+    "options": [],
+    "current": {},
+    "query": {
+     "queryType": "infinity",
+     "refId": "variable",
+     "infinityQuery": {
+      "refId": "variable",
+      "type": "json",
+      "source": "url",
+      "parser": "backend",
+      "format": "table",
+      "url": "https://api.cloudflare.com/client/v4/accounts/${cf_account}/subscriptions",
+      "url_options": {
+       "method": "GET",
+       "data": ""
+      },
+      "root_selector": "([result[rate_plan.id = 'workers_paid'][0].{ 'v': current_period_end }])",
+      "columns": [
+       {
+        "selector": "v",
+        "text": "v",
+        "type": "string"
+       }
+      ],
+      "filters": []
+     }
+    }
+   },
+   {
+    "type": "query",
+    "name": "cf_usage_from",
+    "hide": 2,
+    "refresh": 1,
+    "skipUrlSync": true,
+    "datasource": {
+     "type": "yesoreyeram-infinity-datasource",
+     "uid": "sv-cloudflare-api"
+    },
+    "options": [],
+    "current": {},
+    "query": {
+     "queryType": "infinity",
+     "refId": "variable",
+     "infinityQuery": {
+      "refId": "variable",
+      "type": "json",
+      "source": "url",
+      "parser": "backend",
+      "format": "table",
+      "url": "https://api.cloudflare.com/client/v4/accounts/${cf_account}/subscriptions",
+      "url_options": {
+       "method": "GET",
+       "data": ""
+      },
+      "root_selector": "([($w := result[rate_plan.id = 'workers_paid'][0];\n    { 'v': $w ? $substring($fromMillis($toMillis($w.current_period_start) - 31 * 86400000), 0, 10) : '1970-01-01' })])",
+      "columns": [
+       {
+        "selector": "v",
+        "text": "v",
+        "type": "string"
+       }
+      ],
+      "filters": []
+     }
+    }
+   },
+   {
+    "type": "query",
+    "name": "cf_usage_to",
+    "hide": 2,
+    "refresh": 1,
+    "skipUrlSync": true,
+    "datasource": {
+     "type": "yesoreyeram-infinity-datasource",
+     "uid": "sv-cloudflare-api"
+    },
+    "options": [],
+    "current": {},
+    "query": {
+     "queryType": "infinity",
+     "refId": "variable",
+     "infinityQuery": {
+      "refId": "variable",
+      "type": "json",
+      "source": "url",
+      "parser": "backend",
+      "format": "table",
+      "url": "https://api.cloudflare.com/client/v4/accounts/${cf_account}/subscriptions",
+      "url_options": {
+       "method": "GET",
+       "data": ""
+      },
+      "root_selector": "([($w := result[rate_plan.id = 'workers_paid'][0];\n    { 'v': $w ? $substring($w.current_period_end, 0, 10) : '1970-01-02' })])",
+      "columns": [
+       {
+        "selector": "v",
+        "text": "v",
+        "type": "string"
+       }
+      ],
+      "filters": []
+     }
+    }
+   },
+   {
+    "type": "query",
+    "name": "cf_plan_fee",
+    "hide": 2,
+    "refresh": 1,
+    "skipUrlSync": true,
+    "datasource": {
+     "type": "yesoreyeram-infinity-datasource",
+     "uid": "sv-cloudflare-api"
+    },
+    "options": [],
+    "current": {},
+    "query": {
+     "queryType": "infinity",
+     "refId": "variable",
+     "infinityQuery": {
+      "refId": "variable",
+      "type": "json",
+      "source": "url",
+      "parser": "backend",
+      "format": "table",
+      "url": "https://api.cloudflare.com/client/v4/accounts/${cf_account}/subscriptions",
+      "url_options": {
+       "method": "GET",
+       "data": ""
+      },
+      "root_selector": "([{ 'v': $string($sum(result[frequency = 'monthly'].price)) }])",
+      "columns": [
+       {
+        "selector": "v",
+        "text": "v",
+        "type": "string"
+       }
+      ],
+      "filters": []
+     }
+    }
+   }
+  ]
+ },
+ "panels": [
+  {
+   "type": "stat",
+   "title": "GCP 本月累計",
+   "description": "本月 1 日至今的 GCP 淨額；折線＝每天。BigQuery 帳單明細匯出（新台幣，已扣抵免）；資料晚幾小時到一兩天才齊，最近一天偏低。不含 Cloudflare、Modal。",
+   "gridPos": {
+    "x": 0,
+    "y": 0,
+    "w": 6,
+    "h": 2
+   },
+   "datasource": {
+    "type": "grafana-bigquery-datasource",
+    "uid": "sv-bigquery"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-bigquery-datasource",
+      "uid": "sv-bigquery"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": 1,
+     "project": "gen-lang-client-0602998820",
+     "rawSql": "SELECT TIMESTAMP(DATE(usage_start_time, 'Asia/Taipei'), 'Asia/Taipei') AS time, SUM(cost) + SUM(IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) c), 0)) AS net FROM `gen-lang-client-0602998820.billing_export.gcp_billing_export_resource_v1_018BA5_A4B827_5694C8` WHERE _PARTITIONTIME >= TIMESTAMP_SUB($__timeFrom(), INTERVAL 1 DAY) AND $__timeFilter(usage_start_time) GROUP BY time ORDER BY time"
+    }
+   ],
+   "timeFrom": "now/M",
+   "hideTimeOverride": true,
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "sum"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "orientation": "auto",
+    "textMode": "value",
+    "wideLayout": false,
+    "colorMode": "value",
+    "graphMode": "none",
+    "justifyMode": "auto",
+    "showPercentChange": false,
+    "text": {
+     "titleSize": 12,
+     "valueSize": 20
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "prefix:NT$",
+     "decimals": 0,
+     "noValue": "尚未接資料",
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#e8e9ec",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "id": 1
+  },
+  {
+   "type": "timeseries",
+   "title": "",
+   "description": "本月 1 日至今的 GCP 淨額；折線＝每天。BigQuery 帳單明細匯出（新台幣，已扣抵免）；資料晚幾小時到一兩天才齊，最近一天偏低。不含 Cloudflare、Modal。",
+   "transparent": true,
+   "gridPos": {
+    "x": 0,
+    "y": 2,
+    "w": 6,
+    "h": 2
+   },
+   "datasource": {
+    "type": "grafana-bigquery-datasource",
+    "uid": "sv-bigquery"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-bigquery-datasource",
+      "uid": "sv-bigquery"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": 1,
+     "project": "gen-lang-client-0602998820",
+     "rawSql": "SELECT TIMESTAMP(DATE(usage_start_time, 'Asia/Taipei'), 'Asia/Taipei') AS time, SUM(cost) + SUM(IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) c), 0)) AS net FROM `gen-lang-client-0602998820.billing_export.gcp_billing_export_resource_v1_018BA5_A4B827_5694C8` WHERE _PARTITIONTIME >= TIMESTAMP_SUB($__timeFrom(), INTERVAL 1 DAY) AND $__timeFilter(usage_start_time) GROUP BY time ORDER BY time"
+    }
+   ],
+   "timeFrom": "now/M",
+   "hideTimeOverride": true,
+   "options": {
+    "legend": {
+     "showLegend": false,
+     "displayMode": "list",
+     "placement": "bottom",
+     "calcs": []
+    },
+    "tooltip": {
+     "mode": "single"
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "prefix:NT$",
+     "decimals": 0,
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#7b808b"
+     },
+     "custom": {
+      "drawStyle": "line",
+      "lineInterpolation": "smooth",
+      "lineWidth": 1,
+      "fillOpacity": 20,
+      "showPoints": "never",
+      "spanNulls": true,
+      "axisPlacement": "hidden"
+     }
+    },
+    "overrides": []
+   },
+   "id": 2
+  },
+  {
+   "type": "stat",
+   "title": "GCP 月底預估",
+   "description": "本月累計 ÷ 今天是本月第幾天 × 本月天數（最近一天帳單不齊，會略偏低）。BigQuery 帳單明細匯出（新台幣，已扣抵免）；資料晚幾小時到一兩天才齊，最近一天偏低。不含 Cloudflare、Modal。",
+   "gridPos": {
+    "x": 6,
+    "y": 0,
+    "w": 6,
+    "h": 4
+   },
+   "datasource": {
+    "type": "grafana-bigquery-datasource",
+    "uid": "sv-bigquery"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-bigquery-datasource",
+      "uid": "sv-bigquery"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": 1,
+     "project": "gen-lang-client-0602998820",
+     "rawSql": "SELECT (SUM(cost) + SUM(IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) c), 0))) / EXTRACT(DAY FROM CURRENT_DATE('Asia/Taipei')) * EXTRACT(DAY FROM LAST_DAY(CURRENT_DATE('Asia/Taipei'))) AS forecast FROM `gen-lang-client-0602998820.billing_export.gcp_billing_export_resource_v1_018BA5_A4B827_5694C8` WHERE _PARTITIONTIME >= TIMESTAMP_SUB($__timeFrom(), INTERVAL 1 DAY) AND $__timeFilter(usage_start_time)"
+    }
+   ],
+   "timeFrom": "now/M",
+   "hideTimeOverride": true,
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "orientation": "auto",
+    "textMode": "value",
+    "wideLayout": false,
+    "colorMode": "value",
+    "graphMode": "none",
+    "justifyMode": "auto",
+    "showPercentChange": false,
+    "text": {
+     "titleSize": 12,
+     "valueSize": 20
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "prefix:NT$",
+     "decimals": 0,
+     "noValue": "尚未接資料",
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#e8e9ec",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "id": 3
+  },
+  {
+   "type": "stat",
+   "title": "Cloudflare 本期累計",
+   "description": "本期到昨天的 Cloudflare 帳單金額，含方案月費。內含額度先扣，用完才開始計費，所以每期前幾天通常只有月費。來源：Cloudflare 帳單用量 API（美元，Cloudflare 以美元計費；GCP 面板是新台幣），資料到昨天。帳單週期從續約日起算（不是每月 1 日）。",
+   "gridPos": {
+    "x": 12,
+    "y": 0,
+    "w": 6,
+    "h": 4
+   },
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "sv-cloudflare-api"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-cloudflare-api"
+     },
+     "type": "json",
+     "source": "url",
+     "parser": "backend",
+     "format": "table",
+     "url": "https://api.cloudflare.com/client/v4/accounts/${cf_account}/billable-usage?from=${cf_usage_from}&to=${cf_usage_to}",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     },
+     "root_selector": "([($sd := ($d := '${cf_period_start}'; $contains($d, /^[0-9]{4}-[0-9]{2}-[0-9]{2}/) ? $substring($d, 0, 10) : '');\n  $fs := '${cf_plan_fee}'; $fee := $number($contains($fs, /^[0-9]+(\\.[0-9]+)?$/) ? $fs : '0'); $r := result;\n  $p := $sort($distinct($r.$substring(BillingPeriodStart, 0, 10))[$ < $sd])[-1]; $exists($sd) and $sd != '' ?\n  { 'usd': $round($sum([$r[$substring(BillingPeriodStart, 0, 10) = $sd].BilledCost]) + $fee, 2) } : {})])",
+     "columns": [
+      {
+       "selector": "usd",
+       "text": "金額",
+       "type": "number"
+      }
+     ],
+     "filters": []
+    }
+   ],
+   "hideTimeOverride": true,
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "orientation": "auto",
+    "textMode": "value",
+    "wideLayout": false,
+    "colorMode": "value",
+    "graphMode": "none",
+    "justifyMode": "auto",
+    "showPercentChange": false,
+    "text": {
+     "titleSize": 12,
+     "valueSize": 20
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "prefix:US$",
+     "decimals": 2,
+     "noValue": "尚未接資料",
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#e8e9ec",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "id": 4
+  },
+  {
+   "type": "stat",
+   "title": "Cloudflare 上期帳單",
+   "description": "上一個帳單週期的 Cloudflare 總額，含方案月費。來源：Cloudflare 帳單用量 API（美元，Cloudflare 以美元計費；GCP 面板是新台幣），資料到昨天。帳單週期從續約日起算（不是每月 1 日）。",
+   "gridPos": {
+    "x": 18,
+    "y": 0,
+    "w": 6,
+    "h": 4
+   },
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "sv-cloudflare-api"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-cloudflare-api"
+     },
+     "type": "json",
+     "source": "url",
+     "parser": "backend",
+     "format": "table",
+     "url": "https://api.cloudflare.com/client/v4/accounts/${cf_account}/billable-usage?from=${cf_usage_from}&to=${cf_usage_to}",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     },
+     "root_selector": "([($sd := ($d := '${cf_period_start}'; $contains($d, /^[0-9]{4}-[0-9]{2}-[0-9]{2}/) ? $substring($d, 0, 10) : '');\n  $fs := '${cf_plan_fee}'; $fee := $number($contains($fs, /^[0-9]+(\\.[0-9]+)?$/) ? $fs : '0'); $r := result;\n  $p := $sort($distinct($r.$substring(BillingPeriodStart, 0, 10))[$ < $sd])[-1]; $exists($p) and $p != '' ?\n  { 'usd': $round($sum([$r[$substring(BillingPeriodStart, 0, 10) = $p].BilledCost]) + $fee, 2) } : {})])",
+     "columns": [
+      {
+       "selector": "usd",
+       "text": "金額",
+       "type": "number"
+      }
+     ],
+     "filters": []
+    }
+   ],
+   "hideTimeOverride": true,
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "lastNotNull"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "orientation": "auto",
+    "textMode": "value",
+    "wideLayout": false,
+    "colorMode": "value",
+    "graphMode": "none",
+    "justifyMode": "auto",
+    "showPercentChange": false,
+    "text": {
+     "titleSize": 12,
+     "valueSize": 20
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "prefix:US$",
+     "decimals": 2,
+     "noValue": "尚未接資料",
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#e8e9ec",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "id": 5
+  },
+  {
+   "type": "stat",
+   "title": "Cloud Run 請求",
+   "description": "所選時間內所有 Cloud Run 服務的請求數合計；折線＝每小時。",
+   "gridPos": {
+    "x": 19,
+    "y": 4,
+    "w": 5,
+    "h": 2
+   },
+   "datasource": {
+    "type": "stackdriver",
+    "uid": "bg59sppgm7v9cb"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "stackdriver",
+      "uid": "bg59sppgm7v9cb"
+     },
+     "queryType": "timeSeriesList",
+     "timeSeriesList": {
+      "projectName": "gen-lang-client-0602998820",
+      "filters": [
+       "resource.type",
+       "=",
+       "cloud_run_revision",
+       "AND",
+       "metric.type",
+       "=",
+       "run.googleapis.com/request_count"
+      ],
+      "crossSeriesReducer": "REDUCE_SUM",
+      "perSeriesAligner": "ALIGN_SUM",
+      "alignmentPeriod": "+3600s",
+      "groupBys": []
+     },
+     "aliasBy": "請求"
+    }
+   ],
+   "hideTimeOverride": true,
+   "options": {
+    "reduceOptions": {
+     "calcs": [
+      "sum"
+     ],
+     "fields": "",
+     "values": false
+    },
+    "orientation": "auto",
+    "textMode": "value",
+    "wideLayout": false,
+    "colorMode": "value",
+    "graphMode": "none",
+    "justifyMode": "auto",
+    "showPercentChange": false,
+    "text": {
+     "titleSize": 12,
+     "valueSize": 20
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "decimals": 0,
+     "noValue": "尚未接資料",
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#e8e9ec",
+        "value": null
+       }
+      ]
+     }
+    },
+    "overrides": []
+   },
+   "id": 6
+  },
+  {
+   "type": "timeseries",
+   "title": "",
+   "description": "所選時間內所有 Cloud Run 服務的請求數合計；折線＝每小時。",
+   "transparent": true,
+   "gridPos": {
+    "x": 19,
+    "y": 6,
+    "w": 5,
+    "h": 3
+   },
+   "datasource": {
+    "type": "stackdriver",
+    "uid": "bg59sppgm7v9cb"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "stackdriver",
+      "uid": "bg59sppgm7v9cb"
+     },
+     "queryType": "timeSeriesList",
+     "timeSeriesList": {
+      "projectName": "gen-lang-client-0602998820",
+      "filters": [
+       "resource.type",
+       "=",
+       "cloud_run_revision",
+       "AND",
+       "metric.type",
+       "=",
+       "run.googleapis.com/request_count"
+      ],
+      "crossSeriesReducer": "REDUCE_SUM",
+      "perSeriesAligner": "ALIGN_SUM",
+      "alignmentPeriod": "+3600s",
+      "groupBys": []
+     },
+     "aliasBy": "請求"
+    }
+   ],
+   "hideTimeOverride": true,
+   "options": {
+    "legend": {
+     "showLegend": false,
+     "displayMode": "list",
+     "placement": "bottom",
+     "calcs": []
+    },
+    "tooltip": {
+     "mode": "single"
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "decimals": 0,
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#7b808b"
+     },
+     "custom": {
+      "drawStyle": "line",
+      "lineInterpolation": "smooth",
+      "lineWidth": 1,
+      "fillOpacity": 20,
+      "showPoints": "never",
+      "spanNulls": true,
+      "axisPlacement": "hidden"
+     }
+    },
+    "overrides": []
+   },
+   "id": 7
+  },
+  {
+   "type": "gauge",
+   "title": "D1 各資料庫用量",
+   "description": "每個 D1 庫用了 10 GB 上限的幾成，最滿的在左；80% 起琥珀、90% 起紅（硬門檻）。成長速度與到門檻天數在 /v1/capacity。",
+   "gridPos": {
+    "x": 0,
+    "y": 4,
+    "w": 19,
+    "h": 5
+   },
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "sv-monitoring"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "type": "json",
+     "parser": "backend",
+     "format": "table",
+     "root_selector": "([$sort(rows, function($a, $b) { $a.utilization_pct < $b.utilization_pct }).{ 'db': ($n := $lookup({\"DB\":\"主庫\",\"CORE_DB\":\"核心\",\"MARKET_DB\":\"行情\",\"LEARNING_DB\":\"學習\",\"OPS_DB\":\"營運\",\"EXECUTION_DB\":\"執行\",\"PAPER_DB\":\"模擬交易\",\"RESEARCH_DB\":\"研究\"}, binding_name); $n ? $n : '其他庫'), 'pct': utilization_pct }])",
+     "columns": [
+      {
+       "selector": "db",
+       "text": "db",
+       "type": "string"
+      },
+      {
+       "selector": "pct",
+       "text": "pct",
+       "type": "number"
+      }
+     ],
+     "filters": [],
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-monitoring"
+     },
+     "source": "url",
+     "url": "/v1/capacity",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     }
+    }
+   ],
+   "options": {
+    "reduceOptions": {
+     "values": true,
+     "calcs": [],
+     "fields": "/^(?!(?:db)$).+$/",
+     "limit": 40
+    },
+    "orientation": "auto",
+    "showThresholdMarkers": true,
+    "showThresholdLabels": false,
+    "sizing": "auto",
+    "minVizWidth": 60,
+    "minVizHeight": 60,
+    "text": {
+     "titleSize": 12,
+     "valueSize": 20
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percent",
+     "decimals": 1,
+     "min": 0,
+     "max": 100,
+     "noValue": "尚未接資料",
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#1d6b73",
+        "value": null
+       },
+       {
+        "color": "#ff9830",
+        "value": 80
+       },
+       {
+        "color": "#f2495c",
+        "value": 90
+       }
+      ]
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "pct"
+      },
+      "properties": [
+       {
+        "id": "displayName",
+        "value": "${__data.fields.db}"
+       }
+      ]
+     }
+    ]
+   },
+   "id": 8
+  },
+  {
+   "type": "barchart",
+   "title": "Cloudflare 內含額度",
+   "description": "Workers Paid 方案每個帳單週期（依續約日，不是每月 1 日）內含的用量。請求、讀寫列＝照本期到目前的速度，到期末會用掉內含量的幾成；儲存＝最新一天的大小 ÷ 內含量。超過 100% 的部分照量計費（琥珀）。內含量：Workers 1,000 萬請求；D1 讀 250 億列、寫 5,000 萬列、存 5 GB；KV 讀 1,000 萬、寫 100 萬、存 1 GB。",
+   "gridPos": {
+    "x": 0,
+    "y": 9,
+    "w": 6,
+    "h": 8
+   },
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "sv-cloudflare-api"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-cloudflare-api"
+     },
+     "type": "json",
+     "source": "url",
+     "parser": "backend",
+     "format": "table",
+     "url": "https://api.cloudflare.com/client/v4/graphql",
+     "url_options": {
+      "method": "POST",
+      "body_type": "raw",
+      "body_content_type": "application/json",
+      "data": "{\"query\":\"query($a: string!, $start: Time!, $until: Time!, $day: Date!) { viewer { accounts(filter: { accountTag: $a }) { w: workersInvocationsAdaptive(limit: 10000, filter: { datetime_geq: $start, datetime_lt: $until }) { sum { requests } } d: d1AnalyticsAdaptiveGroups(limit: 10000, filter: { datetimeHour_geq: $start, datetimeHour_lt: $until }) { sum { rowsRead rowsWritten } } ds: d1StorageAdaptiveGroups(limit: 10000, filter: { date_geq: $day }, orderBy: [date_DESC]) { dimensions { date databaseId } max { databaseSizeBytes } } k: kvOperationsAdaptiveGroups(limit: 10000, filter: { datetime_geq: $start, datetime_lt: $until }) { dimensions { actionType } sum { requests } } ks: kvStorageAdaptiveGroups(limit: 10000, filter: { date_geq: $day }, orderBy: [date_DESC]) { dimensions { date namespaceId } max { byteCount } } } } }\",\"variables\":{\"a\":\"${cf_account}\",\"start\":\"${cf_period_start}\",\"until\":\"${__to:date:iso}\",\"day\":\"${__from:date:YYYY-MM-DD}\"}}"
+     },
+     "root_selector": "([($a := data.viewer.accounts[0]; $s := $toMillis(($d := '${cf_period_start}'; $contains($d, /^[0-9]{4}-[0-9]{2}-[0-9]{2}/) ? $substring($d, 0, 10) : '1970-01-01') & 'T00:00:00Z'); $e := $toMillis(($d := '${cf_period_end}'; $contains($d, /^[0-9]{4}-[0-9]{2}-[0-9]{2}/) ? $substring($d, 0, 10) : '1970-01-01') & 'T00:00:00Z');\n  $len := $e > $s ? $e - $s : 86400000; $f := $max([($toMillis($now()) - $s) / $len, 86400000 / $len]);\n  $pace := function($used, $included) { $round(($used ? $used : 0) / $f / $included * 100, 1) };\n  $d1 := $a.ds[0].dimensions.date; $kv := $a.ks[0].dimensions.date;\n  $exists($a) and $s > 0 and $e > $s ? [{ 'product': 'Workers 請求', 'pct': $pace($sum($a.w.sum.requests), 10000000) },\n   { 'product': 'D1 讀取列', 'pct': $pace($sum($a.d.sum.rowsRead), 25000000000) },\n   { 'product': 'D1 寫入列', 'pct': $pace($sum($a.d.sum.rowsWritten), 50000000) },\n   { 'product': 'D1 儲存', 'pct': $round(($b := $sum($a.ds[dimensions.date = $d1].max.databaseSizeBytes); $b ? $b : 0) / 5000000000 * 100, 1) },\n   { 'product': 'KV 讀取', 'pct': $pace($sum($a.k[dimensions.actionType = 'read'].sum.requests), 10000000) },\n   { 'product': 'KV 寫入', 'pct': $pace($sum($a.k[dimensions.actionType = 'write'].sum.requests), 1000000) },\n   { 'product': 'KV 儲存', 'pct': $round(($b := $sum($a.ks[dimensions.date = $kv].max.byteCount); $b ? $b : 0) / 1000000000 * 100, 1) }]\n  : [])])",
+     "columns": [
+      {
+       "selector": "product",
+       "text": "product",
+       "type": "string"
+      },
+      {
+       "selector": "pct",
+       "text": "用量",
+       "type": "number"
+      }
+     ],
+     "filters": []
+    }
+   ],
+   "transformations": [
+    {
+     "id": "organize",
+     "options": {
+      "excludeByName": {},
+      "renameByName": {},
+      "indexByName": {
+       "product": 0,
+       "用量": 1
+      }
+     }
+    }
+   ],
+   "options": {
+    "xField": "product",
+    "orientation": "horizontal",
+    "stacking": "none",
+    "showValue": "always",
+    "barWidth": 0.75,
+    "groupWidth": 0.7,
+    "barRadius": 0,
+    "xTickLabelRotation": 0,
+    "xTickLabelSpacing": 0,
+    "xTickLabelMaxLength": 24,
+    "fullHighlight": false,
+    "tooltip": {
+     "mode": "single"
+    },
+    "text": {
+     "valueSize": 12
+    },
+    "legend": {
+     "showLegend": false,
+     "displayMode": "list",
+     "placement": "bottom",
+     "calcs": []
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "percent",
+     "decimals": 1,
+     "noValue": "尚未接資料",
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#1d6b73",
+        "value": null
+       },
+       {
+        "color": "#ff9830",
+        "value": 100
+       }
+      ]
+     },
+     "custom": {
+      "fillOpacity": 90,
+      "lineWidth": 0,
+      "gradientMode": "none",
+      "axisPlacement": "auto",
+      "axisSoftMin": 0,
+      "axisSoftMax": 100
+     }
+    },
+    "overrides": []
+   },
+   "id": 9
+  },
+  {
+   "type": "barchart",
+   "title": "Cloudflare 上期各項",
+   "description": "上一個帳單週期各收費項目的金額，最多的在上，只列有收費的項目。D1 與 R2 儲存依累計 GB-月計費，超過內含量後每 1 GB-月收一次。各項分別四捨五入，加總可能與上期帳單差 US$0.01。來源：Cloudflare 帳單用量 API（美元，Cloudflare 以美元計費；GCP 面板是新台幣），資料到昨天。帳單週期從續約日起算（不是每月 1 日）。",
+   "gridPos": {
+    "x": 6,
+    "y": 9,
+    "w": 6,
+    "h": 8
+   },
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "sv-cloudflare-api"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-cloudflare-api"
+     },
+     "type": "json",
+     "source": "url",
+     "parser": "backend",
+     "format": "table",
+     "url": "https://api.cloudflare.com/client/v4/accounts/${cf_account}/billable-usage?from=${cf_usage_from}&to=${cf_usage_to}",
+     "url_options": {
+      "method": "GET",
+      "data": ""
+     },
+     "root_selector": "([($sd := ($d := '${cf_period_start}'; $contains($d, /^[0-9]{4}-[0-9]{2}-[0-9]{2}/) ? $substring($d, 0, 10) : '');\n  $fs := '${cf_plan_fee}'; $fee := $number($contains($fs, /^[0-9]+(\\.[0-9]+)?$/) ? $fs : '0'); $r := result;\n  $p := $sort($distinct($r.$substring(BillingPeriodStart, 0, 10))[$ < $sd])[-1]; $names := [{\"k\":\"D1 - Storage\",\"v\":\"D1 儲存\"},{\"k\":\"D1 - Rows Read\",\"v\":\"D1 讀取列\"},{\"k\":\"D1 - Rows Written\",\"v\":\"D1 寫入列\"},{\"k\":\"R2 Data Storage\",\"v\":\"R2 儲存\"},{\"k\":\"R2 Storage Class A\",\"v\":\"R2 寫入類操作\"},{\"k\":\"R2 Storage Class B\",\"v\":\"R2 讀取類操作\"},{\"k\":\"Workers Standard Requests\",\"v\":\"Workers 請求\"},{\"k\":\"Workers CPU ms\",\"v\":\"Workers CPU 時間\"},{\"k\":\"KV Read Operations\",\"v\":\"KV 讀取\"},{\"k\":\"KV Write Operations\",\"v\":\"KV 寫入\"},{\"k\":\"KV Delete Operations\",\"v\":\"KV 刪除\"},{\"k\":\"KV List Operations\",\"v\":\"KV 列出\"},{\"k\":\"KV Storage\",\"v\":\"KV 儲存\"},{\"k\":\"Queues - \",\"v\":\"Queues 操作\"}];\n  $name := function($n, $family) { ($m := $filter($names, function($x) { $substring($n, 0, $length($x.k)) = $x.k })[0];\n    $m ? $m.v : $family ? $family : $n) };\n  $g := $append($r[$substring(BillingPeriodStart, 0, 10) = $p and BilledCost != 0].{ 'item': $name(ServiceName, ServiceFamilyName), 'usd': BilledCost },\n    [{ 'item': '-', 'usd': 0 }]){ item: $sum(usd) };\n  $exists($p) ? $sort($append($each($g, function($v, $k) { { 'item': $k, 'usd': $round($v, 2) } })[item != '-'], $fee ? [{ 'item': '方案月費', 'usd': $fee }] : []),\n    function($a, $b) { $a.usd < $b.usd }) : [])])",
+     "columns": [
+      {
+       "selector": "item",
+       "text": "item",
+       "type": "string"
+      },
+      {
+       "selector": "usd",
+       "text": "金額",
+       "type": "number"
+      }
+     ],
+     "filters": []
+    }
+   ],
+   "transformations": [
+    {
+     "id": "organize",
+     "options": {
+      "excludeByName": {},
+      "renameByName": {},
+      "indexByName": {
+       "item": 0,
+       "金額": 1
+      }
+     }
+    }
+   ],
+   "options": {
+    "xField": "item",
+    "orientation": "horizontal",
+    "stacking": "none",
+    "showValue": "always",
+    "barWidth": 0.75,
+    "groupWidth": 0.7,
+    "barRadius": 0,
+    "xTickLabelRotation": 0,
+    "xTickLabelSpacing": 0,
+    "xTickLabelMaxLength": 24,
+    "fullHighlight": false,
+    "tooltip": {
+     "mode": "single"
+    },
+    "text": {
+     "valueSize": 12
+    },
+    "legend": {
+     "showLegend": false,
+     "displayMode": "list",
+     "placement": "bottom",
+     "calcs": []
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "prefix:US$",
+     "decimals": 1,
+     "noValue": "尚未接資料",
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#e8e9ec",
+        "value": null
+       }
+      ]
+     },
+     "custom": {
+      "fillOpacity": 90,
+      "lineWidth": 0,
+      "gradientMode": "none",
+      "axisPlacement": "auto"
+     }
+    },
+    "overrides": []
+   },
+   "id": 10
+  },
+  {
+   "type": "barchart",
+   "title": "GCP 本月各服務",
+   "description": "本月 1 日至今各服務的 GCP 淨額占比：前四大服務，其餘併成「其他」。BigQuery 帳單明細匯出（新台幣，已扣抵免）；資料晚幾小時到一兩天才齊，最近一天偏低。不含 Cloudflare、Modal。",
+   "gridPos": {
+    "x": 12,
+    "y": 9,
+    "w": 6,
+    "h": 8
+   },
+   "datasource": {
+    "type": "grafana-bigquery-datasource",
+    "uid": "sv-bigquery"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-bigquery-datasource",
+      "uid": "sv-bigquery"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": 1,
+     "project": "gen-lang-client-0602998820",
+     "rawSql": "WITH s AS (SELECT service.description AS svc, SUM(cost) + SUM(IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) c), 0)) AS net FROM `gen-lang-client-0602998820.billing_export.gcp_billing_export_resource_v1_018BA5_A4B827_5694C8` WHERE _PARTITIONTIME >= TIMESTAMP_SUB($__timeFrom(), INTERVAL 1 DAY) AND $__timeFilter(usage_start_time) GROUP BY svc HAVING net > 0), r AS (SELECT IF(ROW_NUMBER() OVER (ORDER BY net DESC) <= 4, svc, '其他') AS label, net, ROW_NUMBER() OVER (ORDER BY net DESC) AS rk FROM s) SELECT label AS svc, SUM(net) AS net FROM r GROUP BY label ORDER BY MIN(rk)"
+    }
+   ],
+   "transformations": [
+    {
+     "id": "organize",
+     "options": {
+      "renameByName": {
+       "net": "淨額"
+      }
+     }
+    }
+   ],
+   "options": {
+    "xField": "svc",
+    "orientation": "horizontal",
+    "stacking": "none",
+    "showValue": "always",
+    "barWidth": 0.75,
+    "groupWidth": 0.7,
+    "barRadius": 0,
+    "xTickLabelRotation": 0,
+    "xTickLabelSpacing": 0,
+    "xTickLabelMaxLength": 24,
+    "fullHighlight": false,
+    "tooltip": {
+     "mode": "single"
+    },
+    "text": {
+     "valueSize": 12
+    },
+    "legend": {
+     "showLegend": false,
+     "displayMode": "list",
+     "placement": "bottom",
+     "calcs": []
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "prefix:NT$",
+     "decimals": 0,
+     "noValue": "尚未接資料",
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#e8e9ec",
+        "value": null
+       }
+      ]
+     },
+     "custom": {
+      "fillOpacity": 90,
+      "lineWidth": 0,
+      "gradientMode": "none",
+      "axisPlacement": "auto"
+     }
+    },
+    "overrides": []
+   },
+   "timeFrom": "now/M",
+   "hideTimeOverride": true,
+   "id": 11
+  },
+  {
+   "type": "trend",
+   "title": "GCP 本月累計成本",
+   "gridPos": {
+    "x": 18,
+    "y": 9,
+    "w": 6,
+    "h": 8
+   },
+   "timeFrom": "now/M",
+   "hideTimeOverride": true,
+   "description": "實線＝本月每天的累計淨額，虛線＝照目前日均推到月底，琥珀虛線＝每月預算 NT$2,000（示範值）。BigQuery 帳單明細匯出（新台幣，已扣抵免）；資料晚幾小時到一兩天才齊，最近一天偏低。不含 Cloudflare、Modal。",
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "grafana-bigquery-datasource",
+      "uid": "sv-bigquery"
+     },
+     "editorMode": "code",
+     "rawQuery": true,
+     "format": 1,
+     "project": "gen-lang-client-0602998820",
+     "rawSql": "WITH d AS (SELECT EXTRACT(DAY FROM DATE(usage_start_time, 'Asia/Taipei')) AS day, SUM(cost) + SUM(IFNULL((SELECT SUM(c.amount) FROM UNNEST(credits) c), 0)) AS net FROM `gen-lang-client-0602998820.billing_export.gcp_billing_export_resource_v1_018BA5_A4B827_5694C8` WHERE _PARTITIONTIME >= TIMESTAMP_SUB($__timeFrom(), INTERVAL 1 DAY) AND $__timeFilter(usage_start_time) GROUP BY day), c AS (SELECT day, SUM(net) OVER (ORDER BY day) AS actual FROM d), k AS (SELECT MAX(day) AS last, MAX(actual) AS mtd FROM c) SELECT g AS day, c.actual, IF(g >= k.last, k.mtd / k.last * g, NULL) AS forecast FROM k, UNNEST(GENERATE_ARRAY(1, EXTRACT(DAY FROM LAST_DAY(CURRENT_DATE('Asia/Taipei'))))) AS g LEFT JOIN c ON c.day = g ORDER BY day"
+    }
+   ],
+   "transformations": [
+    {
+     "id": "organize",
+     "options": {
+      "renameByName": {
+       "actual": "實際累計",
+       "forecast": "月底預估"
+      }
+     }
+    }
+   ],
+   "options": {
+    "xField": "day",
+    "legend": {
+     "showLegend": true,
+     "displayMode": "list",
+     "placement": "bottom",
+     "calcs": []
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "prefix:NT$",
+     "decimals": 0,
+     "min": 0,
+     "noValue": "尚未接資料",
+     "color": {
+      "mode": "fixed",
+      "fixedColor": "#199cb8"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "transparent",
+        "value": null
+       },
+       {
+        "color": "#ff9830",
+        "value": 2000
+       }
+      ]
+     },
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 2,
+      "fillOpacity": 12,
+      "showPoints": "never",
+      "spanNulls": false,
+      "thresholdsStyle": {
+       "mode": "dashed"
+      }
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byRegexp",
+       "options": "^(實際累計|月底預估)$"
+      },
+      "properties": [
+       {
+        "id": "custom.axisSoftMax",
+        "value": 2200
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "月底預估"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#a573fe"
+        }
+       },
+       {
+        "id": "custom.lineStyle",
+        "value": {
+         "fill": "dash",
+         "dash": [
+          6,
+          4
+         ]
+        }
+       },
+       {
+        "id": "custom.fillOpacity",
+        "value": 0
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byName",
+       "options": "day"
+      },
+      "properties": [
+       {
+        "id": "unit",
+        "value": "none"
+       },
+       {
+        "id": "custom.axisLabel",
+        "value": "本月第幾天"
+       }
+      ]
+     }
+    ]
+   },
+   "id": 12,
+   "datasource": {
+    "type": "grafana-bigquery-datasource",
+    "uid": "sv-bigquery"
+   }
+  },
+  {
+   "type": "heatmap",
+   "title": "D1 讀取列（日 × 時）",
+   "description": "一格＝一天的一個小時（台灣時間），所有 D1 庫讀取的列數合計，越亮越多（沒有讀取＝與背景同色）；看晚鏈 21:45–23:30 的尖峰是否變寬或變亮。來源：Cloudflare GraphQL Analytics。",
+   "gridPos": {
+    "x": 0,
+    "y": 17,
+    "w": 8,
+    "h": 8
+   },
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "sv-cloudflare-api"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-cloudflare-api"
+     },
+     "type": "json",
+     "source": "url",
+     "parser": "backend",
+     "format": "table",
+     "url": "https://api.cloudflare.com/client/v4/graphql",
+     "url_options": {
+      "method": "POST",
+      "body_type": "raw",
+      "body_content_type": "application/json",
+      "data": "{\"query\":\"query($a: string!, $since: Time!, $until: Time!) { viewer { accounts(filter: { accountTag: $a }) { d: d1AnalyticsAdaptiveGroups(limit: 10000, filter: { datetimeHour_geq: $since, datetimeHour_lt: $until }, orderBy: [datetimeHour_ASC]) { dimensions { datetimeHour } sum { rowsRead rowsWritten } } } } }\",\"variables\":{\"a\":\"${cf_account}\",\"since\":\"${__from:date:iso}\",\"until\":\"${__to:date:iso}\"}}"
+     },
+     "root_selector": "([($h := data.viewer.accounts[0].d.{ 'ms': $toMillis(dimensions.datetimeHour) + 28800000, 'v': sum.rowsRead };\n  $distinct($h.$floor(ms / 86400000)).($d := $; $merge($append([{ 'time': $fromMillis($d * 86400000 - 28800000) }],\n    $h[$floor(ms / 86400000) = $d].($hh := $floor((ms % 86400000) / 3600000); { 'r' & ($hh < 10 ? '0' : '') & $string($hh): v })))))])",
+     "columns": [
+      {
+       "selector": "time",
+       "text": "time",
+       "type": "timestamp"
+      },
+      {
+       "selector": "r00",
+       "text": "00",
+       "type": "number"
+      },
+      {
+       "selector": "r01",
+       "text": "01",
+       "type": "number"
+      },
+      {
+       "selector": "r02",
+       "text": "02",
+       "type": "number"
+      },
+      {
+       "selector": "r03",
+       "text": "03",
+       "type": "number"
+      },
+      {
+       "selector": "r04",
+       "text": "04",
+       "type": "number"
+      },
+      {
+       "selector": "r05",
+       "text": "05",
+       "type": "number"
+      },
+      {
+       "selector": "r06",
+       "text": "06",
+       "type": "number"
+      },
+      {
+       "selector": "r07",
+       "text": "07",
+       "type": "number"
+      },
+      {
+       "selector": "r08",
+       "text": "08",
+       "type": "number"
+      },
+      {
+       "selector": "r09",
+       "text": "09",
+       "type": "number"
+      },
+      {
+       "selector": "r10",
+       "text": "10",
+       "type": "number"
+      },
+      {
+       "selector": "r11",
+       "text": "11",
+       "type": "number"
+      },
+      {
+       "selector": "r12",
+       "text": "12",
+       "type": "number"
+      },
+      {
+       "selector": "r13",
+       "text": "13",
+       "type": "number"
+      },
+      {
+       "selector": "r14",
+       "text": "14",
+       "type": "number"
+      },
+      {
+       "selector": "r15",
+       "text": "15",
+       "type": "number"
+      },
+      {
+       "selector": "r16",
+       "text": "16",
+       "type": "number"
+      },
+      {
+       "selector": "r17",
+       "text": "17",
+       "type": "number"
+      },
+      {
+       "selector": "r18",
+       "text": "18",
+       "type": "number"
+      },
+      {
+       "selector": "r19",
+       "text": "19",
+       "type": "number"
+      },
+      {
+       "selector": "r20",
+       "text": "20",
+       "type": "number"
+      },
+      {
+       "selector": "r21",
+       "text": "21",
+       "type": "number"
+      },
+      {
+       "selector": "r22",
+       "text": "22",
+       "type": "number"
+      },
+      {
+       "selector": "r23",
+       "text": "23",
+       "type": "number"
+      }
+     ],
+     "filters": []
+    }
+   ],
+   "hideTimeOverride": true,
+   "transformations": [
+    {
+     "id": "organize",
+     "options": {
+      "excludeByName": {},
+      "renameByName": {},
+      "indexByName": {
+       "10": 11,
+       "11": 12,
+       "12": 13,
+       "13": 14,
+       "14": 15,
+       "15": 16,
+       "16": 17,
+       "17": 18,
+       "18": 19,
+       "19": 20,
+       "20": 21,
+       "21": 22,
+       "22": 23,
+       "23": 24,
+       "time": 0,
+       "00": 1,
+       "01": 2,
+       "02": 3,
+       "03": 4,
+       "04": 5,
+       "05": 6,
+       "06": 7,
+       "07": 8,
+       "08": 9,
+       "09": 10
+      }
+     }
+    }
+   ],
+   "options": {
+    "calculate": false,
+    "cellGap": 1,
+    "cellValues": {
+     "unit": "short",
+     "decimals": 0
+    },
+    "showValue": "never",
+    "color": {
+     "mode": "opacity",
+     "fill": "#b7d3f6",
+     "scheme": "Blues",
+     "scale": "linear",
+     "exponent": 0.5,
+     "steps": 5,
+     "reverse": false
+    },
+    "filterValues": {
+     "le": -1000000000000000
+    },
+    "rowsFrame": {
+     "layout": "auto"
+    },
+    "yAxis": {
+     "axisPlacement": "left",
+     "reverse": true
+    },
+    "legend": {
+     "show": true
+    },
+    "tooltip": {
+     "mode": "single",
+     "yHistogram": false,
+     "showColorScale": true
+    },
+    "exemplars": {
+     "color": "#a9abb3"
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "noValue": "尚未接資料",
+     "custom": {
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      }
+     }
+    },
+    "overrides": []
+   },
+   "id": 13
+  },
+  {
+   "type": "heatmap",
+   "title": "D1 寫入列（日 × 時）",
+   "description": "一格＝一天的一個小時（台灣時間），所有 D1 庫寫入的列數合計，越亮越多。來源：Cloudflare GraphQL Analytics。",
+   "gridPos": {
+    "x": 8,
+    "y": 17,
+    "w": 8,
+    "h": 8
+   },
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "sv-cloudflare-api"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "sv-cloudflare-api"
+     },
+     "type": "json",
+     "source": "url",
+     "parser": "backend",
+     "format": "table",
+     "url": "https://api.cloudflare.com/client/v4/graphql",
+     "url_options": {
+      "method": "POST",
+      "body_type": "raw",
+      "body_content_type": "application/json",
+      "data": "{\"query\":\"query($a: string!, $since: Time!, $until: Time!) { viewer { accounts(filter: { accountTag: $a }) { d: d1AnalyticsAdaptiveGroups(limit: 10000, filter: { datetimeHour_geq: $since, datetimeHour_lt: $until }, orderBy: [datetimeHour_ASC]) { dimensions { datetimeHour } sum { rowsRead rowsWritten } } } } }\",\"variables\":{\"a\":\"${cf_account}\",\"since\":\"${__from:date:iso}\",\"until\":\"${__to:date:iso}\"}}"
+     },
+     "root_selector": "([($h := data.viewer.accounts[0].d.{ 'ms': $toMillis(dimensions.datetimeHour) + 28800000, 'v': sum.rowsWritten };\n  $distinct($h.$floor(ms / 86400000)).($d := $; $merge($append([{ 'time': $fromMillis($d * 86400000 - 28800000) }],\n    $h[$floor(ms / 86400000) = $d].($hh := $floor((ms % 86400000) / 3600000); { 'w' & ($hh < 10 ? '0' : '') & $string($hh): v })))))])",
+     "columns": [
+      {
+       "selector": "time",
+       "text": "time",
+       "type": "timestamp"
+      },
+      {
+       "selector": "w00",
+       "text": "00",
+       "type": "number"
+      },
+      {
+       "selector": "w01",
+       "text": "01",
+       "type": "number"
+      },
+      {
+       "selector": "w02",
+       "text": "02",
+       "type": "number"
+      },
+      {
+       "selector": "w03",
+       "text": "03",
+       "type": "number"
+      },
+      {
+       "selector": "w04",
+       "text": "04",
+       "type": "number"
+      },
+      {
+       "selector": "w05",
+       "text": "05",
+       "type": "number"
+      },
+      {
+       "selector": "w06",
+       "text": "06",
+       "type": "number"
+      },
+      {
+       "selector": "w07",
+       "text": "07",
+       "type": "number"
+      },
+      {
+       "selector": "w08",
+       "text": "08",
+       "type": "number"
+      },
+      {
+       "selector": "w09",
+       "text": "09",
+       "type": "number"
+      },
+      {
+       "selector": "w10",
+       "text": "10",
+       "type": "number"
+      },
+      {
+       "selector": "w11",
+       "text": "11",
+       "type": "number"
+      },
+      {
+       "selector": "w12",
+       "text": "12",
+       "type": "number"
+      },
+      {
+       "selector": "w13",
+       "text": "13",
+       "type": "number"
+      },
+      {
+       "selector": "w14",
+       "text": "14",
+       "type": "number"
+      },
+      {
+       "selector": "w15",
+       "text": "15",
+       "type": "number"
+      },
+      {
+       "selector": "w16",
+       "text": "16",
+       "type": "number"
+      },
+      {
+       "selector": "w17",
+       "text": "17",
+       "type": "number"
+      },
+      {
+       "selector": "w18",
+       "text": "18",
+       "type": "number"
+      },
+      {
+       "selector": "w19",
+       "text": "19",
+       "type": "number"
+      },
+      {
+       "selector": "w20",
+       "text": "20",
+       "type": "number"
+      },
+      {
+       "selector": "w21",
+       "text": "21",
+       "type": "number"
+      },
+      {
+       "selector": "w22",
+       "text": "22",
+       "type": "number"
+      },
+      {
+       "selector": "w23",
+       "text": "23",
+       "type": "number"
+      }
+     ],
+     "filters": []
+    }
+   ],
+   "hideTimeOverride": true,
+   "transformations": [
+    {
+     "id": "organize",
+     "options": {
+      "excludeByName": {},
+      "renameByName": {},
+      "indexByName": {
+       "10": 11,
+       "11": 12,
+       "12": 13,
+       "13": 14,
+       "14": 15,
+       "15": 16,
+       "16": 17,
+       "17": 18,
+       "18": 19,
+       "19": 20,
+       "20": 21,
+       "21": 22,
+       "22": 23,
+       "23": 24,
+       "time": 0,
+       "00": 1,
+       "01": 2,
+       "02": 3,
+       "03": 4,
+       "04": 5,
+       "05": 6,
+       "06": 7,
+       "07": 8,
+       "08": 9,
+       "09": 10
+      }
+     }
+    }
+   ],
+   "options": {
+    "calculate": false,
+    "cellGap": 1,
+    "cellValues": {
+     "unit": "short",
+     "decimals": 0
+    },
+    "showValue": "never",
+    "color": {
+     "mode": "opacity",
+     "fill": "#d2c4ff",
+     "scheme": "Blues",
+     "scale": "linear",
+     "exponent": 0.5,
+     "steps": 5,
+     "reverse": false
+    },
+    "filterValues": {
+     "le": -1000000000000000
+    },
+    "rowsFrame": {
+     "layout": "auto"
+    },
+    "yAxis": {
+     "axisPlacement": "left",
+     "reverse": true
+    },
+    "legend": {
+     "show": true
+    },
+    "tooltip": {
+     "mode": "single",
+     "yHistogram": false,
+     "showColorScale": true
+    },
+    "exemplars": {
+     "color": "#a9abb3"
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "noValue": "尚未接資料",
+     "custom": {
+      "scaleDistribution": {
+       "type": "linear"
+      },
+      "hideFrom": {
+       "legend": false,
+       "tooltip": false,
+       "viz": false
+      }
+     }
+    },
+    "overrides": []
+   },
+   "id": 14
+  },
+  {
+   "type": "timeseries",
+   "title": "Cloud Run 延遲 p50／p95",
+   "gridPos": {
+    "x": 16,
+    "y": 17,
+    "w": 8,
+    "h": 8
+   },
+   "datasource": {
+    "type": "stackdriver",
+    "uid": "bg59sppgm7v9cb"
+   },
+   "description": "所有 Cloud Run 服務每 6 小時的請求延遲中位數（p50）與 p95（Cloud Monitoring distribution 合併後取百分位）；縱軸是對數。看 p95 有沒有往上長、和 p50 差距有沒有拉大。",
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "stackdriver",
+      "uid": "bg59sppgm7v9cb"
+     },
+     "queryType": "timeSeriesList",
+     "timeSeriesList": {
+      "projectName": "gen-lang-client-0602998820",
+      "filters": [
+       "resource.type",
+       "=",
+       "cloud_run_revision",
+       "AND",
+       "metric.type",
+       "=",
+       "run.googleapis.com/request_latencies"
+      ],
+      "crossSeriesReducer": "REDUCE_PERCENTILE_50",
+      "perSeriesAligner": "ALIGN_DELTA",
+      "alignmentPeriod": "+21600s",
+      "groupBys": []
+     },
+     "aliasBy": "p50"
+    },
+    {
+     "refId": "B",
+     "datasource": {
+      "type": "stackdriver",
+      "uid": "bg59sppgm7v9cb"
+     },
+     "queryType": "timeSeriesList",
+     "timeSeriesList": {
+      "projectName": "gen-lang-client-0602998820",
+      "filters": [
+       "resource.type",
+       "=",
+       "cloud_run_revision",
+       "AND",
+       "metric.type",
+       "=",
+       "run.googleapis.com/request_latencies"
+      ],
+      "crossSeriesReducer": "REDUCE_PERCENTILE_95",
+      "perSeriesAligner": "ALIGN_DELTA",
+      "alignmentPeriod": "+21600s",
+      "groupBys": []
+     },
+     "aliasBy": "p95"
+    }
+   ],
+   "options": {
+    "legend": {
+     "showLegend": true,
+     "displayMode": "list",
+     "placement": "bottom",
+     "calcs": []
+    },
+    "tooltip": {
+     "mode": "multi"
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "ms",
+     "decimals": 0,
+     "noValue": "尚未接資料",
+     "custom": {
+      "drawStyle": "line",
+      "lineWidth": 2,
+      "fillOpacity": 0,
+      "showPoints": "never",
+      "spanNulls": true,
+      "scaleDistribution": {
+       "type": "log",
+       "log": 10
+      }
+     }
+    },
+    "overrides": [
+     {
+      "matcher": {
+       "id": "byFrameRefID",
+       "options": "A"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#199cb8"
+        }
+       }
+      ]
+     },
+     {
+      "matcher": {
+       "id": "byFrameRefID",
+       "options": "B"
+      },
+      "properties": [
+       {
+        "id": "color",
+        "value": {
+         "mode": "fixed",
+         "fixedColor": "#a573fe"
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "id": 15
+  },
+  {
+   "type": "state-timeline",
+   "title": "Cloud Run 服務執行個體",
+   "description": "每個服務每小時有沒有執行個體醒著（scale-to-zero 下，藍＝那一小時有執行個體在跑）。滑鼠停在色段上看持續多久。",
+   "gridPos": {
+    "x": 0,
+    "y": 25,
+    "w": 12,
+    "h": 7
+   },
+   "datasource": {
+    "type": "stackdriver",
+    "uid": "bg59sppgm7v9cb"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "datasource": {
+      "type": "stackdriver",
+      "uid": "bg59sppgm7v9cb"
+     },
+     "queryType": "timeSeriesList",
+     "timeSeriesList": {
+      "projectName": "gen-lang-client-0602998820",
+      "filters": [
+       "resource.type",
+       "=",
+       "cloud_run_revision",
+       "AND",
+       "metric.type",
+       "=",
+       "run.googleapis.com/container/instance_count",
+       "AND",
+       "metric.label.state",
+       "=",
+       "active"
+      ],
+      "crossSeriesReducer": "REDUCE_SUM",
+      "perSeriesAligner": "ALIGN_MAX",
+      "alignmentPeriod": "+3600s",
+      "groupBys": [
+       "resource.label.service_name"
+      ]
+     },
+     "aliasBy": "{{resource.label.service_name}}"
+    }
+   ],
+   "hideTimeOverride": true,
+   "options": {
+    "showValue": "never",
+    "rowHeight": 0.7,
+    "mergeValues": true,
+    "alignValue": "left",
+    "legend": {
+     "showLegend": false,
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "single"
+    }
+   },
+   "fieldConfig": {
+    "defaults": {
+     "noValue": "沒有",
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#2B2D33",
+        "value": null
+       },
+       {
+        "color": "#8ab8ff",
+        "value": 0.5
+       }
+      ]
+     },
+     "mappings": [
+      {
+       "type": "value",
+       "options": {
+        "0": {
+         "text": "沒有",
+         "index": 0
+        }
+       }
+      },
+      {
+       "type": "range",
+       "options": {
+        "from": 0.5,
+        "to": 1000000000,
+        "result": {
+         "text": "有執行個體",
+         "index": 1
+        }
+       }
+      }
+     ],
+     "custom": {
+      "fillOpacity": 100,
+      "lineWidth": 0
+     }
+    },
+    "overrides": []
+   },
+   "id": 16
+  },
+  {
+   "type": "state-timeline",
+   "title": "Cloud Run Job 成敗（示範資料）",
+   "description": "示範資料。每個 Job 一列，色段從一次執行開始、到下一次執行為止：青＝成功、紅＝失敗。",
+   "gridPos": {
+    "x": 12,
+    "y": 25,
+    "w": 12,
+    "h": 7
+   },
+   "datasource": {
+    "type": "yesoreyeram-infinity-datasource",
+    "uid": "grafanacloud-infinity"
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "type": "json",
+     "parser": "backend",
+     "format": "table",
+     "root_selector": "([rows.{ 'time': time, 'job': job, 'result': result }])",
+     "columns": [
+      {
+       "selector": "time",
+       "text": "time",
+       "type": "timestamp"
+      },
+      {
+       "selector": "job",
+       "text": "job",
+       "type": "string"
+      },
+      {
+       "selector": "result",
+       "text": "result",
+       "type": "string"
+      }
+     ],
+     "filters": [],
+     "datasource": {
+      "type": "yesoreyeram-infinity-datasource",
+      "uid": "grafanacloud-infinity"
+     },
+     "source": "inline",
+     "data": "{\"rows\":[{\"time\":\"2026-11-15T10:00:00.000Z\",\"job\":\"weekly-root\",\"result\":\"failed\"},{\"time\":\"2026-11-15T11:00:00.000Z\",\"job\":\"allocator-ev-lifecycle-watchdog\",\"result\":\"success\"},{\"time\":\"2026-11-15T12:00:00.000Z\",\"job\":\"finlab-v4-backfill\",\"result\":\"success\"},{\"time\":\"2026-11-15T13:00:00.000Z\",\"job\":\"rescore-1230\",\"result\":\"success\"},{\"time\":\"2026-11-15T14:00:00.000Z\",\"job\":\"active8-oof-daily\",\"result\":\"success\"},{\"time\":\"2026-11-15T15:00:00.000Z\",\"job\":\"pipeline\",\"result\":\"success\"},{\"time\":\"2026-11-16T10:00:00.000Z\",\"job\":\"allocator-ev-lifecycle-watchdog\",\"result\":\"success\"},{\"time\":\"2026-11-16T11:00:00.000Z\",\"job\":\"finlab-v4-backfill\",\"result\":\"success\"},{\"time\":\"2026-11-16T12:00:00.000Z\",\"job\":\"rescore-1230\",\"result\":\"success\"},{\"time\":\"2026-11-16T13:00:00.000Z\",\"job\":\"active8-oof-daily\",\"result\":\"success\"},{\"time\":\"2026-11-16T14:00:00.000Z\",\"job\":\"pipeline\",\"result\":\"success\"},{\"time\":\"2026-11-17T10:00:00.000Z\",\"job\":\"allocator-ev-lifecycle-watchdog\",\"result\":\"success\"},{\"time\":\"2026-11-17T11:00:00.000Z\",\"job\":\"finlab-v4-backfill\",\"result\":\"failed\"},{\"time\":\"2026-11-17T12:00:00.000Z\",\"job\":\"rescore-1230\",\"result\":\"success\"},{\"time\":\"2026-11-17T13:00:00.000Z\",\"job\":\"active8-oof-daily\",\"result\":\"success\"},{\"time\":\"2026-11-17T14:00:00.000Z\",\"job\":\"pipeline\",\"result\":\"success\"},{\"time\":\"2026-11-18T10:00:00.000Z\",\"job\":\"allocator-ev-lifecycle-watchdog\",\"result\":\"success\"},{\"time\":\"2026-11-18T11:00:00.000Z\",\"job\":\"finlab-v4-backfill\",\"result\":\"success\"},{\"time\":\"2026-11-18T12:00:00.000Z\",\"job\":\"rescore-1230\",\"result\":\"success\"},{\"time\":\"2026-11-18T13:00:00.000Z\",\"job\":\"active8-oof-daily\",\"result\":\"success\"},{\"time\":\"2026-11-18T14:00:00.000Z\",\"job\":\"pipeline\",\"result\":\"success\"},{\"time\":\"2026-11-19T10:00:00.000Z\",\"job\":\"allocator-ev-lifecycle-watchdog\",\"result\":\"success\"},{\"time\":\"2026-11-19T11:00:00.000Z\",\"job\":\"finlab-v4-backfill\",\"result\":\"success\"},{\"time\":\"2026-11-19T12:00:00.000Z\",\"job\":\"rescore-1230\",\"result\":\"failed\"},{\"time\":\"2026-11-19T13:00:00.000Z\",\"job\":\"active8-oof-daily\",\"result\":\"success\"},{\"time\":\"2026-11-19T14:00:00.000Z\",\"job\":\"pipeline\",\"result\":\"success\"},{\"time\":\"2026-11-20T10:00:00.000Z\",\"job\":\"allocator-ev-lifecycle-watchdog\",\"result\":\"success\"},{\"time\":\"2026-11-20T11:00:00.000Z\",\"job\":\"finlab-v4-backfill\",\"result\":\"success\"},{\"time\":\"2026-11-20T12:00:00.000Z\",\"job\":\"rescore-1230\",\"result\":\"success\"},{\"time\":\"2026-11-20T13:00:00.000Z\",\"job\":\"active8-oof-daily\",\"result\":\"success\"},{\"time\":\"2026-11-20T14:00:00.000Z\",\"job\":\"pipeline\",\"result\":\"success\"},{\"time\":\"2026-11-21T10:00:00.000Z\",\"job\":\"allocator-ev-lifecycle-watchdog\",\"result\":\"success\"},{\"time\":\"2026-11-21T11:00:00.000Z\",\"job\":\"finlab-v4-backfill\",\"result\":\"success\"},{\"time\":\"2026-11-21T12:00:00.000Z\",\"job\":\"rescore-1230\",\"result\":\"success\"},{\"time\":\"2026-11-21T13:00:00.000Z\",\"job\":\"active8-oof-daily\",\"result\":\"failed\"},{\"time\":\"2026-11-21T14:00:00.000Z\",\"job\":\"pipeline\",\"result\":\"success\"},{\"time\":\"2026-11-22T10:00:00.000Z\",\"job\":\"weekly-root\",\"result\":\"success\"},{\"time\":\"2026-11-22T11:00:00.000Z\",\"job\":\"allocator-ev-lifecycle-watchdog\",\"result\":\"success\"},{\"time\":\"2026-11-22T12:00:00.000Z\",\"job\":\"finlab-v4-backfill\",\"result\":\"success\"},{\"time\":\"2026-11-22T13:00:00.000Z\",\"job\":\"rescore-1230\",\"result\":\"success\"},{\"time\":\"2026-11-22T14:00:00.000Z\",\"job\":\"active8-oof-daily\",\"result\":\"success\"},{\"time\":\"2026-11-22T15:00:00.000Z\",\"job\":\"pipeline\",\"result\":\"success\"},{\"time\":\"2026-11-23T10:00:00.000Z\",\"job\":\"allocator-ev-lifecycle-watchdog\",\"result\":\"success\"},{\"time\":\"2026-11-23T11:00:00.000Z\",\"job\":\"finlab-v4-backfill\",\"result\":\"success\"},{\"time\":\"2026-11-23T12:00:00.000Z\",\"job\":\"rescore-1230\",\"result\":\"success\"},{\"time\":\"2026-11-23T13:00:00.000Z\",\"job\":\"active8-oof-daily\",\"result\":\"success\"},{\"time\":\"2026-11-23T14:00:00.000Z\",\"job\":\"pipeline\",\"result\":\"failed\"},{\"time\":\"2026-11-24T10:00:00.000Z\",\"job\":\"allocator-ev-lifecycle-watchdog\",\"result\":\"success\"},{\"time\":\"2026-11-24T11:00:00.000Z\",\"job\":\"finlab-v4-backfill\",\"result\":\"success\"},{\"time\":\"2026-11-24T12:00:00.000Z\",\"job\":\"rescore-1230\",\"result\":\"success\"},{\"time\":\"2026-11-24T13:00:00.000Z\",\"job\":\"active8-oof-daily\",\"result\":\"success\"},{\"time\":\"2026-11-24T14:00:00.000Z\",\"job\":\"pipeline\",\"result\":\"success\"},{\"time\":\"2026-11-25T10:00:00.000Z\",\"job\":\"allocator-ev-lifecycle-watchdog\",\"result\":\"success\"},{\"time\":\"2026-11-25T11:00:00.000Z\",\"job\":\"finlab-v4-backfill\",\"result\":\"success\"},{\"time\":\"2026-11-25T12:00:00.000Z\",\"job\":\"rescore-1230\",\"result\":\"success\"},{\"time\":\"2026-11-25T13:00:00.000Z\",\"job\":\"active8-oof-daily\",\"result\":\"success\"},{\"time\":\"2026-11-25T14:00:00.000Z\",\"job\":\"pipeline\",\"result\":\"success\"},{\"time\":\"2026-11-26T10:00:00.000Z\",\"job\":\"allocator-ev-lifecycle-watchdog\",\"result\":\"success\"},{\"time\":\"2026-11-26T11:00:00.000Z\",\"job\":\"finlab-v4-backfill\",\"result\":\"success\"},{\"time\":\"2026-11-26T12:00:00.000Z\",\"job\":\"rescore-1230\",\"result\":\"success\"},{\"time\":\"2026-11-26T13:00:00.000Z\",\"job\":\"active8-oof-daily\",\"result\":\"success\"},{\"time\":\"2026-11-26T14:00:00.000Z\",\"job\":\"pipeline\",\"result\":\"success\"},{\"time\":\"2026-11-27T10:00:00.000Z\",\"job\":\"allocator-ev-lifecycle-watchdog\",\"result\":\"success\"},{\"time\":\"2026-11-27T11:00:00.000Z\",\"job\":\"finlab-v4-backfill\",\"result\":\"success\"},{\"time\":\"2026-11-27T12:00:00.000Z\",\"job\":\"rescore-1230\",\"result\":\"success\"},{\"time\":\"2026-11-27T13:00:00.000Z\",\"job\":\"active8-oof-daily\",\"result\":\"success\"},{\"time\":\"2026-11-27T14:00:00.000Z\",\"job\":\"pipeline\",\"result\":\"success\"},{\"time\":\"2026-11-28T10:00:00.000Z\",\"job\":\"allocator-ev-lifecycle-watchdog\",\"result\":\"success\"},{\"time\":\"2026-11-28T11:00:00.000Z\",\"job\":\"finlab-v4-backfill\",\"result\":\"success\"},{\"time\":\"2026-11-28T12:00:00.000Z\",\"job\":\"rescore-1230\",\"result\":\"success\"},{\"time\":\"2026-11-28T13:00:00.000Z\",\"job\":\"active8-oof-daily\",\"result\":\"success\"},{\"time\":\"2026-11-28T14:00:00.000Z\",\"job\":\"pipeline\",\"result\":\"success\"}]}"
+    }
+   ],
+   "timeFrom": "14d",
+   "hideTimeOverride": true,
+   "transformations": [
+    {
+     "id": "partitionByValues",
+     "options": {
+      "fields": [
+       "job"
+      ],
+      "keepFields": false,
+      "naming": {
+       "asLabels": true
+      }
+     }
+    }
+   ],
+   "options": {
+    "legend": {
+     "showLegend": false,
+     "displayMode": "list",
+     "placement": "bottom"
+    },
+    "tooltip": {
+     "mode": "single"
+    },
+    "showValue": "never",
+    "rowHeight": 0.7,
+    "mergeValues": false
+   },
+   "fieldConfig": {
+    "defaults": {
+     "displayName": "${__field.labels.job}",
+     "noValue": "尚未接資料",
+     "mappings": [
+      {
+       "type": "value",
+       "options": {
+        "completed": {
+         "text": "完成",
+         "color": "#173d42",
+         "index": 0
+        },
+        "success": {
+         "text": "完成",
+         "color": "#173d42",
+         "index": 1
+        },
+        "noop": {
+         "text": "無事可做",
+         "color": "#173d42",
+         "index": 2
+        },
+        "retry_success": {
+         "text": "重試後完成",
+         "color": "#173d42",
+         "index": 3
+        },
+        "running": {
+         "text": "執行中",
+         "color": "#8ab8ff",
+         "index": 4
+        },
+        "waiting": {
+         "text": "等待中",
+         "color": "#5c606b",
+         "index": 5
+        },
+        "not_started": {
+         "text": "未開始",
+         "color": "#5c606b",
+         "index": 6
+        },
+        "pending": {
+         "text": "未開始",
+         "color": "#5c606b",
+         "index": 7
+        },
+        "out_of_window": {
+         "text": "未到時段",
+         "color": "#5c606b",
+         "index": 8
+        },
+        "stale": {
+         "text": "待確認",
+         "color": "#5c606b",
+         "index": 9
+        },
+        "skipped": {
+         "text": "略過",
+         "color": "#464a52",
+         "index": 10
+        },
+        "at_risk": {
+         "text": "趕不上截止",
+         "color": "#ff9830",
+         "index": 11
+        },
+        "attention": {
+         "text": "應跑未跑",
+         "color": "#ff9830",
+         "index": 12
+        },
+        "overdue": {
+         "text": "逾時",
+         "color": "#ff9830",
+         "index": 13
+        },
+        "stuck": {
+         "text": "卡住",
+         "color": "#f2495c",
+         "index": 14
+        },
+        "missed": {
+         "text": "漏跑",
+         "color": "#f2495c",
+         "index": 15
+        },
+        "failed": {
+         "text": "失敗",
+         "color": "#f2495c",
+         "index": 16
+        },
+        "error": {
+         "text": "失敗",
+         "color": "#f2495c",
+         "index": 17
+        },
+        "blocked": {
+         "text": "中止",
+         "color": "#f2495c",
+         "index": 18
+        },
+        "watcher_blocked": {
+         "text": "被擋住",
+         "color": "#ff9830",
+         "index": 19
+        },
+        "ready": {
+         "text": "就緒",
+         "color": "#173d42",
+         "index": 20
+        },
+        "ok": {
+         "text": "正常",
+         "color": "#173d42",
+         "index": 21
+        },
+        "warn": {
+         "text": "注意",
+         "color": "#ff9830",
+         "index": 22
+        },
+        "fail": {
+         "text": "未過",
+         "color": "#f2495c",
+         "index": 23
+        },
+        "critical": {
+         "text": "重大",
+         "color": "#f2495c",
+         "index": 24
+        },
+        "warning": {
+         "text": "注意",
+         "color": "#ff9830",
+         "index": 25
+        },
+        "healthy": {
+         "text": "正常",
+         "color": "#173d42",
+         "index": 26
+        },
+        "pending_maturity": {
+         "text": "等待成熟",
+         "color": "#5c606b",
+         "index": 27
+        },
+        "pass": {
+         "text": "通過",
+         "color": "#173d42",
+         "index": 28
+        },
+        "collecting": {
+         "text": "收集中",
+         "color": "#8ab8ff",
+         "index": 29
+        },
+        "not_applicable_no_real_intents": {
+         "text": "不適用（沒有真實下單）",
+         "color": "#5c606b",
+         "index": 30
+        },
+        "owner_read_unavailable": {
+         "text": "讀不到來源",
+         "color": "#ff9830",
+         "index": 31
+        },
+        "match": {
+         "text": "一致",
+         "color": "#173d42",
+         "index": 32
+        },
+        "drift": {
+         "text": "漂移",
+         "color": "#ff9830",
+         "index": 33
+        },
+        "missing": {
+         "text": "缺少",
+         "color": "#f2495c",
+         "index": 34
+        },
+        "invalid": {
+         "text": "無效",
+         "color": "#f2495c",
+         "index": 35
+        },
+        "PASS": {
+         "text": "通過",
+         "color": "#173d42",
+         "index": 36
+        },
+        "FAIL": {
+         "text": "未過",
+         "color": "#f2495c",
+         "index": 37
+        }
+       }
+      }
+     ],
+     "color": {
+      "mode": "thresholds"
+     },
+     "thresholds": {
+      "mode": "absolute",
+      "steps": [
+       {
+        "color": "#2B2D33",
+        "value": null
+       }
+      ]
+     },
+     "custom": {
+      "fillOpacity": 100,
+      "lineWidth": 0
+     }
+    },
+    "overrides": []
+   },
+   "id": 17
+  }
+ ]
+}

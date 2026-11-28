@@ -138,6 +138,9 @@ export function mockResponses(nowIso) {
       result: (i * 7 + j * 3) % 17 === 0 ? 'failed' : 'success' })))
   return {
     'plan:cloudflare-d1-grid': { rows: d1Grid },
+    'plan:cloudflare-cost-period': { rows: [{ usd: 5 }] },
+    'plan:cloudflare-cost-last': { rows: [{ usd: 37.97 }] },
+    'plan:cloudflare-cost-items': { rows: [['D1 儲存', 18.75], ['D1 讀取列', 14.03], ['方案月費', 5], ['R2 儲存', 0.2]].map(([item, usd]) => ({ item, usd })) },
     'mock:billing-month-by-service': { rows: monthByService },
     'mock:billing-month-cumulative': { rows: cumulative },
     'plan:cloud-run-job-runs': { rows: jobRuns },

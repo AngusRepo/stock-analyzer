@@ -8,7 +8,7 @@ Stack：`narrowpeacock3250.grafana.net`，資料夾 `StockVision`。儀表板 JS
 |---|---|
 | `dashboards/sv-today.json` | ① 今天（v6，這一輪要不要動手）：必要階段、L3 收尾、失敗站次、現在、D1 過載、T+5 guard 一列小 KPI；流程鏈 Canvas（框色＝狀態、底色＝離截止的餘裕、比平常慢的站標 +Xm，明細在 tooltip）、最近兩晚各站時間軸、今晚各站耗時 ÷ 平常、要處理、資料就緒卡片 |
 | `dashboards/sv-health.json` | ② 執行品質（v6，過去 14 天哪裡固定在壞、有沒有變慢）：每日／盤中鏈成功率、失敗站次、重複失敗數、耗時倍數、失敗分類、L3 Pipeline 收尾時間、出過狀況的站、每週／每月／盤中小流程、重複失敗清單 |
-| `dashboards/sv-resources.json` | ③ 資源與成本（v6）：GCP 本月累計／月底預估（BigQuery 帳單，新台幣、日曆月）、Cloudflare 本期累計／上期帳單（billable-usage，美元、續約日起算的帳單週期）、Cloud Run 請求、D1 各庫用量；Cloudflare 內含額度、Cloudflare 上期各項、GCP 本月各服務、GCP 本月累計成本；D1 讀取／寫入列（日 × 時，Cloudflare GraphQL）、Cloud Run 延遲 p50／p95、Cloud Run 服務執行個體 |
+| `dashboards/sv-resources.json` | ③ 資源與成本（v6）：GCP 本月累計／月底預估（BigQuery 帳單，新台幣、日曆月）、Cloudflare 本期累計／上期帳單（billable-usage，美元、續約日起算的帳單週期）、Cloud Run 請求、D1 各庫用量；Cloudflare 內含額度、GCP 本月各服務、GCP 本月累計成本；D1 讀取／寫入列（日 × 時，Cloudflare GraphQL）、Cloud Run 延遲 p50／p95、Cloud Run 服務執行個體 |
 | `dashboards/sv-model.json` | ④ 策略與模型（v6）：OPB 帳本落後、今日正式政策、T+5 serving guard、封存紀錄、Paper 報酬／相對加權指數／回撤、Paper NAV 與加權指數、每天選到的 OPB arm、arm 樣本數 × 平均 reward、模型名冊、KV 設定漂移、證據累積、模型服務狀態、最近一次月訓結果 |
 | `dashboards/sv-mobile.json` | 手機：今天能不能出手、要處理、未完成必要階段、資料就緒（只列有問題的）、失敗中的階段；單欄 w=24 |
 | `dashboards/gcp-cloud-run-scheduler.json` | Cloud Run／Scheduler 面板的來源（資源與成本、策略與模型兩頁從這裡取） |

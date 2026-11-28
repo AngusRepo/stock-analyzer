@@ -387,7 +387,11 @@ const BILLING_NOTE = 'BigQuery 帳單明細匯出（新台幣，已扣抵免）�
 /** Cost panels over the billing export; the fixture build reads `mock` (mock.mjs) in the same columns. Tables (format 1)
  * in both builds, so the panels and their transformations are the same. */
 /** A service keeps its colour whatever its rank; a service not listed here takes the 其他 grey (its name is still in the legend). */
-const SERVICE_COLORS = [['Cloud Run', COOL.cat[0]], ['Cloud Storage', COOL.cat[1]], ['Artifact Registry', COOL.cat[2]], ['Cloud Build', COOL.cat[3]]]
+/** Each service its colour on every page; 其他 (the rest, summed) and a service not named take their own, neither white
+ * (Wei 11/28: the bars were all white). */
+const SERVICE_COLORS = [['Cloud Run', COOL.cat[0]], ['Cloud Storage', COOL.cat[1]], ['Artifact Registry', COOL.cat[2]], ['Cloud Build', COOL.cat[3]],
+  ['Cloud Scheduler', COOL.service]]
+const SERVICE_OTHER = COOL.calm
 function costPanels(q, mode) {
   // Only the fixture build draws authored rows; the previews read the same BigQuery billing export as the live page.
   const real = mode !== 'fixture'
@@ -409,7 +413,7 @@ function costPanels(q, mode) {
         SELECT label AS svc, SUM(net) AS net FROM r GROUP BY label ORDER BY MIN(rk)`)
       : q('mock:billing-month-by-service', { root: `($r := rows; $append($r[[0..3]], $count($r) > 4 ? [{ 'svc': '其他', 'net': $sum($r[[4..999]].net) }] : []))`,
         columns: [S('svc', 'svc'), N('net', 'net')] }), 0, 10, 8, 8,
-    { byRow: ['svc', 'net'], unit: TWD, colors: [...SERVICE_COLORS, ['其他', COOL.other]], fallback: COOL.other,
+    { byRow: ['svc', 'net'], unit: TWD, colors: [...SERVICE_COLORS, ['其他', SERVICE_OTHER]], fallback: COOL.unnamed,
       desc: `本月 1 日至今各服務的 GCP 淨額占比：前四大服務，其餘併成「其他」。${BILLING_NOTE}` }), { timeFrom: MONTH, hideTimeOverride: true, gridPos: gp(8, 9, 7, 8) }),
     // Day of month on x (a trend panel), so the projection can run past today to the month's last day.
     cumulative: { type: 'trend', title: '本月累計成本', gridPos: gp(15, 9, 9, 8), timeFrom: MONTH, hideTimeOverride: true,
@@ -844,8 +848,6 @@ const REQUESTS = ['resource.type', '=', 'cloud_run_revision', 'AND', 'metric.typ
 const LATENCIES = ['resource.type', '=', 'cloud_run_revision', 'AND', 'metric.type', '=', 'run.googleapis.com/request_latencies']
 const HOURS = Array.from({ length: 24 }, (_, h) => String(h).padStart(2, '0'))
 
-/** The D1 databases by their Worker binding (worker/src/monitoring/env.ts D1_BINDINGS). */
-const D1_NAMES = lit({ DB: '主庫', CORE_DB: '核心', MARKET_DB: '行情', LEARNING_DB: '學習', OPS_DB: '營運', EXECUTION_DB: '執行', PAPER_DB: '模擬交易', RESEARCH_DB: '研究' })
 /** Workers Paid included usage per billing period (developers.cloudflare.com workers / d1 / kv pricing, read 2026-11-28):
  * Workers 10M requests; D1 25B rows read, 50M rows written, 5 GB stored (all databases summed); KV 10M reads, 1M writes, 1 GB. */
 const CF_INCLUDED = { requests: 1e7, rowsRead: 25e9, rowsWritten: 5e7, d1Bytes: 5e9, kvReads: 1e7, kvWrites: 1e6, kvBytes: 1e9 }
@@ -886,13 +888,6 @@ const cfD1GridRoot = (prefix, field) => `($h := data.viewer.accounts[0].d.{ 'ms'
 
 /** Cloudflare's charges per day and line item (USD, the account's billing currency; a day behind), this period and the one before. */
 const CF_USAGE = '/accounts/${cf_account}/billable-usage?from=${cf_usage_from}&to=${cf_usage_to}'
-/** Line items in words, matched by the start of Cloudflare's own name (every item name the account's billable usage listed
- * on 2026-11-28; the rest of a name states the included amount, which can change). An item not listed reads as its
- * product family (Workers AI, Artifacts), or its own name when it has none. */
-const CF_ITEM_NAMES = lit([['D1 - Storage', 'D1 儲存'], ['D1 - Rows Read', 'D1 讀取列'], ['D1 - Rows Written', 'D1 寫入列'], ['R2 Data Storage', 'R2 儲存'],
-  ['R2 Storage Class A', 'R2 寫入類操作'], ['R2 Storage Class B', 'R2 讀取類操作'], ['Workers Standard Requests', 'Workers 請求'], ['Workers CPU ms', 'Workers CPU 時間'],
-  ['KV Read Operations', 'KV 讀取'], ['KV Write Operations', 'KV 寫入'], ['KV Delete Operations', 'KV 刪除'], ['KV List Operations', 'KV 列出'], ['KV Storage', 'KV 儲存'],
-  ['Queues - ', 'Queues 操作']].map(([k, v]) => ({ k, v })))
 /** Periods by their start date (YYYY-MM-DD): `$sd` this one's ('' when the variable did not resolve), `$p` the previous
  * one's (the latest earlier start in the range; absent in an account's first period), `$fee` the plan fee (0 when its
  * variable did not resolve). No call here can throw on an unresolved variable. */
@@ -903,16 +898,6 @@ const CF_PERIODS = `$sd := ($d := '\${cf_period_start}'; $contains($d, /^[0-9]{4
  * period starts; the export runs a day behind) sum to 0, so the card reads the fee alone. No period, no row. */
 const cfPeriodTotal = (period) => `(${CF_PERIODS} $exists(${period}) and ${period} != '' ?
   { 'usd': $round($sum([$r[$substring(BillingPeriodStart, 0, 10) = ${period}].BilledCost]) + $fee, 2) } : {})`
-/** The previous period's charged items (credits and adjustments too: any amount but 0), largest first, with the plan fee
- * as one of them. No previous period, no rows (not a fee for a period that did not exist). The '-' row keeps the grouping
- * from ever running on nothing: Go JSONata then fails (object key item does not evaluate to a string; seen 2026-11-28). */
-const CF_ITEMS_ROOT = `(${CF_PERIODS} $names := ${CF_ITEM_NAMES};
-  $name := function($n, $family) { ($m := $filter($names, function($x) { $substring($n, 0, $length($x.k)) = $x.k })[0];
-    $m ? $m.v : $family ? $family : $n) };
-  $g := $append($r[$substring(BillingPeriodStart, 0, 10) = $p and BilledCost != 0].{ 'item': $name(ServiceName, ServiceFamilyName), 'usd': BilledCost },
-    [{ 'item': '-', 'usd': 0 }]){ item: $sum(usd) };
-  $exists($p) ? $sort($append($each($g, function($v, $k) { { 'item': $k, 'usd': $round($v, 2) } })[item != '-'], $fee ? [{ 'item': '方案月費', 'usd': $fee }] : []),
-    function($a, $b) { $a.usd < $b.usd }) : [])`
 const USD = 'prefix:US$'
 const CF_COST_NOTE = '來源：Cloudflare 帳單用量 API（美元，Cloudflare 以美元計費；GCP 面板是新台幣），資料到昨天。帳單週期從續約日起算（不是每月 1 日）。'
 
@@ -941,29 +926,32 @@ function resources5(q, mode) {
       desc: `本期到昨天的 Cloudflare 帳單金額，含方案月費。內含額度先扣，用完才開始計費，所以每期前幾天通常只有月費。${CF_COST_NOTE}` }),
     spark('Cloudflare 上期帳單', cfCost('mock:cloudflare-cost-last', cfPeriodTotal('$p'), usd), 18, 0, 6, 4, { line: false, unit: USD, dec: 2,
       desc: `上一個帳單週期的 Cloudflare 總額，含方案月費。${CF_COST_NOTE}` }),
-    ...spark('Cloud Run 請求', gcpSeries('A', REQUESTS, null, 'ALIGN_SUM', '+3600s', '請求'), 19, 4, 5, 5,
+    ...spark('Cloud Run 請求', gcpSeries('A', REQUESTS, null, 'ALIGN_SUM', '+3600s', '請求'), 19, 4, 5, 8,
       { calc: 'sum', unit: 'short', desc: '所選時間內所有 Cloud Run 服務的請求數合計；折線＝每小時。' }),
-    gauges('D1 各資料庫用量', q(CAPACITY, { root: `$sort(rows, function($a, $b) { $a.utilization_pct < $b.utilization_pct }).{ 'db': ($n := $lookup(${D1_NAMES}, binding_name); $n ? $n : '其他庫'), 'pct': utilization_pct }`,
-      columns: [S('db', 'db'), N('pct', 'pct')] }), 'db', 'pct', 0, 4, 19, 5,
-    { dec: 1, desc: '每個 D1 庫用了 10 GB 上限的幾成，最滿的在左；80% 起琥珀、90% 起紅（硬門檻）。' }),
-    hbars('Cloudflare 內含額度', quota, 'product', 0, 9, 6, 8,
+    // D1 databases by their Worker binding name in English, Wei's own words for them (11/28), less the _DB the title
+    // already says (LEARNING_DB → LEARNING). Fixed gauge size (sizing manual): a 375 px phone wraps them 3 to a row, each
+    // wide enough for EXECUTION; auto sizing kept 4 to a row there and cut the names (LEAR…). Text sizes auto so 91.3% fits.
+    gauges('D1 各資料庫用量', q(CAPACITY, { root: `$sort(rows, function($a, $b) { $a.utilization_pct < $b.utilization_pct }).{ 'db': $not($exists(binding_name)) ? 'UNKNOWN' : $contains(binding_name, '_DB') ? $substringBefore(binding_name, '_DB') : binding_name, 'pct': utilization_pct }`,
+      columns: [S('db', 'db'), N('pct', 'pct')] }), 'db', 'pct', 0, 4, 19, 8,
+    { dec: 1, minViz: [105, 80], autoText: true, desc: '每個 D1 庫用了 10 GB 上限的幾成，最滿的在左；80% 起琥珀、90% 起紅（硬門檻）。' }),
+    hbars('Cloudflare 內含額度', quota, 'product', 0, 12, 8, 8,
       { unit: 'percent', dec: 1, softMin: 0, softMax: 100, th: th([C.ok, null], [C.warn, 100]),
         desc: 'Workers Paid 方案每個帳單週期（依續約日，不是每月 1 日）內含的用量。請求、讀寫列＝照本期到目前的速度，到期末會用掉內含量的幾成；儲存＝最新一天的大小 ÷ 內含量。超過 100% 的部分照量計費（琥珀）。內含量：Workers 1,000 萬請求；D1 讀 250 億列、寫 5,000 萬列、存 5 GB；KV 讀 1,000 萬、寫 100 萬、存 1 GB。' }),
-    // Bars, not the donut: at the docked-menu width the donut's legend table cut the service names and scrolled sideways.
-    hbars('Cloudflare 上期各項', cfCost('mock:cloudflare-cost-items', CF_ITEMS_ROOT, [S('item', 'item'), N('usd', '金額')]), 'item', 6, 9, 6, 8,
-      // One decimal: with two, the axis's last tick (US$20.00) ran past the panel's edge at 1440.
-      { unit: USD, dec: 1, desc: `上一個帳單週期各收費項目的金額，最多的在上，只列有收費的項目。D1 與 R2 儲存依累計 GB-月計費，超過內含量後每 1 GB-月收一次。各項分別四捨五入，加總可能與上期帳單差 US$0.01。${CF_COST_NOTE}` }),
+    // No Cloudflare 上期各項 beside it since 11/28: a paid bill's items change no decision, and Cloudflare 內含額度 already
+    // shows what runs over. Each bar in its service's colour, as on the donut (SERVICE_COLORS).
     // BigQuery names the amount by its SQL alias; the tooltip shows the field's name.
-    Object.assign(hbars('GCP 本月各服務', cost.byServiceDonut.targets[0], 'svc', 12, 9, 6, 8, { unit: TWD, desc: cost.byServiceDonut.description }),
+    Object.assign(hbars('GCP 本月各服務', cost.byServiceDonut.targets[0], 'svc', 8, 12, 8, 8, { unit: TWD, desc: cost.byServiceDonut.description,
+      colorBy: 'svc', th: th([COOL.unnamed, null]), overrides: [{ matcher: { id: 'byName', options: 'svc' }, properties: [{ id: 'mappings', value: [{ type: 'value',
+        options: Object.fromEntries([...SERVICE_COLORS, ['其他', SERVICE_OTHER]].map(([name, color], index) => [name, { color, index }])) }] }] }] }),
       { timeFrom: MONTH, hideTimeOverride: true, transformations: [{ id: 'organize', options: { renameByName: { net: '淨額' } } }] }),
-    Object.assign(cost.cumulative, { title: 'GCP 本月累計成本', gridPos: gp(18, 9, 6, 8) }),
-    heatmap('D1 讀取列（日 × 時）', d1Grid('r', 'rowsRead'), 0, 17, 8, 8, { fill: COOL.seq.reads, steps: 5, unit: 'short', top: true,
+    Object.assign(cost.cumulative, { title: 'GCP 本月累計成本', gridPos: gp(16, 12, 8, 8) }),
+    heatmap('D1 讀取列（日 × 時）', d1Grid('r', 'rowsRead'), 0, 20, 8, 8, { fill: COOL.seq.reads, steps: 5, unit: 'short', top: true,
       desc: '一格＝一天的一個小時（台灣時間），所有 D1 庫讀取的列數合計，越亮越多（沒有讀取＝與背景同色）；看晚鏈 21:45–23:30 的尖峰是否變寬或變亮。來源：Cloudflare GraphQL Analytics。' }),
-    heatmap('D1 寫入列（日 × 時）', d1Grid('w', 'rowsWritten'), 8, 17, 8, 8, { fill: COOL.seq.writes, steps: 5, unit: 'short', top: true,
+    heatmap('D1 寫入列（日 × 時）', d1Grid('w', 'rowsWritten'), 8, 20, 8, 8, { fill: COOL.seq.writes, steps: 5, unit: 'short', top: true,
       desc: '一格＝一天的一個小時（台灣時間），所有 D1 庫寫入的列數合計，越亮越多。來源：Cloudflare GraphQL Analytics。' }),
     // Percentiles, not a bucket heatmap: the distribution has 103 buckets and about 22k requests in 30 days, so even daily
     // cells are 62 % empty and the 0 ms bucket alone holds 40 % of the requests (measured 2026-11-26).
-    { type: 'timeseries', title: 'Cloud Run 延遲 p50／p95', gridPos: gp(16, 17, 8, 8), datasource: GCP_DS,
+    { type: 'timeseries', title: 'Cloud Run 延遲 p50／p95', gridPos: gp(16, 20, 8, 8), datasource: GCP_DS,
       description: '所有 Cloud Run 服務每 6 小時的請求延遲中位數（p50）與 p95（Cloud Monitoring distribution 合併後取百分位）；縱軸是對數。看 p95 有沒有往上長、和 p50 差距有沒有拉大。',
       targets: [gcpSeries('A', LATENCIES, null, 'ALIGN_DELTA', '+21600s', 'p50', 'REDUCE_PERCENTILE_50'),
         gcpSeries('B', LATENCIES, null, 'ALIGN_DELTA', '+21600s', 'p95', 'REDUCE_PERCENTILE_95')],
@@ -971,20 +959,20 @@ function resources5(q, mode) {
       fieldConfig: { defaults: { unit: 'ms', decimals: 0, noValue: NO_SOURCE, custom: { drawStyle: 'line', lineWidth: 2, fillOpacity: 0, showPoints: 'never', spanNulls: true,
         scaleDistribution: { type: 'log', log: 10 } } },
       overrides: [['A', COOL.cat[0]], ['B', COOL.cat[2]]].map(([refId, color]) => ({ matcher: { id: 'byFrameRefID', options: refId }, properties: [{ id: 'color', value: { mode: 'fixed', fixedColor: color } }] })) } },
-    gcpStates('Cloud Run 服務執行個體', gcpSeries('A', INSTANCES, 'resource.label.service_name', 'ALIGN_MAX', '+3600s', '{{resource.label.service_name}}'), 0, 25, 12, 7,
+    gcpStates('Cloud Run 服務執行個體', gcpSeries('A', INSTANCES, 'resource.label.service_name', 'ALIGN_MAX', '+3600s', '{{resource.label.service_name}}'), 0, 28, 12, 7,
       { on: '有執行個體', empty: '沒有', desc: '每個服務每小時有沒有執行個體醒著（scale-to-zero 下，藍＝那一小時有執行個體在跑）。滑鼠停在色段上看持續多久。' }),
     // Cloud Run Jobs and Scheduler over Cloud Monitoring (moved from the old GCP 執行狀態 page, 11/28; the planned
     // per-run source never came).
-    gcpStates('Cloud Run Job 執行時段', gcpSeries('A', RUNNING, 'resource.label.job_name', 'ALIGN_MAX', '+3600s', '{{resource.label.job_name}}'), 12, 25, 12, 7,
+    gcpStates('Cloud Run Job 執行時段', gcpSeries('A', RUNNING, 'resource.label.job_name', 'ALIGN_MAX', '+3600s', '{{resource.label.job_name}}'), 12, 28, 12, 7,
       { on: '執行中', timeFrom: '14d', empty: '14 天內沒有 Job 執行', desc: '每個 Cloud Run Job 一列、每小時一格：藍＝那一小時有執行中的 Job。滑鼠停在色段上看持續多久。' }),
     Object.assign(gcpTimeseries('Cloud Run Job 每日成敗', [gcpSeries('A', jobRuns('succeeded'), null, 'ALIGN_SUM', '+86400s', '成功'),
       gcpSeries('B', jobRuns('failed'), null, 'ALIGN_SUM', '+86400s', '失敗')], { bars: true, legend: 'list', calcs: [], timeFrom: '14d',
       desc: '所有 Cloud Run Job 每天結束的執行次數：青＝成功、紅＝失敗。', overrides: [['A', C.ok], ['B', C.bad]].map(([refId, color]) =>
         ({ matcher: { id: 'byFrameRefID', options: refId }, properties: [{ id: 'color', value: { mode: 'fixed', fixedColor: color } }] })) }),
-      { gridPos: gp(0, 32, 8, 9), hideTimeOverride: true }),
-    gcpTotals('失敗的 Job（14 天）', gcpSeries('A', jobRuns('failed'), 'resource.label.job_name', 'ALIGN_SUM', '+86400s', '{{resource.label.job_name}}'), 8, 32, 8, 9,
+      { gridPos: gp(0, 35, 8, 9), hideTimeOverride: true }),
+    gcpTotals('失敗的 Job（14 天）', gcpSeries('A', jobRuns('failed'), 'resource.label.job_name', 'ALIGN_SUM', '+86400s', '{{resource.label.job_name}}'), 8, 35, 8, 9,
       { name: 'Job', color: C.bad, empty: '14 天內沒有失敗', desc: '14 天內有失敗的 Cloud Run Job 與失敗次數，最多的在上。' }),
-    gcpTotals('Scheduler 錯誤日誌（14 天）', gcpSeries('A', SCHEDULER_ERRORS, 'resource.label.job_id', 'ALIGN_SUM', '+86400s', '{{resource.label.job_id}}'), 16, 32, 8, 9,
+    gcpTotals('Scheduler 錯誤日誌（14 天）', gcpSeries('A', SCHEDULER_ERRORS, 'resource.label.job_id', 'ALIGN_SUM', '+86400s', '{{resource.label.job_id}}'), 16, 35, 8, 9,
       { name: '排程', color: C.warn, empty: '14 天內沒有錯誤日誌', desc: '14 天內每個排程寫出的錯誤日誌筆數，最多的在上。錯誤日誌不一定是最終失敗（重試後成功也會留一筆），要看最終結果請對照 ② 執行品質。' }),
   ]
 }

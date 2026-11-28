@@ -27,10 +27,8 @@ def test_rotation_helper_keeps_tokens_out_of_native_argv_and_disk() -> None:
     assert "[int]$ExpectedSchedulerCount = 54" in source
     assert "Get-SchedulerOptionalValue -Object $job -Name 'desiredState'" in source
     assert "if ($job.desiredState)" not in source
-    assert "'retention-hot-window-drain'" in source
-    assert "'retention-archive-only'" in source
-    assert "'learning-retention-readiness'" in source
-    assert "'legacy-learning-deletion-readiness'" in source
+    # The create allow-list has no default ids; each release passes the jobs it creates.
+    assert "[string[]]$AllowedSchedulerCreateIds = @()," in source
     assert "versions', 'secret', 'bulk'" in source
     assert "-StandardInput $stdin" in source
     assert ". $schedulerRestHelper" in source
@@ -167,8 +165,10 @@ def test_scheduler_inventory_create_patch_parity_and_rollback_contract() -> None
     ).read_text(encoding="utf-8")
 
     assert "[string[]]$AllowedSchedulerCreateIds" in source
-    assert "'screener-v2-watchdog'" in source
-    assert "'data-domain-shadow-backfill-ops'" in source
+    # No default create list: a release names the jobs it creates.
+    assert "[string[]]$AllowedSchedulerCreateIds = @()," in source
+    assert "[AllowEmptyCollection()][string[]]$AllowedCreateIds" in scheduler_source
+    assert "'ml-service/.venv/bin/python'" in source
     assert "New-SchedulerInventoryPlan" in source
     assert "Assert-SchedulerCreatePlanAllowed" in source
     assert "Sync-SchedulerInventory" in source

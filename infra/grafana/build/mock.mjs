@@ -3,7 +3,8 @@
  *   (branch feat/monitoring-model-health-endpoints): /v1/paper/nav, /v1/models/roster, /v1/opb, /v1/chain/failure-classes, /v1/kv-drift;
  *   the v6 routes (modelOps.ts, d1OverloadReport): /v1/policy/seal, /v1/opb/ledger, /v1/models/serving, /v1/serving-guard, /v1/d1/overloaded.
  * - mock:billing-* — rows as the BigQuery billing queries return them (build.mjs costPanels).
- * - plan:cloudflare-* — Cloudflare usage, no source wired yet (fixture only).
+ * - mock:cloudflare-* — rows as the Cloudflare API queries of v6 ③ return them (build.mjs resources5).
+ * - plan:cloudflare-* — the v4 page's Cloudflare panels, no source wired (fixture only).
  * Deterministic and dated back from the fixture evening, so the page reads like that evening. */
 const TW = 8 * 3600_000
 const DAY = 86_400_000
@@ -136,8 +137,12 @@ export function mockResponses(nowIso) {
   const jobRuns = days(14).flatMap((d, i) => jobs.filter(([, task]) => task !== 'weekly' || new Date(`${d}T00:00:00Z`).getUTCDay() === 0)
     .map(([job], j) => ({ time: new Date(Date.parse(`${d}T00:00:00+08:00`) + (18 + j) * 3600_000).toISOString(), job,
       result: (i * 7 + j * 3) % 17 === 0 ? 'failed' : 'success' })))
+  const cfQuota = [['Workers 請求', 41], ['D1 讀取', 87], ['D1 寫入', 34], ['D1 儲存', 62], ['KV 讀取', 9], ['R2 儲存', 18]].map(([product, pct]) => ({ product, pct }))
   return {
-    'plan:cloudflare-d1-grid': { rows: d1Grid },
+    'mock:cloudflare-d1-grid': { rows: d1Grid },
+    'mock:cloudflare-cost-period': { rows: [{ usd: 5 }] },
+    'mock:cloudflare-cost-last': { rows: [{ usd: 37.97 }] },
+    'mock:cloudflare-cost-items': { rows: [['D1 儲存', 18.75], ['D1 讀取列', 14.03], ['方案月費', 5], ['R2 儲存', 0.2]].map(([item, usd]) => ({ item, usd })) },
     'mock:billing-month-by-service': { rows: monthByService },
     'mock:billing-month-cumulative': { rows: cumulative },
     'plan:cloud-run-job-runs': { rows: jobRuns },
@@ -147,8 +152,8 @@ export function mockResponses(nowIso) {
     'mock:billing-recent-daily': { rows: daily(billingRows) },
     'mock:billing-forecast': { rows: [{ mtd: round(mtd), forecast: round(mtd / elapsed * monthDays) }] },
     // Names fit under a gauge; the period (本月, KV 今日) is in the panel description.
-    'plan:cloudflare-quota': { rows: [['Workers 請求', 41], ['D1 讀取', 87], ['D1 寫入', 34], ['D1 儲存', 62], ['KV 讀取', 9],
-      ['R2 儲存', 18]].map(([product, pct]) => ({ product, pct })) },
+    'plan:cloudflare-quota': { rows: cfQuota },
+    'mock:cloudflare-quota': { rows: cfQuota },
     'plan:cloudflare-d1-rows': { rows: Array.from({ length: 30 * 24 }, (_, i) => {
       const at = now - (30 * 24 - 1 - i) * 3600_000
       return { time: new Date(at - at % 3600_000).toISOString(), ...d1Load(at) }

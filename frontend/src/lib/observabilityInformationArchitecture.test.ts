@@ -29,6 +29,11 @@ assert(page.includes('AdaptiveMetaPanel'), 'ObservabilityPage should keep adapti
 assert(page.includes("event.domain === 'ml_threshold_policy'"), 'OBS adaptive/meta panel must consume ml_threshold_policy events')
 assert(page.includes('Operational Drilldown'), 'ObservabilityPage should keep actionable operations evidence')
 assert(page.includes('Loading OBS evidence'), 'OBS should keep its loading transition')
+// 11/28 Wei：不得整頁等最慢的 API；各區塊只等自己的 query。
+assert(!page.includes('initialLoading'), 'OBS must not gate the whole page on every query')
+assert(!/absolute inset-0 z-20/.test(page), 'OBS must not cover the page with a loading mask')
+assert(page.includes('scheduler.isLoading ? ('), 'execution chain waits only for scheduler')
+assert(page.includes('observability.isLoading ? ('), 'adaptive evidence waits only for model events')
 
 assert(fs.existsSync(chainPath) && fs.existsSync(chainCssPath), 'OBS execution chain component and isolated CSS should exist')
 assert(page.includes('ExecutionChainPanel'), 'OBS should render the formal execution chain')

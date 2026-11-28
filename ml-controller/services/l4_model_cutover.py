@@ -9,6 +9,7 @@ from pathlib import Path
 
 from services.l4_distribution import digest, validate_bundle
 from services.l4_distribution_runtime import distribution_policy_identity, validate_opb_policy
+from services.l4_opb_selection import canonical_opb
 from services.paper_strategy_mode import MLP_MODE, validate_model_mode
 
 SCHEMA = 'l4-full-mlp-median-paper-cutover-v1'
@@ -49,7 +50,8 @@ def validate_cutover(approval, *, admission, now):
     if new_opb.pop('approved_policy_identity',None)!=identity:
         raise RuntimeError('l4_cutover_opb_identity_invalid')
     old_opb.pop('approved_policy_identity',None)
-    if old_opb!=new_opb or old['constraints']!=new['constraints']:
+    # canonical_opb: writing the KV default (market_proxy '0050') is not a policy change.
+    if canonical_opb(old_opb)!=canonical_opb(new_opb) or old['constraints']!=new['constraints']:
         raise RuntimeError('l4_cutover_allocator_policy_changed')
     old_static={k:v for k,v in old.items() if k not in ('artifact','operating_mode','strategy_role','opb')}
     new_static={k:v for k,v in new.items() if k not in ('artifact','operating_mode','strategy_role','opb')}

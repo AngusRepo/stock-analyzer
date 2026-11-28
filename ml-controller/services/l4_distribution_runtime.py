@@ -12,8 +12,8 @@ from services.l4_portfolio import allocate
 from services.l4_l3_baseline import native_baseline, attach_baseline
 from services.similarity_evidence import ledoit_wolf_covariance
 from services.l4_numeric_contract import DAILY_VOL_FLOOR, MIN_RETURN_OBSERVATIONS, WEIGHT_SUPPORT
-from services.l4_opb_selection import (POLICY_SCHEMA, arm_policies, context_identity, is_v2,
-    objective_costs, risk_envelope, select_arm, validate_arms, validate_constraints)
+from services.l4_opb_selection import (POLICY_SCHEMA, arm_policies, context_identity, decision_inputs_digest, is_v2,
+    is_v3, objective_costs, risk_envelope, select_arm, validate_arms, validate_constraints)
 
 PLAN_SCHEMA = 'l4-portfolio-plan-v1'
 
@@ -80,7 +80,9 @@ def missing_l3_evidence(prediction, identity, signal_date):
 
 
 def distribution_policy_identity(policy,identity):
-    opb={k:v for k,v in (policy.get('opb') or {'enabled':False}).items() if k!='approved_policy_identity'}
+    from services.l4_opb_selection import canonical_opb
+    # A default market proxy written into KV is the same policy (identity unchanged).
+    opb={k:v for k,v in canonical_opb(policy.get('opb') or {'enabled':False}).items() if k!='approved_policy_identity'}
     body={'model':policy['artifact']['model_checksum'],'l3':identity,
           'constraints':policy['constraints'],'opb_policy':opb,'schema':PLAN_SCHEMA}
     if policy.get('sealedExecution') is not None:body['sealed_execution']=policy['sealedExecution']
@@ -192,6 +194,9 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
         raise ValueError('l4_distribution_forced_arm_not_admitted')
     signal_date = runtime['signal_date']
     identity = runtime['l3_identity']
+    # v3: the replay verifies the frozen snapshot against this, whatever was deployed since.
+    inputs_digest = (decision_inputs_digest(recommendations, policy, return_history, reward_ledger)
+                     if is_v3(policy) and forced_arm is None else None)
     bundle = policy['artifact']
     from services.l3_equal_weight_bundle import is_r33_bundle
     r33_bundle = is_r33_bundle(bundle)
@@ -349,7 +354,8 @@ def run(recommendations, policy, *, return_history, reward_ledger=(), evidence_s
             'execution_scope':'counterfactual' if forced_arm is not None else 'private_research' if research else 'paper',
             'account_id':1,'account_anchor':account.get('account_anchor'),'parent_plan_id':account.get('active_plan_id'),'account_checksum':digest(account),'policy_identity':policy_identity,
             'model_checksum':allocation_model_checksum,'l3_identity':identity,'nav_at_decision':nav,
-            'opb':{**opb,'candidate_feature_summary':attribution['opb_candidate_summary']},
+            'opb':{**opb,'candidate_feature_summary':attribution['opb_candidate_summary'],
+                   **({'decision_inputs_digest':inputs_digest} if is_v3(policy) and forced_arm is None else {})},
             'input_attribution':attribution,'risk_evidence':risk_evidence,
             'prediction_coverage':{'available':len(modeled),'candidate_count':len(by_symbol),
                                    'unavailable':unavailable},

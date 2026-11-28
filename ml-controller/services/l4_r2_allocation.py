@@ -1,10 +1,12 @@
 """Use sealed full-pool alpha in the same allocator, in isolated research only."""
 from services.l4_distribution import digest,finite
+from services.l4_opb_selection import canonical_opb
 from services.l4_r2_forward_evaluation import validate_policy
 
 def allocation_policy(policy):
     result={k:policy[k] for k in ('constraints','opb','sealedExecution','sealedExecutionCalibration') if k in policy}
-    if 'opb' in result:result['opb']={k:v for k,v in result['opb'].items() if k!='approved_policy_identity'}
+    # canonical_opb: an explicit KV default (market_proxy '0050') keeps the checksum.
+    if 'opb' in result:result['opb']={k:v for k,v in canonical_opb(result['opb']).items() if k!='approved_policy_identity'}
     return result
 
 def inputs(packet,*,identity,day,baseline,policy,symbols):

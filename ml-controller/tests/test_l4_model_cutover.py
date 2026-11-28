@@ -61,3 +61,30 @@ def test_cutover_cannot_launder_other_changes(monkeypatch,fault):
     if fault=='reset':r['approved_full_mlp_champion_cutover']['account_reset']=True
     r['approved_full_mlp_champion_cutover']['next_configuration_checksum']=digest(c)
     with pytest.raises((RuntimeError,ValueError)):validate_cutover(r,admission={},now=datetime.now(timezone.utc))
+
+
+def _v3_cutover(monkeypatch,old_proxy,new_proxy):
+    """Both sides on the v3 opb block; only the KV market_proxy spelling differs."""
+    from test_l4_opb_v3_replay import OPB
+    r=approval(monkeypatch);grant=r['approved_full_mlp_champion_cutover']
+    for side,proxy in ((r['prior_runtime_approval']['configuration'],old_proxy),(r['configuration'],new_proxy)):
+        p=side['trading_config']['l4Distribution']
+        p['opb']={k:deepcopy(v) for k,v in OPB.items() if k!='approved_policy_identity'}
+        if proxy is not None:p['opb']['market_proxy']=proxy
+        p['opb']['approved_policy_identity']=distribution_policy_identity(p,p['artifact']['l3_identity'])
+    grant['previous_configuration_checksum']=digest(r['prior_runtime_approval']['configuration'])
+    grant['next_configuration_checksum']=digest(r['configuration'])
+    return r
+
+
+@pytest.mark.parametrize('old_proxy,new_proxy',[(None,None),(None,'0050'),('0050',None),('0050','0050'),('006208','006208')])
+def test_writing_the_kv_default_market_proxy_is_not_an_allocator_policy_change(monkeypatch,old_proxy,new_proxy):
+    r=_v3_cutover(monkeypatch,old_proxy,new_proxy)
+    assert validate_cutover(r,admission={},now=datetime.now(timezone.utc))==r
+
+
+@pytest.mark.parametrize('old_proxy,new_proxy',[(None,'006208'),('0050','006208'),('006208',None),('006208','0050')])
+def test_another_market_proxy_is_an_allocator_policy_change(monkeypatch,old_proxy,new_proxy):
+    r=_v3_cutover(monkeypatch,old_proxy,new_proxy)
+    with pytest.raises(RuntimeError,match='l4_cutover_allocator_policy_changed'):
+        validate_cutover(r,admission={},now=datetime.now(timezone.utc))

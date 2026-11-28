@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { classifySchedulerSummary } from './schedulerRunLogger'
 import test from 'node:test'
 import type { Bindings } from '../types'
 import { runActive8OofLifecycle } from './controllerResearchWorkflows'
@@ -113,11 +114,17 @@ test('plan blocked response remains visibly failed and never queues a retry', as
 })
 
 test('a pipeline that has not succeeded parks the daily job instead of dispatching it into a locked day', async () => {
-  let calls = 0
+  let calls = 0, replays = 0
   const original = globalThis.fetch
-  globalThis.fetch = async () => { calls++; return Response.json({ status: 'spawned' }) }
+  globalThis.fetch = async (url: any) => {
+    // The OPB arm replay is booked on its own when the job is not dispatched (2026-11-19).
+    if (String(url).endsWith('/l4_distribution/opb-arm-replay')) { replays++; return Response.json({ status: 'spawned', execution_id: 'r' }) }
+    calls++; return Response.json({ status: 'spawned' })
+  }
   let stage: {status: string; last_error: string | null} | null = null
-  const db = { prepare: () => ({ bind: () => ({ all: async () => ({ results: [] }), first: async () => stage }) }) }
+  // The replay run receipt (learning) is absent: every gate entry starts the replay job.
+  const db = { prepare: (sql: string) => ({ bind: () => ({ all: async () => ({ results: [] }),
+    first: async () => sql.includes('l4_opb_arm_replay_runs_v1') ? null : stage }) }) }
   const env = { DB: db, OPS_DB: db, MULTI_D1_ACTIVE_DOMAINS: 'ops',
     PAPER_DAILY_PLAN_OWNER: 'premarket_once_v1', KV: {get: async () => null}, ML_CONTROLLER_URL: 'https://controller.invalid' } as any
   try {
@@ -129,27 +136,52 @@ test('a pipeline that has not succeeded parks the daily job instead of dispatchi
         `active8_oof_lifecycle status=skipped reason=awaiting_pipeline job_dispatched=false signal_date=2026-10-29 pipeline_status=${label}`)
     }
     assert.equal(calls, 0)
+    assert.equal(replays, 5)
     stage = {status: 'success', last_error: null}
     assert.match(await runActive8OofLifecycle(env, '2026-10-29', 'daily'), /status=spawned/)
     assert.equal(calls, 1)
+    assert.equal(replays, 5, 'the dispatched job owns the replay')
   } finally { globalThis.fetch = original }
 })
 
 test('sealed nightly phase blocks watchdog before Cloud Run and resumes after publication', async () => {
-  let calls = 0, published = false
+  let calls = 0, replays = 0, published = false
+  const kv = new Map<string, string>()
   const original = globalThis.fetch
-  globalThis.fetch = async () => { calls++; return Response.json({ status: 'spawned' }) }
-  const db = { prepare: () => ({ bind: (date: string) => {
+  globalThis.fetch = async (url: any) => {
+    if (String(url).endsWith('/l4_distribution/opb-arm-replay')) {
+      replays++
+      // The job finishes after this tick returns and leaves its run receipt.
+      runReceipt = { status: 'ok', complete: 1, failed_dates_json: '[]', deferred_dates_json: '[]',
+        rejected_dates_json: '["2026-09-24"]', finished_at: '2026-10-02T18:10:00Z' }
+      return Response.json({ status: 'spawned', execution_id: 'r' })
+    }
+    calls++; return Response.json({ status: 'spawned' })
+  }
+  let runReceipt: Record<string, unknown> | null = null
+  const db = { prepare: (sql: string) => ({ bind: (date: string) => {
     assert.equal(date, '2026-10-02')
-    return { all: async () => ({ results: [] }), first: async () => ({ status: published ? 'success' : 'waiting', last_error: published ? null : 'awaiting_premarket' }) }
+    return { all: async () => ({ results: [] }), first: async () => sql.includes('l4_opb_arm_replay_runs_v1') ? runReceipt
+      : ({ status: published ? 'success' : 'waiting', last_error: published ? null : 'awaiting_premarket' }), run: async () => ({}) }
   } }) }
   const env = { DB: db, OPS_DB: db, MULTI_D1_ACTIVE_DOMAINS: 'ops',
-    PAPER_DAILY_PLAN_OWNER: 'premarket_once_v1', KV: {get: async () => null}, ML_CONTROLLER_URL: 'https://controller.invalid' } as any
+    PAPER_DAILY_PLAN_OWNER: 'premarket_once_v1', KV: {get: async (key: string, type?: string) => kv.has(key) ? (type === 'json' ? JSON.parse(kv.get(key)!) : kv.get(key)) : null,
+      put: async (key: string, value: string) => { kv.set(key, value) }}, ML_CONTROLLER_URL: 'https://controller.invalid' } as any
   try {
+    const summaries: string[] = []
     for (let tick = 0; tick < 12; tick++) {
-      assert.match(await runActive8OofLifecycle(env, '2026-10-02', 'daily'), /reason=awaiting_premarket job_dispatched=false/)
+      const summary = await runActive8OofLifecycle(env, '2026-10-02', 'daily')
+      assert.match(summary, /reason=awaiting_premarket job_dispatched=false/)
+      summaries.push(summary)
     }
     assert.equal(calls, 0)
+    assert.equal(replays, 1, 'one independent replay execution per business date, not one per watchdog tick')
+    // A terminal rejection is visible on the task summary without changing its status class.
+    assert.doesNotMatch(summaries[0], /attention=/)
+    for (const summary of summaries.slice(1)) {
+      assert.match(summary, / attention=opb_replay_rejected:1$/)
+      assert.equal(classifySchedulerSummary(summary), classifySchedulerSummary(summaries[0]))
+    }
     published = true
     assert.match(await runActive8OofLifecycle(env, '2026-10-02', 'daily'), /status=spawned/)
     assert.equal(calls, 1)

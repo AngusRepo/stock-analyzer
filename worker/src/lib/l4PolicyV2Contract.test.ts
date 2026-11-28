@@ -51,7 +51,7 @@ async function run(): Promise<void> {
       opb: { schema_version: 'l4-opb-relative-arms-v2', enabled: true, reward_window_observations: 60,
         reward_half_life_observations: 20, arms: [{ id: 'base' }, { id: 'tight', exposure_fraction: 0.8, name_fraction: 0.8 }] } }
     mutate(cfg)
-    return validateTradingConfig(cfg).filter(error => /v2|policy_schema|positionScales/.test(error))
+    return validateTradingConfig(cfg).filter(error => /v2|v3|policy_schema|positionScales/.test(error))
   }
   assert.deepEqual(v2Errors(() => {}), [])
   assert.match(v2Errors(cfg => { cfg.l4Distribution.constraints.name_cap = 0.25 }).join(), /allocator-owned/)
@@ -65,6 +65,53 @@ async function run(): Promise<void> {
   assert.match(v2Errors(cfg => { cfg.position.maxPctOfPortfolio = 0.25 }).join(), /forbids position.maxPctOfPortfolio/)
   assert.match(v2Errors(cfg => { cfg.l4Distribution.policy_schema = 'l4-distribution-policy-v9' }).join(), /policy_schema is unknown/)
   assert.equal('maxPctOfPortfolio' in DEFAULT_TRADING_CONFIG.position, false, 'risk_config owns the single-name cap')
+  // OPB v3: selection arms only, every statistical knob explicit (mirrors validate_v3_config).
+  const v3 = (cfg: any) => { cfg.l4Distribution.opb = { schema_version: 'l4-opb-selection-arms-v3', enabled: true,
+    reward_window_observations: 60, reward_half_life_observations: 20,
+    reward: 'exposure_normalized_market_neutral_daily_v1', family_error_rate: 0.1, hac_lag_sessions: 2,
+    critical_value_simulations: 20000, min_exposure_ratio: 0.5,
+    inert_counterfactual: { enabled: true, reference_exposure_cap: 0.2, reference_name_cap: 0.0625 },
+    cutover_warm_start: { enabled: true, max_observations: 20 },
+    arms: [{ id: 'base' }, { id: 'alpha_tilt', risk_aversion: 0.5 }, { id: 'risk_tilt', risk_aversion: 8 },
+      { id: 'ridge', l2_penalty: 0.02 }] } }
+  assert.deepEqual(v2Errors(v3), [])
+  for (const [mutate, field] of [
+    [(o: any) => { o.arms[1].exposure_fraction = 0.8 }, 'arms'],
+    [(o: any) => { o.arms[1].name_fraction = 0.8 }, 'arms'],
+    [(o: any) => { o.arms[2].max_cluster_weight = 1.5 }, 'arms'],
+    [(o: any) => { o.arms[2].id = 'alpha_tilt' }, 'arms'],
+    [(o: any) => { o.arms[3].risk_aversion = 0.5; delete o.arms[3].l2_penalty }, 'arms'],
+    [(o: any) => { o.arms.push({ id: 'same_as_base' }) }, 'arms'],
+    [(o: any) => { o.min_exposure_ratio = 0 }, 'min_exposure_ratio'],
+    [(o: any) => { o.critical_value_simulations = 200000; o.reward_window_observations = 120 }, 'critical_value_simulations'],
+    [(o: any) => { o.exploration = 0.05 }, 'unknown_field'],
+    [(o: any) => { delete o.family_error_rate }, 'family_error_rate'],
+    [(o: any) => { o.family_error_rate = 0.6 }, 'family_error_rate'],
+    [(o: any) => { o.hac_lag_sessions = 2.5 }, 'hac_lag_sessions'],
+    [(o: any) => { o.critical_value_simulations = 10 }, 'critical_value_simulations'],
+    [(o: any) => { o.reward = 'raw_v2' }, 'reward'],
+    [(o: any) => { delete o.inert_counterfactual.reference_name_cap }, 'inert_counterfactual'],
+    [(o: any) => { o.inert_counterfactual.reference_name_cap = 0.3 }, 'inert_counterfactual'],
+    [(o: any) => { o.inert_counterfactual.enabled = false }, 'inert_counterfactual'],
+    [(o: any) => { o.cutover_warm_start.max_observations = 61 }, 'cutover_warm_start'],
+    // opb.market_proxy (Wei 11/28): optional, a TW ETF code (label calendar stays on 0050), fail closed otherwise.
+    [(o: any) => { o.market_proxy = '00631L' }, 'market_proxy'],
+    [(o: any) => { o.market_proxy = '2330' }, 'market_proxy'],
+    [(o: any) => { o.market_proxy = '0050123' }, 'market_proxy'],
+    [(o: any) => { o.market_proxy = '005' }, 'market_proxy'],
+    [(o: any) => { o.market_proxy = '123' }, 'market_proxy'],
+    [(o: any) => { o.market_proxy = '1234567' }, 'market_proxy'],
+    [(o: any) => { o.market_proxy = 50 }, 'market_proxy'],
+    [(o: any) => { o.market_proxy = null }, 'market_proxy'],
+    [(o: any) => { o.market_proxy = ' 0050' }, 'market_proxy'],
+  ] as const) {
+    assert.match(v2Errors(cfg => { v3(cfg); mutate(cfg.l4Distribution.opb) }).join(), new RegExp(`v3 OPB selection arms are invalid: ${field}`), field)
+  }
+  for (const proxy of ['0050', '006208', '0056', '00878']) assert.deepEqual(v2Errors(cfg => { v3(cfg); cfg.l4Distribution.opb.market_proxy = proxy }), [], proxy)
+  // A v3-only field: on a v2 OPB block it is rejected (Python validate_arms rejects it too).
+  assert.match(v2Errors(cfg => { cfg.l4Distribution.opb.market_proxy = '0050' }).join(), /opb.market_proxy is a v3 OPB field/)
+  assert.deepEqual(v2Errors(cfg => { v3(cfg); cfg.l4Distribution.opb.inert_counterfactual =
+    { enabled: false, reference_exposure_cap: null, reference_name_cap: null } }), [])
 
   // EMERGING/ESB/ROTC targets under v2 surface as an explicit setup error, never a silent SQL drop.
   const orchestrator = readFileSync(new URL('./pendingBuyOrchestrator.ts', import.meta.url), 'utf8')

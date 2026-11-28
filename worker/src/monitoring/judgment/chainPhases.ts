@@ -22,7 +22,7 @@ export const OTHER_CHAIN_PHASES: Record<Exclude<ChainId, 'daily_readiness'>, rea
       stages: ['adaptive-meta-policy-replay', 's12-smcvwap-calibration', 'linucb-multiplier-replay', 'weekly-cleanup', 'weekly-readiness'], main: ['weekly-cleanup', 'weekly-readiness'] },
   ],
   monthly_artifact: [
-    { id: 'monthly', title: '每月 artifact', caption: '每月第一個週六 strategy mining → monthly search；第一個週日 Active-8 monthly → monthly root 收尾',
+    { id: 'monthly', title: '每月產出', caption: '每月第一個週六 strategy mining → monthly search；第一個週日 Active-8 monthly → monthly root 收尾',
       stages: ['monthly-strategy-mining', 'monthly-optuna', 'active8-oof-monthly', 'monthly-readiness'], main: ['monthly-strategy-mining', 'monthly-optuna', 'active8-oof-monthly', 'monthly-readiness'] },
   ],
 }

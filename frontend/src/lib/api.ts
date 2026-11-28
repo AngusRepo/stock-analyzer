@@ -17,6 +17,7 @@ export const stocksApi = {
   remove:      (id: number) => del<any>(`/stocks/${id}`),
   refresh:     (id: number) => post<any>(`/stocks/${id}/refresh`),
   prices:      (id: number, days = 365) => get<any[]>(`/stocks/${id}/prices?days=${days}`),
+  dailyBars:   (symbols: string[], limit = 20) => get<{ since: string; bars: Record<string, Array<{ date: string; open: number; high: number; low: number; close: number }>> }>(`/stocks/daily-bars?symbols=${encodeURIComponent(symbols.join(','))}&limit=${limit}`),
   indicators:  (id: number, days = 365) => get<any[]>(`/stocks/${id}/indicators?days=${days}`),
   financials:  (id: number, limit = 12, asOf?: string) => {
     const params = new URLSearchParams({ limit: String(limit) })

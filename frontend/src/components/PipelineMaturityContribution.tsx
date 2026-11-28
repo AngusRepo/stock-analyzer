@@ -10,7 +10,7 @@ import { DataState } from '@/components/ui/data-state'
 import { StatusBadge, StatusIcon, StatusText } from '@/components/ui/status'
 import { priceToneClass, type StatusTone } from '@/lib/colorTokens'
 import { formatDate, formatDateTime } from '@/lib/format'
-import { humanStatus, looksInternal } from '@/lib/humanLabels'
+import { humanStatus, humanTitle, looksInternal } from '@/lib/humanLabels'
 import { navReadinessReason, preoutcomeSummary } from '@/lib/expectedReturnEvidencePresentation'
 import {
   Activity,
@@ -160,6 +160,13 @@ const BLOCKER_LABELS: Record<string, string> = {
   prospective_forward_evidence_missing: '每日鎖定候選 pre-outcome 證據尚未物化',
 }
 
+// 產物 ID 例：artifact:strategy_redundancy_oof:2026-11-25:04806e18…；只顯示日期與雜湊前 12 碼，snake_case 段落不上畫面。
+function shortArtifactId(id: string | null | undefined): string {
+  if (!id) return '不適用'
+  const parts = id.split(':').filter((part) => part && part !== 'artifact' && !looksInternal(part) && !/_/.test(part))
+  return parts.length ? parts.map((part) => (/^[0-9a-f]{13,}$/i.test(part) ? part.slice(0, 12) : part)).join(' · ') : '系統產物'
+}
+
 function stageIcon(id: PipelineMaturityStage['id']) {
   const cls = 'h-4 w-4'
   if (id === 'threshold_margin_affinity_v2') return <SlidersHorizontal className={cls} />
@@ -233,7 +240,7 @@ function MetricCell({ metric }: { metric: PipelineMaturityMetric }) {
   return (
     <div className="min-w-0 border-b border-white/[0.06] py-2 sm:px-3">
       <div className="flex items-start justify-between gap-2">
-        <p className={`min-w-0 text-xs leading-5 text-muted-foreground ${metric.note ? 'cursor-help underline decoration-dotted decoration-white/20 underline-offset-2' : ''}`} title={metric.note ?? metric.key}>{METRIC_LABELS[metric.key] ?? metric.label}</p>
+        <p className={`min-w-0 text-xs leading-5 text-muted-foreground ${metric.note ? 'cursor-help underline decoration-dotted decoration-white/20 underline-offset-2' : ''}`} title={humanTitle(metric.note)}>{METRIC_LABELS[metric.key] ?? metric.label}</p>
         {metric.passed === true ? <StatusIcon tone="ok" title="通過門檻" /> : null}
         {metric.passed === false ? <StatusIcon tone="fail" title="未通過門檻" /> : null}
       </div>
@@ -241,7 +248,7 @@ function MetricCell({ metric }: { metric: PipelineMaturityMetric }) {
         <span className={`sv-num break-words text-sm font-semibold ${tone}`}>{displayValue(metric)}</span>
         {target ? <span className="sv-num text-[11px] text-muted-foreground">門檻 {target}</span> : null}
       </div>
-      {reason ? <p className="mt-0.5 text-[10px] leading-4 text-muted-foreground" title={metric.reason_code ?? undefined}>{reason}</p> : null}
+      {reason ? <p className="mt-0.5 text-[10px] leading-4 text-muted-foreground">{reason}</p> : null}
     </div>
   )
 }
@@ -477,7 +484,7 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
             </div>
           </div>
           <div className="mt-2 flex flex-wrap gap-1.5">
-            <StatusBadge tone={status.tone} title={stage.status}>{status.label}</StatusBadge>
+            <StatusBadge tone={status.tone}>{status.label}</StatusBadge>
             <Badge variant="outline" className={`h-auto whitespace-normal rounded-full px-2 py-0.5 text-[11px] ${mode.cls}`}>{mode.label}</Badge>
           </div>
           {productionServingState ? <p className="mt-2 flex items-start gap-1.5 text-xs font-semibold leading-5 text-slate-100"><StatusIcon tone={evidenceScopes?.serving_pointer?.artifact_state === 'serving' ? 'ok' : 'na'} />{productionServingState}</p> : null}
@@ -502,7 +509,7 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
         <div className="min-w-0">
           <p className="text-xs font-semibold text-muted-foreground">本階段實際貢獻</p>
           <p className="mt-1 break-words text-sm leading-6 text-slate-300">{stage.production_effect}</p>
-          <p className="mt-1 cursor-help text-[11px] leading-4 text-muted-foreground" title={stage.contribution}>
+          <p className="mt-1 cursor-help text-[11px] leading-4 text-muted-foreground" title={humanTitle(stage.contribution)}>
             <Activity className="mr-1 inline h-3 w-3 text-cyan-300" />責任邊界與決策用途 ⓘ
           </p>
         </div>
@@ -580,10 +587,10 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
                 <div className="mt-2 space-y-3">
                   {blockerGroups.map((group) => (
                     <div key={group.scope}>
-                      <p className="mb-1 text-[11px] font-semibold text-muted-foreground" title={group.scope}>{group.title}</p>
+                      <p className="mb-1 text-[11px] font-semibold text-muted-foreground">{group.title}</p>
                       <div className="space-y-1">
                         {group.blockers.length ? group.blockers.map((blocker) => (
-                          <p key={blocker} className="flex items-start gap-1.5 text-xs leading-5 text-slate-200" title={`系統代碼：${blocker}`}>
+                          <p key={blocker} className="flex items-start gap-1.5 text-xs leading-5 text-slate-200">
                             <StatusIcon tone="fail" />
                             <span className="min-w-0">{blockerText(blocker)}</span>
                           </p>
@@ -600,12 +607,12 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
             <div className="border-t border-white/[0.07] pt-3">
               <p className="flex items-center gap-1.5 text-xs font-semibold text-muted-foreground"><Database className="h-3.5 w-3.5" /> 資料來源與版本 lineage</p>
               <dl className="mt-2 grid grid-cols-[minmax(0,7.5rem)_minmax(0,1fr)] gap-x-2 gap-y-1 text-[11px] leading-4">
-                <dt className="text-muted-foreground" title={stage.lineage.evidence_semantics ?? undefined}>{scopedCandidateStage ? '離線升級候選截止日' : '資料截止日'}</dt><dd className="sv-num text-slate-300">{formatDate(stage.lineage.data_cutoff_date ?? stage.lineage.evidence_date, '資料尚未具備')}</dd>
+                <dt className="text-muted-foreground" title={humanTitle(stage.lineage.evidence_semantics)}>{scopedCandidateStage ? '離線升級候選截止日' : '資料截止日'}</dt><dd className="sv-num text-slate-300">{formatDate(stage.lineage.data_cutoff_date ?? stage.lineage.evidence_date, '資料尚未具備')}</dd>
                 <dt className="text-muted-foreground">成熟結果已知截至</dt><dd className="sv-num text-slate-300">{formatDate(stage.lineage.mature_outcome_max_date, '尚未發布')}</dd>
-                <dt className="text-muted-foreground">OOF 訊號截止日</dt><dd className="sv-num text-slate-300" title={stage.lineage.oof_unavailable_reason ?? undefined}>{stage.lineage.oof_applicable === false ? '不適用（此階段不是 OOF）' : stage.lineage.oof_max_date ? formatDate(stage.lineage.oof_max_date) : '資料尚未具備'}</dd>
+                <dt className="text-muted-foreground">OOF 訊號截止日</dt><dd className="sv-num text-slate-300" title={humanTitle(stage.lineage.oof_unavailable_reason)}>{stage.lineage.oof_applicable === false ? '不適用（此階段不是 OOF）' : stage.lineage.oof_max_date ? formatDate(stage.lineage.oof_max_date) : '資料尚未具備'}</dd>
                 <dt className="text-muted-foreground">監控封包業務日（非成熟進度）</dt><dd className="sv-num text-slate-300">{formatDate(stage.lineage.frozen_forward_business_date, '不適用／尚未具備')}</dd>
-                {stage.lineage.cadence ? <><dt className="text-muted-foreground">更新頻率</dt><dd className="sv-num truncate text-slate-300" title={stage.lineage.cadence}>{stage.lineage.cadence}</dd></> : null}
-                {stage.lineage.role ? <><dt className="text-muted-foreground">用途角色</dt><dd className="sv-num truncate text-slate-300" title={stage.lineage.role}>{stage.lineage.role}</dd></> : null}
+                {stage.lineage.cadence ? <><dt className="text-muted-foreground">更新頻率</dt><dd className="sv-num break-all text-slate-300">{stage.lineage.cadence}</dd></> : null}
+                {stage.lineage.role ? <><dt className="text-muted-foreground">用途角色</dt><dd className="sv-num break-all text-slate-300">{stage.lineage.role}</dd></> : null}
                 <dt className="text-muted-foreground">前次證據</dt><dd className="sv-num text-slate-300">{formatDate(previousHistory?.evidence_date, '首次證據')}</dd>
                 <dt className="text-muted-foreground">相較前次變化</dt><dd className={`sv-num break-words ${returnTone(historyDelta, historyReturnLike)}`}>{historyComparison}</dd>
                 <dt className="text-muted-foreground">{scopedCandidateStage ? '離線候選驗證歷史（非每日績效）' : '近期趨勢'}</dt>
@@ -617,15 +624,15 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
                     </span>
                   )) : '尚無前次歷史'}
                 </dd>
-                <dt className="text-muted-foreground">版本</dt><dd className="sv-num truncate text-slate-300" title={stage.version ?? undefined}>{stage.version ?? '資料尚未具備'}</dd>
-                <dt className="text-muted-foreground">產物 ID</dt><dd className="sv-num truncate text-slate-300" title={stage.lineage.artifact_id ?? undefined}>{stage.lineage.artifact_id ?? '不適用'}</dd>
-                <dt className="text-muted-foreground">來源</dt><dd className="truncate text-slate-300" title={stage.lineage.source}>{looksInternal(stage.lineage.source) ? '系統資料' : stage.lineage.source}</dd>
+                <dt className="text-muted-foreground">版本</dt><dd className="sv-num break-all text-slate-300">{stage.version ?? '資料尚未具備'}</dd>
+                <dt className="text-muted-foreground">產物 ID</dt><dd className="sv-num break-all text-slate-300">{shortArtifactId(stage.lineage.artifact_id)}</dd>
+                <dt className="text-muted-foreground">來源</dt><dd className="break-words text-slate-300">{looksInternal(stage.lineage.source) ? '系統資料' : stage.lineage.source}</dd>
               </dl>
               {evidenceScopeRows.length ? (
                 <div className="mt-3 grid gap-2">
                   {evidenceScopeRows.map((scope) => (
                     <div key={scope.scope} className="rounded-lg border border-white/[0.07] bg-black/15 p-2">
-                      <p className="text-[11px] font-semibold text-slate-200" title={scope.scope}>{scope.title}</p>
+                      <p className="text-[11px] font-semibold text-slate-200">{scope.title}</p>
                       <dl className="mt-1 grid grid-cols-[minmax(0,6.5rem)_minmax(0,1fr)] gap-x-2 gap-y-1 text-[10px] leading-4">
                         {scope.rows.map(([label, value]) => {
                           const raw = value ?? (label === 'Reason' ? '沒有額外原因' : '資料缺漏')
@@ -633,7 +640,7 @@ function StageRow({ stage }: { stage: PipelineMaturityStage }) {
                           return (
                             <div key={label} className="contents">
                               <dt className="text-muted-foreground">{FIELD_LABELS[label ?? ''] ?? label}</dt>
-                              <dd className="sv-num truncate text-slate-300" title={raw ?? undefined}>{shown}</dd>
+                              <dd className="sv-num break-all text-slate-300">{looksInternal(shown) ? humanStatus(shown, '系統資料') : shown}</dd>
                             </div>
                           )
                         })}
@@ -739,7 +746,7 @@ export default function PipelineMaturityContribution({
         {data.active_ml_ensemble && <div className="mt-3 rounded-xl border border-white/[0.07] px-3 py-3 text-xs leading-5 text-slate-400">
           <p className="font-semibold text-slate-200">目前正式 L3 ensemble</p>
           {data.active_ml_ensemble.status === 'serving' ? <>
-            <p>驗證樣本截止：{formatDate(data.active_ml_ensemble.validation_end_date, '未知')} · 結果已知截止：{formatDate(data.active_ml_ensemble.knowledge_cutoff_date, '未知')} · <span className="cursor-help underline decoration-dotted decoration-white/25" title={data.active_ml_ensemble.cohort_id ?? undefined}>版本身分</span></p>
+            <p>驗證樣本截止：{formatDate(data.active_ml_ensemble.validation_end_date, '未知')} · 結果已知截止：{formatDate(data.active_ml_ensemble.knowledge_cutoff_date, '未知')} · <span className="cursor-help underline decoration-dotted decoration-white/25" title={humanTitle(data.active_ml_ensemble.cohort_id)}>版本身分</span></p>
             <p>{data.l4_distribution ? '新 L4 必須與此 L3 版本相容；版本不符時暫停新配置。' : '此為目前正式 L3 版本；收益模型證據列於下方。'}</p>
           </> : <StatusText tone="warn">{data.active_ml_ensemble.status === 'missing' ? '尚無正式 ensemble 指標' : '正式 ensemble 身分讀取或驗證受阻'}</StatusText>}
         </div>}
@@ -758,7 +765,7 @@ export default function PipelineMaturityContribution({
               <div className="flex flex-wrap items-center gap-2">
                 <Route className="h-4 w-4 text-cyan-300" />
                 <h3 className="text-sm font-semibold text-slate-100">{navRouteStage ? 'NAV 路由採用與當日選股生效確認' : '門檻證據 V2 + 路由分數 V2 必須一起升級'}</h3>
-                <StatusBadge tone={STATUS_STYLE[strategyRouteBundle.status].tone} title={strategyRouteBundle.status}>
+                <StatusBadge tone={STATUS_STYLE[strategyRouteBundle.status].tone}>
                   {STATUS_STYLE[strategyRouteBundle.status].label}
                 </StatusBadge>
                 <Badge variant="outline" className={`h-auto rounded-full px-2 py-0.5 text-[11px] ${MODE_STYLE[strategyRouteBundle.contribution_mode].cls}`}>
@@ -802,7 +809,7 @@ export default function PipelineMaturityContribution({
           ) : null}
           {strategyRouteBundle.blockers.length ? (
             <div className="mt-3 flex flex-wrap gap-2">
-              {strategyRouteBundle.blockers.map((blocker) => <StatusBadge key={blocker} tone="fail" title={`系統代碼：${blocker}`} className="whitespace-normal">{blockerText(blocker)}</StatusBadge>)}
+              {strategyRouteBundle.blockers.map((blocker) => <StatusBadge key={blocker} tone="fail" className="whitespace-normal">{blockerText(blocker)}</StatusBadge>)}
             </div>
           ) : null}
         </div>

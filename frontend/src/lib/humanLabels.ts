@@ -18,6 +18,11 @@ const SOURCE_LABELS: Array<[RegExp, string]> = [
   [/^canonical_chip_daily/i, '籌碼日資料'],
   [/^canonical_margin/i, '融資融券日資料'],
   [/^canonical_futures/i, '期貨日資料'],
+  [/^canonical_market_summary_daily/i, '市場彙總日資料'],
+  [/^canonical_market_daily/i, '市場日資料'],
+  [/^canonical_institutional_amount/i, '法人買賣金額日資料'],
+  [/^canonical_/i, '正式日資料'],
+  [/^external_evidence_items/i, '外部證據資料'],
   [/finlab official date fallback/i, 'FinLab（官方日期）'],
   [/finlab/i, 'FinLab'],
   [/gdelt/i, '國際新聞事件'],
@@ -87,4 +92,54 @@ export function strategyIdLabel(raw: unknown): string {
   const version = id.match(/^(.+?)[_-](v\d+)$/i)
   const base = (version ? version[1] : id).replace(/[_-]+/g, ' ').trim()
   return version ? `${base} · ${version[2].toLowerCase()}` : base
+}
+
+/**
+ * tooltip（title）專用：含 snake_case 識別名或 JSON 的字串一律不放進 title（Wei 規則：tooltip 不露原碼）。
+ * 回傳 undefined 時 React 不會輸出 title 屬性。
+ */
+export function humanTitle(text: unknown): string | undefined {
+  if (typeof text !== 'string') return undefined
+  const t = text.trim()
+  if (!t) return undefined
+  if (/\b[a-z]+(?:_[a-z0-9]+)+\b/.test(t) || /^[[{]/.test(t) || looksInternal(t)) return undefined
+  return t
+}
+
+/**
+ * 排程摘要：後端常把整段 JSON（checksum、receipt）塞進 key=value 摘要。畫面只放人看的文字，
+ * 40 字以上的 {…}／[…] 區塊拿掉並註明字數；底線換空白。不截斷、不收合（11/28 Wei 定案）。
+ */
+export function humanJobSummary(text: unknown): string {
+  const t = typeof text === 'string' ? text : ''
+  let out = ''
+  let hidden = 0
+  for (let i = 0; i < t.length; i++) {
+    const c = t[i]
+    if (c === '{' || c === '[') {
+      let depth = 0
+      let inString = false
+      let j = i
+      for (; j < t.length; j++) {
+        const ch = t[j]
+        if (inString) {
+          if (ch === '\\') j++
+          else if (ch === '"') inString = false
+        } else if (ch === '"') inString = true
+        else if (ch === '{' || ch === '[') depth++
+        else if (ch === '}' || ch === ']') {
+          depth--
+          if (depth === 0) break
+        }
+      }
+      if (j - i + 1 >= 40) {
+        hidden += Math.min(j, t.length - 1) - i + 1
+        i = j
+        continue
+      }
+    }
+    out += c
+  }
+  const human = out.replace(/_/g, ' ').replace(/\s+/g, ' ').trim()
+  return hidden ? `${human}（另有機器明細 ${hidden.toLocaleString()} 字）` : human
 }

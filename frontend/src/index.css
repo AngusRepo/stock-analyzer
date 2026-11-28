@@ -548,6 +548,16 @@
     border-spacing: 0 0.5rem;
   }
 
+  /* lightweight-charts 用 <table> 排 pane／座標軸：不吃全站表格樣式（行距 0.5rem 會多出 40px、
+     手機的 display:block + overflow-x:auto 會把圖表變成 340/383 的內捲軸）。 */
+  .tv-lightweight-charts table {
+    display: table !important;
+    overflow: visible !important;
+    white-space: normal !important;
+    border-collapse: collapse !important;
+    border-spacing: 0 !important;
+  }
+
   .sv-stockintelli-page thead {
     color: #8992a3;
     font-size: 11px;

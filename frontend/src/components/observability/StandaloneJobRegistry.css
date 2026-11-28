@@ -63,7 +63,7 @@
 .obs-standalone__job-card.is-waiting .obs-standalone__status { color: var(--warn); }
 .obs-standalone__job-card.is-attention .obs-standalone__status { color: var(--warn); }
   .obs-standalone__job-card.is-blocked .obs-standalone__status { color: var(--warn); }
-.obs-standalone__summary { display: -webkit-box; min-height: 44px; max-height: 44px; margin: 9px 0 0; overflow: hidden; overflow-wrap: anywhere; color: var(--muted-foreground); font-size: .8125rem; line-height: 22px; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.obs-standalone__summary { display: block; min-height: 44px; margin: 9px 0 0; overflow-wrap: anywhere; color: var(--muted-foreground); font-size: .8125rem; line-height: 22px; }
 .obs-standalone__summary.is-error { color: var(--fail); }
 .obs-standalone__summary.is-attention { color: var(--warn); }
 .obs-standalone__relation { display: flex; min-width: 0; align-items: center; gap: 7px; margin-top: 9px; border-top: 1px solid var(--border); padding-top: 8px; color: var(--muted-foreground); }

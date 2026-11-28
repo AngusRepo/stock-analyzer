@@ -23,7 +23,7 @@ import { PriceChange, StatusBadge, StatusIcon } from '@/components/ui/status'
 import { marketApi, recommendationsApi } from '@/lib/api'
 import { TW_COLORS } from '@/lib/colorTokens'
 import { formatDate, formatDateShort, formatNumber as formatGrouped, formatPct as formatUnsignedPct, formatSignedPct } from '@/lib/format'
-import { looksInternal } from '@/lib/humanLabels'
+import { humanSource, looksInternal } from '@/lib/humanLabels'
 import { splitRecommendationLanes } from '@/lib/recommendationLanes'
 import { safeExternalUrl } from '@/lib/safeUrl'
 import {
@@ -147,6 +147,13 @@ function formatBillion(value: number | null) {
   return `${value > 0 ? '+' : ''}${formatGrouped(value, 2)}${NBSP}億`
 }
 
+// 數字照原字級、單位縮小一級：窄欄（1440 四欄）時「1,598.3 萬張」不被截。
+function WithUnit({ text }: { text: string }) {
+  const at = text.lastIndexOf(NBSP)
+  if (at < 0) return <>{text}</>
+  return <>{text.slice(0, at)}<span className="ml-0.5 text-[0.72em] font-semibold opacity-80">{text.slice(at + 1)}</span></>
+}
+
 function toneBySigned(value: number | null): Tone {
   if (value == null || value === 0) return 'slate'
   return value > 0 ? 'up' : 'down'
@@ -231,7 +238,7 @@ function SectionHeader({
   action?: ReactNode
 }) {
   return (
-    <div className="flex min-h-[48px] items-center justify-between gap-3 px-5 py-3">
+    <div className="flex min-h-[48px] flex-wrap items-center justify-between gap-x-3 gap-y-1 px-5 py-3">
       <div className="flex min-w-0 items-center gap-2">
         <Icon className="h-4 w-4 shrink-0 text-blue-400" />
         <h2 className="truncate text-[15px] font-bold text-slate-100">{title}</h2>
@@ -352,7 +359,7 @@ function IndexTileCard({ tile, panelDate }: { tile: IndexTile; panelDate: string
   const missingLabel = fetchFailed ? '讀取失敗' : tile.status === 'finlab_not_materialized' ? '尚未匯入' : '缺資料'
   return (
     <div
-      title={`來源：${tile.source}`}
+      title={`來源：${humanSource(tile.source, 'FinLab')}`}
       className={cx(
         'relative overflow-hidden border-white/[0.045] px-5 py-3.5 md:border-r',
         tile.tone === 'up' && 'bg-up/[0.045]',
@@ -473,7 +480,7 @@ function Metric({ label, value, valueClass = 'text-slate-100', sub, title }: { l
   return (
     <div className="min-w-0" title={title}>
       <p className="text-xs text-muted-foreground">{label}</p>
-      <p className={cx('mt-1 whitespace-nowrap text-lg font-bold tabular-nums', valueClass)}>{value}</p>
+      <p className={cx('mt-1 whitespace-nowrap text-base font-bold tabular-nums 2xl:text-lg', valueClass)}>{typeof value === 'string' ? <WithUnit text={value} /> : value}</p>
       {sub && <p className="whitespace-nowrap text-[11px] tabular-nums text-muted-foreground">{sub}</p>}
     </div>
   )
@@ -608,7 +615,7 @@ function InstitutionFlowStatTrack({ risk, panelDate }: { risk: any; panelDate: s
       bar={<SplitBar values={rows.map((row) => Math.abs(row.value ?? 0))} colors={['#8b5cf6', '#06b6d4', '#f59e0b']} title="外資／投信／自營商買賣超金額占比" />}
     >
       <p className="text-xs text-muted-foreground">三大法人合計買賣超</p>
-      <PriceChange value={total} className="mt-1 block text-xl font-bold">{formatBillion(total)}</PriceChange>
+      <PriceChange value={total} className="mt-1 block whitespace-nowrap text-xl font-bold"><WithUnit text={formatBillion(total)} /></PriceChange>
       <div className="mt-3 grid grid-cols-3 gap-3">
         {rows.map((row) => (
           <div key={row.label} className="min-w-0">
@@ -616,7 +623,7 @@ function InstitutionFlowStatTrack({ risk, panelDate }: { risk: any; panelDate: s
               <span className="mr-1 inline-block h-1.5 w-1.5 rounded-full align-middle" style={{ backgroundColor: row.label === '外資' ? '#8b5cf6' : row.label === '投信' ? '#06b6d4' : '#f59e0b' }} />
               {row.label}
             </p>
-            <PriceChange value={row.value} className="mt-1 block text-sm font-bold">{formatBillion(row.value)}</PriceChange>
+            <PriceChange value={row.value} className="mt-1 block whitespace-nowrap text-sm font-bold"><WithUnit text={formatBillion(row.value)} /></PriceChange>
           </div>
         ))}
       </div>
@@ -712,7 +719,8 @@ function HedgeFactor({ label, value, note, tone = 'slate' }: { label: string; va
   return (
     <div className="min-w-0" title={cleanNote && !showNote ? cleanNote : undefined}>
       <p className="text-xs text-muted-foreground">{label}</p>
-      <p className={cx('mt-1 whitespace-nowrap text-base font-bold tabular-nums', toneText(tone))}>{value}</p>
+      {/* 純數字不含空白不會斷；「S&P 500 -0.25% / SOX -0.65%」這類組合值在窄欄換行而不是被截。 */}
+      <p className={cx('mt-1 text-base font-bold leading-snug tabular-nums', toneText(tone))}>{value}</p>
       {showNote && <p className="mt-0.5 text-[11px] text-muted-foreground">{cleanNote}</p>}
     </div>
   )
@@ -899,16 +907,16 @@ function MarketOverviewBlock() {
           </div>
         ) : (
           <>
-            <div className={panelClass('grid gap-4 p-4 xl:self-stretch')}>
-              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-[minmax(290px,1.18fr)_minmax(220px,0.82fr)]">
-                <FearGreedCard risk={risk} panelDate={panelDate} />
-                <BusinessSignalCard risk={risk} />
-              </div>
+            {/* 兩欄高度對齊：左欄＝情緒（貪婪＋避險），右欄＝期貨法人＋國際事件＋景氣信號。
+                content-start：卡片照內容高度排，不被 grid 拉長留白。 */}
+            <div className={panelClass('grid content-start gap-4 p-4 xl:self-stretch')}>
+              <FearGreedCard risk={risk} panelDate={panelDate} />
               <HedgeSentimentCard risk={risk} panelDate={panelDate} />
             </div>
-            <div className={panelClass('grid gap-4 p-4 xl:self-stretch')}>
+            <div className={panelClass('grid content-start gap-4 p-4 xl:self-stretch')}>
               <MarketRiskDetailBreakdown risk={risk} />
               <GlobalEventContextCard risk={risk} />
+              <BusinessSignalCard risk={risk} />
             </div>
           </>
         )}
@@ -1006,7 +1014,7 @@ function NewsBlock({ embedded = false }: { embedded?: boolean }) {
                 <span className="truncate font-semibold">{item.source ?? '新聞'}</span>
                 <span className="shrink-0 tabular-nums">{formatDateShort(item.published_at ?? item.publishedAt, '')}</span>
               </div>
-              <p className={cx('line-clamp-2 font-semibold text-slate-100', embedded ? 'mt-1 text-sm leading-[1.45]' : 'mt-3 text-sm leading-6')}>{item.title}</p>
+              <p className={cx('font-semibold text-slate-100', embedded ? 'mt-1 text-sm leading-[1.45]' : 'mt-3 text-sm leading-6')}>{item.title}</p>
               {item.stock_symbol && <p className="mt-1 text-[11px] text-sky-300">{item.stock_symbol} {item.stock_name ?? ''}</p>}
             </a>
           ))}
@@ -1074,7 +1082,7 @@ function GlobalEventContextCard({ risk }: { risk: any }) {
               className="block border-b border-white/[0.055] py-2 transition-colors last:border-b-0 hover:text-cyan-200"
             >
               <div className="flex items-start justify-between gap-3">
-                <p className="line-clamp-2 text-sm font-semibold leading-5 text-slate-200">{event.title}</p>
+                <p className="text-sm font-semibold leading-5 text-slate-200">{event.title}</p>
                 <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground">{formatDateShort(event.publishedAt, '')}</span>
               </div>
               {themes.length > 0 && <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{themes.join(' / ')}</p>}
@@ -1236,7 +1244,7 @@ function RecommendationPanel() {
 
   return (
     // overflow-clip (not hidden) so the sticky detail panel can follow the page scroll.
-    <section className={panelClass('overflow-clip')}>
+    <section className={panelClass('overflow-clip')} data-home-reco-empty={listState === 'empty' || listState === 'empty-stale' ? '' : undefined}>
       <SectionHeader
         icon={Sparkles}
         title="選股推薦名單"
@@ -1442,7 +1450,8 @@ export default function MarketHomePage() {
           <MarketOverviewBlock />
           {/* DeferredRender shows a labelled loading skeleton until the section nears the viewport. */}
           <DeferredRender className="sv-home-deferred-section" minHeight={760}>
-            <div className="grid items-start gap-4 xl:grid-cols-2">
+            {/* 桌機 1:1 並排；當天沒有推薦（名單只剩空狀態一行）時改上下排，避免左欄下方整片空白。 */}
+            <div className="grid items-start gap-4 xl:has-[[data-home-reco-empty]]:grid-cols-1 xl:grid-cols-2">
               <div className="min-w-0"><RecommendationPanel /></div>
               <div className="min-w-0"><GroupFactorTrajectoryPanel /></div>
             </div>

@@ -21,7 +21,7 @@ export default function CandidateVersionPanel({ versions }: { versions?: Candida
             <p className="mt-1 text-muted-foreground">
               <span
                 className="cursor-help border-b border-dotted border-white/25"
-                title={[`cohort：${candidate.cohort_id ?? '未驗證'}`, `artifact：${candidate.artifact_id ?? '未知'}`, `checksum：${candidate.checksum ?? '未知'}`].join('\n')}
+                title={candidate.checksum ? `模型檢查碼 ${String(candidate.checksum).slice(0, 12)}` : undefined}
               >Cohort 與產物身分</span>
             </p>
           </>}

@@ -24,7 +24,8 @@ export const STATUS_LABEL: Record<StatusTone, string> = { ok: '通過', warn: '�
 /** 小型狀態徽章：圖示＋短字；細節放 title（tooltip）。 */
 export function StatusBadge({ tone, children, title, className = '' }: { tone: StatusTone; children: ReactNode; title?: string; className?: string }) {
   return (
-    <span title={title} className={`inline-flex items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] leading-4 whitespace-nowrap ${STATUS_CHIP[tone]} ${className}`}>
+    // 呼叫端給 whitespace-* 時不再疊 whitespace-nowrap（兩個 class 同時存在時 Tailwind 產生順序決定勝負，長原因文字會撐出右緣）。
+    <span title={title} className={`inline-flex max-w-full items-center gap-1 rounded border px-1.5 py-0.5 text-[11px] leading-4 ${className.includes('whitespace-') ? '' : 'whitespace-nowrap'} ${STATUS_CHIP[tone]} ${className}`}>
       <StatusIcon tone={tone} size={10} />
       {children}
     </span>

@@ -37,7 +37,7 @@ export default function ResearchValidationWorkbench() {
   return (
     <section className="rounded-2xl border border-slate-800 bg-slate-950/70 p-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2><span className="font-semibold text-slate-100">研究驗證工作台</span><span className="ml-3 text-xs text-slate-400">搜尋歷史 · 參數穩健區域 · 前視檢查 · 版本漂移</span></h2>
+        <h2 className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-0.5"><span className="font-semibold text-slate-100">研究驗證工作台</span><span className="text-xs text-slate-400">搜尋歷史 · 參數穩健區域 · 前視檢查 · 版本漂移</span></h2>
         <Button size="sm" variant="outline" disabled={loaded && (canonical.isFetching || runs.isFetching)} onClick={() => { if (loaded) { void canonical.refetch(); void runs.refetch() } else setLoaded(true) }}>
           {!loaded ? '載入驗證報告' : canonical.isFetching || runs.isFetching ? '讀取中…' : '重新讀取'}
         </Button>

@@ -11,6 +11,7 @@ import { DataState } from '@/components/ui/data-state'
 import { StatusBadge, StatusIcon, StatusText } from '@/components/ui/status'
 import { STATUS_CHIP, type StatusTone } from '@/lib/colorTokens'
 import { formatDate } from '@/lib/format'
+import { humanTitle } from '@/lib/humanLabels'
 import { strategyLabApi, type StrategyAdaptivePolicyState, type StrategyEvidenceProfile, type StrategyEvidenceProfilesResponse, type StrategyFormalOwnerDecision, type StrategyLearningResponse, type StrategyPromotionGate, type StrategyReplacementGateSummary, type StrategySpec } from '@/lib/api'
 
 type LearningRow = StrategyLearningResponse['specs'][number]
@@ -73,8 +74,9 @@ function statusClass(status: string): string {
 
 function StatusPill({ status, children, title }: { status: string; children: React.ReactNode; title?: string }) {
   const tone = statusTone(status)
-  if (tone) return <StatusBadge tone={tone} title={title ?? status}>{children}</StatusBadge>
-  return <Badge variant="outline" className={statusClass(status)} title={title ?? status}>{children}</Badge>
+  // 狀態原碼不進 tooltip（Wei 規則）；呼叫端給的說明含原碼時也不顯示。
+  if (tone) return <StatusBadge tone={tone} title={humanTitle(title)}>{children}</StatusBadge>
+  return <Badge variant="outline" className={statusClass(status)} title={humanTitle(title)}>{children}</Badge>
 }
 
 function gateResultClass(pass: boolean | null): string {
@@ -494,14 +496,16 @@ function DiagnosticMetric({
   role: string
 }) {
   return (
-    <div className="flex min-w-0 items-baseline justify-between gap-2 border-b border-slate-800/60 py-1 last:border-0">
-      <span className="min-w-0 text-muted-foreground">
-        <span className="block truncate">{label}</span>
-        <span className="mt-0.5 block text-[10px] leading-4 text-muted-foreground">{description}</span>
-      </span>
-      <span className="shrink-0 text-right font-mono text-slate-300">
-        {value} <span className="block text-[10px] text-cyan-200">{role}</span>
-      </span>
+    // 名稱與數值同一列、說明與角色在下一列：窄欄時名稱換行，不被數值欄擠到截字。
+    <div className="min-w-0 border-b border-slate-800/60 py-1 last:border-0">
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="min-w-0 break-words text-muted-foreground">{label}</span>
+        <span className="shrink-0 text-right font-mono text-slate-300">{value}</span>
+      </div>
+      <div className="mt-0.5 flex flex-wrap items-baseline justify-between gap-x-2 text-[10px] leading-4">
+        <span className="min-w-0 text-muted-foreground">{description}</span>
+        <span className="text-cyan-200">{role}</span>
+      </div>
     </div>
   )
 }
@@ -1221,7 +1225,7 @@ function StrategyLedgerGroup({
                   <StatusPill status={row.learning.status}>{statusLabel(row.learning.status)}</StatusPill>
                   <StatusPill status={healthBucket === 'execution_eligible' ? 'active' : healthBucket === 'evidence_repair' ? 'reward_join_missing' : 'not_ready'}>{strategyHealthLabel(healthBucket)}</StatusPill>
                 </div>
-                <p className="mt-1 break-all font-mono text-xs text-muted-foreground" title={`${row.id}:${row.version}`}>{row.id} &middot; {row.alphaBucket}</p>
+                <p className="mt-1 break-words text-xs text-muted-foreground">{String(row.alphaBucket ?? '').replace(/_/g, ' ')}</p>
               </div>
 
               <dl className="grid grid-cols-2 gap-2 2xl:grid-cols-3">
@@ -1287,11 +1291,12 @@ function StrategyLedgerGroup({
                         const availabilityReason = evidenceMetricAvailabilityReason(metricRow)
                         return (
                           <div key={metric} className={`rounded-md border px-2 py-1 text-[11px] text-slate-200 ${ready ? 'border-ok/25 bg-ok/[0.05]' : pendingDependency ? 'border-warn/25 bg-warn/[0.05]' : 'border-cyan-400/20 bg-cyan-400/[0.04]'}`}>
-                            <span className="flex items-center gap-1" title={metric}><StatusIcon tone={ready ? 'ok' : pendingDependency ? 'warn' : 'na'} size={10} />{evidenceMetricLabels[metric] ?? metric}</span>
-                            <span className="mt-0.5 block font-mono text-[10px]">
-                              <span className="opacity-75">{evidenceMetricStatusLabel(metricRow?.status)} · </span>
+                            <span className="flex items-center gap-1"><StatusIcon tone={ready ? 'ok' : pendingDependency ? 'warn' : 'na'} size={10} />{evidenceMetricLabels[metric] ?? metric}</span>
+                            {/* 三段各自成塊（flex-wrap），窄欄換行時不會疊字。 */}
+                            <span className="mt-0.5 flex flex-wrap items-baseline gap-x-1.5 font-mono text-[10px]">
+                              <span className="opacity-75">{evidenceMetricStatusLabel(metricRow?.status)}</span>
                               <span className={RETURN_LIKE_EVIDENCE_METRICS.has(metric) ? signedClass(metricRow?.value) : 'text-slate-200'}>{evidenceMetricValue(metric, metricRow?.value)}</span>
-                              <span className="opacity-75"> · n={metricRow?.sample_count ?? 0} / {metricRow?.mature_dates ?? 0} 日</span>
+                              <span className="opacity-75">n={metricRow?.sample_count ?? 0} / {metricRow?.mature_dates ?? 0} 日</span>
                             </span>
                             <span className="mt-1 block text-[10px] leading-4 text-slate-400">{evidenceMetricDescriptions[metric] ?? '此指標尚未提供白話定義。'}</span>
                             {availabilityReason && <span className="mt-1 block text-[10px] leading-4 text-amber-200/80">原因：{availabilityReason}</span>}
@@ -1444,7 +1449,7 @@ function StrategyHealthBoard({
                           ].join(' ')}
                         >
                           <span className="flex min-w-0 items-start justify-between gap-2">
-                            <span className={['min-w-0 break-words text-xs font-semibold', selected ? 'text-cyan-100' : 'text-slate-200'].join(' ')} title={`${row.name}（${row.id}:${row.version}）`}>{row.name}</span>
+                            <span className={['min-w-0 break-words text-xs font-semibold', selected ? 'text-cyan-100' : 'text-slate-200'].join(' ')} >{row.name}</span>
                             <span className="sv-num shrink-0 text-right text-[10px] text-slate-400">
                               <span className="block">正式 contribution {formalWeight == null ? '未取得' : pct(formalWeight)}</span>
                               <span className="mt-0.5 block text-cyan-200">Preview {previewWeight == null ? '未取得' : pct(previewWeight)}</span>
@@ -1542,11 +1547,11 @@ function StrategyLineageInspector({
         </div>
         <dl className="mt-3 space-y-2 text-xs">
           <div className="flex justify-between gap-3"><dt className="text-muted-foreground">快照日</dt><dd className="font-mono text-slate-300">{formatDate(snapshotDate, '未取得')}</dd></div>
-          <div className="flex justify-between gap-3"><dt className="text-muted-foreground">策略</dt><dd className="min-w-0 truncate font-mono text-slate-300" title={`${row.id}:${row.version}`}>{row.id}:{row.version}</dd></div>
-          <div className="flex justify-between gap-3"><dt className="text-muted-foreground">報酬來源</dt><dd className="min-w-0 truncate font-mono text-slate-300" title={row.learning.reward_owner}>{row.learning.reward_owner === 's12_execution_replay_v3_net' ? 'S12 執行重播' : '選股邊際報酬'}</dd></div>
+          <div className="flex justify-between gap-3"><dt className="text-muted-foreground">策略</dt><dd className="min-w-0 break-words text-right text-slate-300">{row.name}</dd></div>
+          <div className="flex justify-between gap-3"><dt className="text-muted-foreground">報酬來源</dt><dd className="min-w-0 text-right text-slate-300">{row.learning.reward_owner === 's12_execution_replay_v3_net' ? 'S12 執行重播' : '選股邊際報酬'}</dd></div>
           <div className="flex justify-between gap-3"><dt className="text-muted-foreground">最新決策</dt><dd className="font-mono text-slate-300">{formatDate(row.learning.latest_decision_date, '尚無')}</dd></div>
           <div className="flex justify-between gap-3"><dt className="text-muted-foreground">最新報酬</dt><dd className="font-mono text-slate-300">{formatDate(row.learning.latest_reward_date, '尚無')}</dd></div>
-          <div className="flex justify-between gap-3"><dt className="text-muted-foreground">證據權限</dt><dd className="text-right text-slate-300" title={profile?.production_authority}>{profile?.production_authority === 'formal_owner_input_active' ? '正式輸入生效' : profile?.production_authority === 'formal_owner_input_ready' ? '正式輸入就緒' : profile?.production_authority === 'comparison_only' ? '僅供比較' : '未取得'}</dd></div>
+          <div className="flex justify-between gap-3"><dt className="text-muted-foreground">證據權限</dt><dd className="text-right text-slate-300">{profile?.production_authority === 'formal_owner_input_active' ? '正式輸入生效' : profile?.production_authority === 'formal_owner_input_ready' ? '正式輸入就緒' : profile?.production_authority === 'comparison_only' ? '僅供比較' : '未取得'}</dd></div>
         </dl>
       </section>
       <section className="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
@@ -1558,7 +1563,7 @@ function StrategyLineageInspector({
           <div className="flex justify-between gap-3"><dt className="text-muted-foreground">路由比較成熟日</dt><dd className="text-cyan-300">{lanes?.threshold_route_shadow.mature_dates ?? 0} / {lanes?.threshold_route_shadow.required_mature_dates ?? 11} 日</dd></div>
           <div className="flex justify-between gap-3"><dt className="text-muted-foreground">多週期證據</dt><dd className={lanes?.multi_horizon_formal.production_effect ? 'text-violet-300' : 'text-muted-foreground'}>{lanes?.multi_horizon_formal.production_effect ? '正式權責' : '待定'}</dd></div>
           <div className="flex justify-between gap-3"><dt className="text-muted-foreground">主要週期</dt><dd className="font-mono text-slate-300">{formalOwnerDecision ? `${formalOwnerDecision.primary_horizon_days} 日` : '尚無正式決策'}</dd></div>
-          <div className="flex justify-between gap-3"><dt className="text-muted-foreground">權責狀態</dt><dd className={formalCooldown ? 'text-warn' : 'text-slate-300'} title={formalOwnerDecision?.performance_state}>{formalCooldown ? '績效降溫' : formalOwnerDecision?.performance_state ? formalOwnerDecision.performance_state.replace(/_/g, ' ') : '中性，待封存'}</dd></div>
+          <div className="flex justify-between gap-3"><dt className="text-muted-foreground">權責狀態</dt><dd className={formalCooldown ? 'text-warn' : 'text-slate-300'}>{formalCooldown ? '績效降溫' : formalOwnerDecision?.performance_state ? formalOwnerDecision.performance_state.replace(/_/g, ' ') : '中性，待封存'}</dd></div>
           <div className="flex justify-between gap-3"><dt className="text-muted-foreground">連續分數</dt><dd className="font-mono text-slate-300">{formalOwnerDecision ? `負 ${formalOwnerDecision.negative_calibration_streak} · 正 ${formalOwnerDecision.positive_calibration_streak}` : '-'}</dd></div>
         </dl>
       </section>
@@ -1566,7 +1571,7 @@ function StrategyLineageInspector({
         <h3 className="text-xs font-semibold text-slate-200">成熟度／allocation gate 結果</h3>
         <div className="mt-2 flex flex-wrap gap-1.5">
           {(missing.length ? missing : ['成熟度／allocation gate 已通過']).slice(0, 6).map((reason) => (
-            <StatusBadge key={reason} tone={missing.length ? 'warn' : 'ok'} title={reason} className="whitespace-normal text-[10px]">{gateReasonLabel(reason)}</StatusBadge>
+            <StatusBadge key={reason} tone={missing.length ? 'warn' : 'ok'} className="whitespace-normal text-[10px]">{gateReasonLabel(reason)}</StatusBadge>
           ))}
         </div>
       </section>
@@ -1595,7 +1600,7 @@ function StrategyLineageInspector({
               <ul className="mt-2 space-y-1 text-[10px] leading-4 text-slate-200">
                 {formalCooldownReasons.map((reason) => (
                   <li key={reason} className="rounded border border-amber-400/15 bg-slate-950/30 px-2 py-1">
-                    <span className="font-medium" title={reason}>{gateReasonLabel(reason)}</span>
+                    <span className="font-medium">{gateReasonLabel(reason)}</span>
                   </li>
                 ))}
               </ul>
@@ -1619,7 +1624,7 @@ function StrategyLineageInspector({
               <ul className="mt-2 space-y-1 text-[10px] leading-4 text-violet-100">
                 {formalPolicyPendingReasons.map((reason) => (
                   <li key={reason} className="rounded border border-violet-400/15 bg-slate-950/30 px-2 py-1">
-                    <span className="font-medium" title={reason}>{gateReasonLabel(reason)}</span>
+                    <span className="font-medium">{gateReasonLabel(reason)}</span>
                   </li>
                 ))}
               </ul>

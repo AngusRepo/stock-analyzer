@@ -51,7 +51,7 @@ for (const file of ['components/ui/status.tsx', 'components/ui/data-state.tsx', 
   assert(!/emerald|rose|\bred-|\bgreen-/.test(text), `${file} must not use emerald/rose/red/green`)
 }
 const simroomCss = fs.readFileSync(path.join(src, 'components/simroom/simroom.css'), 'utf8')
-assert(/\.dots i\.ok \{ background: var\(--ok\)/.test(simroomCss) && /\.dots i\.fail \{ background: var\(--fail\)/.test(simroomCss),
+assert(/\.bar i\.ok \{ background: var\(--ok\)/.test(simroomCss) && /\.bar i\.fail \{ background: var\(--fail\)/.test(simroomCss),
   'condition dots use status tokens')
 
 console.log('colorTokenContract: OK')

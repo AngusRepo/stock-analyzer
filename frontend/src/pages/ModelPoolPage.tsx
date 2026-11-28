@@ -536,10 +536,10 @@ export default function ModelPoolPage() {
         )}
 
         {(modelPoolError || refreshError) && (
-          <div className="border border-fail/35 bg-fail/10 p-4 text-sm text-fail" role="status">{modelPoolSnapshotReady ? '更新失敗，保留上次成功快照：' : '讀取失敗：'}{(refreshError ?? modelPoolError)!.message}</div>
+          <div className="break-words border border-fail/35 bg-fail/10 p-4 text-sm text-fail" role="status">{modelPoolSnapshotReady ? '更新失敗，保留上次成功快照：' : '讀取失敗：'}{(refreshError ?? modelPoolError)!.message}</div>
         )}
         {evidenceError && (
-          <div className="border border-fail/35 bg-fail/10 p-4 text-sm text-fail" role="status">模型證據讀取失敗：{evidenceError.message}</div>
+          <div className="break-words border border-fail/35 bg-fail/10 p-4 text-sm text-fail" role="status">模型證據讀取失敗：{evidenceError.message}</div>
         )}
 
         {modelPoolSnapshotReady && (

@@ -25,13 +25,14 @@ function item(over: Record<string, any> = {}, or15: Record<string, any> = {}) {
 }
 
 test('session phase, default view and axis follow Taipei time', () => {
-  assert.equal(sessionPhase(7 * 60 + 59), 'night')
-  assert.equal(sessionPhase(8 * 60), 'premarket')
+  assert.equal(sessionPhase(0), 'premarket')
+  assert.equal(sessionPhase(8 * 60 + 59), 'premarket')
   assert.equal(sessionPhase(9 * 60), 'intraday')
-  assert.equal(sessionPhase(13 * 60 + 30), 'close')
-  assert.equal(sessionPhase(14 * 60 + 30), 'postmarket')
-  assert.equal(defaultView('night'), 'premarket')
-  assert.equal(defaultView('close'), 'postmarket')
+  assert.equal(sessionPhase(13 * 60 + 29), 'intraday')
+  assert.equal(sessionPhase(13 * 60 + 30), 'postmarket')
+  assert.equal(sessionPhase(23 * 60 + 59), 'postmarket')
+  assert.equal(defaultView('premarket'), 'premarket')
+  assert.equal(defaultView('postmarket'), 'postmarket')
   assert.equal(axisPosition(0), 0)
   assert.ok(axisPosition(9 * 60) > axisPosition(8 * 60))
   const clock = twClock(NOW)

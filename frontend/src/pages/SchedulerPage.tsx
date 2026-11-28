@@ -1,4 +1,5 @@
 ﻿import { useQuery } from '@tanstack/react-query'
+import { humanJobSummary } from '@/lib/humanLabels'
 import { AlertTriangle, Clock, ExternalLink, RefreshCw } from 'lucide-react'
 import { lazy, Suspense } from 'react'
 import AppShell from '@/components/AppShell'
@@ -16,7 +17,6 @@ import {
 } from '@/components/workstation/WorkstationChrome'
 import { STATUS_CHIP } from '@/lib/colorTokens'
 import { StatusIcon } from '@/components/ui/status'
-import { VirtualizedList } from '@/components/performance/VirtualizedList'
 
 const LazySchedulerCadenceChart = lazy(() => import('@/components/charts/SchedulerCadenceChart'))
 
@@ -102,9 +102,17 @@ function MetricCell({ label, value, tone = 'neutral', detail }: {
       <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-slate-800">
         <div className={`h-full rounded-full ${tone === 'ok' ? 'bg-ok' : tone === 'warn' ? 'bg-warn' : tone === 'error' ? 'bg-fail' : 'bg-slate-500'}`} style={{ width: tone === 'error' ? '100%' : tone === 'warn' ? '64%' : '92%' }} />
       </div>
-      {detail && <p className="mt-1 truncate text-xs text-muted-foreground">{detail}</p>}
+      {detail && <p className="mt-1 break-words text-xs text-muted-foreground">{detail}</p>}
     </div>
   )
+}
+
+const GROUP_LABELS: Record<SchedulerJob['group'], string> = {
+  pipeline_chain: '每日主鏈',
+  intraday: '盤中',
+  daily: '每日獨立',
+  weekly: '每週',
+  monthly: '每月',
 }
 
 function JobRow({ job }: { job: SchedulerJob }) {
@@ -113,22 +121,22 @@ function JobRow({ job }: { job: SchedulerJob }) {
   const attention = attentionSkipReason(job)
   const replay = historicalReplayLabel(job)
   return (
-    <div className="grid min-h-[92px] grid-cols-1 gap-2 border-b border-[#263247] px-3 py-2 sv-num text-[11px] sm:grid-cols-[1fr_96px_92px_112px] sm:items-center">
+    <div className="grid grid-cols-1 gap-2 border-b border-[#263247] px-3 py-2 sv-num text-[11px] sm:grid-cols-[minmax(0,1fr)_96px_92px_112px] sm:items-center">
       <div className="min-w-0">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <WorkstationStatusPill tone={jobTone(job)}>{statusLabel(job.lastStatus)}</WorkstationStatusPill>
           {replay && <WorkstationPill tone="info">{replay}</WorkstationPill>}
-          <span title={job.consolidation?.consolidationClass}><WorkstationPill tone={consolidationTone(job)}>{consolidationLabel(job)}</WorkstationPill></span>
-          <p className="truncate text-slate-100">{job.name}</p>
+          <span><WorkstationPill tone={consolidationTone(job)}>{consolidationLabel(job)}</WorkstationPill></span>
+          <p className="min-w-0 break-words text-slate-100">{job.name}</p>
           {(suspicious || attention) && <AlertTriangle className="h-3.5 w-3.5 text-warn" />}
         </div>
-        <p className={`mt-1 truncate ${attention ? 'text-warn' : 'text-[#70809b]'}`} title={job.summary || undefined}>
-          {job.group} / {attention || job.summary || job.schedule}
+        <p className={`mt-1 break-all ${attention ? 'text-warn' : 'text-[#70809b]'}`}>
+          {GROUP_LABELS[job.group] ?? String(job.group).replace(/_/g, ' ')}／{humanJobSummary(attention || job.summary || job.schedule || '')}
         </p>
         {consolidation && (
-          <p className="mt-1 truncate text-[#8a92a6]">
+          <p className="mt-1 break-words text-[#8a92a6]">
             {consolidation.replacementOwner
-              ? `建議：${consolidation.replacementOwner}`
+              ? `建議：${String(consolidation.replacementOwner).replace(/_/g, " ")}`
               : consolidation.recommendation}
           </p>
         )}
@@ -138,8 +146,8 @@ function JobRow({ job }: { job: SchedulerJob }) {
       </div>
       <div className="grid grid-cols-3 gap-2 text-[#8a92a6] sm:contents">
         <span className={suspicious ? 'text-warn' : 'text-[#8a92a6]'}>{job.lastDuration || '-'}</span>
-        <span className="truncate">{job.rate7d || '-'}</span>
-        <span className="truncate text-right text-[#70809b]">{job.nextRun || '-'}</span>
+        <span>{job.rate7d || '-'}</span>
+        <span className="text-right text-[#70809b]">{job.nextRun || '-'}</span>
       </div>
     </div>
   )
@@ -224,24 +232,22 @@ export default function SchedulerPage() {
 
         <section className="grid gap-4 xl:grid-cols-[1fr_360px]">
           <WorkstationPanel title="Scheduler Runs / 排程執行" kicker="run state, callback, duration">
-            <VirtualizedList
-              items={jobs}
-              height={520}
-              itemHeight={92}
-              getKey={(job) => job.id}
-              renderItem={(job) => <JobRow job={job} />}
-              empty={<div className="p-4 text-sm text-muted-foreground">尚未取得 scheduler jobs。</div>}
-            />
+            {/* 全部攤開（Wei：不准內捲軸）；原本 520px 虛擬捲動框要捲 7,900px 才看完。 */}
+            {jobs.length ? (
+              <div>{jobs.map((job) => <JobRow key={job.id} job={job} />)}</div>
+            ) : (
+              <div className="p-4 text-sm text-muted-foreground">尚未取得 scheduler jobs。</div>
+            )}
           </WorkstationPanel>
 
           <WorkstationPanel title="Needs Attention / 優先處理" kicker="failed or suspicious duration">
             <div className="divide-y divide-border">
               {suspiciousJobs.slice(0, 8).map((job) => (
                 <div key={job.id} className="px-4 py-3">
-                  <div className="flex items-start justify-between gap-3">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <p className="truncate sv-num text-[11px] normal-case text-slate-100">{job.name}</p>
-                      <p className="mt-1 text-xs leading-5 text-[#8a92a6]">{attentionSkipReason(job) ? `${attentionSkipReason(job)} · ` : ''}{job.summary || job.schedule}</p>
+                      <p className="break-words sv-num text-[11px] normal-case text-slate-100">{job.name}</p>
+                      <p className="mt-1 break-all text-xs leading-5 text-[#8a92a6]">{attentionSkipReason(job) ? `${attentionSkipReason(job)} · ` : ''}{humanJobSummary(job.summary || job.schedule || '')}</p>
                       {job.consolidation && (
                         <p className="mt-1 text-xs leading-5 text-[#70809b]">
                           Consolidation: {consolidationLabel(job)} / risk {job.consolidation.operatorRisk}
@@ -250,7 +256,7 @@ export default function SchedulerPage() {
                     </div>
                     <WorkstationStatusPill tone={jobTone(job)}>{statusLabel(job.lastStatus)}</WorkstationStatusPill>
                   </div>
-                  <p className="mt-2 sv-num text-[10px] text-[#70809b]">last {job.lastRun}{historicalReplayLabel(job) ? ` / run_date ${historicalReplayLabel(job)}` : ''} / duration {job.lastDuration} / next {job.nextRun}</p>
+                  <p className="mt-2 sv-num text-[10px] text-[#70809b]">last {job.lastRun}{historicalReplayLabel(job) ? ` / 補跑日 ${historicalReplayLabel(job)}` : ''} / duration {job.lastDuration} / next {job.nextRun}</p>
                 </div>
               ))}
               {!suspiciousJobs.length && (

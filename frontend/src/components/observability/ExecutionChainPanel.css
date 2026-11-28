@@ -116,7 +116,7 @@
 .obs-chain__runtime-icon svg { width: 16px; height: 16px; stroke-width: 2.2; }
 .obs-chain__runtime > span:nth-child(2) { display: grid; min-width: 0; }
 .obs-chain__runtime small { color: currentColor; font-size: .8125rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
-.obs-chain__runtime strong { overflow: hidden; color: var(--foreground); font-size: .8125rem; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+.obs-chain__runtime strong { overflow-wrap: anywhere; color: var(--foreground); font-size: .8125rem; line-height: 1.3; }
 .obs-chain__runtime em { color: currentColor; font-size: .8125rem; font-style: normal; font-weight: 700; white-space: nowrap; }
 .obs-chain__runtime.is-running { border-color: color-mix(in srgb, var(--chain-running) 58%, transparent); color: var(--chain-running); background: color-mix(in srgb, var(--border) 88%, transparent); box-shadow: 0 0 22px color-mix(in srgb, var(--chain-running) 20%, transparent); }
 .obs-chain__runtime.is-running .obs-chain__runtime-icon { animation: obs-current-runtime 1.4s ease-in-out infinite; }
@@ -142,8 +142,9 @@
 }
 .obs-chain__orchestrator > svg { width: 17px; height: 17px; color: currentColor; stroke-width: 1.8; }
 .obs-chain__orchestrator > span { display: grid; min-width: 0; }
-.obs-chain__orchestrator small { overflow: hidden; color: var(--muted-foreground); font-size: .8125rem; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
-.obs-chain__orchestrator strong { overflow: hidden; color: var(--foreground); font-size: .8125rem; line-height: 1.3; text-overflow: ellipsis; white-space: nowrap; }
+/* 長名稱換行，不截字（Wei：不准截斷長內容）。 */
+.obs-chain__orchestrator small { overflow-wrap: anywhere; color: var(--muted-foreground); font-size: .8125rem; line-height: 1.25; }
+.obs-chain__orchestrator strong { overflow-wrap: anywhere; color: var(--foreground); font-size: .8125rem; line-height: 1.3; }
 .obs-chain__orchestrator em { color: currentColor; font-size: .8125rem; font-style: normal; font-weight: 650; white-space: nowrap; }
 .obs-chain__orchestrator:hover { border-color: color-mix(in srgb, var(--primary) 42%, transparent); background: color-mix(in srgb, var(--sv-bg-1) 88%, transparent); }
 .obs-chain__orchestrator:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
@@ -337,7 +338,7 @@
 
 .obs-chain__stage-copy { display: grid; min-width: 0; width: 100%; margin-top: 10px; justify-items: center; }
 .obs-chain__stage-copy strong { max-width: 100%; color: var(--foreground); font-size: .8125rem; font-weight: 680; line-height: 1.25; text-wrap: balance; }
-.obs-chain__stage-copy > span:not(.obs-job-timing) { max-width: 100%; margin-top: 3px; overflow: hidden; color: var(--muted-foreground); font-size: .8125rem; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+.obs-chain__stage-copy > span:not(.obs-job-timing) { max-width: 100%; margin-top: 3px; overflow-wrap: anywhere; color: var(--muted-foreground); font-size: .8125rem; line-height: 1.25; }
 .obs-chain__stage-copy > .obs-job-timing { margin-top: 6px; text-align: left; }
 .obs-chain__stage-copy small { margin-top: 5px; color: var(--muted-foreground); font-size: .8125rem; font-weight: 500; }
 .obs-chain__stage-copy em { margin-top: 3px; color: currentColor; font-size: .8125rem; font-style: normal; font-weight: 650; }
@@ -687,7 +688,9 @@
 
 @media (max-width: 640px) {
   .obs-chain__toolbar-meta { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
-  .obs-chain__runtime { width: 100%; grid-template-columns: 30px minmax(0, 1fr) auto; }
+  .obs-chain__runtime { width: 100%; grid-template-columns: 30px minmax(0, 1fr); }
+  /* 手機：狀態文字（含 Historical replay 日期）放到第二行換行，不跟階段名稱擠同一行 */
+  .obs-chain__runtime em { grid-column: 2; white-space: normal; overflow-wrap: anywhere; }
   .obs-chain__orchestrator { width: 100%; }
 }
 
